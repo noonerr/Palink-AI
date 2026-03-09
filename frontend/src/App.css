@@ -1,0 +1,131 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+/* 动态背景效果 */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.blob {
+  position: absolute;
+  /* 性能优化：减小模糊半径 */
+  filter: blur(40px);
+  /* 视觉调整：降低默认亮度/不透明度 */
+  opacity: 0.2;
+  /* 性能优化：启用硬件加速提示 */
+  will-change: transform, border-radius;
+  transform: translate3d(0,0,0); /* 强制开启3D加速 */
+  backface-visibility: hidden;
+  
+  animation: float 10s infinite ease-in-out alternate, morph 8s infinite ease-in-out alternate;
+}
+
+/* 浅色模式适配：移除耗性能的混合模式，直接调整透明度 */
+.bg-white .blob {
+  opacity: 0.12;
+}
+
+/* 形状1：左上，青色系 */
+.blob-1 {
+  width: 500px;
+  height: 500px;
+  background: linear-gradient(135deg, #00f2ff, #00c3ff);
+  top: -100px;
+  left: -100px;
+  animation-duration: 14s, 10s; /* 稍微减慢一点点以节省性能 */
+}
+
+/* 形状2：右下，深蓝/紫色系 */
+.blob-2 {
+  width: 450px;
+  height: 450px;
+  background: linear-gradient(135deg, #4400ff, #8800ff);
+  bottom: -50px;
+  right: -50px;
+  animation-duration: 12s, 9s;
+  animation-delay: -5s;
+}
+
+/* 形状3：中间辅助形状 */
+.blob-3 {
+  width: 300px;
+  height: 300px;
+  background: linear-gradient(135deg, #00ff88, #00f2ff);
+  top: 40%;
+  left: 30%;
+  opacity: 0.15; /* 第三个稍微更淡一点 */
+  animation-duration: 16s, 12s;
+  animation-delay: -2s;
+}
+
+/* 浅色模式颜色调整 */
+.bg-white .blob-1 {
+  background: linear-gradient(135deg, #00b4d8, #48cae4);
+}
+
+.bg-white .blob-2 {
+  background: linear-gradient(135deg, #5e60ce, #6930c3);
+}
+
+.bg-white .blob-3 {
+  background: linear-gradient(135deg, #ffb703, #fb8500);
+  opacity: 0.08;
+}
+
+@keyframes float {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  50% { transform: translate(30px, 40px) rotate(5deg); } /* 减小位移幅度，减少重绘区域 */
+  100% { transform: translate(-20px, 15px) rotate(-5deg); }
+}
+
+@keyframes morph {
+  0% { border-radius: 50%; }
+  25% { border-radius: 40% 60% 60% 40% / 40% 40% 60% 60%; } /* 简化变形复杂度 */
+  50% { border-radius: 50% 50% 30% 70% / 30% 70% 30% 70%; }
+  75% { border-radius: 60% 40% 40% 60% / 60% 60% 40% 40%; }
+  100% { border-radius: 45% 55% 60% 40% / 45% 50% 55% 50%; }
+}

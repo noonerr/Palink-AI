@@ -1,0 +1,871 @@
+"""
+角色扩展路由：会话、分支、对话流、导入/导出、解析、翻译
+"""
+import os
+import io
+import json
+import uuid
+import logging
+import base64
+from typing import Optional, List
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from openai import AsyncOpenAI
+
+from ..core import get_db, settings
+from ..api.dependencies import get_current_user
+from ..models import User, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch
+from ..character_card import extract_chara_card_from_png
+
+router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
+router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
+router_chat = APIRouter(tags=["character-chat"])
+
+logger = logging.getLogger(__name__)
+
+
+# ───────────────────────────────────────────────
+# Helpers
+# ───────────────────────────────────────────────
+
+def _get_providers() -> list:
+    cfg = os.path.join(settings.DATA_DIR, "providers.json")
+    try:
+        with open(cfg, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _find_model(model_id: str):
+    for p in _get_providers():
+        if p.get("is_active"):
+            for m in p.get("models", []):
+                mid = m["id"] if isinstance(m, dict) else m
+                if mid == model_id:
+                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
+    return None, None
+
+
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户") -> str:
+    parts = []
+    if char.system_prompt:
+        parts.append(char.system_prompt)
+    parts.append(f"You are {char.name}. Stay in character at all times.")
+    if char.personality:
+        parts.append(f"Personality: {char.personality}")
+    if char.background:
+        parts.append(f"Background: {char.background}")
+    if char.scenario:
+        parts.append(f"Scenario: {char.scenario}")
+    if char.description:
+        parts.append(f"Description: {char.description}")
+    parts.append(f'The user\'s name is "{user_nickname}".')
+    return "\n\n".join(parts)
+
+
+def _char_to_dict(c: Character) -> dict:
+    result = {
+        "id": c.id,
+        "name": c.name,
+        "description": c.description,
+        "background": c.background,
+        "personality": c.personality,
+        "avatar": c.avatar,
+        "scenario": c.scenario,
+        "first_mes": c.first_mes,
+        "mes_example": c.mes_example,
+        "system_prompt": c.system_prompt,
+        "creator": c.creator,
+        "character_version": c.character_version,
+        "user_nickname": c.user_nickname,
+        "is_processing": c.is_processing or False,
+        "processing_status": c.processing_status or "",
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
+    }
+    try:
+        result["tags"] = json.loads(c.tags) if c.tags else []
+        result["extensions"] = json.loads(c.extensions) if c.extensions else {}
+    except Exception:
+        result["tags"] = []
+        result["extensions"] = {}
+    return result
+
+
+# ───────────────────────────────────────────────
+# Character Sessions
+# ───────────────────────────────────────────────
+
+@router_characters.get("/{character_id}/sessions")
+async def get_character_sessions(
+    character_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+    sessions = (
+        db.query(CharacterChatSession)
+        .filter(CharacterChatSession.character_id == character_id, CharacterChatSession.user_id == user.id)
+        .order_by(CharacterChatSession.updated_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": s.id,
+            "title": s.title,
+            "character_id": s.character_id,
+            "user_id": s.user_id,
+            "dialogue_mode": s.dialogue_mode,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+        }
+        for s in sessions
+    ]
+
+
+# ───────────────────────────────────────────────
+# Character status / export / import / parse / translate
+# ───────────────────────────────────────────────
+
+@router_characters.get("/{character_id}/status")
+async def get_character_status(
+    character_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+    return {
+        "id": char.id,
+        "is_processing": char.is_processing or False,
+        "processing_status": char.processing_status or "",
+    }
+
+
+@router_characters.post("/{character_id}/reset-status")
+async def reset_character_status(
+    character_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+    char.is_processing = False
+    char.processing_status = ""
+    db.commit()
+    return {"status": "ok"}
+
+
+@router_characters.get("/{character_id}/export")
+async def export_character(
+    character_id: str,
+    format: str = "json",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    try:
+        tags = json.loads(char.tags) if char.tags else []
+        extensions = json.loads(char.extensions) if char.extensions else {}
+    except Exception:
+        tags = []
+        extensions = {}
+
+    data = {
+        "name": char.name,
+        "description": char.description or "",
+        "personality": char.personality or "",
+        "scenario": char.scenario or "",
+        "first_mes": char.first_mes or "",
+        "mes_example": char.mes_example or "",
+        "system_prompt": char.system_prompt or "",
+        "background": char.background or "",
+        "creator": char.creator or "",
+        "character_version": char.character_version or "",
+        "tags": tags,
+        "extensions": extensions,
+        "avatar": char.avatar or "",
+    }
+
+    if format == "json":
+        content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{char.name}.json"'},
+        )
+    else:
+        # PNG export: embed character data in PNG tEXt chunk
+        try:
+            from PIL import Image
+            import struct
+            import zlib
+
+            # Create a simple 256x256 image with character avatar or default
+            if char.avatar and char.avatar.startswith("data:image"):
+                img_data = base64.b64decode(char.avatar.split(",", 1)[1])
+                img = Image.open(io.BytesIO(img_data)).convert("RGBA")
+            else:
+                img = Image.new("RGBA", (256, 256), (100, 100, 200, 255))
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            png_bytes = bytearray(buf.getvalue())
+
+            # Inject chara tEXt chunk before IEND
+            char_b64 = base64.b64encode(json.dumps(data, ensure_ascii=False).encode()).decode()
+            keyword = b"chara"
+            chunk_data = keyword + b"\x00" + char_b64.encode("utf-8")
+            crc = zlib.crc32(b"tEXt" + chunk_data) & 0xFFFFFFFF
+            chunk = struct.pack(">I", len(chunk_data)) + b"tEXt" + chunk_data + struct.pack(">I", crc)
+
+            # Insert before last 12 bytes (IEND chunk)
+            final_png = bytes(png_bytes[:-12]) + chunk + bytes(png_bytes[-12:])
+            return Response(
+                content=final_png,
+                media_type="image/png",
+                headers={"Content-Disposition": f'attachment; filename="{char.name}.png"'},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"PNG export failed: {e}")
+
+
+@router_characters.post("/import")
+async def import_character(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """导入角色卡（PNG 或 JSON 格式）"""
+    content = await file.read()
+
+    char_data = None
+    if file.filename and file.filename.lower().endswith(".png"):
+        char_data = extract_chara_card_from_png(content)
+    elif file.filename and file.filename.lower().endswith(".json"):
+        try:
+            char_data = json.loads(content.decode("utf-8"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON file")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format. Use PNG or JSON.")
+
+    if not char_data:
+        raise HTTPException(status_code=422, detail="Could not extract character data from file")
+
+    # Normalize V1/V2/V3 format
+    if "data" in char_data and isinstance(char_data["data"], dict):
+        char_data = char_data["data"]
+
+    char = Character(
+        user_id=user.id,
+        name=char_data.get("name", "Imported Character"),
+        description=char_data.get("description") or char_data.get("char_persona", ""),
+        background=char_data.get("background", ""),
+        personality=char_data.get("personality", ""),
+        scenario=char_data.get("scenario", ""),
+        first_mes=char_data.get("first_mes", ""),
+        mes_example=char_data.get("mes_example", ""),
+        system_prompt=char_data.get("system_prompt", ""),
+        creator=char_data.get("creator", ""),
+        character_version=char_data.get("character_version", ""),
+        tags=json.dumps(char_data.get("tags", []), ensure_ascii=False),
+        extensions=json.dumps(char_data.get("extensions", {}), ensure_ascii=False),
+        is_processing=False,
+    )
+
+    # Handle avatar from the file
+    if char_data.get("avatar") and char_data["avatar"].startswith("data:image"):
+        char.avatar = char_data["avatar"]
+
+    db.add(char)
+    db.commit()
+    db.refresh(char)
+    return {"status": "ok", "character": _char_to_dict(char)}
+
+
+@router_characters.post("/parse")
+async def parse_character_card(
+    req: dict,
+    user: User = Depends(get_current_user),
+):
+    """从 URL 解析角色卡图片"""
+    image_url = req.get("image_url", "")
+    if not image_url:
+        raise HTTPException(status_code=400, detail="image_url required")
+
+    try:
+        if image_url.startswith("data:image"):
+            # base64 data URL
+            img_data = base64.b64decode(image_url.split(",", 1)[1])
+        else:
+            import urllib.request
+            with urllib.request.urlopen(image_url, timeout=10) as r:
+                img_data = r.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch image: {e}")
+
+    char_data = extract_chara_card_from_png(img_data)
+    if not char_data:
+        raise HTTPException(status_code=422, detail="No character data found in image")
+
+    if "data" in char_data and isinstance(char_data["data"], dict):
+        char_data = char_data["data"]
+
+    return {"status": "ok", "character": char_data}
+
+
+class TranslateRequest(BaseModel):
+    character_id: str
+    target_language: str = "zh"
+
+
+@router_characters.post("/translate")
+async def translate_character(
+    req: TranslateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """用 AI 翻译角色卡内容"""
+    char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    # Mark as processing
+    char.is_processing = True
+    char.processing_status = "Translating..."
+    db.commit()
+
+    lang_name = "Chinese (Simplified)" if req.target_language == "zh" else req.target_language
+
+    # Find any available model
+    providers = _get_providers()
+    provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
+    if not provider:
+        char.is_processing = False
+        db.commit()
+        raise HTTPException(status_code=400, detail="No AI model configured")
+
+    model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
+
+    fields_to_translate = {
+        "description": char.description or "",
+        "personality": char.personality or "",
+        "scenario": char.scenario or "",
+        "first_mes": char.first_mes or "",
+        "background": char.background or "",
+        "system_prompt": char.system_prompt or "",
+    }
+
+    try:
+        client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+        prompt = (
+            f"Translate the following character card fields to {lang_name}. "
+            f"Return a valid JSON object with the same keys. Keep proper nouns (character names) unchanged.\n\n"
+            + json.dumps(fields_to_translate, ensure_ascii=False)
+        )
+        resp = await client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        content = resp.choices[0].message.content
+        # Extract JSON
+        import re
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            translated = json.loads(match.group(0))
+            if translated.get("description"):
+                char.description = translated["description"]
+            if translated.get("personality"):
+                char.personality = translated["personality"]
+            if translated.get("scenario"):
+                char.scenario = translated["scenario"]
+            if translated.get("first_mes"):
+                char.first_mes = translated["first_mes"]
+            if translated.get("background"):
+                char.background = translated["background"]
+            if translated.get("system_prompt"):
+                char.system_prompt = translated["system_prompt"]
+
+        char.is_processing = False
+        char.processing_status = ""
+        db.commit()
+        return {"status": "ok", "character": _char_to_dict(char)}
+    except Exception as e:
+        char.is_processing = False
+        char.processing_status = f"Translation failed: {e}"
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ───────────────────────────────────────────────
+# Session management
+# ───────────────────────────────────────────────
+
+@router_sessions.delete("/{session_id}")
+async def delete_character_session(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    db.delete(session)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router_sessions.get("/{session_id}/messages")
+async def get_character_session_messages(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get active branch
+    active_branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id,
+        CharacterChatSessionBranch.is_active == True
+    ).first()
+
+    query = db.query(CharacterChatMessage).filter(CharacterChatMessage.session_id == session_id)
+    if active_branch:
+        query = query.filter(CharacterChatMessage.branch_id == active_branch.id)
+    else:
+        query = query.filter(CharacterChatMessage.branch_id == None)
+
+    messages = query.order_by(CharacterChatMessage.created_at).all()
+    return [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "model": m.model,
+            "created_at": m.created_at,
+            "tokens": m.tokens,
+            "branch_id": m.branch_id,
+        }
+        for m in messages
+    ]
+
+
+@router_sessions.delete("/{session_id}/messages/{message_id}")
+async def delete_character_message(
+    session_id: str,
+    message_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    msg = db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.id == message_id,
+        CharacterChatMessage.session_id == session_id
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    db.delete(msg)
+    db.commit()
+    return {"status": "ok"}
+
+
+class MessageEditRequest(BaseModel):
+    content: str
+
+
+@router_sessions.put("/{session_id}/messages/{message_id}")
+async def edit_character_message(
+    session_id: str,
+    message_id: int,
+    req: MessageEditRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    msg = db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.id == message_id,
+        CharacterChatMessage.session_id == session_id
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    msg.content = req.content
+    db.commit()
+    return {"status": "ok"}
+
+
+# ───────────────────────────────────────────────
+# Branches
+# ───────────────────────────────────────────────
+
+class BranchCreateRequest(BaseModel):
+    session_id: str
+    branch_name: str
+    parent_message_id: Optional[int] = None
+
+
+@router_sessions.get("/{session_id}/branches")
+async def get_branches(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    branches = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id
+    ).all()
+    if not branches:
+        # Auto-create main branch
+        main_branch = CharacterChatSessionBranch(
+            session_id=session_id,
+            branch_name="Main",
+            is_active=True,
+        )
+        db.add(main_branch)
+        db.commit()
+        db.refresh(main_branch)
+        branches = [main_branch]
+    return [
+        {
+            "id": b.id,
+            "session_id": b.session_id,
+            "branch_name": b.branch_name,
+            "is_active": b.is_active,
+            "parent_message_id": b.parent_message_id,
+            "created_at": b.created_at,
+        }
+        for b in branches
+    ]
+
+
+@router_sessions.post("/{session_id}/branches")
+async def create_branch(
+    session_id: str,
+    req: BranchCreateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    branch = CharacterChatSessionBranch(
+        session_id=session_id,
+        branch_name=req.branch_name,
+        parent_message_id=req.parent_message_id,
+        is_active=False,
+    )
+    db.add(branch)
+    db.commit()
+    db.refresh(branch)
+    return {"status": "ok", "branch": {"id": branch.id, "branch_name": branch.branch_name}}
+
+
+@router_sessions.post("/{session_id}/branches/{branch_id}/switch")
+async def switch_branch(
+    session_id: str,
+    branch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Deactivate all branches
+    db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id
+    ).update({"is_active": False}, synchronize_session=False)
+
+    # Activate target branch
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    branch.is_active = True
+    db.commit()
+
+    # Return messages for this branch
+    msgs = (
+        db.query(CharacterChatMessage)
+        .filter(CharacterChatMessage.session_id == session_id, CharacterChatMessage.branch_id == branch_id)
+        .order_by(CharacterChatMessage.created_at)
+        .all()
+    )
+    messages = [{"id": m.id, "role": m.role, "content": m.content, "model": m.model, "created_at": m.created_at} for m in msgs]
+    return {"status": "ok", "messages": messages}
+
+
+@router_sessions.delete("/{session_id}/branches/{branch_id}")
+async def delete_branch(
+    session_id: str,
+    branch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    if branch.is_active:
+        raise HTTPException(status_code=400, detail="Cannot delete the active branch")
+    db.delete(branch)
+    db.commit()
+    return {"status": "ok"}
+
+
+# ───────────────────────────────────────────────
+# Character Chat (Streaming)
+# ───────────────────────────────────────────────
+
+class CharacterChatRequest(BaseModel):
+    character_id: str
+    message: str
+    session_id: Optional[str] = None
+    model: str
+    temperature: float = 0.7
+    dialogue_mode: str = "first_person"
+    branch_id: Optional[str] = None
+    user_nickname: Optional[str] = None
+    images: List[str] = []
+    files: List[str] = []
+
+
+@router_chat.post("/api/character-chat")
+async def character_chat(
+    req: CharacterChatRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    provider, model_cfg = _find_model(req.model)
+    if not provider:
+        raise HTTPException(status_code=400, detail="Model not configured")
+
+    user_nickname = req.user_nickname or user.username or "用户"
+    is_init = req.message.strip() == "__INIT__"
+
+    # ── Ensure session ──────────────────────────────────────────────────
+    session_id = req.session_id
+    is_new_session = False
+    if not session_id or session_id == "":
+        session_id = str(uuid.uuid4())
+        is_new_session = True
+        new_session = CharacterChatSession(
+            id=session_id,
+            character_id=char.id,
+            user_id=user.id,
+            title=char.name,
+            dialogue_mode=req.dialogue_mode,
+        )
+        db.add(new_session)
+        db.commit()
+    else:
+        db.query(CharacterChatSession).filter(CharacterChatSession.id == session_id).update(
+            {"updated_at": datetime.now(timezone.utc)}, synchronize_session=False
+        )
+        db.commit()
+
+    # ── Ensure active branch ────────────────────────────────────────────
+    branch_id = req.branch_id
+    if not branch_id:
+        active_branch = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.session_id == session_id,
+            CharacterChatSessionBranch.is_active == True
+        ).first()
+        if active_branch:
+            branch_id = active_branch.id
+        else:
+            if is_new_session:
+                main_branch = CharacterChatSessionBranch(
+                    session_id=session_id,
+                    branch_name="Main",
+                    is_active=True,
+                )
+                db.add(main_branch)
+                db.commit()
+                db.refresh(main_branch)
+                branch_id = main_branch.id
+
+    # ── Build messages array ────────────────────────────────────────────
+    system_prompt = _build_char_system_prompt(char, user_nickname)
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if char.mes_example:
+        messages.append({"role": "system", "content": f"Example dialogue:\n{char.mes_example}"})
+
+    # Load history
+    hist_query = db.query(CharacterChatMessage).filter(CharacterChatMessage.session_id == session_id)
+    if branch_id:
+        hist_query = hist_query.filter(CharacterChatMessage.branch_id == branch_id)
+    else:
+        hist_query = hist_query.filter(CharacterChatMessage.branch_id == None)
+    history = hist_query.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
+    for m in reversed(history):
+        messages.append({"role": m.role, "content": m.content})
+
+    # ── Handle __INIT__ (send character's first message) ────────────────
+    if is_init:
+        first_mes = (char.first_mes or "").strip()
+        if not first_mes:
+            return {"session_id": session_id, "message": ""}
+        # Save the character's first message directly
+        db.add(CharacterChatMessage(
+            session_id=session_id,
+            branch_id=branch_id,
+            role="assistant",
+            content=first_mes,
+            model=req.model,
+        ))
+        db.commit()
+
+        async def init_stream():
+            yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+            # Stream the first message char by char in chunks
+            chunk_size = 20
+            for i in range(0, len(first_mes), chunk_size):
+                yield f"data: {json.dumps({'content': first_mes[i:i+chunk_size]})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            init_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ── Regular message ─────────────────────────────────────────────────
+    user_content = req.message
+    if req.images:
+        content_payload = [{"type": "text", "text": user_content}]
+        for img_url in req.images:
+            content_payload.append({"type": "image_url", "image_url": {"url": img_url}})
+        user_msg = {"role": "user", "content": content_payload}
+    else:
+        user_msg = {"role": "user", "content": user_content}
+
+    messages.append(user_msg)
+
+    # Save user message
+    db.add(CharacterChatMessage(
+        session_id=session_id,
+        branch_id=branch_id,
+        role="user",
+        content=req.message,
+        model=req.model,
+    ))
+    db.commit()
+
+    async def event_generator():
+        full_content = ""
+        full_reasoning = ""
+        try:
+            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+            stream = await client.chat.completions.create(
+                model=req.model,
+                messages=messages,
+                temperature=req.temperature,
+                stream=True,
+            )
+            # Send session_id on first chunk if new session
+            if is_new_session:
+                yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                content = delta.content
+                resp = {}
+                if reasoning:
+                    full_reasoning += reasoning
+                    resp["reasoning"] = reasoning
+                if content:
+                    full_content += content
+                    resp["content"] = content
+                if resp:
+                    yield f"data: {json.dumps(resp, ensure_ascii=False)}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+            # Persist assistant message in a fresh DB session
+            from ..core.database import SessionLocal
+            new_db = SessionLocal()
+            try:
+                final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
+                new_db.add(CharacterChatMessage(
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    role="assistant",
+                    content=final,
+                    model=req.model,
+                    tokens=len(full_content) // 2,
+                ))
+                new_db.commit()
+            finally:
+                new_db.close()
+
+        except Exception as e:
+            logger.error(f"Character chat stream error: {e}")
+            yield f"data: {json.dumps({'content': f'Error: {str(e)}', 'error': True})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

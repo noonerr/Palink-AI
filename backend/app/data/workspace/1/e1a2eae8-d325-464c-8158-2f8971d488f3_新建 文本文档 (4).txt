@@ -1,0 +1,503 @@
+import React, { useState, useEffect, useRef, Component } from 'react';
+import { 
+  MessageSquare, Layers, Settings, Cpu, Mic, Send, Bot, User, 
+  Shield, Link as LinkIcon, Loader2, LogOut, Trash2, Plus, 
+  History, Sliders, Users, Lock, ChevronDown, ChevronRight, Brain, Sun, Moon, Globe, Zap, Box, X, Copy, Check, ArrowDown, StopCircle, Eye,
+  Server, Sparkles, Key, Edit3, Database, RefreshCw, PanelLeftClose, PanelLeftOpen, Info, Image as ImageIcon, Upload, ToggleLeft, ToggleRight
+} from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+
+/**
+ * Palink AI Frontend v0.29.1 (Stable Build)
+ * 1. 完整性：包含崩溃拦截、数据清洗、流体打字、思考抽屉。
+ * 2. 稳定性：修复所有已知的依赖和数据格式问题。
+ */
+
+// --- 0. ErrorBoundary ---
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, errorInfo) { console.error("Uncaught error:", error, errorInfo); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen bg-gray-100 text-gray-800 p-8 text-center">
+          <AlertTriangle size={64} className="text-red-500 mb-4"/>
+          <h1 className="text-2xl font-bold mb-2 text-red-600">应用遇到错误</h1>
+          <div className="bg-white border border-red-200 p-4 rounded-lg text-xs font-mono text-red-500 mb-6 max-w-2xl overflow-auto shadow-sm text-left">
+            {this.state.error?.toString()}
+          </div>
+          <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors shadow-lg">
+            重置数据并重启
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// --- Utils ---
+const safeParse = (key, fallback) => {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : fallback;
+  } catch (e) {
+    localStorage.removeItem(key);
+    return fallback;
+  }
+};
+
+const normalizeModel = (m) => {
+  if (!m) return { id: 'unknown', alias: 'Unknown', icon: '', description: '' };
+  if (typeof m === 'string') return { id: m, alias: m, icon: '', description: '' };
+  return {
+    id: m.id || 'unknown',
+    alias: m.alias || m.id || 'Unknown',
+    icon: m.icon || '', 
+    description: m.description || ''
+  };
+};
+
+const convertFileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = error => reject(error);
+});
+
+// --- Hook: 流体打字机 ---
+const useFluidTyping = (targetText, isStreaming, onUpdate) => {
+  const [displayed, setDisplayed] = useState('');
+  const currentRef = useRef(''); 
+  const targetRef = useRef(targetText || ''); 
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    targetRef.current = targetText || '';
+    if (!isStreaming) {
+      setDisplayed(targetRef.current);
+      currentRef.current = targetRef.current;
+      return;
+    }
+
+    const animate = () => {
+      const target = targetRef.current;
+      const current = currentRef.current;
+
+      if (current.length < target.length) {
+        const delta = target.length - current.length;
+        let step = delta > 100 ? 5 : (delta > 20 ? 2 : 1);
+        if (delta < 10 && Math.random() > 0.5) step = 1;
+
+        const nextStr = target.slice(0, current.length + step);
+        setDisplayed(nextStr);
+        currentRef.current = nextStr;
+        if (onUpdate) onUpdate();
+        rafRef.current = requestAnimationFrame(animate);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [targetText, isStreaming, onUpdate]);
+
+  return isStreaming ? displayed : targetText;
+};
+
+// --- 1. MessageContent ---
+const MessageContent = ({ content, reasoning, role, isStreaming, modelInfo, tokens, onDelete, onRegenerate, onHeightChange }) => {
+  let rawThink = reasoning;
+  let rawMain = content || '';
+
+  if (!rawThink && content && content.includes('<think>')) {
+     const unescaped = content.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+     const match = unescaped.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+     if (match) {
+         rawThink = match[1];
+         rawMain = unescaped.replace(/<think>[\s\S]*?(?:<\/think>|$)/, '').trim();
+     }
+  }
+
+  const enableTyping = role === 'assistant' && isStreaming;
+  const displayMain = useFluidTyping(rawMain, enableTyping, onHeightChange);
+  const safeInfo = normalizeModel(modelInfo);
+
+  const CodeBlock = ({children, className}) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const codeString = String(children).replace(/\n$/, '');
+    const [copied, setCopied] = useState(false);
+    const handleCopy = () => { navigator.clipboard.writeText(codeString); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+
+    return (
+      <div className="rounded-xl overflow-hidden my-3 border dark:border-gray-800 shadow-sm text-sm group font-mono bg-white dark:bg-[#1a1a1a]">
+        <div className="flex items-center justify-between px-4 py-1.5 bg-gray-50 dark:bg-[#151718] border-b dark:border-gray-800">
+          <span className="text-xs text-gray-500">{match ? match[1] : 'code'}</span>
+          <button onClick={handleCopy} className="flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-500 transition-colors">
+             {copied ? <Check size={12}/> : <Copy size={12}/>}
+          </button>
+        </div>
+        <SyntaxHighlighter children={codeString} style={vscDarkPlus} language={match ? match[1] : 'text'} PreTag="div" customStyle={{margin: 0, padding: '0.75rem', background: 'transparent', fontSize: '0.85rem'}} />
+      </div>
+    );
+  };
+
+  if (role === 'user') {
+    return (
+      <div className="flex justify-end w-full animate-in slide-in-from-right-2 duration-300">
+         <div className="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm max-w-[85%] md:max-w-[40%] w-fit whitespace-pre-wrap break-words leading-relaxed text-[15px]">
+            {content}
+         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-4xl mx-auto font-sans text-[15px] group/msg animate-in fade-in duration-500">
+      {role === 'assistant' && (
+        <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-left-2 duration-300">
+            <div className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center text-lg overflow-hidden border dark:border-gray-800 shadow-sm shrink-0 select-none">
+                {(safeInfo.icon && safeInfo.icon.startsWith('data:image')) ? <img src={safeInfo.icon} className="w-full h-full object-cover" /> : <span>{safeInfo.icon || '🤖'}</span>}
+            </div>
+            <div className="flex flex-col">
+                <span className="font-bold text-sm text-gray-900 dark:text-gray-100">{safeInfo.alias}</span>
+                {safeInfo.description && <span className="text-[10px] text-gray-400 line-clamp-1">{safeInfo.description}</span>}
+            </div>
+        </div>
+      )}
+
+      {rawThink && (
+        <div className="mb-3">
+          <details open={isStreaming} className="group bg-gray-50/50 dark:bg-[#151718] rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <summary className="flex items-center gap-2 p-2 px-3 cursor-pointer select-none hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+              <Brain size={14} className={`text-indigo-500 ${isStreaming?'animate-pulse':''}`}/>
+              <span className="text-xs font-medium text-gray-500">{isStreaming ? '正在思考...' : '思维链'}</span>
+              <ChevronDown size={14} className="ml-auto text-gray-400 group-open:rotate-180 transition-transform"/>
+            </summary>
+            <div className="px-4 pb-3 pt-0 border-t border-gray-100 dark:border-gray-800">
+              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 font-mono whitespace-pre-wrap leading-relaxed opacity-90 max-h-96 overflow-y-auto custom-scrollbar">
+                {rawThink}
+              </div>
+            </div>
+          </details>
+        </div>
+      )}
+      
+      {/* 豆包风格排版：紧凑、清晰 */}
+      <div className="text-gray-800 dark:text-gray-100 tracking-wide break-words leading-relaxed min-h-[1.5em] ml-11">
+        {(displayMain || isStreaming) ? 
+           <ReactMarkdown 
+             remarkPlugins={[remarkGfm]} 
+             rehypePlugins={[rehypeRaw]} 
+             components={{ 
+               code: CodeBlock, 
+               p: ({children}) => <p className="mb-2 last:mb-0 leading-7">{children}</p>,
+               ul: ({children}) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
+               ol: ({children}) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
+               li: ({children}) => <li>{children}</li>,
+               blockquote: ({children}) => <blockquote className="border-l-4 border-gray-200 dark:border-gray-700 pl-3 py-1 my-2 text-gray-500 italic">{children}</blockquote>,
+               a: ({href, children}) => <a href={href} target="_blank" className="text-indigo-600 hover:underline decoration-2 underline-offset-2">{children}</a> 
+             }}
+           >
+             {displayMain}
+           </ReactMarkdown> 
+           : (!isStreaming && !rawThink && <span className="text-gray-300 italic">...</span>)
+        }
+        {isStreaming && role === 'assistant' && <span className="inline-block w-1.5 h-4 bg-indigo-500 rounded-sm animate-pulse ml-1 align-middle"/>}
+      </div>
+
+      {role === 'assistant' && (
+          <div className="mt-2 pt-1 flex items-center justify-between text-[10px] text-gray-400 border-t border-transparent group-hover/msg:border-gray-100 dark:group-hover/msg:border-gray-800 transition-all ml-11">
+             <div className="flex items-center gap-3 opacity-0 group-hover/msg:opacity-100 transition-opacity font-mono">
+                {tokens > 0 && <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">{tokens} tokens</span>}
+             </div>
+             <div className="flex gap-2 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                {!isStreaming && <button onClick={onRegenerate} className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"><RefreshCw size={13}/></button>}
+                <button onClick={onDelete} className="p-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 rounded"><Trash2 size={13}/></button>
+             </div>
+          </div>
+      )}
+    </div>
+  );
+};
+
+// --- 2. Auth Component ---
+const AuthScreen = ({ onLogin }) => {
+  const [isRegister, setIsRegister] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const handleSubmit = async (e) => {
+    e.preventDefault(); setMsg(''); setLoading(true);
+    const endpoint = isRegister ? '/api/register' : '/api/token';
+    try {
+      let body, headers = {};
+      if (isRegister) { headers = {'Content-Type':'application/json'}; body = JSON.stringify({username,password}); } 
+      else { headers = {'Content-Type':'application/x-www-form-urlencoded'}; body = new URLSearchParams({username,password}); }
+      const res = await fetch(endpoint, {method:'POST',headers,body});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || 'Failed');
+      if(isRegister) { setMsg("注册成功，请登录"); setIsRegister(false); } 
+      else { localStorage.setItem('palink_token',data.access_token); localStorage.setItem('palink_role',data.role); onLogin(data); }
+    } catch(err) { setMsg(err.message); } finally { setLoading(false); }
+  };
+  return (<div className="fixed inset-0 bg-gray-900 flex items-center justify-center z-[100]"><div className="bg-white dark:bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-700 shadow-2xl animate-in zoom-in-95 duration-300"><div className="flex justify-center mb-6"><div className="w-12 h-12 bg-indigo-500 rounded-xl flex items-center justify-center rotate-12 shadow-lg"><LinkIcon className="text-white"/></div></div><h2 className="text-2xl font-bold text-center text-gray-800 dark:text-white mb-6">{isRegister?'注册':'Palink 登录'}</h2><form onSubmit={handleSubmit} className="space-y-4"><input className="w-full p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-xl outline-none text-gray-900 dark:text-gray-100" value={username} onChange={e=>setUsername(e.target.value)} placeholder="User"/><input type="password" className="w-full p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-xl outline-none text-gray-900 dark:text-gray-100" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Pass"/><button disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl transition-all flex justify-center">{loading?<Loader2 className="animate-spin"/>:(isRegister?'注 册':'登 录')}</button></form><button onClick={()=>setIsRegister(!isRegister)} className="w-full mt-4 text-sm text-gray-500 hover:text-indigo-500">{isRegister?'去登录':'去注册'}</button></div></div>);
+};
+
+// --- 3. Model Tag Manager (含头像) ---
+const ModelEditModal = ({ model, onSave, onClose }) => {
+  const [data, setData] = useState(model || { id: '', alias: '', icon: '', description: '' });
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      try { const base64 = await convertFileToBase64(file); setData({ ...data, icon: base64 }); } catch (err) { alert('图片上传失败'); }
+    }
+  };
+  return (<div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-in fade-in duration-200"><div className="bg-white dark:bg-gray-900 w-full max-w-lg rounded-2xl shadow-2xl border dark:border-gray-700 flex flex-col overflow-hidden"><div className="p-4 border-b dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-800/50"><h3 className="font-bold text-lg dark:text-white">编辑模型</h3><button onClick={onClose}><X size={20} className="text-gray-500"/></button></div><div className="p-6 space-y-4"><div className="flex items-center gap-4"><div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center border dark:border-gray-700 overflow-hidden relative group cursor-pointer">{data.icon && data.icon.length > 5 ? <img src={data.icon} className="w-full h-full object-cover"/> : <span className="text-2xl">{data.icon || '🤖'}</span>}<label className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><Upload size={20} className="text-white"/><input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} /></label></div><div className="flex-1 space-y-1"><label className="text-[10px] font-bold text-gray-400 uppercase">模型 ID</label><input value={data.id} onChange={e=>setData({...data, id:e.target.value})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-2 rounded text-sm font-mono" placeholder="gpt-4o"/></div></div><div className="space-y-1"><label className="text-[10px] font-bold text-gray-400 uppercase">显示名称</label><input value={data.alias} onChange={e=>setData({...data, alias:e.target.value})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-2 rounded text-sm" placeholder="GPT-4 Omni"/></div><div className="space-y-1"><label className="text-[10px] font-bold text-gray-400 uppercase">头像 Emoji (可选，如果未上传图片)</label><input value={data.icon} onChange={e=>setData({...data, icon:e.target.value})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-2 rounded text-sm" placeholder="🤖"/></div><div className="space-y-1"><label className="text-[10px] font-bold text-gray-400 uppercase">简介</label><textarea value={data.description} onChange={e=>setData({...data, description:e.target.value})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-2 rounded text-sm h-20 resize-none" placeholder="简介..."/></div></div><div className="p-4 border-t dark:border-gray-800 flex justify-end gap-2 bg-gray-50 dark:bg-gray-900"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg">取消</button><button onClick={()=>onSave(data)} className="px-6 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">保存</button></div></div></div>);
+};
+
+const ModelListEditor = ({ models, onChange }) => {
+  const [editingIdx, setEditingIdx] = useState(null);
+  const safeModels = (Array.isArray(models) ? models : []).map(normalizeModel);
+  return (<div className="space-y-3"><div className="flex flex-col gap-2">{safeModels.map((m, i) => (<div key={i} className="flex items-center gap-3 bg-white dark:bg-gray-800 p-2 px-3 rounded-lg border dark:border-gray-700 shadow-sm group"><div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-lg overflow-hidden shrink-0">{m.icon?.startsWith('data:image') ? <img src={m.icon} className="w-full h-full object-cover" /> : <span>{m.icon || '🤖'}</span>}</div><div className="flex-1 overflow-hidden"><div className="flex items-center gap-2"><span className="font-bold text-sm dark:text-gray-200">{m.alias}</span><span className="text-[10px] text-gray-400 bg-gray-50 dark:bg-gray-900 px-1 rounded font-mono">{m.id}</span></div></div><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={()=>setEditingIdx(i)} className="p-1.5 hover:bg-indigo-50 text-indigo-500 rounded"><Edit3 size={14}/></button><button onClick={()=>{const n=[...safeModels];n.splice(i,1);onChange(n)}} className="p-1.5 hover:bg-red-50 text-red-500 rounded"><Trash2 size={14}/></button></div></div>))}<button onClick={()=>setEditingIdx(-1)} className="w-full py-2 border border-dashed border-gray-300 dark:border-gray-700 rounded-lg text-xs text-gray-500 hover:text-indigo-500 hover:border-indigo-400 transition-colors flex justify-center items-center gap-1"><Plus size={14}/> 添加模型</button></div>{editingIdx !== null && (<ModelEditModal model={editingIdx === -1 ? null : safeModels[editingIdx]} onClose={()=>setEditingIdx(null)} onSave={(newModel) => { const n = [...safeModels]; if (editingIdx === -1) n.push(newModel); else n[editingIdx] = newModel; onChange(n); setEditingIdx(null); }}/>)}</div>);
+};
+
+// --- 4. Admin Panel ---
+const AdminPanel = ({ token, onLogout }) => {
+  const [tab, setTab] = useState('providers'); const [users, setUsers] = useState([]); const [providers, setProviders] = useState([]); const [presets, setPresets] = useState([]);
+  const [newUser, setNewUser] = useState({username:'', password:''});
+  const [isAddingProvider, setIsAddingProvider] = useState(false);
+  const [editingProvider, setEditingProvider] = useState(null);
+  const [inspectUser, setInspectUser] = useState(null); const [userSessions, setUserSessions] = useState([]); const [inspectSessionId, setInspectSessionId] = useState(null); const [sessionMessages, setSessionMessages] = useState([]);
+  const [settings, setSettings] = useState({});
+
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const fetchSafe = async (url, opts={}) => { try { const res = await fetch(url, { ...opts, headers:{...headers, ...opts.headers} }); if (res.status === 401) { onLogout(); return null; } return res.json(); } catch { return []; } };
+
+  const CHANNEL_PRESETS = [
+    { id: 'deepseek', name: 'DeepSeek', icon: '🦈', base_url: 'https://api.deepseek.com', models: [{id:'deepseek-chat', alias:'DeepSeek V3', icon:'🦈'}, {id:'deepseek-reasoner', alias:'DeepSeek R1', icon:'🧠'}] },
+    { id: 'silicon', name: '硅基流动', icon: '🚀', base_url: 'https://api.siliconflow.cn/v1', models: [{id:'deepseek-ai/DeepSeek-R1', alias:'Silicon R1', icon:'🚀'}, {id:'deepseek-ai/DeepSeek-V3', alias:'Silicon V3', icon:'⚡'}] },
+    { id: 'openai', name: 'OpenAI', icon: '🤖', base_url: 'https://api.openai.com/v1', models: [{id:'gpt-4o', alias:'GPT-4o', icon:'🤖'}, {id:'gpt-3.5-turbo', alias:'GPT-3.5', icon:'⚡'}] },
+    { id: 'openrouter', name: 'OpenRouter', icon: '🌐', base_url: 'https://openrouter.ai/api/v1', models: [] },
+  ];
+
+  useEffect(() => { 
+    if(tab==='users') fetchSafe('/api/admin/users').then(d => Array.isArray(d) && setUsers(d)); 
+    if(tab==='providers') { 
+        const local = safeParse('palink_providers', []);
+        setProviders(Array.isArray(local) ? local : []);
+        fetchSafe('/api/admin/providers').then(d => { 
+            if(Array.isArray(d) && d.length>0) { 
+                setProviders(d); 
+                localStorage.setItem('palink_providers', JSON.stringify(d)); 
+            } 
+        }); 
+    } 
+    if(tab==='settings') fetchSafe('/api/admin/settings').then(setSettings);
+  }, [tab, token]);
+
+  const saveProvider = async (p) => { 
+      let newProviders = [...providers]; const idx = newProviders.findIndex(x => x.id === p.id); 
+      if (idx >= 0) newProviders[idx] = p; else newProviders.push(p); 
+      setProviders(newProviders); localStorage.setItem('palink_providers', JSON.stringify(newProviders));
+      await fetch('/api/admin/providers', { method: 'POST', headers, body: JSON.stringify(newProviders) });
+      setIsAddingProvider(false); setEditingProvider(null);
+  };
+  
+  const removeProvider = async (idx) => { if(!confirm("确定删除？")) return; const n = [...providers]; n.splice(idx, 1); setProviders(n); localStorage.setItem('palink_providers', JSON.stringify(n)); await fetch('/api/admin/providers', { method: 'POST', headers, body: JSON.stringify(n) }); };
+  const addUser = async () => { if(!newUser.username) return; await fetchSafe('/api/admin/users', {method:'POST', body:JSON.stringify(newUser)}); fetchSafe('/api/admin/users').then(setUsers); };
+  const deleteUser = async (id) => { if(confirm('删除?')) { await fetchSafe(`/api/admin/users/${id}`, {method:'DELETE'}); fetchSafe('/api/admin/users').then(setUsers); }};
+  const toggleRegister = async () => { const newVal = settings.allow_register !== 'true'; await fetch('/api/admin/settings', {method:'POST', headers, body:JSON.stringify({allow_register: newVal})}); setSettings({...settings, allow_register: String(newVal)}); };
+  const openInspector = async (u) => { setInspectUser(u); const s = await fetchSafe(`/api/admin/users/${u.id}/sessions`); setUserSessions(s||[]); setInspectSessionId(null); setSessionMessages([]); };
+  const loadInspectorSession = async (sid) => { setInspectSessionId(sid); const m = await fetchSafe(`/api/admin/sessions/${sid}/messages`); setSessionMessages(m||[]); };
+
+  return (<div className="flex h-full bg-gray-50 dark:bg-black"><div className="w-64 border-r dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-6"><div><h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 px-2 italic">Control Hub</h2><div className="space-y-1"><button onClick={()=>setTab('providers')} className={`w-full text-left px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-3 transition-all ${tab==='providers'?'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30':'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><Server size={18}/> 渠道与模型</button><button onClick={()=>setTab('users')} className={`w-full text-left px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-3 transition-all ${tab==='users'?'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30':'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><Users size={18}/> 用户库</button><button onClick={()=>setTab('settings')} className={`w-full text-left px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-3 transition-all ${tab==='settings'?'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30':'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><Settings size={18}/> 系统设置</button></div></div></div><div className="flex-1 p-8 overflow-y-auto">
+    {tab==='providers' && (<div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500"><div className="flex justify-between items-center"><h3 className="text-2xl font-bold dark:text-white">渠道管理</h3><button onClick={()=>{setEditingProvider({id:`p-${Date.now()}`,name:'New',base_url:'',api_key:'',models:[],is_active:true});setIsAddingProvider(true)}} className="bg-indigo-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 hover:bg-indigo-700 shadow-lg shadow-indigo-500/20"><Plus size={18}/> 新增渠道</button></div><div className="grid gap-4">{providers.map((p, i) => (<div key={p.id} className="bg-white dark:bg-gray-900 p-6 rounded-2xl border dark:border-gray-800 shadow-sm group relative"><div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={()=>{setEditingProvider(p); setIsAddingProvider(true);}} className="p-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 rounded-lg"><Edit3 size={16}/></button><button onClick={()=>removeProvider(i)} className="p-2 bg-red-50 dark:bg-red-900/20 text-red-500 rounded-lg"><Trash2 size={16}/></button></div><div className="flex items-start gap-4"><div className="w-12 h-12 bg-gray-50 dark:bg-gray-800 rounded-xl flex items-center justify-center text-3xl border dark:border-gray-700">🌐</div><div className="flex-1 overflow-hidden"><div className="font-bold text-lg mb-1 dark:text-white">{p.name} <span className="text-xs text-green-500 ml-2">● Active</span></div><div className="text-xs text-gray-400 font-mono mb-4">{p.base_url}</div><div className="grid grid-cols-2 gap-2">{(p.models||[]).map(normalizeModel).filter(Boolean).slice(0,6).map((m,idx)=><div key={idx} className="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg border dark:border-gray-700"><span className="text-lg">{m.icon ? (m.icon.startsWith('data')?<img src={m.icon} className="w-4 h-4 rounded-full"/>:m.icon) : '🤖'}</span><span className="text-xs font-bold truncate dark:text-gray-300">{m.alias}</span></div>)}</div></div></div></div>))}</div></div>)}
+    {isAddingProvider && (<div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"><div className="bg-white dark:bg-gray-900 w-full max-w-2xl rounded-3xl shadow-2xl border dark:border-gray-700 flex flex-col max-h-[90vh] overflow-hidden"><div className="p-6 border-b dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-900/50"><h3 className="font-bold text-xl flex items-center gap-2 dark:text-white"><Sparkles className="text-indigo-500"/> 配置 AI 渠道</h3><button onClick={() => setIsAddingProvider(false)} className="text-gray-400 hover:text-gray-600"><X size={24}/></button></div><div className="p-6 overflow-y-auto space-y-6"> <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-gray-400 uppercase">渠道名称</label><input value={editingProvider?.name||''} onChange={e=>setEditingProvider({...editingProvider, name:e.target.value, id: editingProvider?.id || 'p-'+Date.now()})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-3 rounded-xl outline-none dark:text-white" /></div><div><label className="text-[10px] font-bold text-gray-400 uppercase">API Key</label><input value={editingProvider?.api_key||''} onChange={e=>setEditingProvider({...editingProvider, api_key:e.target.value})} type="password" className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-3 rounded-xl outline-none dark:text-white" placeholder="sk-..." /></div><div className="col-span-2"><label className="text-[10px] font-bold text-gray-400 uppercase">Base URL</label><input value={editingProvider?.base_url||''} onChange={e=>setEditingProvider({...editingProvider, base_url:e.target.value})} className="w-full bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 p-3 rounded-xl outline-none font-mono text-sm dark:text-white" /></div></div><div className="border-t dark:border-gray-800 pt-6"><label className="text-sm font-bold block mb-4 dark:text-white">模型库管理</label><ModelListEditor models={editingProvider?.models} onChange={m=>setEditingProvider({...editingProvider, models:m})}/></div></div><div className="p-6 border-t dark:border-gray-800 flex justify-end gap-3"><button onClick={() => setIsAddingProvider(false)} className="px-6 py-2.5 rounded-xl font-bold hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">取消</button><button onClick={() => saveProvider(editingProvider)} className="px-10 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-500/20">保存渠道</button></div></div></div>)}
+    {tab === 'users' && !inspectUser && (<div className="max-w-4xl mx-auto space-y-6"><div className="bg-white dark:bg-gray-900 p-6 rounded-2xl border dark:border-gray-800 shadow-sm flex gap-4"><input value={newUser.username} onChange={e=>setNewUser({...newUser, username:e.target.value})} placeholder="用户名" className="border p-2 rounded dark:bg-gray-800 dark:border-gray-700 dark:text-white"/><input value={newUser.password} onChange={e=>setNewUser({...newUser, password:e.target.value})} placeholder="密码" className="border p-2 rounded dark:bg-gray-800 dark:border-gray-700 dark:text-white"/><button onClick={addUser} className="bg-indigo-600 text-white px-4 rounded hover:bg-indigo-700">添加用户</button></div><div className="bg-white dark:bg-gray-900 rounded-2xl border dark:border-gray-800 overflow-hidden shadow-sm"><table className="w-full text-sm text-left text-gray-600 dark:text-gray-300"><thead className="bg-gray-50 dark:bg-gray-800"><tr><th className="p-4">ID</th><th className="p-4">用户</th><th className="p-4">角色</th><th className="p-4">操作</th></tr></thead><tbody>{users.map(u=>(<tr key={u.id} className="border-t dark:border-gray-800"><td className="p-4">{u.id}</td><td className="p-4 font-bold">{u.username}</td><td className="p-4">{u.role}</td><td className="p-4 flex gap-2"><button onClick={()=>openInspector(u)} className="text-indigo-500 hover:text-indigo-700" title="查看会话"><Eye size={16}/></button><button onClick={()=>deleteUser(u.id)} className="text-red-500 hover:text-red-700" title="删除用户"><Trash2 size={16}/></button></td></tr>))}</tbody></table></div></div>)}
+    {tab === 'settings' && (<div className="max-w-2xl mx-auto space-y-6"><div className="bg-white dark:bg-gray-900 p-6 rounded-2xl border dark:border-gray-800 shadow-sm flex items-center justify-between"><div><h3 className="font-bold text-lg dark:text-white">开放注册</h3><p className="text-sm text-gray-500">允许外部用户注册新账号</p></div><button onClick={toggleRegister} className={`text-2xl transition-colors ${settings.allow_register==='true'?'text-green-500':'text-gray-300'}`}>{settings.allow_register==='true'?<ToggleRight size={40}/>:<ToggleLeft size={40}/>}</button></div></div>)}
+    
+    {/* 上帝视角 Modal */}
+    {inspectUser && (<div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4"><div className="bg-white dark:bg-gray-900 w-full max-w-5xl h-[85vh] rounded-3xl shadow-2xl border dark:border-gray-700 flex flex-col overflow-hidden"><div className="p-4 border-b dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-900"><h3 className="font-bold flex items-center gap-2 text-gray-800 dark:text-white"><Eye size={18} className="text-indigo-500"/> 审计模式: {inspectUser.username}</h3><button onClick={()=>setInspectUser(null)} className="text-gray-500"><X size={20}/></button></div><div className="flex-1 flex overflow-hidden"><div className="w-64 border-r dark:border-gray-800 overflow-y-auto p-2 bg-gray-50 dark:bg-gray-900">{userSessions.map(s=><div key={s.id} onClick={()=>loadInspectorSession(s.id)} className={`p-3 rounded-lg text-sm cursor-pointer mb-1 ${inspectSessionId===s.id?'bg-indigo-100 text-indigo-700 font-bold':'hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-300'}`}>{s.title}</div>)}</div><div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-black space-y-4">{sessionMessages.map((m,i)=>(<div key={i} className={`p-4 rounded-xl text-sm border ${m.role==='user'?'bg-gray-50 dark:bg-gray-800 border-gray-100 dark:border-gray-700':'bg-indigo-50 dark:bg-indigo-900/10 border-indigo-100 dark:border-indigo-800'} dark:text-gray-200`}><div className="flex justify-between text-xs opacity-50 mb-2 font-bold uppercase tracking-wider"><span>{m.role}</span><span>{m.model}</span></div><div className="whitespace-pre-wrap">{m.content}</div></div>))}</div></div></div></div></div>)}
+  </div></div>);
+};
+
+// --- Chat Module ---
+const ChatModule = ({ token, onLogout }) => {
+  const [sessions, setSessions] = useState([]);
+  const [curSessionId, setCurSessionId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]); 
+  const [showSettings, setShowSettings] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedMsgIds, setSelectedMsgIds] = useState(new Set());
+  const [isSessionEditMode, setIsSessionEditMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState(new Set());
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  
+  const chatContainerRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const abortControllerRef = useRef(null);
+
+  const [settings, setSettings] = useState(() => safeParse('palink_chat_settings', { model: '', temp: 0.7 }));
+  useEffect(() => { localStorage.setItem('palink_chat_settings', JSON.stringify(settings)); }, [settings]);
+  
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const fetchSafe = async (url, opt={}) => { const res = await fetch(url, {...opt, headers: {...headers, ...opt.headers}}); if (res.status === 401) { onLogout(); throw new Error("401"); } return res; };
+
+  const scrollToBottom = () => { if(shouldAutoScroll) requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: "auto" })); };
+  const handleScroll = () => { if (!chatContainerRef.current) return; const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current; setShouldAutoScroll(scrollHeight - scrollTop - clientHeight < 100); };
+  
+  const handleChildHeightChange = () => { if (shouldAutoScroll) scrollToBottom(); };
+  useEffect(() => { if (shouldAutoScroll) scrollToBottom(); }, [messages, shouldAutoScroll]);
+
+  useEffect(() => {
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    if (curSessionId) { 
+        setLoading(false); 
+        fetch(`/api/sessions/${curSessionId}/messages`, {headers}).then(r=>r.json()).then(d=>{setMessages(d); setShouldAutoScroll(true);}); 
+    } else setMessages([]);
+  }, [curSessionId]);
+
+  useEffect(() => { 
+      const localData = safeParse('palink_providers', []);
+      let models = [];
+      if (Array.isArray(localData)) {
+          localData.forEach(p => {
+              if (p.models && Array.isArray(p.models)) {
+                  p.models.map(normalizeModel).filter(Boolean).forEach(m => {
+                      models.push({ ...m, providerName: p.name });
+                  });
+              }
+          });
+      }
+      setAvailableModels(models);
+      if (!settings.model && models.length > 0) setSettings(s => ({ ...s, model: models[0].id }));
+      
+      fetch('/api/sessions', {headers}).then(r=>r.json()).then(d => { setSessions(d); if (d.length > 0 && !curSessionId) setCurSessionId(d[0].id); });
+  }, []);
+
+  const sendMessage = async () => {
+    if (!input.trim() || loading) return;
+    const userText = input; setInput(''); setLoading(true); setShouldAutoScroll(true);
+
+    const userMsgId = Date.now() + '-user';
+    const assistantMsgId = Date.now() + '-ai';
+    
+    const selectedModel = availableModels.find(m => m.id === settings.model);
+    const safeModelInfo = normalizeModel(selectedModel);
+
+    setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: userText }, { id: assistantMsgId, role: 'assistant', content: '', reasoning: '', isStreaming: true, ...safeModelInfo }]);
+
+    try {
+      const res = await fetch('/api/chat', { method: 'POST', headers, body: JSON.stringify({ session_id: curSessionId, message: userText, model: settings.model }) });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let done = false, fullText = "", fullReasoning = "";
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        const chunkValue = decoder.decode(value, { stream: true });
+        const lines = chunkValue.split('\n').filter(line => line.trim() !== '');
+        for (const line of lines) {
+          try {
+            const json = JSON.parse(line);
+            if (json.type === 'reasoning') { fullReasoning += json.chunk; setMessages(prev => prev.map(msg => msg.id === assistantMsgId ? { ...msg, reasoning: fullReasoning } : msg)); } 
+            else if (json.type === 'content' || json.chunk) { fullText += (json.chunk || ''); setMessages(prev => prev.map(msg => msg.id === assistantMsgId ? { ...msg, content: fullText } : msg)); }
+            else if (json.type === 'done') { setMessages(prev => prev.map(msg => msg.id === assistantMsgId ? { ...msg, id: json.msg_id, isStreaming: false, tokens: json.tokens } : msg)); }
+          } catch {}
+        }
+      }
+    } catch { 
+        setMessages(prev => prev.map(msg => msg.id === assistantMsgId ? { ...msg, isStreaming: false, content: "⚠️ 连接出错，请检查 API。" } : msg));
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="flex h-full">
+      <div className={`${isSidebarOpen?'w-72':'w-0'} bg-gray-50 dark:bg-[#0c0c0c] border-r dark:border-gray-800 flex flex-col transition-all duration-500 overflow-hidden`}>
+        <div className="p-4"><button onClick={()=>setCurSessionId(null)} className="w-full bg-white dark:bg-gray-900 border dark:border-gray-800 py-3 rounded-2xl flex justify-center items-center gap-2 hover:bg-gray-100 transition-all font-bold shadow-sm whitespace-nowrap dark:text-white"><Plus size={18}/> 开启新话题</button></div>
+        <div className="flex-1 overflow-y-auto px-3 space-y-1">
+            {sessions.map(s=>(
+                <div key={s.id} onClick={()=>setCurSessionId(s.id)} className={`p-3 rounded-xl text-sm cursor-pointer transition-all truncate ${curSessionId===s.id?'bg-indigo-600 text-white shadow-lg':'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'}`}>
+                    {s.title}
+                </div>
+            ))}
+        </div>
+      </div>
+      <div className="flex-1 flex flex-col relative overflow-hidden bg-white dark:bg-black">
+        <header className="h-16 border-b dark:border-gray-800 flex items-center justify-between px-6 bg-white/50 dark:bg-black/50 backdrop-blur-xl z-20 shrink-0">
+           <div className="flex items-center gap-3">
+               <button onClick={()=>setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors text-gray-600 dark:text-gray-300">{isSidebarOpen ? <PanelLeftClose size={20}/> : <PanelLeftOpen size={20}/>}</button>
+               <h1 className="font-bold truncate max-w-xs text-gray-800 dark:text-white">{curSessionId ? sessions.find(s=>s.id===curSessionId)?.title : '欢迎回来'}</h1>
+           </div>
+           <div className="flex items-center gap-3">
+               <select value={settings.model} onChange={e=>setSettings({...settings, model:e.target.value})} className="bg-gray-100 dark:bg-gray-800 border-none rounded-xl px-4 py-2 text-sm outline-none font-bold cursor-pointer text-gray-800 dark:text-white">{availableModels.map(m=><option key={m.id} value={m.id}>{m.icon} {m.alias}</option>)}</select>
+               <button onClick={()=>setShowSettings(!showSettings)} className="p-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl text-gray-600 dark:text-gray-300"><Sliders size={18}/></button>
+           </div>
+        </header>
+        
+        <div ref={chatContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 md:p-8 space-y-10 scroll-smooth custom-scrollbar">
+           {messages.map((m) => (
+              <div key={m.id} className={`flex ${m.role==='user'?'justify-end':'justify-center'} animate-in fade-in duration-500`}>
+                 <div className={`w-full ${m.role==='user'?'max-w-[75%] md:max-w-[40%]':'max-w-3xl'}`}>
+                    <div className={`${m.role==='user'?'bg-indigo-600 text-white p-4 rounded-3xl shadow-xl shadow-indigo-500/10':'text-gray-900 dark:text-gray-100'}`}>
+                       {/* 修复：使用 normalizeModel 确保数据安全 */}
+                       <MessageContent content={m.content} reasoning={m.reasoning} isStreaming={m.isStreaming} role={m.role} modelInfo={m.role==='assistant' ? normalizeModel({id:m.model, alias:m.alias, icon:m.icon, description:m.description}) : null} tokens={m.tokens} onDelete={()=>{}} onRegenerate={()=>{}} onHeightChange={()=>{if(shouldAutoScroll) scrollToBottom()}} />
+                    </div>
+                 </div>
+              </div>
+           ))}
+           <div ref={messagesEndRef} className="h-4"/>
+        </div>
+        
+        <div className="p-6 shrink-0">
+            <div className="max-w-3xl mx-auto relative group">
+                <div className="absolute inset-0 bg-indigo-500/5 blur-xl group-focus-within:bg-indigo-500/10 transition-all rounded-full"/>
+                <div className="relative flex items-center bg-gray-50 dark:bg-[#111] border dark:border-gray-800 rounded-[24px] p-2 pr-3 focus-within:border-indigo-500/50 transition-all shadow-sm">
+                    <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendMessage()} className="flex-1 bg-transparent px-5 py-3 outline-none text-[16px] placeholder-gray-500 dark:text-white" placeholder="发消息给 Palink AI..."/>
+                    {loading ? <div className="bg-gray-200 dark:bg-gray-800 p-3 rounded-full text-gray-400"><Loader2 className="animate-spin" size={20}/></div> : <button onClick={sendMessage} className="bg-indigo-600 text-white p-3 rounded-full hover:bg-indigo-700 hover:scale-105 active:scale-95 transition-all"><Send size={20}/></button>}
+                </div>
+            </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  const [token, setToken] = useState(localStorage.getItem('palink_token'));
+  const [role, setRole] = useState(localStorage.getItem('palink_role'));
+  const [tab, setTab] = useState('chat');
+  const [isDark, setIsDark] = useState(safeParse('palink_dark', false));
+  useEffect(() => { if (isDark) document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); localStorage.setItem('palink_dark', isDark); }, [isDark]);
+  const handleLogout = () => { localStorage.clear(); window.location.reload(); };
+  if (!token) return <AuthScreen onLogin={(d)=>{setToken(d.access_token); setRole(d.role)}}/>;
+  return (
+    <ErrorBoundary>
+      <div className="flex h-screen bg-white dark:bg-black text-gray-900 dark:text-gray-100 font-sans selection:bg-indigo-500/30">
+        <div className="w-16 border-r dark:border-gray-800 flex flex-col items-center py-8 gap-8 z-50 bg-white dark:bg-black">
+          <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-indigo-600/20 rotate-3 transition-transform hover:rotate-0 cursor-pointer"><LinkIcon size={20}/></div>
+          <button onClick={()=>setTab('chat')} className={`p-2 rounded-xl transition-all ${tab==='chat'?'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20':'text-gray-400 hover:text-indigo-500'}`}><MessageSquare/></button>
+          {role==='admin' && <button onClick={()=>setTab('admin')} className={`p-2 rounded-xl transition-all ${tab==='admin'?'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20':'text-gray-400 hover:text-indigo-500'}`}><Shield/></button>}
+          <div className="flex-1"/>
+          <button onClick={()=>setIsDark(!isDark)} className="p-2 text-gray-400 hover:text-indigo-500 transition-all">{isDark?<Sun/>:<Moon/>}</button>
+          <button onClick={handleLogout} className="p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/10 rounded-xl transition-all"><LogOut/></button>
+        </div>
+        <main className="flex-1 h-full overflow-hidden">
+          {tab==='chat'&&<ChatModule token={token} onLogout={handleLogout}/>}
+          {tab==='admin'&&<AdminPanel token={token} onLogout={handleLogout}/>}
+        </main>
+      </div>
+    </ErrorBoundary>
+  );
+};

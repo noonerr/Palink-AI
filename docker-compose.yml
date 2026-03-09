@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: always
+
+  backend:
+    build: ./backend
+    # --- DNS 配置 ---
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/models:/app/models
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://ai_user:ai_password@db:5432/ai_hub
+      - HF_ENDPOINT=https://hf-mirror.com
+      - MEMORY_EMBEDDING_PROVIDER=fastembed
+      - MEMORY_VECTOR_DIMENSION=512
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # -----------------------------------
+    restart: always
+
+  db:
+    image: pgvector/pgvector:pg15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+      - POSTGRES_DB=ai_hub
+    ports:
+      - "5432:5432"
+    # --- 关键修改：添加数据库健康检查 ---
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_user -d ai_hub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ---------------------------------
+    restart: always
+
+volumes:
+  postgres_data:
