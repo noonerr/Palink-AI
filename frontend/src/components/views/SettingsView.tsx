@@ -692,7 +692,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
   const [startersExpanded, setStartersExpanded] = useState(false);
   const [mobileTabSelected, setMobileTabSelected] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
 
   // Provider edit state
   const [pName, setPName] = useState('');

@@ -733,3 +733,22 @@ button,
     gap: 0.5rem;
   }
 }
+
+/* ========================================
+   Accessibility: Reduced Motion
+   ======================================== */
+@media (prefers-reduced-motion: reduce) {
+  .aurora-blob {
+    animation: none !important;
+    opacity: 0.06;
+  }
+
+  .animate-fade-in,
+  .animate-fade-in-up,
+  .animate-slide-in-right,
+  .animate-slide-in-left,
+  .animate-pulse-soft {
+    animation: none !important;
+    opacity: 1;
+  }
+}

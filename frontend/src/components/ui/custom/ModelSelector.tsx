@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { Check, ChevronDown, Bot, Cpu, Database } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useClickOutside } from '@/hooks/useClickOutside';
 import type { Model } from '@/types';
 
 interface ModelSelectorProps {
@@ -21,15 +22,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   
   const currentModelObj = models.find(m => m.id === currentModel) || models[0];
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  useClickOutside(containerRef, () => setIsOpen(false));
 
   if (size === 'sm') {
     return (
@@ -51,7 +44,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         </button>
 
         {isOpen && (
-          <div className="absolute bottom-full left-0 mb-2 w-56 sm:w-64 glass-strong rounded-xl shadow-xl border border-border z-[9999] overflow-hidden animate-fade-in-up origin-bottom-left">
+          <div className="absolute bottom-full left-0 mb-2 w-56 sm:w-64 glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up origin-bottom-left">
             <div className="max-h-64 overflow-y-auto p-1.5">
               {models.map(model => (
                 <button

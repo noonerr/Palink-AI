@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useClickOutside } from '@/hooks/useClickOutside';
 import { 
   Bot, 
   Plus, 
@@ -80,15 +81,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
   const [newBranchName, setNewBranchName] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  useClickOutside(containerRef, () => setIsOpen(false));
 
   const handleCreate = () => {
     if (newBranchName.trim()) {
@@ -116,7 +109,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-2 w-72 glass-strong rounded-xl shadow-xl border border-border z-50 overflow-hidden animate-fade-in-up">
+        <div className="absolute top-full right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up">
           <div className="p-2 border-b border-border/50">
             <div className="flex items-center gap-2">
               <Input
@@ -141,7 +134,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
           <div className="max-h-64 overflow-y-auto">
             {branches.length === 0 ? (
               <div className="p-4 text-center text-sm text-muted-foreground">
-                暂无分支
+                No branches / 暂无分支
               </div>
             ) : (
               branches.map((branch) => (
@@ -165,7 +158,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
                     <div className="flex-1">
                       <div className="font-medium">{branch.branch_name}</div>
                       {branch.is_active && (
-                        <div className="text-xs opacity-70">当前</div>
+                        <div className="text-xs opacity-70">Current / 当前</div>
                       )}
                     </div>
                     {selectedBranch?.id === branch.id && <Check size={14} />}
@@ -205,19 +198,11 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  useClickOutside(containerRef, () => setIsOpen(false));
 
   const modes = [
-    { id: 'first_person', name: '第一人称' },
-    { id: 'third_person', name: '故事模式' }
+    { id: 'first_person', name: '1st Person / 第一人称' },
+    { id: 'third_person', name: 'Story / 故事模式' }
   ];
 
   const getIcon = (modeId: string) => {
@@ -248,7 +233,7 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute top-full right-0 mt-2 w-48 glass-strong rounded-xl shadow-xl border border-border z-50 overflow-hidden animate-fade-in-up">
+        <div className="absolute top-full right-0 mt-2 w-44 max-w-[calc(100vw-2rem)] glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up">
           <div className="p-1.5">
             {modes.map(mode => (
               <button
@@ -2005,7 +1990,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           />
           
           {showProcessingMessage.show && (
-            <div className="fixed top-4 right-4 bg-background border border-border rounded-xl p-4 shadow-xl z-50 flex items-center gap-3 animate-slide-in">
+            <div className="fixed top-4 right-4 bg-background border border-border rounded-xl p-4 shadow-xl z-[80] flex items-center gap-3 animate-slide-in-right">
               <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
               <p className="text-sm font-medium">{showProcessingMessage.message}</p>
             </div>
@@ -2239,12 +2224,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           {/* Mobile Sidebar Overlay */}
           {mobileSidebarOpen && (
             <div 
-              className="fixed inset-0 z-50 md:hidden animate-fade-in"
+              className="fixed inset-0 z-[59] md:hidden animate-fade-in"
               onClick={() => setMobileSidebarOpen(false)}
             >
-              <div className="absolute inset-0 bg-black/50" />
+              <div className="absolute inset-0 bg-black/40" />
               <div 
-                className="absolute left-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-background shadow-2xl animate-slide-in-left flex flex-col"
+                className="absolute left-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-background shadow-2xl animate-slide-in-left flex flex-col z-[60]"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 shrink-0">
@@ -2346,7 +2331,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col h-full overflow-hidden pb-16 md:pb-0">
+          <div className="flex-1 flex flex-col h-full overflow-hidden pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0">
             <div className="h-[54px] flex items-center justify-between px-4 md:px-6 border-b border-border/50 glass z-10 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <Button

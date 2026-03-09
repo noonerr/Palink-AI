@@ -269,7 +269,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   }
 
   return (
-    <div className="flex h-full relative pb-16 md:pb-0">
+    <div className="flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0">
       {/* Desktop Sidebar with smooth fade animation */}
       <div 
         className={cn(
