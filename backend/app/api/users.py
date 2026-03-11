@@ -1,19 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
 from ..models import User, UserSetting
+from ..schemas import UserSettingUpdate
 
 router = APIRouter(prefix="/api/users/me", tags=["user-settings"])
-
-
-class UserSettingUpdate(BaseModel):
-    memory_mode: Optional[str] = None
-    memory_model: Optional[str] = None
-    show_model_reasoning: Optional[bool] = None
 
 
 def _get_or_create_settings(user: User, db: Session) -> UserSetting:

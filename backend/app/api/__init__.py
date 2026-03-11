@@ -11,6 +11,7 @@ from .admin import router as admin_router
 from .recommendations import router as recommendations_router
 from .memory import router as memory_router
 from .character_ext import router_characters, router_sessions as char_sessions_router, router_chat
+from .worldbook import router as worldbook_router, router_session_wb as worldbook_session_router
 
 api_router = APIRouter()
 
@@ -27,3 +28,5 @@ api_router.include_router(memory_router)
 api_router.include_router(router_characters)
 api_router.include_router(char_sessions_router)
 api_router.include_router(router_chat)
+api_router.include_router(worldbook_router)
+api_router.include_router(worldbook_session_router)

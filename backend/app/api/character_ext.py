@@ -19,13 +19,85 @@ from openai import AsyncOpenAI
 from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch
+from ..models.system import UserSetting
 from ..character_card import extract_chara_card_from_png
+from ..memory_module.service import MemoryService
+from ..services.worldbook_service import build_worldbook_context, check_stage_transition
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
 router_chat = APIRouter(tags=["character-chat"])
 
 logger = logging.getLogger(__name__)
+
+
+# ───────────────────────────────────────────────
+# Branch History Helpers
+# ───────────────────────────────────────────────
+
+def _get_branch_messages_up_to(db: Session, session_id: str, branch_id: str, up_to_message_id: Optional[int] = None) -> list:
+    """Get messages for a branch, optionally up to (and including) a specific message id."""
+    msgs = (
+        db.query(CharacterChatMessage)
+        .filter(
+            CharacterChatMessage.session_id == session_id,
+            CharacterChatMessage.branch_id == branch_id,
+        )
+        .order_by(CharacterChatMessage.created_at)
+        .all()
+    )
+    if up_to_message_id is None:
+        return msgs
+    result = []
+    for m in msgs:
+        result.append(m)
+        if m.id == up_to_message_id:
+            break
+    return result
+
+
+def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit: int = 60) -> list:
+    """Return ordered messages by traversing the ancestor branch chain.
+
+    For the target branch itself all messages are loaded.  For each ancestor
+    branch only messages up to (and including) the fork-point message are
+    loaded so that messages after the fork on a parent branch are excluded.
+    """
+    branch = db.query(CharacterChatSessionBranch).filter_by(id=branch_id).first()
+    if not branch:
+        return []
+
+    # Build chain from target branch back to root.
+    # Each entry: (branch_obj, up_to_message_id | None)
+    #   up_to_message_id=None  → load ALL messages on that branch
+    #   up_to_message_id=<id>  → load messages up to (inclusive) that id
+    chain: list = []
+    cur = branch
+    up_to: int | None = None  # target branch: load everything
+    while cur:
+        chain.append((cur, up_to))
+        if cur.parent_branch_id:
+            up_to = cur.parent_message_id  # limit parent to fork point
+            parent = db.query(CharacterChatSessionBranch).filter_by(id=cur.parent_branch_id).first()
+            cur = parent
+        else:
+            break
+
+    chain.reverse()  # root-first order
+
+    all_msgs: list = []
+    for b, up_to_id in chain:
+        msgs = _get_branch_messages_up_to(db, session_id, b.id, up_to_id)
+        all_msgs.extend(msgs)
+
+    # Deduplicate by id while preserving order
+    seen: set = set()
+    deduped: list = []
+    for m in all_msgs:
+        if m.id not in seen:
+            seen.add(m.id)
+            deduped.append(m)
+    return deduped[-limit:]
 
 
 # ───────────────────────────────────────────────
@@ -288,7 +360,17 @@ async def import_character(
 
     # Handle avatar from the file
     if char_data.get("avatar") and char_data["avatar"].startswith("data:image"):
+        # 使用角色卡中提供的base64头像
         char.avatar = char_data["avatar"]
+    elif file.filename and file.filename.lower().endswith(".png"):
+        # 从PNG文件中提取头像
+        try:
+            import base64
+            # 将PNG数据转换为base64格式
+            base64_avatar = base64.b64encode(content).decode('utf-8')
+            char.avatar = f"data:image/png;base64,{base64_avatar}"
+        except Exception:
+            pass
 
     db.add(char)
     db.commit()
@@ -296,40 +378,117 @@ async def import_character(
     return {"status": "ok", "character": _char_to_dict(char)}
 
 
+class ParseCharacterRequest(BaseModel):
+    character_id: Optional[str] = None
+    image_url: Optional[str] = None
+    model: Optional[str] = None
+
+
 @router_characters.post("/parse")
 async def parse_character_card(
-    req: dict,
+    req: ParseCharacterRequest,
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """从 URL 解析角色卡图片"""
-    image_url = req.get("image_url", "")
-    if not image_url:
-        raise HTTPException(status_code=400, detail="image_url required")
+    """解析角色卡：支持从 URL 或从已导入的角色卡用 AI 解析"""
+    if not req.character_id and not req.image_url:
+        raise HTTPException(status_code=400, detail="Either character_id or image_url is required")
 
-    try:
-        if image_url.startswith("data:image"):
-            # base64 data URL
-            img_data = base64.b64decode(image_url.split(",", 1)[1])
+    if req.image_url:
+        try:
+            if req.image_url.startswith("data:image"):
+                img_data = base64.b64decode(req.image_url.split(",", 1)[1])
+            else:
+                import urllib.request
+                with urllib.request.urlopen(req.image_url, timeout=10) as r:
+                    img_data = r.read()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image: {e}")
+
+        char_data = extract_chara_card_from_png(img_data)
+        if not char_data:
+            raise HTTPException(status_code=422, detail="No character data found in image")
+
+        if "data" in char_data and isinstance(char_data["data"], dict):
+            char_data = char_data["data"]
+
+        return {"status": "ok", "character": char_data}
+
+    if req.character_id:
+        char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found")
+
+        char.is_processing = True
+        char.processing_status = "Parsing..."
+        db.commit()
+
+        providers = _get_providers()
+        provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
+        if not provider:
+            char.is_processing = False
+            db.commit()
+            raise HTTPException(status_code=400, detail="No AI model configured")
+
+        model_id = req.model
+        if not model_id:
+            model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
         else:
-            import urllib.request
-            with urllib.request.urlopen(image_url, timeout=10) as r:
-                img_data = r.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch image: {e}")
+            p, _ = _find_model(model_id)
+            if not p:
+                char.is_processing = False
+                db.commit()
+                raise HTTPException(status_code=400, detail="Model not found")
 
-    char_data = extract_chara_card_from_png(img_data)
-    if not char_data:
-        raise HTTPException(status_code=422, detail="No character data found in image")
+        fields_to_parse = {
+            "description": char.description or "",
+            "personality": char.personality or "",
+            "scenario": char.scenario or "",
+            "background": char.background or "",
+        }
 
-    if "data" in char_data and isinstance(char_data["data"], dict):
-        char_data = char_data["data"]
+        try:
+            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+            prompt = (
+                "Parse the following character card content, extract and organize the information. "
+                "Return a valid JSON object with the same keys, clean up any messy format, "
+                "and improve the content to be more coherent and structured.\n\n"
+                + json.dumps(fields_to_parse, ensure_ascii=False)
+            )
+            resp = await client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            content = resp.choices[0].message.content
+            import re
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                if parsed.get("description"):
+                    char.description = parsed["description"]
+                if parsed.get("personality"):
+                    char.personality = parsed["personality"]
+                if parsed.get("scenario"):
+                    char.scenario = parsed["scenario"]
+                if parsed.get("background"):
+                    char.background = parsed["background"]
 
-    return {"status": "ok", "character": char_data}
+            char.is_processing = False
+            char.processing_status = ""
+            db.commit()
+            return {"status": "ok", "character": _char_to_dict(char)}
+        except Exception as e:
+            char.is_processing = False
+            char.processing_status = f"Parsing failed: {e}"
+            db.commit()
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 class TranslateRequest(BaseModel):
     character_id: str
     target_language: str = "zh"
+    model: Optional[str] = None
 
 
 @router_characters.post("/translate")
@@ -350,7 +509,6 @@ async def translate_character(
 
     lang_name = "Chinese (Simplified)" if req.target_language == "zh" else req.target_language
 
-    # Find any available model
     providers = _get_providers()
     provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
     if not provider:
@@ -358,7 +516,16 @@ async def translate_character(
         db.commit()
         raise HTTPException(status_code=400, detail="No AI model configured")
 
-    model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
+    model_id = req.model
+    if not model_id:
+        model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
+    else:
+        p, _ = _find_model(model_id)
+        if not p:
+            char.is_processing = False
+            db.commit()
+            raise HTTPException(status_code=400, detail="Model not found")
+        provider = p
 
     fields_to_translate = {
         "description": char.description or "",
@@ -451,13 +618,27 @@ async def get_character_session_messages(
         CharacterChatSessionBranch.is_active == True
     ).first()
 
-    query = db.query(CharacterChatMessage).filter(CharacterChatMessage.session_id == session_id)
+    # Use full ancestor-chain traversal so child branches include
+    # parent messages up to the fork point (fixes empty-message bug).
     if active_branch:
-        query = query.filter(CharacterChatMessage.branch_id == active_branch.id)
+        messages = _get_full_branch_history(db, session_id, active_branch.id, limit=1000)
     else:
-        query = query.filter(CharacterChatMessage.branch_id == None)
+        latest_branch = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.session_id == session_id
+        ).order_by(CharacterChatSessionBranch.created_at.desc()).first()
+        if latest_branch:
+            messages = _get_full_branch_history(db, session_id, latest_branch.id, limit=1000)
+        else:
+            messages = (
+                db.query(CharacterChatMessage)
+                .filter(
+                    CharacterChatMessage.session_id == session_id,
+                    CharacterChatMessage.branch_id == None,
+                )
+                .order_by(CharacterChatMessage.created_at)
+                .all()
+            )
 
-    messages = query.order_by(CharacterChatMessage.created_at).all()
     return [
         {
             "id": m.id,
@@ -533,6 +714,7 @@ class BranchCreateRequest(BaseModel):
     session_id: str
     branch_name: str
     parent_message_id: Optional[int] = None
+    parent_branch_id: Optional[str] = None
 
 
 @router_sessions.get("/{session_id}/branches")
@@ -592,6 +774,7 @@ async def create_branch(
         session_id=session_id,
         branch_name=req.branch_name,
         parent_message_id=req.parent_message_id,
+        parent_branch_id=req.parent_branch_id,
         is_active=False,
     )
     db.add(branch)
@@ -629,15 +812,98 @@ async def switch_branch(
     branch.is_active = True
     db.commit()
 
-    # Return messages for this branch
-    msgs = (
-        db.query(CharacterChatMessage)
-        .filter(CharacterChatMessage.session_id == session_id, CharacterChatMessage.branch_id == branch_id)
-        .order_by(CharacterChatMessage.created_at)
-        .all()
-    )
-    messages = [{"id": m.id, "role": m.role, "content": m.content, "model": m.model, "created_at": m.created_at} for m in msgs]
+    # Return messages using full ancestor-chain traversal
+    hist = _get_full_branch_history(db, session_id, branch_id, limit=1000)
+    messages = [{"id": m.id, "role": m.role, "content": m.content, "model": m.model, "created_at": m.created_at} for m in hist]
     return {"status": "ok", "messages": messages}
+
+
+@router_sessions.get("/{session_id}/branch-tree")
+async def get_branch_tree(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return all branches and their message pairs for storyline visualization."""
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    branches = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id
+    ).order_by(CharacterChatSessionBranch.created_at).all()
+
+    if not branches:
+        main_branch = CharacterChatSessionBranch(
+            session_id=session_id,
+            branch_name="Main",
+            is_active=True,
+        )
+        db.add(main_branch)
+        db.commit()
+        db.refresh(main_branch)
+        branches = [main_branch]
+
+    result_branches = []
+    for branch in branches:
+        msgs = (
+            db.query(CharacterChatMessage)
+            .filter(
+                CharacterChatMessage.session_id == session_id,
+                CharacterChatMessage.branch_id == branch.id,
+            )
+            .order_by(CharacterChatMessage.created_at)
+            .all()
+        )
+        pairs = []
+        pending_user = None
+        for msg in msgs:
+            if msg.role == "user":
+                pending_user = msg
+            elif msg.role == "assistant":
+                if pending_user:
+                    # Strip <think>...</think> blocks for summary
+                    import re as _re
+                    ai_display = _re.sub(r"<think>[\s\S]*?</think>", "", msg.content).strip()
+                    pairs.append({
+                        "pair_id": f"pair_{pending_user.id}",
+                        "user_msg_id": pending_user.id,
+                        "ai_msg_id": msg.id,
+                        "user_summary": pending_user.content[:80],
+                        "ai_summary": ai_display[:80],
+                        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                    })
+                    pending_user = None
+                else:
+                    # Init message (character's opening, no preceding user msg)
+                    import re as _re
+                    ai_display = _re.sub(r"<think>[\s\S]*?</think>", "", msg.content).strip()
+                    pairs.append({
+                        "pair_id": f"ai_{msg.id}",
+                        "user_msg_id": None,
+                        "ai_msg_id": msg.id,
+                        "user_summary": None,
+                        "ai_summary": ai_display[:80],
+                        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                    })
+        result_branches.append({
+            "id": branch.id,
+            "branch_name": branch.branch_name,
+            "parent_branch_id": branch.parent_branch_id,
+            "parent_message_id": branch.parent_message_id,
+            "is_active": branch.is_active,
+            "created_at": branch.created_at.isoformat() if branch.created_at else None,
+            "nodes": pairs,
+        })
+
+    active_branch = next((b for b in branches if b.is_active), None)
+    return {
+        "branches": result_branches,
+        "active_branch_id": active_branch.id if active_branch else None,
+    }
 
 
 @router_sessions.delete("/{session_id}/branches/{branch_id}")
@@ -742,21 +1008,68 @@ async def character_chat(
                 db.refresh(main_branch)
                 branch_id = main_branch.id
 
+    # ── Memory context ───────────────────────────────────────────────
+    memory_mode = "disabled"
+    user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if user_setting and user_setting.memory_mode:
+        memory_mode = user_setting.memory_mode
+
     # ── Build messages array ────────────────────────────────────────────
     system_prompt = _build_char_system_prompt(char, user_nickname)
+
+    # ── Inject world book context ───────────────────────────────────────
+    try:
+        wb_context = build_worldbook_context(db, session_id)
+        if wb_context:
+            system_prompt += "\n\n" + wb_context
+    except Exception as e:
+        logger.warning(f"World book context injection failed: {e}")
+
+    if memory_mode != "disabled":
+        try:
+            mem_svc = MemoryService(db)
+            if mem_svc.is_available():
+                mem_ctx = mem_svc.get_context(
+                    user_id=user.id,
+                    query=req.message if not is_init else char.name,
+                    session_id=session_id,
+                    max_tokens=1500,
+                )
+                if mem_ctx and mem_ctx.memories:
+                    mem_parts = []
+                    if mem_ctx.user_profile and mem_ctx.user_profile.summary:
+                        mem_parts.append(f"[User Profile]\n{mem_ctx.user_profile.summary}")
+                    mem_lines = []
+                    for mem in mem_ctx.memories:
+                        prefix = "User" if mem.role == "user" else "Assistant"
+                        mem_lines.append(f"- {prefix}: {mem.content[:200]}")
+                    if mem_lines:
+                        mem_parts.append("[Relevant Memories]\n" + "\n".join(mem_lines))
+                    if mem_parts:
+                        system_prompt += "\n\n" + "\n\n".join(mem_parts)
+        except Exception as e:
+            logger.warning(f"Memory context retrieval failed: {e}")
+
     messages = [{"role": "system", "content": system_prompt}]
 
     if char.mes_example:
         messages.append({"role": "system", "content": f"Example dialogue:\n{char.mes_example}"})
 
-    # Load history
-    hist_query = db.query(CharacterChatMessage).filter(CharacterChatMessage.session_id == session_id)
+    # Load history using ancestor-chain traversal for correct branch context
     if branch_id:
-        hist_query = hist_query.filter(CharacterChatMessage.branch_id == branch_id)
+        history = _get_full_branch_history(db, session_id, branch_id, limit=30)
     else:
-        hist_query = hist_query.filter(CharacterChatMessage.branch_id == None)
-    history = hist_query.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
-    for m in reversed(history):
+        history = (
+            db.query(CharacterChatMessage)
+            .filter(
+                CharacterChatMessage.session_id == session_id,
+                CharacterChatMessage.branch_id == None,
+            )
+            .order_by(CharacterChatMessage.created_at.desc())
+            .limit(30)
+            .all()[::-1]
+        )
+    for m in history:
         messages.append({"role": m.role, "content": m.content})
 
     # ── Handle __INIT__ (send character's first message) ────────────────
@@ -775,7 +1088,7 @@ async def character_chat(
         db.commit()
 
         async def init_stream():
-            yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+            yield f"data: {json.dumps({'session_id': session_id, 'branch_id': branch_id})}\n\n"
             # Stream the first message char by char in chunks
             chunk_size = 20
             for i in range(0, len(first_mes), chunk_size):
@@ -813,19 +1126,38 @@ async def character_chat(
     async def event_generator():
         full_content = ""
         full_reasoning = ""
+        total_tokens = 0
+        prompt_tokens = 0
+        completion_tokens = 0
         try:
             client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
-            stream = await client.chat.completions.create(
+            stream_kwargs = dict(
                 model=req.model,
                 messages=messages,
                 temperature=req.temperature,
                 stream=True,
             )
+            # Request usage info in stream if supported
+            try:
+                stream_kwargs["stream_options"] = {"include_usage": True}
+                stream = await client.chat.completions.create(**stream_kwargs)
+            except Exception:
+                # Fallback: some providers don't support stream_options
+                stream_kwargs.pop("stream_options", None)
+                stream = await client.chat.completions.create(**stream_kwargs)
+
             # Send session_id on first chunk if new session
             if is_new_session:
-                yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+                yield f"data: {json.dumps({'session_id': session_id, 'branch_id': branch_id})}\n\n"
 
             async for chunk in stream:
+                # Extract usage from the final chunk if available
+                usage = getattr(chunk, "usage", None)
+                if usage:
+                    total_tokens = getattr(usage, "total_tokens", 0) or 0
+                    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -841,6 +1173,10 @@ async def character_chat(
                 if resp:
                     yield f"data: {json.dumps(resp, ensure_ascii=False)}\n\n"
 
+            # Send usage info before DONE
+            if total_tokens > 0:
+                yield f"data: {json.dumps({'type': 'usage', 'total_tokens': total_tokens, 'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens})}\n\n"
+
             yield "data: [DONE]\n\n"
 
             # Persist assistant message in a fresh DB session
@@ -848,15 +1184,56 @@ async def character_chat(
             new_db = SessionLocal()
             try:
                 final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
+                # Use API-reported tokens if available, otherwise estimate
+                token_count = completion_tokens if completion_tokens > 0 else len(full_content) // 2
                 new_db.add(CharacterChatMessage(
                     session_id=session_id,
                     branch_id=branch_id,
                     role="assistant",
                     content=final,
                     model=req.model,
-                    tokens=len(full_content) // 2,
+                    tokens=token_count,
                 ))
                 new_db.commit()
+
+                # Check stage transition (every message, async)
+                try:
+                    from ..models.character import CharacterChatMessage as CCM
+                    recent = new_db.query(CCM).filter(
+                        CCM.session_id == session_id
+                    ).order_by(CCM.created_at.desc()).limit(6).all()[::-1]
+                    recent_msgs = [{"role": m.role, "content": m.content} for m in recent]
+                    # Note: check_stage_transition is async but we're in a sync context here;
+                    # we use a simple asyncio call. The transition SSE is sent separately.
+                    import asyncio
+                    transition = asyncio.get_event_loop().run_until_complete(
+                        check_stage_transition(new_db, session_id, recent_msgs, req.model)
+                    )
+                    if transition and transition.get("should_transition"):
+                        logger.info(f"Stage transition for session {session_id}: {transition}")
+                except Exception as e:
+                    logger.warning(f"Stage transition check failed: {e}")
+
+                # Store memories if enabled
+                if memory_mode != "disabled":
+                    try:
+                        mem_svc = MemoryService(new_db)
+                        if mem_svc.is_available():
+                            mem_svc.store_memory(
+                                user_id=user.id,
+                                session_id=session_id,
+                                role="user",
+                                content=req.message,
+                            )
+                            mem_svc.store_memory(
+                                user_id=user.id,
+                                session_id=session_id,
+                                role="assistant",
+                                content=full_content,
+                            )
+                            new_db.commit()
+                    except Exception as e:
+                        logger.warning(f"Memory storage failed: {e}")
             finally:
                 new_db.close()
 

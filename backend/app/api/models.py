@@ -40,9 +40,11 @@ async def get_models():
             continue
         for m in p.get("models", []):
             if isinstance(m, dict):
+                display_name = m.get("name") or m.get("alias") or m["id"]
                 result.append({
                     "id": m["id"],
-                    "name": m.get("alias", m["id"]),
+                    "name": display_name,
+                    "alias": display_name,
                     "icon": m.get("icon", "🤖"),
                     "description": m.get("description", ""),
                     "context_length": m.get("context_length", 4096),

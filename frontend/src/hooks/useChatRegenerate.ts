@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import { api } from '@/services/api';
 
 interface Message {
   id?: string;
@@ -16,7 +17,7 @@ interface UseChatRegenerateOptions {
 }
 
 export const useChatRegenerate = <T extends Message>({
-  token,
+  token: _token,
   apiEndpoint,
   generateMessageId,
   additionalPayload = {}
@@ -68,21 +69,13 @@ export const useChatRegenerate = <T extends Message>({
     let fullReasoning = '';
 
     try {
-      const res = await fetch(apiEndpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          ...additionalPayload,
-          message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
-          model: currentModel,
-          images: [],
-          files: []
-        }),
-        signal: abortControllerRef.current.signal
-      });
+      const res = await api.stream(apiEndpoint, {
+        ...additionalPayload,
+        message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
+        model: currentModel,
+        images: [],
+        files: []
+      }, { signal: abortControllerRef.current.signal });
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
@@ -124,15 +117,7 @@ export const useChatRegenerate = <T extends Message>({
       }
 
       if (fullContent.length > 20) {
-        fetch('/api/chat/suggestions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ message: fullContent, model: currentModel })
-        })
-          .then(r => r.json())
+        api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
           .then(setSuggestions)
           .catch(() => {});
       }
@@ -154,7 +139,7 @@ export const useChatRegenerate = <T extends Message>({
       setRegeneratingMessageIndex(null);
       abortControllerRef.current = null;
     }
-  }, [token, apiEndpoint, generateMessageId, additionalPayload]);
+  }, [apiEndpoint, generateMessageId, additionalPayload]);
 
   return {
     regeneratingMessageIndex,

@@ -5,11 +5,13 @@ from .message import ChatMessage
 from .character import Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch
 from .workspace import UserFolder, UserFile
 from .system import SystemSetting, UserSetting, ProviderTestResult
+from .worldbook import WorldBook, WorldBookStage, SessionWorldBook
 
 __all__ = [
     'Base',
     'User', 'ChatSession', 'ChatMessage',
     'Character', 'CharacterChatSession', 'CharacterChatMessage', 'CharacterChatSessionBranch',
     'UserFolder', 'UserFile',
-    'SystemSetting', 'UserSetting', 'ProviderTestResult'
+    'SystemSetting', 'UserSetting', 'ProviderTestResult',
+    'WorldBook', 'WorldBookStage', 'SessionWorldBook',
 ]

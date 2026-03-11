@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, UserFolder, UserFile
+from ..schemas import FolderCreate
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 logger = logging.getLogger(__name__)
@@ -48,11 +49,6 @@ def _find_model(model_id: str):
 
 
 # --- schemas ---
-
-class FolderCreate(BaseModel):
-    name: str
-    parent_id: Optional[str] = None
-
 
 class FileMove(BaseModel):
     file_ids: List[str] = []

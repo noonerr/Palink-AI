@@ -4,7 +4,7 @@ import { useEffect, RefObject } from 'react';
  * 点击/触摸组件外部时触发回调
  */
 export function useClickOutside<T extends HTMLElement>(
-  ref: RefObject<T>,
+  ref: RefObject<T | null>,
   handler: () => void
 ) {
   useEffect(() => {

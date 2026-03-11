@@ -27,7 +27,7 @@ interface MessageProps {
   canRegenerate?: boolean;
   showModelReasoning?: boolean;
   isSelected?: boolean;
-  onToggleSelect?: () => void;
+  onToggleSelect?: (id?: string) => void;
   onDelete?: () => void;
   showSelect?: boolean;
   isDeleteMode?: boolean;
@@ -46,14 +46,14 @@ interface MessageProps {
   memoryMode?: string;
 }
 
-export const Message: React.FC<MessageProps> = ({
+const MessageInner: React.FC<MessageProps> = ({
   message,
   userAvatar,
   userName,
   models = [],
   streaming = false,
   isLast = false,
-  t,
+  t: _t,
   tokens,
   memoryStats,
   onCompress,
@@ -69,14 +69,13 @@ export const Message: React.FC<MessageProps> = ({
   messageIndex,
   selectedItems,
   onSetMultipleItemsSelect,
-  onEdit,
-  canEdit = false,
+  onEdit: _onEdit,
+  canEdit: _canEdit = false,
   isMixedDeleteMode = false,
   selectedWholeMessages,
   selectedMessageParts,
   onToggleWholeMessageSelect,
   onToggleMessagePartSelect,
-  onSelectAllPartsInMessage,
   isCharacterChat = false,
   memoryMode,
 }) => {
@@ -122,13 +121,7 @@ export const Message: React.FC<MessageProps> = ({
     }
   };
 
-  const handleSelectAllParts = () => {
-    if (isMixedDeleteMode && onSelectAllPartsInMessage && messageIndex !== undefined) {
-      onSelectAllPartsInMessage(messageIndex);
-    }
-  };
-
-  type MessagePart = {
+type MessagePart = {
     type: 'modelReasoning' | 'thinking' | 'action' | 'text';
     content: string;
     id: string;
@@ -670,3 +663,53 @@ export const Message: React.FC<MessageProps> = ({
     </div>
   );
 };
+
+/**
+ * React.memo 包装：仅在影响渲染的 props 变化时才重新渲染
+ * 自定义比较函数跳过回调函数引用比较（行为不变，仅引用变化）
+ */
+export const Message = React.memo(MessageInner, (prev, next) => {
+  // 消息内容与身份
+  if (prev.message.id !== next.message.id) return false;
+  if (prev.message.content !== next.message.content) return false;
+  if (prev.message.role !== next.message.role) return false;
+  if (prev.message.model !== next.message.model) return false;
+
+  // 流式与位置状态
+  if (prev.streaming !== next.streaming) return false;
+  if (prev.isLast !== next.isLast) return false;
+
+  // 选择/删除模式
+  if (prev.isSelected !== next.isSelected) return false;
+  if (prev.showSelect !== next.showSelect) return false;
+  if (prev.isDeleteMode !== next.isDeleteMode) return false;
+  if (prev.isMixedDeleteMode !== next.isMixedDeleteMode) return false;
+
+  // 功能状态
+  if (prev.compressing !== next.compressing) return false;
+  if (prev.showModelReasoning !== next.showModelReasoning) return false;
+  if (prev.canRegenerate !== next.canRegenerate) return false;
+  if (prev.memoryMode !== next.memoryMode) return false;
+  if (prev.tokens !== next.tokens) return false;
+  if (prev.isCharacterChat !== next.isCharacterChat) return false;
+
+  // 身份信息
+  if (prev.userAvatar !== next.userAvatar) return false;
+  if (prev.userName !== next.userName) return false;
+  if (prev.messageIndex !== next.messageIndex) return false;
+
+  // 按当前消息检查选中状态（避免整体 Set/Map 引用比较）
+  const msgId = String(prev.message.id);
+  if (prev.selectedItems?.has(msgId) !== next.selectedItems?.has(msgId)) return false;
+
+  const idx = prev.messageIndex;
+  if (idx !== undefined) {
+    if (prev.selectedWholeMessages?.has(idx) !== next.selectedWholeMessages?.has(idx)) return false;
+    if (prev.selectedMessageParts?.get(idx) !== next.selectedMessageParts?.get(idx)) return false;
+  }
+
+  // 记忆统计（引用比较，父组件应保持稳定引用）
+  if (prev.memoryStats !== next.memoryStats) return false;
+
+  return true;
+});

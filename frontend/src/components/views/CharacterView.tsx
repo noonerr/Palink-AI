@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useCharacterChat } from '@/hooks/useCharacterChat';
+import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { 
   Bot, 
   Plus, 
@@ -38,13 +40,17 @@ import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { ErrorToast } from '@/components/ui/custom/ErrorToast';
-import { analyzeError, type ErrorInfo } from '@/lib/errorHandler';
+import StorylinePanel from '@/components/ui/custom/StorylinePanel';
+import type { BranchTree } from '@/components/ui/custom/StorylineMap';
+import { WorldBookSelector } from '@/components/ui/custom/WorldBookSelector';
+import { StageIndicator } from '@/components/ui/custom/StageIndicator';
+import { StageControls } from '@/components/ui/custom/StageControls';
+import { WorldBookOverview } from '@/components/ui/custom/WorldBookOverview';
+import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
+import { useWorldBook } from '@/hooks/useWorldBook';
+import { api } from '@/services/api';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch } from '@/types';
-
-const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-};
 
 interface CharacterViewProps {
   token: string;
@@ -52,15 +58,10 @@ interface CharacterViewProps {
   models: Model[];
   t: Record<string, string>;
   systemDefaults?: Record<string, string>;
+  lang?: 'zh' | 'en';
 }
 
 type ViewState = 'list' | 'edit' | 'chat';
-
-interface Attachment {
-  type: 'image' | 'file';
-  name: string;
-  url: string;
-}
 
 interface BranchSelectorProps {
   branches: CharacterChatSessionBranch[];
@@ -189,11 +190,13 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
 interface DialogueModeSelectorProps {
   currentMode: 'first_person' | 'third_person';
   onSelect: (mode: 'first_person' | 'third_person') => void;
+  lang?: 'zh' | 'en';
 }
 
 const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
   currentMode,
-  onSelect
+  onSelect,
+  lang = 'zh'
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -201,8 +204,8 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
   useClickOutside(containerRef, () => setIsOpen(false));
 
   const modes = [
-    { id: 'first_person', name: '1st Person / 第一人称' },
-    { id: 'third_person', name: 'Story / 故事模式' }
+    { id: 'first_person', name: lang === 'zh' ? '第一人称' : '1st Person' },
+    { id: 'third_person', name: lang === 'zh' ? '故事模式' : 'Story' }
   ];
 
   const getIcon = (modeId: string) => {
@@ -264,11 +267,12 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
 };
 
 export const CharacterView: React.FC<CharacterViewProps> = ({
-  token,
+  token: _token,
   user,
   models,
   t,
-  systemDefaults
+  systemDefaults,
+  lang
 }) => {
   const [viewState, setViewState] = useState<ViewState>('list');
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -287,7 +291,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [messages, setMessages] = useState<CharacterChatMessage[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(systemDefaults?.default_character_chat_model || models[0]?.id || '');
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
-  const [isGenerating, setIsGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   
   // 对话分支相关状态
@@ -295,16 +298,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [selectedBranch, setSelectedBranch] = useState<CharacterChatSessionBranch | null>(null);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
+  const [showStoryline, setShowStoryline] = useState(false);
+  const [branchTree, setBranchTree] = useState<BranchTree | null>(null);
   
-  const [inputValue, setInputValue] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  
-  // Regenerate state
-  const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
   
   const [memoryStats, setMemoryStats] = useState<{
     message_count: number;
@@ -317,135 +315,46 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
-  const [isMixedDeleteMode, setIsMixedDeleteMode] = useState(false);
-  const [selectedWholeMessages, setSelectedWholeMessages] = useState<Set<number>>(new Set());
-  const [selectedMessageParts, setSelectedMessageParts] = useState<Map<number, Set<string>>>(new Map());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'single'; id: string } | { type: 'batch' } | null>(null);
   const [showDeleteCharacterConfirm, setShowDeleteCharacterConfirm] = useState(false);
   const [pendingDeleteCharacter, setPendingDeleteCharacter] = useState<string | null>(null);
   const [showDeleteBranchConfirm, setShowDeleteBranchConfirm] = useState(false);
   const [pendingDeleteBranch, setPendingDeleteBranch] = useState<string | null>(null);
-  const [showDeleteMixedConfirm, setShowDeleteMixedConfirm] = useState(false);
   const [initializingChat, setInitializingChat] = useState(false);
   const [showImportOptions, setShowImportOptions] = useState<string | null>(null);
   const [processingCharacter, setProcessingCharacter] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [forceShowOverlay, setForceShowOverlay] = useState<string | null>(null);
   const [showProcessingMessage, setShowProcessingMessage] = useState<{ show: boolean; message: string }>({ show: false, message: '' });
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
   const [showModelReasoning, setShowModelReasoning] = useState(false);
+  const [showWorldBookManager, setShowWorldBookManager] = useState(false);
+  const [showWorldBookOverview, setShowWorldBookOverview] = useState(false);
+  const [selectedWorldBookId, setSelectedWorldBookId] = useState<string | null>(null);
   
-  // Error handling state
-  const [currentError, setCurrentError] = useState<ErrorInfo | null>(null);
-  const [retryMessageContent, setRetryMessageContent] = useState<string>('');
-  const [retryMessageImages, setRetryMessageImages] = useState<string[]>([]);
-  
-  // Request timeout state
-  const [requestStartTime, setRequestStartTime] = useState<number | null>(null);
-  const [timeoutWarning, setTimeoutWarning] = useState(false);
-  const TIMEOUT_WARNING_MS = 15000; // 15 seconds before showing warning
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-
+  // World Book hook
+  const wb = useWorldBook();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const suggestionsAbortRef = useRef<AbortController | null>(null);
+
   const loadingSessionRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    loadCharacters();
-    fetchUserSettings();
-    
-    // 监听用户设置更新事件
-    const handleSettingsUpdate = (e: any) => {
-      if (e.detail?.showModelReasoning !== undefined) {
-        setShowModelReasoning(e.detail.showModelReasoning);
-      }
-    };
-    window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
-    return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdate);
-  }, [token]);
-
-  useEffect(() => {
-    const newDefaultModel = systemDefaults?.default_character_chat_model || models[0]?.id || '';
-    setSelectedModel(newDefaultModel);
-  }, [systemDefaults, models]);
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
-
-  const fetchUserSettings = async () => {
-    try {
-      const res = await fetch('/api/users/me/settings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const settings = await res.json();
-        setShowModelReasoning(settings.show_model_reasoning || false);
-      }
-    } catch (e) {
-      console.error('Failed to fetch user settings:', e);
-    }
-  };
-
-  const loadCharacters = async () => {
-    try {
-      const res = await fetch('/api/characters', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCharacters(data);
-        
-        const processingChar = data.find((c: any) => c.is_processing);
-        if (processingChar) {
-          if (!processingCharacter) {
-            setProcessingCharacter(processingChar.id);
-            pollCharacterStatus(processingChar.id);
-          }
-        }
-        // 不要在这里清除 processingCharacter，让轮询函数自己处理
-      }
-    } catch (e) {
-      console.error('Failed to load characters:', e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Forward-declare loadSessions and loadMemoryStats for hooks
   const loadSessions = useCallback(async (characterId: string) => {
     try {
-      const res = await fetch(`/api/characters/${characterId}/sessions`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSessions(data);
-      }
+      const data = await api.get(`/api/characters/${characterId}/sessions`);
+      setSessions(data);
     } catch (e) {
       console.error('Failed to load sessions:', e);
     }
-  }, [token]);
+  }, []);
 
   const autoCompressMemory = async (sessionId: string) => {
     if (loadingSessionRef.current !== sessionId) return;
-    
     try {
-      const res = await fetch(`/api/memory/check-auto-compress?session_id=${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok && loadingSessionRef.current === sessionId) {
-        const data = await res.json();
-        if (data.auto_compressed) {
-          console.log('Memory auto-compressed:', data.message);
-        }
+      const data = await api.get(`/api/memory/check-auto-compress?session_id=${sessionId}`);
+      if (loadingSessionRef.current === sessionId && data.auto_compressed) {
+        console.log('Memory auto-compressed:', data.message);
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
@@ -456,18 +365,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
 
   const loadMemoryStats = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
-    
     loadingSessionRef.current = sessionId;
-    
     try {
-      const res = await fetch(`/api/memory/stats?session_id=${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (res.ok && loadingSessionRef.current === sessionId) {
-        const data = await res.json();
+      const data = await api.get(`/api/memory/stats?session_id=${sessionId}`);
+      if (loadingSessionRef.current === sessionId) {
         setMemoryStats(data);
-        
         if (data.compression_needed) {
           await autoCompressMemory(sessionId);
         }
@@ -475,46 +377,144 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     } catch (e) {
       console.error('Failed to load memory stats:', e);
     }
-  }, [token]);
+  }, []);
+
+  // ── Chat hook ──────────────────────────────────────────
+  const {
+    isGenerating,
+    inputValue,
+    setInputValue,
+    attachments,
+    setAttachments,
+    uploading,
+    suggestions,
+    setSuggestions,
+    regeneratingMessageIndex,
+    currentError,
+    retryMessageContent,
+    timeoutWarning,
+    handleSendMessage,
+    handleSendWithInput,
+    handleRegenerate,
+    handleRetry,
+    handleCloseError,
+    handleUpload,
+    handleDeleteMessage,
+    handleEditMessage,
+    abortControllerRef,
+    cleanupTimeout,
+  } = useCharacterChat({
+    selectedCharacter,
+    selectedSession,
+    selectedModel,
+    dialogueMode,
+    selectedBranch,
+    getDisplayName,
+    messages,
+    setMessages,
+    setSelectedSession,
+    loadSessions,
+    loadMemoryStats,
+  });
+
+  // ── Message selection hook ─────────────────────────────
+  const {
+    isMixedDeleteMode,
+    setIsMixedDeleteMode,
+    selectedWholeMessages,
+    selectedMessageParts,
+    showDeleteMixedConfirm,
+    setShowDeleteMixedConfirm,
+    toggleWholeMessageSelect,
+    toggleMessagePartSelect,
+    selectAllPartsInMessage,
+    handleMixedDelete,
+    confirmDeleteMixed,
+    clearSelection,
+  } = useMessageSelection({
+    messages,
+    handleDeleteMessage,
+    handleEditMessage,
+  });
+
+  useEffect(() => {
+    loadCharacters();
+    fetchUserSettings();
+    wb.loadWorldBooks();
+    
+    // 监听用户设置更新事件
+    const handleSettingsUpdate = (e: any) => {
+      if (e.detail?.showModelReasoning !== undefined) {
+        setShowModelReasoning(e.detail.showModelReasoning);
+      }
+    };
+    window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
+    return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdate);
+  }, []);
+
+  useEffect(() => {
+    const newDefaultModel = systemDefaults?.default_character_chat_model || models[0]?.id || '';
+    setSelectedModel(newDefaultModel);
+  }, [systemDefaults, models]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => cleanupTimeout();
+  }, [cleanupTimeout]);
+
+  const fetchUserSettings = async () => {
+    try {
+      const settings = await api.get('/api/users/me/settings');
+      setShowModelReasoning(settings.show_model_reasoning || false);
+    } catch (e) {
+      console.error('Failed to fetch user settings:', e);
+    }
+  };
+
+  const loadCharacters = async () => {
+    try {
+      const data = await api.get('/api/characters');
+      setCharacters(data);
+      
+      const processingChar = data.find((c: any) => c.is_processing);
+      if (processingChar) {
+        if (!processingCharacter) {
+          setProcessingCharacter(processingChar.id);
+          pollCharacterStatus(processingChar.id);
+        }
+      }
+      // 不要在这里清除 processingCharacter，让轮询函数自己处理
+    } catch (e) {
+      console.error('Failed to load characters:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadBranches = useCallback(async (sessionId: string) => {
     try {
-      const res = await fetch(`/api/character-sessions/${sessionId}/branches`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setBranches(data);
-        const active = data.find((b: CharacterChatSessionBranch) => b.is_active);
-        if (active) {
-          setSelectedBranch(active);
-        }
+      const data = await api.get(`/api/character-sessions/${sessionId}/branches`);
+      setBranches(data);
+      const active = data.find((b: CharacterChatSessionBranch) => b.is_active);
+      if (active) {
+        setSelectedBranch(active);
       }
     } catch (e) {
       console.error('Failed to load branches:', e);
     }
-  }, [token]);
+  }, []);
 
   const createBranch = async (branchName: string) => {
     if (!selectedSession || !branchName.trim()) return;
     try {
-      const res = await fetch(`/api/character-sessions/${selectedSession.id}/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          session_id: selectedSession.id,
-          branch_name: branchName,
-          parent_message_id: messages.length > 0 ? messages[messages.length - 1].id : null
-        })
+      await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
+        session_id: selectedSession.id,
+        branch_name: branchName,
+        parent_message_id: messages.length > 0 ? messages[messages.length - 1].id : null
       });
-      if (res.ok) {
-        await loadBranches(selectedSession.id);
-        setNewBranchName('');
-        setShowBranchSelector(false);
-      }
+      await loadBranches(selectedSession.id);
+      setNewBranchName('');
+      setShowBranchSelector(false);
     } catch (e) {
       console.error('Failed to create branch:', e);
     }
@@ -523,16 +523,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const switchBranch = async (branch: CharacterChatSessionBranch) => {
     if (!selectedSession) return;
     try {
-      const res = await fetch(`/api/character-sessions/${selectedSession.id}/branches/${branch.id}/switch`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedBranch(branch);
-        setMessages(data.messages || []);
-        await loadBranches(selectedSession.id);
-      }
+      const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branch.id}/switch`);
+      setSelectedBranch(branch);
+      setMessages(data.messages || []);
+      await loadBranches(selectedSession.id);
     } catch (e) {
       console.error('Failed to switch branch:', e);
     }
@@ -547,15 +541,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const confirmDeleteBranch = async () => {
     if (!pendingDeleteBranch || !selectedSession) return;
     try {
-      const res = await fetch(`/api/character-sessions/${selectedSession.id}/branches/${pendingDeleteBranch}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        await loadBranches(selectedSession.id);
-        if (selectedBranch?.id === pendingDeleteBranch) {
-          setSelectedBranch(null);
-        }
+      await api.delete(`/api/character-sessions/${selectedSession.id}/branches/${pendingDeleteBranch}`);
+      await loadBranches(selectedSession.id);
+      if (selectedBranch?.id === pendingDeleteBranch) {
+        setSelectedBranch(null);
       }
     } catch (e) {
       console.error('Failed to delete branch:', e);
@@ -565,79 +554,57 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   };
 
+  const fetchBranchTree = useCallback(async () => {
+    if (!selectedSession) return;
+    try {
+      const data = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`);
+      setBranchTree(data);
+      setShowStoryline(true);
+    } catch (e) {
+      console.error('Failed to fetch branch tree:', e);
+    }
+  }, [selectedSession]);
+
+  const handleStorylineNavigate = useCallback(async (branchId: string, _messageId: number | null, _isLeaf: boolean) => {
+    if (!selectedSession) return;
+    try {
+      await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch`);
+      const data = await api.get(`/api/character-sessions/${selectedSession.id}/messages`);
+      setMessages(data);
+      await loadBranches(selectedSession.id);
+    } catch (e) {
+      console.error('Failed to navigate storyline:', e);
+    }
+  }, [selectedSession, loadBranches]);
+
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
-      const res = await fetch(`/api/character-sessions/${sessionId}/messages`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data);
-        setSuggestions([]);
-        
-        await loadMemoryStats(sessionId);
-        await loadBranches(sessionId);
-        
-        // 角色扮演禁用推荐对话功能以节省tokens
-        // if (data.length > 0) {
-        //   const lastMsg = data[data.length - 1];
-        //   if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
-        //     if (suggestionsAbortRef.current) {
-        //       suggestionsAbortRef.current.abort();
-        //     }
-        //     suggestionsAbortRef.current = new AbortController();
-        //     const currentAbortController = suggestionsAbortRef.current;
-        //     
-        //     fetch('/api/chat/suggestions', {
-        //       method: 'POST',
-        //       headers: {
-        //         Authorization: `Bearer ${token}`,
-        //         'Content-Type': 'application/json'
-        //       },
-        //       body: JSON.stringify({ message: lastMsg.content, model: selectedModel }),
-        //       signal: currentAbortController.signal
-        //     })
-        //       .then(r => r.json())
-        //       .then(data => {
-        //         if (Array.isArray(data) && !currentAbortController.signal.aborted) {
-        //           setSuggestions(data);
-        //         }
-        //       })
-        //       .catch(() => {});
-        //   }
-        // }
-      }
+      const data = await api.get(`/api/character-sessions/${sessionId}/messages`);
+      setMessages(data);
+      setSuggestions([]);
+      
+      await loadMemoryStats(sessionId);
+      await loadBranches(sessionId);
+      
+      // 角色扮演禁用推荐对话功能（节省 tokens）
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
-  }, [token, selectedModel, loadMemoryStats, loadBranches]);
+  }, [selectedModel, loadMemoryStats, loadBranches]);
 
   const manualCompressMemory = async () => {
     if (!selectedSession?.id || compressing) return;
     setCompressing(true);
     try {
-      const res = await fetch('/api/memory/compress', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          session_id: selectedSession.id,
-          compression_ratio: 0.5
-        })
+      const data = await api.post('/api/memory/compress', {
+        session_id: selectedSession.id,
+        compression_ratio: 0.5
       });
-      if (res.ok) {
-        const data = await res.json();
-        alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
-        await loadMemoryStats(selectedSession.id);
-      } else {
-        const error = await res.text();
-        alert('压缩失败: ' + error);
-      }
-    } catch (e) {
+      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      await loadMemoryStats(selectedSession.id);
+    } catch (e: any) {
       console.error('Manual compress failed:', e);
-      alert('压缩失败');
+      alert('压缩失败: ' + (e.message || ''));
     } finally {
       setCompressing(false);
     }
@@ -674,23 +641,17 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const url = selectedCharacter 
         ? `/api/characters/${selectedCharacter.id}`
         : '/api/characters';
-      const method = selectedCharacter ? 'PUT' : 'POST';
       
-      const res = await fetch(url, {
-        method,
-        headers: { 
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}` 
-        },
-        body: JSON.stringify(editingCharacter)
-      });
-      
-      if (res.ok) {
-        await loadCharacters();
-        setViewState('list');
-        setEditingCharacter({});
-        setSelectedCharacter(null);
+      if (selectedCharacter) {
+        await api.put(url, editingCharacter);
+      } else {
+        await api.post(url, editingCharacter);
       }
+      
+      await loadCharacters();
+      setViewState('list');
+      setEditingCharacter({});
+      setSelectedCharacter(null);
     } catch (e) {
       console.error('Failed to save character:', e);
     }
@@ -704,19 +665,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const confirmDeleteCharacter = async () => {
     if (!pendingDeleteCharacter) return;
     try {
-      const res = await fetch(`/api/characters/${pendingDeleteCharacter}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        await loadCharacters();
-      } else {
-        const error = await res.text();
-        alert('删除失败: ' + error);
-      }
-    } catch (e) {
+      await api.delete(`/api/characters/${pendingDeleteCharacter}`);
+      await loadCharacters();
+    } catch (e: any) {
       console.error('Failed to delete character:', e);
-      alert('删除失败');
+      alert('删除失败: ' + (e.message || ''));
     } finally {
       setShowDeleteCharacterConfirm(false);
       setPendingDeleteCharacter(null);
@@ -728,62 +681,31 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const formData = new FormData();
       formData.append('file', file);
       
-      const res = await fetch('/api/characters/import', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData
-      });
-      
-      if (res.ok) {
-        const result = await res.json();
-        await loadCharacters();
-        setShowImportOptions(result.character.id);
-      } else {
-        const error = await res.text();
-        alert('导入失败: ' + error);
-      }
-    } catch (e) {
+      const result = await api.post('/api/characters/import', formData);
+      await loadCharacters();
+      setShowImportOptions(result.character.id);
+    } catch (e: any) {
       console.error('Failed to import character:', e);
-      alert('导入失败');
+      alert('导入失败: ' + (e.message || ''));
     }
   };
 
   const handleParseCharacter = async (characterId: string) => {
     try {
       setProcessingCharacter(characterId);
-      setIsProcessing(true);
       setForceShowOverlay(characterId);
-      const res = await fetch('/api/characters/parse', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}` 
-        },
-        body: JSON.stringify({ character_id: characterId, model: selectedModel })
-      });
+      setShowImportOptions(null);
+      await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
       
-      if (res.ok) {
-        setShowProcessingMessage({ show: true, message: '已经开始解析，请稍候...' });
-        setShowImportOptions(null);
-        pollCharacterStatus(characterId);
-        setTimeout(() => {
-          setShowProcessingMessage({ show: false, message: '' });
-        }, 3000);
-      } else {
-        const error = await res.text();
-        setShowProcessingMessage({ show: true, message: '解析失败: ' + error });
-        setProcessingCharacter(null);
-        setIsProcessing(false);
-        setForceShowOverlay(null);
-        setTimeout(() => {
-          setShowProcessingMessage({ show: false, message: '' });
-        }, 3000);
-      }
-    } catch (e) {
+      setShowProcessingMessage({ show: true, message: '已经开始解析，请稍候...' });
+      pollCharacterStatus(characterId);
+      setTimeout(() => {
+        setShowProcessingMessage({ show: false, message: '' });
+      }, 3000);
+    } catch (e: any) {
       console.error('Failed to parse character:', e);
-      setShowProcessingMessage({ show: true, message: '解析失败' });
+      setShowProcessingMessage({ show: true, message: '解析失败: ' + (e.message || '') });
       setProcessingCharacter(null);
-      setIsProcessing(false);
       setForceShowOverlay(null);
       setTimeout(() => {
         setShowProcessingMessage({ show: false, message: '' });
@@ -794,39 +716,19 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const handleTranslateCharacter = async (characterId: string) => {
     try {
       setProcessingCharacter(characterId);
-      setIsProcessing(true);
       setForceShowOverlay(characterId);
-      const res = await fetch('/api/characters/translate', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}` 
-        },
-        body: JSON.stringify({ character_id: characterId, target_language: 'zh', model: selectedModel })
-      });
+      setShowImportOptions(null);
+      await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
       
-      if (res.ok) {
-        setShowProcessingMessage({ show: true, message: '已经开始翻译，请稍候...' });
-        setShowImportOptions(null);
-        pollCharacterStatus(characterId);
-        setTimeout(() => {
-          setShowProcessingMessage({ show: false, message: '' });
-        }, 3000);
-      } else {
-        const error = await res.text();
-        setShowProcessingMessage({ show: true, message: '翻译失败: ' + error });
-        setProcessingCharacter(null);
-        setIsProcessing(false);
-        setForceShowOverlay(null);
-        setTimeout(() => {
-          setShowProcessingMessage({ show: false, message: '' });
-        }, 3000);
-      }
-    } catch (e) {
+      setShowProcessingMessage({ show: true, message: '已经开始翻译，请稍候...' });
+      pollCharacterStatus(characterId);
+      setTimeout(() => {
+        setShowProcessingMessage({ show: false, message: '' });
+      }, 3000);
+    } catch (e: any) {
       console.error('Failed to translate character:', e);
-      setShowProcessingMessage({ show: true, message: '翻译失败' });
+      setShowProcessingMessage({ show: true, message: '翻译失败: ' + (e.message || '') });
       setProcessingCharacter(null);
-      setIsProcessing(false);
       setForceShowOverlay(null);
       setTimeout(() => {
         setShowProcessingMessage({ show: false, message: '' });
@@ -840,25 +742,18 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setPollingInterval(null);
     }
     setProcessingCharacter(null);
-    setIsProcessing(false);
     setForceShowOverlay(null);
   };
 
   const handleStopProcessing = async (characterId: string) => {
     try {
-      const res = await fetch(`/api/characters/${characterId}/reset-status`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (res.ok) {
-        stopPolling();
-        await loadCharacters();
-        setShowProcessingMessage({ show: true, message: '已停止处理' });
-        setTimeout(() => {
-          setShowProcessingMessage({ show: false, message: '' });
-        }, 3000);
-      }
+      await api.post(`/api/characters/${characterId}/reset-status`);
+      stopPolling();
+      await loadCharacters();
+      setShowProcessingMessage({ show: true, message: '已停止处理' });
+      setTimeout(() => {
+        setShowProcessingMessage({ show: false, message: '' });
+      }, 3000);
     } catch (e) {
       console.error('Failed to stop processing:', e);
     }
@@ -871,42 +766,33 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/characters/${characterId}/status`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        
-        if (res.ok) {
-          const status = await res.json();
+        const status = await api.get(`/api/characters/${characterId}/status`);
           
-          if (!status.is_processing) {
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              setPollingInterval(null);
-            }
-            setProcessingCharacter(null);
-            setIsProcessing(false);
-            setForceShowOverlay(null);
-            await loadCharacters();
-            if (selectedCharacter?.id === characterId) {
-              const charRes = await fetch(`/api/characters/${characterId}`, {
-                headers: { Authorization: `Bearer ${token}` }
-              });
-              if (charRes.ok) {
-                setSelectedCharacter(await charRes.json());
-              }
-            }
+        if (!status.is_processing) {
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            setPollingInterval(null);
+          }
+          setProcessingCharacter(null);
+          setForceShowOverlay(null);
+          await loadCharacters();
+          if (selectedCharacter?.id === characterId) {
+            try {
+              const charData = await api.get(`/api/characters/${characterId}`);
+              setSelectedCharacter(charData);
+            } catch { /* ignore */ }
+          }
             
-            if (status.processing_status?.includes('完成')) {
-              setShowProcessingMessage({ show: true, message: '角色卡处理完成！' });
-              setTimeout(() => {
-                setShowProcessingMessage({ show: false, message: '' });
-              }, 3000);
-            } else if (status.processing_status?.includes('失败')) {
-              setShowProcessingMessage({ show: true, message: `角色卡处理失败：${status.processing_status}` });
-              setTimeout(() => {
-                setShowProcessingMessage({ show: false, message: '' });
-              }, 3000);
-            }
+          if (status.processing_status?.includes('完成')) {
+            setShowProcessingMessage({ show: true, message: '角色卡处理完成！' });
+            setTimeout(() => {
+              setShowProcessingMessage({ show: false, message: '' });
+            }, 3000);
+          } else if (status.processing_status?.includes('失败')) {
+            setShowProcessingMessage({ show: true, message: `角色卡处理失败：${status.processing_status}` });
+            setTimeout(() => {
+              setShowProcessingMessage({ show: false, message: '' });
+            }, 3000);
           }
         }
       } catch (e) {
@@ -919,9 +805,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
 
   const handleExportCharacter = async (character: Character, format: 'png' | 'json' = 'png') => {
     try {
-      const res = await fetch(`/api/characters/${character.id}/export?format=${format}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await api.raw(`/api/characters/${character.id}/export?format=${format}`);
       
       if (res.ok) {
         if (format === 'json') {
@@ -970,37 +854,36 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     try {
       // 如果没有现有会话，并且角色有第一条消息，创建一个新会话来初始化
       if (sessions.length === 0 && selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
-        const response = await fetch('/api/character-chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            character_id: selectedCharacter.id,
-            message: '__INIT__',
-            model: selectedModel,
-            temperature: 0.7,
-            dialogue_mode: dialogueMode,
-            user_nickname: getDisplayName(selectedCharacter)
-          })
+        const data = await api.post('/api/character-chat', {
+          character_id: selectedCharacter.id,
+          message: '__INIT__',
+          model: selectedModel,
+          temperature: 0.7,
+          dialogue_mode: dialogueMode,
+          user_nickname: getDisplayName(selectedCharacter)
         });
         
-        if (response.ok) {
-          const data = await response.json();
-          await loadSessions(selectedCharacter.id);
-          if (data.session_id) {
-            const newSession = {
-              id: data.session_id,
-              title: selectedCharacter.name,
-              character_id: selectedCharacter.id,
-              user_id: user.id,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              dialogue_mode: dialogueMode
-            };
-            setSelectedSession(newSession as any);
-            await loadMessages(data.session_id);
+        await loadSessions(selectedCharacter.id);
+        if (data.session_id) {
+          const newSession = {
+            id: data.session_id,
+            title: selectedCharacter.name,
+            character_id: selectedCharacter.id,
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            dialogue_mode: dialogueMode
+          };
+          setSelectedSession(newSession as any);
+          await loadMessages(data.session_id);
+          // Associate world book if selected
+          if (selectedWorldBookId) {
+            try {
+              await wb.associateSession(data.session_id, selectedWorldBookId);
+              await wb.loadSessionStatus(data.session_id);
+            } catch (err) {
+              console.error('Failed to associate world book:', err);
+            }
           }
         }
       } else if (initialMessage) {
@@ -1019,6 +902,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setMemoryStats(null);
     await loadMessages(session.id);
     await loadMemoryStats(session.id);
+    // Load world book status for this session
+    try {
+      await wb.loadSessionStatus(session.id);
+    } catch {
+      // Session may not have a world book associated
+    }
   };
 
   const handleNewSession = () => {
@@ -1043,284 +932,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setSelectedSessions(newSet);
   };
 
-  const getAllMessagePartIds = (content: string): string[] => {
-    let processedContent = content;
-    for (let i = 0; i < 3; i++) {
-      processedContent = processedContent
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'");
-    }
-    
-    const allTags = [
-      { type: 'action', start: '<|a|>', end: '</|a|>' },
-      { type: 'thinking', start: '<|t|>', end: '</|t|>' },
-      { type: 'action', start: '<|a|>', end: '<|/a|>' },
-      { type: 'thinking', start: '<|t|>', end: '<|/t|>' },
-      { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
-      { type: 'thinking', start: '<thinking>', end: '</thinking>' },
-      { type: 'thinking', start: '<think>', end: '</think>' },
-      { type: 'action', start: '<action>', end: '</action>' },
-      { type: 'action', start: '[action]', end: '[/action]' }
-    ];
-    
-    type MessagePart = { type: string; id: string };
-    const parts: MessagePart[] = [];
-    let remainingContent = processedContent;
-    let actionIndex = 0;
-    let textIndex = 0;
-    
-    while (remainingContent.length > 0) {
-      let bestMatch: { tag: any; startIdx: number; endIdx: number } | null = null;
-      
-      for (const tag of allTags) {
-        const startIdx = remainingContent.indexOf(tag.start);
-        if (startIdx !== -1) {
-          const endIdx = remainingContent.indexOf(tag.end, startIdx + tag.start.length);
-          if (endIdx !== -1) {
-            if (!bestMatch || startIdx < bestMatch.startIdx) {
-              bestMatch = { tag, startIdx, endIdx };
-            }
-          }
-        }
-      }
-      
-      if (bestMatch) {
-        if (bestMatch.startIdx > 0) {
-          const beforeText = remainingContent.substring(0, bestMatch.startIdx);
-          if (beforeText.trim()) {
-            parts.push({ type: 'text', id: `text-${textIndex++}` });
-          }
-        }
-        
-        let partId: string;
-        if (bestMatch.tag.type === 'action') {
-          partId = `action-${actionIndex++}`;
-        } else if (bestMatch.tag.type === 'modelReasoning') {
-          partId = 'modelReasoning';
-        } else {
-          partId = 'thinking';
-        }
-        
-        parts.push({ type: bestMatch.tag.type, id: partId });
-        remainingContent = remainingContent.substring(bestMatch.endIdx + bestMatch.tag.end.length);
-      } else {
-        if (remainingContent.trim()) {
-          parts.push({ type: 'text', id: `text-${textIndex++}` });
-        }
-        break;
-      }
-    }
-    
-    return parts.map(part => part.id);
-  };
-
-  const toggleWholeMessageSelect = (messageIndex: number) => {
-    const msg = messages[messageIndex];
-    if (!msg) return;
-    
-    const isSelecting = !selectedWholeMessages.has(messageIndex);
-    
-    if (isSelecting) {
-      setSelectedWholeMessages(prev => {
-        const newSet = new Set(prev);
-        newSet.add(messageIndex);
-        return newSet;
-      });
-      
-      const partsToSelect = getAllMessagePartIds(msg.content);
-      
-      if (partsToSelect.length > 0) {
-        setSelectedMessageParts(prev => {
-          const newMap = new Map(prev);
-          newMap.set(messageIndex, new Set(partsToSelect));
-          return newMap;
-        });
-      }
-    } else {
-      setSelectedWholeMessages(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(messageIndex);
-        return newSet;
-      });
-      setSelectedMessageParts(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(messageIndex);
-        return newMap;
-      });
-    }
-  };
-
-  const toggleMessagePartSelect = (messageIndex: number, partId: string) => {
-    setSelectedMessageParts(prev => {
-      const newMap = new Map(prev);
-      const currentParts = newMap.get(messageIndex) || new Set();
-      const newParts = new Set(currentParts);
-      if (newParts.has(partId)) {
-        newParts.delete(partId);
-      } else {
-        newParts.add(partId);
-      }
-      if (newParts.size === 0) {
-        newMap.delete(messageIndex);
-        setSelectedWholeMessages(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(messageIndex);
-          return newSet;
-        });
-      } else {
-        newMap.set(messageIndex, newParts);
-      }
-      return newMap;
-    });
-  };
-
-  const selectAllPartsInMessage = (messageIndex: number) => {
-    const msg = messages[messageIndex];
-    if (!msg) return;
-    
-    const partsToSelect = getAllMessagePartIds(msg.content);
-    
-    setSelectedMessageParts(prev => {
-      const newMap = new Map(prev);
-      newMap.set(messageIndex, new Set(partsToSelect));
-      return newMap;
-    });
-    
-    if (partsToSelect.length > 0) {
-      setSelectedWholeMessages(prev => {
-        const newSet = new Set(prev);
-        newSet.add(messageIndex);
-        return newSet;
-      });
-    }
-  };
-
   const handleBatchDelete = () => {
     if (selectedSessions.size === 0) return;
     setPendingDelete({ type: 'batch' });
     setShowDeleteConfirm(true);
-  };
-
-  const handleMixedDelete = () => {
-    if (selectedWholeMessages.size === 0 && selectedMessageParts.size === 0) return;
-    setShowDeleteMixedConfirm(true);
-  };
-
-  const confirmDeleteMixed = async () => {
-    try {
-      const sortedIndices = Array.from(selectedWholeMessages).sort((a, b) => b - a);
-      
-      for (const idx of sortedIndices) {
-        const msg = messages[idx];
-        if (msg && msg.id !== undefined) {
-          await handleDeleteMessage(msg.id as number, idx);
-        }
-      }
-      
-      const partIndices = Array.from(selectedMessageParts.keys()).sort((a, b) => b - a);
-      
-      for (const idx of partIndices) {
-        if (!selectedWholeMessages.has(idx)) {
-          const msg = messages[idx];
-          if (msg && msg.id !== undefined) {
-            const selectedParts = selectedMessageParts.get(idx) || new Set();
-            
-            let content = msg.content;
-            for (let i = 0; i < 3; i++) {
-              content = content
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"')
-                .replace(/&#39;/g, "'");
-            }
-            
-            const allTags = [
-              { type: 'action', start: '<|a|>', end: '</|a|>' },
-              { type: 'thinking', start: '<|t|>', end: '</|t|>' },
-              { type: 'action', start: '<|a|>', end: '<|/a|>' },
-              { type: 'thinking', start: '<|t|>', end: '<|/t|>' },
-              { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
-              { type: 'thinking', start: '<thinking>', end: '</thinking>' },
-              { type: 'thinking', start: '<think>', end: '</think>' },
-              { type: 'action', start: '<action>', end: '</action>' },
-              { type: 'action', start: '[action]', end: '[/action]' }
-            ];
-            
-            const partsToKeep: string[] = [];
-            let remainingContent = content;
-            let actionIndex = 0;
-            let textIndex = 0;
-            
-            while (remainingContent.length > 0) {
-              let bestMatch: { tag: any; startIdx: number; endIdx: number } | null = null;
-              
-              for (const tag of allTags) {
-                const startIdx = remainingContent.indexOf(tag.start);
-                if (startIdx !== -1) {
-                  const endIdx = remainingContent.indexOf(tag.end, startIdx + tag.start.length);
-                  if (endIdx !== -1) {
-                    if (!bestMatch || startIdx < bestMatch.startIdx) {
-                      bestMatch = { tag, startIdx, endIdx };
-                    }
-                  }
-                }
-              }
-              
-              if (bestMatch) {
-                if (bestMatch.startIdx > 0) {
-                  const beforeText = remainingContent.substring(0, bestMatch.startIdx);
-                  const textId = `text-${textIndex++}`;
-                  if (!selectedParts.has(textId)) {
-                    partsToKeep.push(beforeText);
-                  }
-                }
-                
-                let partId: string;
-                if (bestMatch.tag.type === 'action') {
-                  partId = `action-${actionIndex++}`;
-                } else if (bestMatch.tag.type === 'modelReasoning') {
-                  partId = 'modelReasoning';
-                } else {
-                  partId = 'thinking';
-                }
-                
-                const fullMatch = remainingContent.substring(
-                  bestMatch.startIdx,
-                  bestMatch.endIdx + bestMatch.tag.end.length
-                );
-                
-                if (!selectedParts.has(partId)) {
-                  partsToKeep.push(fullMatch);
-                }
-                
-                remainingContent = remainingContent.substring(bestMatch.endIdx + bestMatch.tag.end.length);
-              } else {
-                const textId = `text-${textIndex++}`;
-                if (!selectedParts.has(textId)) {
-                  partsToKeep.push(remainingContent);
-                }
-                break;
-              }
-            }
-            
-            const result = partsToKeep.join('');
-            await handleEditMessage(msg.id as number, idx, result);
-          }
-        }
-      }
-      
-      setSelectedWholeMessages(new Set());
-      setSelectedMessageParts(new Map());
-      setIsMixedDeleteMode(false);
-    } catch (e) {
-      console.error('Failed to delete:', e);
-    } finally {
-      setShowDeleteMixedConfirm(false);
-    }
   };
 
   const confirmDelete = async () => {
@@ -1329,10 +944,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     try {
       if (pendingDelete.type === 'batch') {
         for (const sessionId of Array.from(selectedSessions)) {
-          await fetch(`/api/character-sessions/${sessionId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          await api.delete(`/api/character-sessions/${sessionId}`);
         }
         
         setSelectedSessions(new Set());
@@ -1345,17 +957,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           setMemoryStats(null);
         }
       } else if (pendingDelete.type === 'single') {
-        const res = await fetch(`/api/character-sessions/${pendingDelete.id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          await loadSessions(selectedCharacter!.id);
-          if (selectedSession?.id === pendingDelete.id) {
-            setSelectedSession(null);
-            setMessages([]);
-            setMemoryStats(null);
-          }
+        await api.delete(`/api/character-sessions/${pendingDelete.id}`);
+        await loadSessions(selectedCharacter!.id);
+        if (selectedSession?.id === pendingDelete.id) {
+          setSelectedSession(null);
+          setMessages([]);
+          setMemoryStats(null);
         }
       }
     } catch (e) {
@@ -1363,344 +970,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     } finally {
       setPendingDelete(null);
       setShowDeleteConfirm(false);
-    }
-  };
-
-  const handleRegenerate = async (messageIndex: number) => {
-    if (!selectedCharacter || isGenerating || uploading || messageIndex < 1) return;
-    
-    const assistantMessageIndex = messageIndex;
-    const userMessageIndex = assistantMessageIndex - 1;
-    
-    if (userMessageIndex < 0) return;
-    
-    const userMessage = messages[userMessageIndex];
-    if (userMessage.role !== 'user') return;
-    
-    setRegeneratingMessageIndex(assistantMessageIndex);
-    setIsGenerating(true);
-    setSuggestions([]);
-    
-    const assistantMessageId = generateMessageId();
-    
-    setMessages(prev => {
-      const newMessages = [...prev];
-      newMessages[assistantMessageIndex] = { 
-        id: assistantMessageId, 
-        role: 'assistant', 
-        content: '', 
-        model: selectedModel 
-      };
-      return newMessages;
-    });
-    
-    abortControllerRef.current = new AbortController();
-    let fullContent = '';
-    let fullReasoning = '';
-    
-    try {
-      const response = await fetch('/api/character-chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          session_id: selectedSession?.id || '',
-          character_id: selectedCharacter.id,
-          message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
-          model: selectedModel,
-          temperature: 0.7,
-          dialogue_mode: dialogueMode,
-          branch_id: selectedBranch?.id,
-          user_nickname: getDisplayName(selectedCharacter)
-        }),
-        signal: abortControllerRef.current.signal
-      });
-      
-      if (!response.ok) throw new Error('Failed to send message');
-      
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            
-            try {
-              const json = JSON.parse(data);
-              if (json.session_id && !selectedSession) {
-                setSelectedSession({ ...json } as any);
-                loadSessions(selectedCharacter.id);
-              }
-              if (json.reasoning) fullReasoning += json.reasoning;
-              if (json.content) fullContent += json.content;
-              
-              setMessages(prev => {
-                const newMessages = [...prev];
-                newMessages[assistantMessageIndex] = {
-                  ...newMessages[assistantMessageIndex],
-                  content: fullReasoning 
-                    ? `<think>${fullReasoning}</think>${fullContent}` 
-                    : fullContent
-                };
-                return newMessages;
-              });
-            } catch (e) {}
-          }
-        }
-      }
-      
-      // 角色扮演暂时禁用推荐对话功能以节省tokens
-      // if (fullContent.length > 20) {
-      //   fetch('/api/chat/suggestions', {
-      //     method: 'POST',
-      //     headers: {
-      //       Authorization: `Bearer ${token}`,
-      //       'Content-Type': 'application/json'
-      //     },
-      //     body: JSON.stringify({ message: fullContent, model: selectedModel })
-      //   })
-      //     .then(r => r.json())
-      //     .then(setSuggestions)
-      //     .catch(() => {});
-      // }
-      
-      if (selectedSession?.id) {
-        await loadMemoryStats(selectedSession.id);
-      }
-      
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[assistantMessageIndex].content += `\n[Error: ${e.message}]`;
-          return newMessages;
-        });
-      }
-    } finally {
-      setIsGenerating(false);
-      setRegeneratingMessageIndex(null);
-      abortControllerRef.current = null;
-    }
-  };
-
-  const handleSendMessage = async (content: string, images: string[]) => {
-    if (!selectedCharacter) return;
-    
-    const text = content || inputValue;
-    if ((!text.trim() && attachments.length === 0) || isGenerating || uploading) return;
-    
-    // Clear any previous error
-    setCurrentError(null);
-    setTimeoutWarning(false);
-    
-    setInputValue('');
-    setAttachments([]);
-    setIsGenerating(true);
-    setSuggestions([]);
-    
-    // Save message for potential retry
-    setRetryMessageContent(text);
-    setRetryMessageImages(images);
-    
-    // Start timeout timer
-    setRequestStartTime(Date.now());
-    timeoutRef.current = setTimeout(() => {
-      setTimeoutWarning(true);
-    }, TIMEOUT_WARNING_MS);
-
-    let displayContent = text;
-    if (attachments.length > 0) {
-      displayContent += '\n\n';
-      attachments.forEach(att => {
-        displayContent += att.type === 'image' 
-          ? `![${att.name}](${att.url})\n`
-          : `[📎 ${att.name}](${att.url})\n`;
-      });
-    }
-
-    const userMessageId = generateMessageId();
-    const assistantMessageId = generateMessageId();
-    setMessages(prev => [
-      ...prev,
-      { id: userMessageId, role: 'user', content: displayContent, model: selectedModel },
-      { id: assistantMessageId, role: 'assistant', content: '', model: selectedModel }
-    ]);
-
-    abortControllerRef.current = new AbortController();
-    let fullContent = '';
-    let fullReasoning = '';
-    let hasReceivedData = false;
-
-    try {
-      const response = await fetch('/api/character-chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          session_id: selectedSession?.id || '',
-          character_id: selectedCharacter.id,
-          message: text,
-          model: selectedModel,
-          temperature: 0.7,
-          dialogue_mode: dialogueMode,
-          branch_id: selectedBranch?.id,
-          user_nickname: getDisplayName(selectedCharacter)
-        }),
-        signal: abortControllerRef.current.signal
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server error: ${response.status} - ${errorText || response.statusText}`);
-      }
-      
-      if (!selectedSession) {
-        setTimeout(() => loadSessions(selectedCharacter.id), 1000);
-      }
-      
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        // We received data, clear timeout warning
-        if (!hasReceivedData) {
-          hasReceivedData = true;
-          setTimeoutWarning(false);
-          if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-          }
-        }
-        
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            
-            try {
-              const json = JSON.parse(data);
-              if (json.session_id && !selectedSession) {
-                setSelectedSession({ ...json } as any);
-                loadSessions(selectedCharacter.id);
-              }
-              if (json.reasoning) fullReasoning += json.reasoning;
-              if (json.content) fullContent += json.content;
-              
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastMessage = newMessages[newMessages.length - 1];
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullReasoning 
-                    ? `<think>${fullReasoning}</think>${fullContent}` 
-                    : fullContent
-                };
-                return newMessages;
-              });
-            } catch (e) {}
-          }
-        }
-      }
-      
-      // 角色扮演禁用推荐对话功能以节省tokens
-      // if (fullContent.length > 20) {
-      //   fetch('/api/chat/suggestions', {
-      //     method: 'POST',
-      //     headers: {
-      //       Authorization: `Bearer ${token}`,
-      //       'Content-Type': 'application/json'
-      //     },
-      //     body: JSON.stringify({ message: fullContent, model: selectedModel })
-      //   })
-      //     .then(r => r.json())
-      //     .then(setSuggestions)
-      //     .catch(() => {});
-      // }
-      
-      if (selectedSession?.id) {
-        await loadMemoryStats(selectedSession.id);
-      }
-      
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        const errorInfo = analyzeError(e);
-        setCurrentError(errorInfo);
-        
-        // Update the assistant message with user-friendly error
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1].content = 
-            `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
-          return newMessages;
-        });
-      }
-    } finally {
-      setIsGenerating(false);
-      setRequestStartTime(null);
-      setTimeoutWarning(false);
-      abortControllerRef.current = null;
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    }
-  };
-
-  const handleSendWithInput = async () => {
-    if (inputValue.trim() || attachments.length > 0) {
-      await handleSendMessage(inputValue, attachments.filter(a => a.type === 'image').map(a => a.url));
-    }
-  };
-
-  const handleRetry = () => {
-    if (retryMessageContent) {
-      setCurrentError(null);
-      handleSendMessage(retryMessageContent, retryMessageImages);
-    }
-  };
-
-  const handleCloseError = () => {
-    setCurrentError(null);
-  };
-
-  const handleUpload = async (file: File, type: 'image' | 'file') => {
-    setUploading(true);
-    try {
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      });
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ filename: file.name, data: dataUrl })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAttachments(prev => [...prev, { type, name: file.name, url: data.url }]);
-      }
-    } catch (e) {
-      console.error('Upload failed:', e);
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -1714,50 +983,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       reader.readAsDataURL(file);
     }
   };
-
-  const handleDeleteMessage = async (messageId: number, messageIndex: number) => {
-    if (!selectedSession) return;
-    
-    try {
-      await fetch(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setMessages(prev => prev.filter((_, idx) => idx !== messageIndex));
-    } catch (e) {
-      console.error('Failed to delete message:', e);
-    }
-  };
-
-  const handleEditMessage = async (messageId: number, messageIndex: number, newContent: string) => {
-    if (!selectedSession) return;
-    
-    try {
-      const res = await fetch(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: newContent })
-      });
-      
-      if (res.ok) {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[messageIndex] = {
-            ...newMessages[messageIndex],
-            content: newContent
-          };
-          return newMessages;
-        });
-      }
-    } catch (e) {
-      console.error('Failed to edit message:', e);
-    }
-  };
-
-
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1887,7 +1112,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                         
                         <div className="absolute inset-0 bg-gradient-to-t from-background/95 via-background/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
                         
-                        <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200 transform translate-y-2 group-hover:translate-y-0">
+                        <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                           <div className="flex flex-wrap items-center gap-1 sm:gap-2">
                             <Button 
                               variant="default" 
@@ -2024,10 +1249,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                   </Button>
                   <Button 
                     onClick={async () => {
-                      await handleParseCharacter(showImportOptions);
-                      if (!showImportOptions) return;
-                      await handleTranslateCharacter(showImportOptions);
                       setShowImportOptions(null);
+                      await handleParseCharacter(showImportOptions);
+                      await handleTranslateCharacter(showImportOptions);
                     }}
                     disabled={processingCharacter !== null}
                     variant="default"
@@ -2360,19 +1584,60 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                   onSelect={setSelectedModel}
                 />
                 {selectedSession && (
-                  <BranchSelector
-                    branches={branches}
-                    selectedBranch={selectedBranch}
-                    onSelect={switchBranch}
-                    onCreate={createBranch}
-                    onDelete={deleteBranch}
-                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={fetchBranchTree}
+                    title="故事线"
+                  >
+                    <GitBranch size={14} />
+                    <span className="hidden sm:inline">故事线</span>
+                  </Button>
+                )}
+                {selectedSession && wb.sessionStatus?.active && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      onClick={() => setShowWorldBookOverview(true)}
+                      title="世界书阶段"
+                    >
+                      <BookOpen size={14} />
+                      <span className="hidden sm:inline">
+                        阶段 {(wb.sessionStatus.current_stage_index ?? 0) + 1}/{wb.sessionStatus.total_stages ?? '?'}
+                      </span>
+                    </Button>
+                    <StageControls
+                      status={wb.sessionStatus}
+                      onPrev={async () => {
+                        if (selectedSession) {
+                          await wb.prevStage(selectedSession.id);
+                          await wb.loadSessionStatus(selectedSession.id);
+                        }
+                      }}
+                      onNext={async () => {
+                        if (selectedSession) {
+                          await wb.nextStage(selectedSession.id);
+                          await wb.loadSessionStatus(selectedSession.id);
+                        }
+                      }}
+                      onJump={async (index) => {
+                        if (selectedSession) {
+                          await wb.jumpToStage(selectedSession.id, index);
+                          await wb.loadSessionStatus(selectedSession.id);
+                        }
+                      }}
+                    />
+                  </>
                 )}
               </div>
               
               <DialogueModeSelector 
                 currentMode={dialogueMode} 
-                onSelect={setDialogueMode} 
+                onSelect={setDialogueMode}
+                lang={lang}
               />
               {selectedSession && (
                 <div className="flex items-center gap-1 ml-2">
@@ -2385,8 +1650,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                       } else {
                         setIsMixedDeleteMode(!isMixedDeleteMode);
                         if (isMixedDeleteMode) {
-                          setSelectedWholeMessages(new Set());
-                          setSelectedMessageParts(new Map());
+                          clearSelection();
                         }
                       }
                     }}
@@ -2428,7 +1692,29 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                       开始与这个角色对话吧！
                     </p>
                   </div>
-                  
+
+                  {/* World Book Selector */}
+                  <div className="w-full max-w-md mb-6">
+                    <WorldBookSelector
+                      worldBooks={wb.worldBooks}
+                      selectedId={selectedWorldBookId}
+                      onSelect={setSelectedWorldBookId}
+                      loading={wb.loading}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      onClick={() => setShowWorldBookManager(true)}
+                    >
+                      <BookOpen size={14} />
+                      管理世界书
+                    </Button>
+                  </div>
+                  <div className="mt-4">
                   <Button 
                     size="lg"
                     className="text-base h-12 px-8"
@@ -2442,6 +1728,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
                     )}
                     开始对话
                   </Button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2459,6 +1746,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
 
             {(messages.length > 0 || selectedSession) && (
               <div className="flex-1 overflow-y-auto">
+                {/* World Book Stage Indicator */}
+                {wb.sessionStatus?.active && (
+                  <StageIndicator
+                    status={wb.sessionStatus}
+                    onStageClick={() => setShowWorldBookOverview(true)}
+                  />
+                )}
                 <div className="px-6 py-6">
                   <div className="w-full space-y-6">
                     {messages.map((msg, idx) => (
@@ -2596,6 +1890,60 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* Storyline Panel */}
+      {showStoryline && branchTree && (
+        <StorylinePanel
+          branchTree={branchTree}
+          activeBranchName={selectedBranch?.branch_name || 'Main'}
+          characterName={selectedCharacter?.name || ''}
+          onClose={() => setShowStoryline(false)}
+          onNavigate={handleStorylineNavigate}
+          isDark={document.documentElement.classList.contains('dark')}
+        />
+      )}
+
+      {/* World Book Overview Panel */}
+      <WorldBookOverview
+        status={wb.sessionStatus || { active: false }}
+        isOpen={showWorldBookOverview}
+        onClose={() => setShowWorldBookOverview(false)}
+        onJump={async (index) => {
+          if (selectedSession) {
+            await wb.jumpToStage(selectedSession.id, index);
+            await wb.loadSessionStatus(selectedSession.id);
+          }
+        }}
+      />
+
+      {/* World Book Manager Dialog */}
+      {showWorldBookManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowWorldBookManager(false)}>
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <WorldBookManager
+              worldBooks={wb.worldBooks}
+              selectedWorldBook={wb.selectedWorldBook}
+              loading={wb.loading}
+              parsing={wb.parsing}
+              models={models}
+              selectedModel={selectedModel}
+              t={t}
+              onLoad={wb.loadWorldBooks}
+              onCreate={wb.createWorldBook}
+              onUpdate={wb.updateWorldBook}
+              onDelete={wb.deleteWorldBook}
+              onImport={wb.importWorldBook}
+              onParse={wb.parseWorldBook}
+              onSelect={(id) => wb.loadWorldBookDetail(id)}
+              onClose={() => setShowWorldBookManager(false)}
+            />
+          </div>
         </div>
       )}
     </div>

@@ -9,11 +9,16 @@ export interface User {
   role: 'user' | 'admin';
   storage_used?: number;
   chat_count?: number;
+  tokens_chat?: number;
+  tokens_workspace?: number;
+  tokens_character?: number;
+  tokens_total?: number;
 }
 
 export interface Model {
   id: string;
   name: string;
+  alias?: string;
   provider: string;
   context_length: number;
   icon?: string;
@@ -96,6 +101,9 @@ export interface Character {
   avatar?: string;
   created_at: string;
   updated_at: string;
+  user_nickname?: string;
+  processing_status?: string;
+  is_processing?: boolean;
   // Silly Tavern 兼容字段
   scenario?: string;
   first_mes?: string;
@@ -137,14 +145,14 @@ export interface CharacterChatSessionBranch {
   id: string;
   session_id: string;
   parent_branch_id?: string;
-  parent_message_id?: number;
+  parent_message_id?: number | null;
   branch_name: string;
   is_active: boolean;
   created_at: string;
 }
 
 export interface CharacterChatMessage {
-  id?: number;
+  id?: string | number;
   role: 'user' | 'assistant';
   content: string;
   model?: string;
@@ -176,4 +184,67 @@ export interface OCData {
 export interface OCConfig {
   allowAIAnalysis: boolean;
   defaultAnalysisModel: string;
+}
+
+// ── World Book (世界书) ──
+
+export interface WorldBook {
+  id: string;
+  name: string;
+  description?: string;
+  source_type: 'upload' | 'online_edit';
+  raw_content?: string;
+  format: 'silly_tavern_v2' | 'custom';
+  tags?: string[];
+  is_parsed: boolean;
+  stage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorldBookStage {
+  id: string;
+  world_book_id: string;
+  stage_index: number;
+  title?: string;
+  content: string;
+  summary?: string;
+  transition_hint?: string;
+  priority: number;
+  token_count: number;
+  image_prompt?: string;
+}
+
+export interface WorldBookDetail extends Omit<WorldBook, 'stage_count'> {
+  stages: WorldBookStage[];
+}
+
+export interface SessionWorldBook {
+  id: string;
+  session_id: string;
+  world_book_id: string;
+  current_stage_index: number;
+  stage_transition_mode: 'auto' | 'manual';
+  world_book?: WorldBook;
+  stages?: WorldBookStage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorldBookStatus {
+  active: boolean;
+  world_book_id?: string;
+  world_book_name?: string;
+  current_stage_index?: number;
+  total_stages?: number;
+  stage_transition_mode?: string;
+  current_stage?: WorldBookStage;
+  stages_overview?: Array<{ index: number; title?: string; summary?: string }>;
+}
+
+export interface StageTransitionResult {
+  previous_stage_index: number;
+  current_stage_index: number;
+  stage_title?: string;
+  total_stages: number;
 }

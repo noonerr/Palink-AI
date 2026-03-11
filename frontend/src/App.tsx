@@ -5,6 +5,7 @@ import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
 import { Sidebar } from '@/components/ui/custom/Sidebar';
 import { AuthScreen } from '@/components/views/AuthScreen';
+import { api, AUTH_FAILURE_EVENT } from '@/services/api';
 import type { User, Model, Language, Theme } from '@/types';
 
 // Translations
@@ -309,6 +310,17 @@ function App() {
     document.documentElement.setAttribute('data-theme', isDark);
   }, [isDark]);
 
+  // 监听 API 层 401 事件，统一登出
+  useEffect(() => {
+    const onAuthFailure = () => {
+      setToken(null);
+      localStorage.removeItem('palink_token');
+      setUser(null);
+    };
+    window.addEventListener(AUTH_FAILURE_EVENT, onAuthFailure);
+    return () => window.removeEventListener(AUTH_FAILURE_EVENT, onAuthFailure);
+  }, []);
+
   // Load user data
   useEffect(() => {
     let isMounted = true;
@@ -316,11 +328,7 @@ function App() {
     const timeoutId = setTimeout(() => controller.abort(), USER_FETCH_TIMEOUT_MS);
 
     if (token) {
-      fetch('/api/users/me', {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal
-      })
-        .then(r => r.ok ? r.json() : Promise.reject())
+      api.get<User>('/api/users/me', { signal: controller.signal })
         .then(u => {
           if (!isMounted) return;
           setUser(u);
@@ -350,21 +358,9 @@ function App() {
   // Load config
   const loadConfig = useCallback(() => {
     if (token) {
-      fetch('/api/models')
-        .then(r => r.json())
-        .then(setModels);
-      
-      fetch('/api/admin/system/defaults', {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-        .then(r => r.json())
-        .then(setSystemDefaults);
-      
-      fetch('/api/recommendations/starters', {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-        .then(r => r.json())
-        .then(setStarterQuestions);
+      api.get('/api/models', { skipAuth: true }).then(setModels).catch(() => {});
+      api.get('/api/admin/system/defaults').then(setSystemDefaults).catch(() => {});
+      api.get('/api/recommendations/starters').then(setStarterQuestions).catch(() => {});
     }
   }, [token]);
 
@@ -426,7 +422,7 @@ function App() {
             onLogout={handleLogout}
             t={t}
           />
-          <main className="flex-1 relative flex flex-col h-full glass-strong md:rounded-2xl md:border-l md:border-border/50 overflow-auto">
+          <main className="flex-1 relative flex flex-col h-full glass-strong md:rounded-2xl md:border-l md:border-border/50 overflow-hidden">
             <Routes>
               <Route path="/" element={<Navigate to="/chat" replace />} />
               <Route path="/chat" element={
@@ -477,6 +473,7 @@ function App() {
                     models={models}
                     t={t}
                     systemDefaults={systemDefaults}
+                    lang={lang}
                   />
                 </Suspense>
               } />

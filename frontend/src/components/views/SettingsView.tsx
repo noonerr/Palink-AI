@@ -17,16 +17,14 @@ import {
   UploadCloud,
   LogOut,
   Key,
-  Search,
-  Image,
   ChevronDown,
-  ChevronRight,
   Sun,
   Moon,
   RefreshCw,
   Zap
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -36,6 +34,8 @@ import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { Switch } from '@/components/ui/switch';
 import { OCSettings } from '@/components/ui/custom/OCSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { ModelEditor } from './ModelEditor';
+import { PRESETS, EMOJIS } from './settings-constants';
 import type { Model, Provider, User as UserType } from '@/types';
 
 interface SettingsViewProps {
@@ -54,582 +54,6 @@ interface SettingsViewProps {
 
 type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about';
 type ModelSubTab = 'llm' | 'local';
-
-// ModelEditor 组件
-interface ModelEditorProps {
-  models: Model[];
-  onChange: (models: Model[]) => void;
-  providerName: string;
-}
-
-const ModelEditor: React.FC<ModelEditorProps> = ({ models, onChange, providerName }) => {
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  const [iconSearch, setIconSearch] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('全部');
-  const [_customIconUrl, _setCustomIconUrl] = useState('');
-  const [_showCustomIconInput, _setShowCustomIconInput] = useState(false);
-
-  const categories = ['全部', ...Array.from(new Set(AVAILABLE_ICONS.map(i => i.category)))];
-  
-  const filteredIcons = AVAILABLE_ICONS.filter(icon => {
-    const matchesSearch = icon.name.toLowerCase().includes(iconSearch.toLowerCase());
-    const matchesCategory = selectedCategory === '全部' || icon.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
-
-  const handleAddModel = () => {
-    const newModel: Model = {
-      id: '',
-      name: '',
-      provider: providerName,
-      context_length: 4096,
-      icon: '🤖',
-      description: '',
-    };
-    onChange([...models, newModel]);
-    setExpandedIndex(models.length);
-  };
-
-  const handleUpdateModel = (index: number, updates: Partial<Model>) => {
-    const newModels = [...models];
-    newModels[index] = { ...newModels[index], ...updates };
-    onChange(newModels);
-  };
-
-  const handleDeleteModel = (index: number) => {
-    onChange(models.filter((_, i) => i !== index));
-    if (expandedIndex === index) setExpandedIndex(null);
-  };
-
-  const handleAutoMatchIcon = (index: number, modelName: string) => {
-    if (modelName) {
-      const matchedIcon = autoMatchIcon(modelName);
-      handleUpdateModel(index, { icon: matchedIcon });
-    }
-  };
-
-  const handleCustomIconUpload = (e: React.ChangeEvent<HTMLInputElement>, index: number) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      toast.error('请上传图片文件');
-      return;
-    }
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error('图片大小不能超过 2MB');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      handleUpdateModel(index, { icon: dataUrl });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
-          <h4 className="text-lg font-semibold text-foreground">模型配置</h4>
-          <p className="text-xs text-muted-foreground">管理此提供商下的 AI 模型，最多支持 50 个模型</p>
-        </div>
-        <Button 
-          size="sm" 
-          onClick={handleAddModel}
-        >
-          <Plus size={16} />
-          添加模型
-        </Button>
-      </div>
-
-      <div className="space-y-3">
-        {models.map((model, index) => (
-          <div
-            key={index}
-            className={cn(
-              "group relative rounded-2xl border bg-card transition-all duration-300",
-              expandedIndex === index 
-                ? "border-primary/50 shadow-lg shadow-primary/5" 
-                : "border-border hover:border-border/80 hover:shadow-md"
-            )}
-          >
-            <div
-              className="flex items-center gap-4 p-4 cursor-pointer transition-colors"
-              onClick={(e) => {
-                const target = e.target as HTMLElement;
-                if (!target.closest('button')) {
-                  setExpandedIndex(expandedIndex === index ? null : index);
-                }
-              }}
-            >
-              <div className="relative">
-                <div className={cn(
-                  "w-12 h-12 rounded-xl flex items-center justify-center overflow-hidden shrink-0 transition-all duration-300",
-                  expandedIndex === index ? "ring-2 ring-primary/30" : ""
-                )}>
-                  {model.icon?.startsWith('/') || model.icon?.startsWith('http') || model.icon?.startsWith('data:') ? (
-                    <img src={model.icon} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-2xl">{model.icon || '🤖'}</span>
-                  )}
-                </div>
-                {expandedIndex === index && (
-                  <div className="absolute -inset-1 bg-primary/10 rounded-2xl -z-10 animate-pulse" />
-                )}
-              </div>
-              
-              <div className="flex-1 min-w-0 space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <h5 className="font-semibold text-foreground truncate">
-                    {model.name || '未命名模型'}
-                  </h5>
-                  {model.id && (
-                    <span className="text-[10px] bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded-md font-mono">
-                      {model.context_length}K
-                    </span>
-                  )}
-                </div>
-                {model.id && (
-                  <p className="text-xs text-muted-foreground truncate font-mono">
-                    {model.id}
-                  </p>
-                )}
-                {model.description && (
-                  <p className="text-xs text-muted-foreground line-clamp-1">
-                    {model.description}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1">
-                <ChevronDown
-                  size={18}
-                  className={cn(
-                    "text-muted-foreground transition-all duration-300",
-                    expandedIndex === index && "rotate-180 text-primary"
-                  )}
-                />
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteModel(index);
-                  }}
-                  className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                  title="删除模型"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-
-            {expandedIndex === index && (
-              <div 
-                className="px-4 pb-4 border-t border-border pt-4 space-y-5 animate-in slide-in-from-top-2 fade-in duration-300"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      模型 ID
-                    </label>
-                    <Input
-                      placeholder="如: gpt-4o"
-                      value={model.id}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                        const newId = e.target.value;
-                        const updates: Partial<Model> = { id: newId };
-                        if (newId && !model.name) {
-                          updates.name = newId;
-                        }
-                        handleUpdateModel(index, updates);
-                      }}
-                      className="h-10 font-mono text-sm bg-background/50"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      显示名称
-                    </label>
-                    <Input
-                      placeholder="如: GPT-4o"
-                      value={model.name}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleUpdateModel(index, { name: e.target.value })}
-                      className="h-10 bg-background/50"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    模型图标
-                  </label>
-                  
-                  <div className="flex items-start gap-4">
-                    <div className="relative">
-                      <div className="w-16 h-16 rounded-2xl flex items-center justify-center overflow-hidden border-2 border-border/50 bg-gradient-to-br from-background to-background/50">
-                        {model.icon?.startsWith('/') || model.icon?.startsWith('http') || model.icon?.startsWith('data:') ? (
-                          <img src={model.icon} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <span className="text-3xl">{model.icon || '🤖'}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex-1 space-y-3">
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => handleAutoMatchIcon(index, model.id || model.name || '')}
-                          className="h-9"
-                        >
-                          <Sparkles size={14} className="mr-1.5" />
-                          自动匹配
-                        </Button>
-                        <label className="cursor-pointer">
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => handleCustomIconUpload(e, index)}
-                          />
-                          <Button size="sm" variant="secondary" asChild className="h-9">
-                            <span><Image size={14} className="mr-1.5" /> 上传</span>
-                          </Button>
-                        </label>
-                      </div>
-                      
-                      <div className="bg-muted/30 rounded-xl p-3 space-y-3">
-                        <div className="flex gap-2">
-                          <div className="relative flex-1">
-                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                            <Input
-                              placeholder="搜索图标..."
-                              value={iconSearch}
-                              onChange={(e) => setIconSearch(e.target.value)}
-                              className="pl-9 h-8 text-sm bg-background"
-                            />
-                          </div>
-                          <select
-                            value={selectedCategory}
-                            onChange={(e) => setSelectedCategory(e.target.value)}
-                            className="h-8 px-3 rounded-lg bg-background border border-input text-sm"
-                          >
-                            {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                          </select>
-                        </div>
-                        <div className="grid grid-cols-8 gap-2 max-h-28 overflow-y-auto p-1">
-                          {filteredIcons.map((icon) => (
-                            <button
-                              key={icon.name}
-                              onClick={() => handleUpdateModel(index, { icon: icon.path })}
-                              className={cn(
-                                "aspect-square rounded-xl bg-background border-2 flex items-center justify-center transition-all duration-200 hover:scale-105 hover:shadow-md",
-                                model.icon === icon.path 
-                                  ? "border-primary ring-2 ring-primary/20 scale-105" 
-                                  : "border-transparent hover:border-border"
-                              )}
-                              title={icon.name}
-                            >
-                              <img src={icon.path} alt={icon.name} className="w-7 h-7 object-contain" />
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      上下文长度
-                    </label>
-                    <div className="relative">
-                      <Database size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        type="number"
-                        value={model.context_length}
-                        onChange={(e) => handleUpdateModel(index, { context_length: parseInt(e.target.value) || 4096 })}
-                        className="h-10 pl-10 bg-background/50 font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    模型描述
-                  </label>
-                  <textarea
-                    placeholder="输入模型简介，支持换行..."
-                    value={model.description || ''}
-                    onChange={(e) => handleUpdateModel(index, { description: e.target.value })}
-                    className="w-full h-24 p-3.5 rounded-xl bg-background/50 border border-input text-sm resize-none focus:ring-2 focus:ring-ring/50 focus:border-ring outline-none transition-all"
-                  />
-                </div>
-                
-                <div className="flex justify-end pt-2 border-t border-border/50">
-                  <Button 
-                    onClick={() => setExpandedIndex(null)}
-                    className="h-9"
-                  >
-                    <Save size={16} className="mr-2" />
-                    保存
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-
-        {models.length === 0 && (
-          <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-10 text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-background flex items-center justify-center">
-              <Bot size={32} className="text-muted-foreground" />
-            </div>
-            <h5 className="text-base font-semibold text-foreground mb-2">暂无模型</h5>
-            <p className="text-sm text-muted-foreground mb-6">
-              添加您的第一个 AI 模型开始使用
-            </p>
-            <Button onClick={handleAddModel}>
-              <Plus size={16} className="mr-2" />
-              添加第一个模型
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-interface CollapsibleConfigSectionProps {
-  pName: string;
-  setPName: (val: string) => void;
-  pUrl: string;
-  setPUrl: (val: string) => void;
-  pKey: string;
-  setPKey: (val: string) => void;
-}
-
-const CollapsibleConfigSection: React.FC<CollapsibleConfigSectionProps> = ({
-  pName,
-  setPName,
-  pUrl,
-  setPUrl,
-  pKey,
-  setPKey
-}) => {
-  const [isExpanded, setIsExpanded] = useState(true);
-  
-  const parseUrl = (url: string) => {
-    const match = url.match(/^(https?:\/\/)(.*)$/);
-    if (match) {
-      return { protocol: match[1], path: match[2] };
-    }
-    return { protocol: 'http://', path: url };
-  };
-  
-  const { protocol, path } = parseUrl(pUrl);
-  
-  const handleProtocolChange = (newProtocol: 'http://' | 'https://') => {
-    setPUrl(newProtocol + path);
-  };
-  
-  const handlePathChange = (newPath: string) => {
-    setPUrl(protocol + newPath);
-  };
-
-  return (
-    <div className="rounded-2xl border-2 border-red-400 bg-gradient-to-br from-red-50 to-card overflow-hidden transition-all duration-300 shadow-lg">
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between p-5 text-left hover:bg-red-100 transition-all duration-200"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shadow-md">
-            <span className="text-white text-lg">🔧</span>
-          </div>
-          <div>
-            <h4 className="font-bold text-lg text-red-700">👇 点击这里折叠/展开 👇</h4>
-            <p className="text-xs text-red-600">
-              {isExpanded ? '🔽 点击收起' : '🔼 点击展开'}
-            </p>
-          </div>
-        </div>
-        <div className={cn(
-          "w-10 h-10 rounded-xl bg-red-200 flex items-center justify-center transition-all duration-300",
-          isExpanded && "bg-red-300 rotate-180"
-        )}>
-          <ChevronDown
-            size={24}
-            className={cn(
-              "text-red-700 transition-transform duration-300",
-              isExpanded && "rotate-180"
-            )}
-          />
-        </div>
-      </button>
-
-      <div className={cn(
-        "overflow-hidden transition-all duration-700 ease-in-out",
-        isExpanded ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0"
-      )}>
-        <div className="px-5 pb-5 pt-2 space-y-5 border-t border-border/50">
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                显示名称
-              </label>
-              <div className="relative">
-                <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={pName}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPName(e.target.value)}
-                  placeholder="Provider Name"
-                  className="h-11 pl-10 bg-background/60"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                API 代理地址
-              </label>
-              <div className="flex gap-2">
-                <div className="flex rounded-lg overflow-hidden border border-input bg-background/60">
-                  <button
-                    onClick={() => handleProtocolChange('http://')}
-                    className={cn(
-                      "px-3 py-2 text-sm font-medium transition-all",
-                      protocol === 'http://' 
-                        ? "bg-primary text-primary-foreground" 
-                        : "text-muted-foreground hover:bg-secondary"
-                    )}
-                  >
-                    http://
-                  </button>
-                  <button
-                    onClick={() => handleProtocolChange('https://')}
-                    className={cn(
-                      "px-3 py-2 text-sm font-medium transition-all border-l border-input",
-                      protocol === 'https://' 
-                        ? "bg-primary text-primary-foreground" 
-                        : "text-muted-foreground hover:bg-secondary"
-                    )}
-                  >
-                    https://
-                  </button>
-                </div>
-                <div className="relative flex-1">
-                  <Input
-                    value={path}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handlePathChange(e.target.value)}
-                    placeholder="api.example.com/v1"
-                    className="h-11 font-mono text-sm bg-background/60"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                API 密钥
-              </label>
-              <div className="relative">
-                <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="password"
-                  value={pKey}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="h-11 pl-10 pr-12 font-mono text-sm bg-background/60"
-                />
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                您的密钥安全存储在本地，不会发送到任何第三方服务器
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const PRESETS = [
-  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', icon: '🌐', models: ['openai/gpt-3.5-turbo'] },
-  { name: 'DeepSeek', url: 'https://api.deepseek.com', icon: '🐋', models: ['deepseek-chat'] },
-  { name: 'OpenAI', url: 'https://api.openai.com/v1', icon: '🅾️', models: ['gpt-4', 'gpt-3.5-turbo'] },
-  { name: 'Anthropic', url: 'https://api.anthropic.com/v1', icon: '🅰️', models: ['claude-3-opus', 'claude-3-sonnet'] }
-];
-
-const EMOJIS = ['🤖', '👨‍💻', '👩‍💻', '🧠', '⚡', '🚀', '🎨', '👾', '🦊', '🐱', '🐶', '🐼', '🐸', '🐵', '🦄', '🐲'];
-
-// 图标映射表 - 根据模型名称自动匹配图标
-const ICON_MAPPING: Record<string, string> = {
-  'deepseek': '/icons/openrouter.webp',
-  'openai': '/icons/openai.webp',
-  'gpt': '/icons/openai.webp',
-  'claude': '/icons/claude-color.webp',
-  'anthropic': '/icons/anthropic.webp',
-  'gemini': '/icons/gemini-color.webp',
-  'google': '/icons/gemini-color.webp',
-  'qwen': '/icons/qwen-color.webp',
-  '通义千问': '/icons/qwen-color.webp',
-  'moonshot': '/icons/moonshot.webp',
-  'kimi': '/icons/moonshot.webp',
-  'doubao': '/icons/doubao-color.webp',
-  '豆包': '/icons/doubao-color.webp',
-  'chatglm': '/icons/chatglm-color.webp',
-  '智谱': '/icons/zhipu-color.webp',
-  'zhipu': '/icons/zhipu-color.webp',
-  'ollama': '/icons/ollama.webp',
-  'llama': '/icons/meta-color.webp',
-  'meta': '/icons/meta-color.webp',
-  'gemma': '/icons/gemma-color.webp',
-  'grok': '/icons/grok.webp',
-  'xai': '/icons/grok.webp',
-  'midjourney': '/icons/midjourney.webp',
-  'luma': '/icons/luma-color.webp',
-  'kling': '/icons/kling-color.webp',
-  'openrouter': '/icons/openrouter.webp',
-  'xiaomi': '/icons/xiaomimimo.webp',
-  '小米': '/icons/xiaomimimo.webp',
-};
-
-// 所有可用图标列表
-const AVAILABLE_ICONS = [
-  { name: 'openai', path: '/icons/openai.webp', category: '通用' },
-  { name: 'anthropic', path: '/icons/anthropic.webp', category: '通用' },
-  { name: 'claude-color', path: '/icons/claude-color.webp', category: '通用' },
-  { name: 'gemini-color', path: '/icons/gemini-color.webp', category: '通用' },
-  { name: 'openrouter', path: '/icons/openrouter.webp', category: '通用' },
-  { name: 'qwen-color', path: '/icons/qwen-color.webp', category: '中文' },
-  { name: 'moonshot', path: '/icons/moonshot.webp', category: '中文' },
-  { name: 'doubao-color', path: '/icons/doubao-color.webp', category: '中文' },
-  { name: 'chatglm-color', path: '/icons/chatglm-color.webp', category: '中文' },
-  { name: 'zhipu-color', path: '/icons/zhipu-color.webp', category: '中文' },
-  { name: 'xiaomimimo', path: '/icons/xiaomimimo.webp', category: '中文' },
-  { name: 'meta-color', path: '/icons/meta-color.webp', category: '开源' },
-  { name: 'ollama', path: '/icons/ollama.webp', category: '开源' },
-  { name: 'gemma-color', path: '/icons/gemma-color.webp', category: '开源' },
-  { name: 'grok', path: '/icons/grok.webp', category: '其他' },
-  { name: 'midjourney', path: '/icons/midjourney.webp', category: '图像' },
-  { name: 'luma-color', path: '/icons/luma-color.webp', category: '视频' },
-  { name: 'kling-color', path: '/icons/kling-color.webp', category: '视频' },
-];
-
-// 自动匹配图标函数
-const autoMatchIcon = (modelName: string): string => {
-  const lowerName = modelName.toLowerCase();
-  for (const [key, iconPath] of Object.entries(ICON_MAPPING)) {
-    if (lowerName.includes(key.toLowerCase())) {
-      return iconPath;
-    }
-  }
-  return '/icons/openrouter.webp'; // 默认图标
-};
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   token,
@@ -670,13 +94,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Memory mode state
   const [memoryMode, setMemoryMode] = useState<string>('rule');
   const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
-
-  // User management state
-  // 以下状态保留供将来使用（用户聊天记录查看功能）
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_selectedUserChats, _setSelectedUserChats] = useState<{ userId: string; username: string; chats: any[] } | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_showUserChatsModal, _setShowUserChatsModal] = useState(false);
 
   // Admin defaults state
   const [defChat, setDefChat] = useState(systemDefaults.default_chat_model || '');
@@ -732,14 +149,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const fetchMemoryMode = async () => {
     try {
-      const res = await fetch('/api/users/me/settings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const settings = await res.json();
-        setMemoryMode(settings.memory_mode || 'rule');
-        setShowModelReasoning(settings.show_model_reasoning !== false);
-      }
+      const settings = await api.get('/api/users/me/settings');
+      setMemoryMode(settings.memory_mode || 'rule');
+      setShowModelReasoning(settings.show_model_reasoning !== false);
     } catch (e) {
       console.error('Failed to fetch memory mode:', e);
     }
@@ -747,20 +159,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveMemoryMode = async (newMode: string) => {
     try {
-      const res = await fetch('/api/users/me/settings', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ memory_mode: newMode })
-      });
-      if (res.ok) {
-        setMemoryMode(newMode);
-        window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
-      } else {
-        toast.error('保存记忆模式失败');
-      }
+      await api.put('/api/users/me/settings', { memory_mode: newMode });
+      setMemoryMode(newMode);
+      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
     } catch (e) {
       console.error('Failed to save memory mode:', e);
       toast.error('保存记忆模式失败');
@@ -769,20 +170,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveModelReasoning = async (enabled: boolean) => {
     try {
-      const res = await fetch('/api/users/me/settings', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ show_model_reasoning: enabled })
-      });
-      if (res.ok) {
-        setShowModelReasoning(enabled);
-        window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { showModelReasoning: enabled } }));
-      } else {
-        toast.error('保存深度思考设置失败');
-      }
+      await api.put('/api/users/me/settings', { show_model_reasoning: enabled });
+      setShowModelReasoning(enabled);
+      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { showModelReasoning: enabled } }));
     } catch (e) {
       console.error('Failed to save model reasoning setting:', e);
       toast.error('保存深度思考设置失败');
@@ -791,34 +181,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const fetchLocalModels = async () => {
     try {
-      // 获取所有模型（包括禁用的），管理员需要看到所有模型
-      const res = await fetch('/api/models/local?all=true', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) setLocalModels(await res.json());
+      const data = await api.get('/api/models/local?all=true');
+      setLocalModels(data);
     } catch (e) { console.error(e); }
   };
   
   // 启用/禁用模型
   const handleModelEnable = async (modelId: string, enabled: boolean) => {
     try {
-      // 提取模型文件名（去掉 local: 前缀）
       const modelName = modelId.replace('local:', '');
-      const res = await fetch(`/api/admin/models/local/${modelName}/enable?enabled=${enabled}`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        // 更新本地状态
-        setLocalModels(prev => prev.map(m => 
-          m.id === modelId ? { ...m, enabled } : m
-        ));
-        
-        // 触发全局模型列表刷新，确保主页模型选择器同步
-        window.dispatchEvent(new CustomEvent('modelsUpdated'));
-      } else {
-        toast.error('设置模型状态失败');
-      }
+      await api.put(`/api/admin/models/local/${modelName}/enable?enabled=${enabled}`);
+      setLocalModels(prev => prev.map(m => 
+        m.id === modelId ? { ...m, enabled } : m
+      ));
+      window.dispatchEvent(new CustomEvent('modelsUpdated'));
     } catch (e) { 
       console.error(e);
       toast.error('设置模型状态失败');
@@ -905,64 +281,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const doModelDelete = async (modelId: string) => {
     try {
-      const res = await fetch(`/api/admin/models/local/${modelId}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(data.message);
-        fetchLocalModels();
-      } else {
-        const error = await res.json();
-        toast.error(`删除失败: ${error.detail || '未知错误'}`);
-      }
-    } catch (e) {
-      toast.error('删除失败: 网络错误');
+      const data = await api.delete(`/api/admin/models/local/${modelId}`);
+      toast.success(data.message);
+      fetchLocalModels();
+    } catch (e: any) {
+      toast.error(`删除失败: ${e.message || '网络错误'}`);
     }
   };
 
   const fetchProviders = async () => {
     try {
-      const res = await fetch('/api/admin/providers', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) setProviders(await res.json());
+      const data = await api.get('/api/admin/providers');
+      setProviders(data);
     } catch (e) {}
   };
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/admin/users', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) setUsersList(await res.json());
+      const data = await api.get('/api/admin/users');
+      setUsersList(data);
     } catch (e) {}
   };
 
   const fetchStarters = async () => {
     try {
-      const res = await fetch('/api/recommendations/starters', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) setStarterQuestions(await res.json());
+      const data = await api.get('/api/recommendations/starters');
+      setStarterQuestions(data);
     } catch (e) {}
   };
 
   const handleUpdateProfile = async () => {
     try {
-      await fetch('/api/users/me', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ avatar: avatarUrl, username: newUsername })
-      });
+      await api.put('/api/users/me', { avatar: avatarUrl, username: newUsername });
       toast.success('Profile updated');
     } catch (e) {}
   };
@@ -987,71 +337,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     
     try {
-      const res = await fetch('/api/users/me/password', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ old_password: pwdOld, new_password: pwdNew })
-      });
-      if (res.ok) {
-        toast.success(t.pwd_changed || '密码修改成功');
-        setPwdOld('');
-        setPwdNew('');
-        setShowPasswordForm(false);
-      } else {
-        const data = await res.json();
-        toast.error(data.detail || t.pwd_change_failed || '密码修改失败');
-      }
-    } catch (e) {
-      toast.error(t.pwd_change_error || '密码修改出错');
+      await api.post('/api/users/me/password', { old_password: pwdOld, new_password: pwdNew });
+      toast.success(t.pwd_changed || '密码修改成功');
+      setPwdOld('');
+      setPwdNew('');
+      setShowPasswordForm(false);
+    } catch (e: any) {
+      toast.error(e.message || t.pwd_change_error || '密码修改出错');
     }
   };
 
   const handleSaveDefaults = async () => {
     try {
-      await fetch('/api/admin/system/defaults', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          default_chat_model: defChat,
-          default_workspace_model: defWs,
-          default_outline_model: defOutline,
-          daily_topic_model: dailyTopicModel,
-          default_character_parse_model: defCharacterParse,
-          default_character_translate_model: defCharacterTranslate,
-          default_character_chat_model: defCharacterChat,
-          default_summarization_model: defSummarization,
-          default_oc_analysis_model: defOCAnalysis,
-          allow_oc_analysis: allowOCAnalysis
-        })
+      await api.post('/api/admin/system/defaults', {
+        default_chat_model: defChat,
+        default_workspace_model: defWs,
+        default_outline_model: defOutline,
+        daily_topic_model: dailyTopicModel,
+        default_character_parse_model: defCharacterParse,
+        default_character_translate_model: defCharacterTranslate,
+        default_character_chat_model: defCharacterChat,
+        default_summarization_model: defSummarization,
+        default_oc_analysis_model: defOCAnalysis,
+        allow_oc_analysis: allowOCAnalysis
       });
       onUpdateDefaults();
       toast.success(t.defaults_saved || '默认配置已保存');
     } catch (e) {}
   };
 
-  const handleViewUserChats = async (userId: string, username: string) => {
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/chats`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const chats = await res.json();
-        // 显示用户对话列表
-        _setSelectedUserChats({ userId, username, chats });
-        _setShowUserChatsModal(true);
-      } else {
-        toast.error(t.fetch_user_chats_failed || '获取用户对话失败');
-      }
-    } catch (e) {
-      toast.error(t.fetch_user_chats_error || '获取用户对话出错');
-    }
-  };
 
   const handleDeleteUser = (userId: string) => {
     setUserDeleteConfirm({ open: true, userId });
@@ -1059,16 +373,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const doDeleteUser = async (userId: string) => {
     try {
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        setUsersList(usersList.filter((u: UserType) => u.id !== userId));
-        toast.success(t.user_deleted || '用户已删除');
-      } else {
-        toast.error(t.delete_user_failed || '删除用户失败');
-      }
+      await api.delete(`/api/admin/users/${userId}`);
+      setUsersList(usersList.filter((u: UserType) => u.id !== userId));
+      toast.success(t.user_deleted || '用户已删除');
     } catch (e) {
       toast.error(t.delete_user_error || '删除用户出错');
     }
@@ -1076,14 +383,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveStarters = async () => {
     try {
-      await fetch('/api/admin/recommendations/starters', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(starterQuestions)
-      });
+      await api.post('/api/admin/recommendations/starters', starterQuestions);
       toast.success('Starters saved');
     } catch (e) {}
   };
@@ -1145,11 +445,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSaveProvider = async () => {
     const modelsToSave = pModels.map(model => {
       // 确保每个模型同时有 id, name 和 alias 字段
+      // name 是用户在 ModelEditor 中编辑的显示名称，alias 应与 name 保持同步
+      const displayName = model.name || model.alias || model.id || '';
       const saveModel: any = { 
         ...model,
         id: model.id || '',
-        name: model.name || model.alias || model.id || '',
-        alias: model.alias || model.name || model.id || ''
+        name: displayName,
+        alias: displayName
       };
       return saveModel;
     });
@@ -1168,19 +470,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       : [...providers, newProvider];
 
     try {
-      const response = await fetch('/api/admin/providers', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(newList)
-      });
-      
-      await response.json();
+      await api.post('/api/admin/providers', newList);
       setEditingProvider(null);
       fetchProviders();
-      // 刷新全局模型列表
       window.dispatchEvent(new CustomEvent('modelsUpdated'));
     } catch (e) {
       console.error('保存出错:', e);
@@ -1193,14 +485,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const doDeleteProvider = async (id: string) => {
     try {
-      await fetch('/api/admin/providers', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(providers.filter(p => p.id !== id))
-      });
+      await api.post('/api/admin/providers', providers.filter(p => p.id !== id));
       fetchProviders();
     } catch (e) {}
   };
@@ -1212,40 +497,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }));
     
     try {
-      const res = await fetch('/api/admin/test-provider', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          base_url: ensureUrlHasProtocol(provider.base_url),
-          api_key: provider.api_key,
-          provider_id: provider.id,
-          provider_name: provider.name
-        })
+      const data = await api.post('/api/admin/test-provider', {
+        base_url: ensureUrlHasProtocol(provider.base_url),
+        api_key: provider.api_key,
+        provider_id: provider.id,
+        provider_name: provider.name
       });
-      
-      if (res.ok) {
-        const data = await res.json();
-        setProviderStatus(prev => ({
-          ...prev,
-          [provider.id]: { 
-            success: data.success, 
-            message: data.message, 
-            testing: false 
-          }
-        }));
-      } else {
-        setProviderStatus(prev => ({
-          ...prev,
-          [provider.id]: { 
-            success: false, 
-            message: '请求失败', 
-            testing: false 
-          }
-        }));
-      }
+      setProviderStatus(prev => ({
+        ...prev,
+        [provider.id]: { 
+          success: data.success, 
+          message: data.message, 
+          testing: false 
+        }
+      }));
     } catch (e) {
       setProviderStatus(prev => ({
         ...prev,
@@ -1363,7 +628,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="max-w-4xl mx-auto h-full">
               {/* Profile Tab */}
               {activeTab === 'profile' && (
-                <ScrollArea className="h-[calc(100vh-180px)]">
+                <ScrollArea className="h-full">
                   <div className="space-y-6 animate-fade-in pr-2">
                   <h3 className="text-2xl font-semibold">{t.settings_profile}</h3>
                 
@@ -1790,7 +1055,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* Admin Defaults Tab */}
           {activeTab === 'admin_defaults' && isAdmin && (
-            <ScrollArea className="h-[calc(100vh-180px)]">
+            <ScrollArea className="h-full">
               <div className="space-y-6 animate-fade-in pr-2">
               <h3 className="text-2xl font-semibold">{t.admin_defaults}</h3>
               
@@ -1902,7 +1167,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* Admin Users Tab */}
           {activeTab === 'admin_users' && isAdmin && (
-            <ScrollArea className="h-[calc(100vh-180px)]">
+            <ScrollArea className="h-full">
               <div className="space-y-6 animate-fade-in pr-2">
               <h3 className="text-2xl font-semibold">{t.admin_users}</h3>
               
@@ -1945,7 +1210,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* Appearance Tab */}
           {activeTab === 'appearance' && (
-            <ScrollArea className="h-[calc(100vh-180px)]">
+            <ScrollArea className="h-full">
               <div className="space-y-6 animate-fade-in pr-2">
               <h3 className="text-2xl font-semibold">{t.appearance || '外观设置'}</h3>
               
@@ -2020,7 +1285,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* Language Tab */}
           {activeTab === 'language' && (
-            <ScrollArea className="h-[calc(100vh-180px)]">
+            <ScrollArea className="h-full">
               <div className="space-y-6 animate-fade-in pr-2">
               <h3 className="text-2xl font-semibold">{t.language || '语言设置'}</h3>
               
@@ -2053,14 +1318,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* OC Settings Tab */}
           {activeTab === 'oc' && (
-            <div className="h-[calc(100vh-180px)]">
+            <div className="h-full">
               <OCSettings token={token} models={models} />
             </div>
           )}
 
           {/* About Tab */}
           {activeTab === 'about' && (
-            <ScrollArea className="h-[calc(100vh-180px)]">
+            <ScrollArea className="h-full">
               <div className="text-center py-12 animate-fade-in pr-2">
               <div className="w-24 h-24 bg-gradient-to-br from-primary to-primary/60 rounded-3xl mx-auto flex items-center justify-center mb-6 shadow-xl shadow-primary/20">
                 <span className="text-primary-foreground text-4xl font-bold">P</span>

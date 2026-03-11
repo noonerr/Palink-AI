@@ -1,9 +1,11 @@
+from typing import Optional
 from pydantic import BaseModel
 
 class DefaultModelConfig(BaseModel):
-    default_model: str
-    default_temperature: float = 0.7
-    default_top_p: float = 0.95
+    default_chat_model: Optional[str] = ""
+    default_workspace_model: Optional[str] = ""
+    default_outline_model: Optional[str] = ""
+    daily_topic_model: Optional[str] = ""
 
 class MemoryCompressRequest(BaseModel):
     session_id: str

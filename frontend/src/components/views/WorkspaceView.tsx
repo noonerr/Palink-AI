@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { api } from '@/services/api';
 import type { FileItem, Folder as FolderType, Model, WorkspaceItems } from '@/types';
 
 interface WorkspaceViewProps {
@@ -33,7 +34,7 @@ interface WorkspaceViewProps {
 }
 
 export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
-  token,
+  token: _token,
   user: _user,
   models,
   systemDefaults,
@@ -80,18 +81,14 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/workspace?parent_id=${currentFolderId || ''}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        setItems(await res.json());
-      }
+      const data = await api.get(`/api/workspace?parent_id=${currentFolderId || ''}`);
+      setItems(data);
     } catch (e) {
       console.error('Failed to fetch items:', e);
     } finally {
       setLoading(false);
     }
-  }, [currentFolderId, token]);
+  }, [currentFolderId]);
 
   useEffect(() => {
     fetchItems();
@@ -103,16 +100,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       return;
     }
     try {
-      await fetch('/api/workspace/folder', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          name: newFolderName,
-          parent_id: currentFolderId || ''
-        })
+      await api.post('/api/workspace/folder', {
+        name: newFolderName,
+        parent_id: currentFolderId || ''
       });
       setNewFolderName('');
       setIsCreateFolder(false);
@@ -133,11 +123,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       formData.append('folder_id', currentFolderId || '');
 
       try {
-        await fetch('/api/workspace/upload', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData
-        });
+        await api.post('/api/workspace/upload', formData);
       } catch (e) {
         console.error('Upload failed:', e);
       }
@@ -161,14 +147,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       : { folder_ids: [id] };
 
     try {
-      await fetch('/api/workspace/delete', {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(body)
-      });
+      await api.delete('/api/workspace/delete', body);
       fetchItems();
       
       if (type === 'file') {
@@ -209,23 +188,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
     setAnalyzing(true);
     try {
-      const res = await fetch('/api/workspace/analyze', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          file_id: analyzingFile.id,
-          model: outlineModel,
-          lang: 'zh'
-        }),
-        signal: controller.signal
-      });
+      const data = await api.post('/api/workspace/analyze', {
+        file_id: analyzingFile.id,
+        model: outlineModel,
+        lang: 'zh'
+      }, { signal: controller.signal } as any);
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
       setAnalyzingFile((prev: FileItem | null) => prev ? { ...prev, summary: data.summary } : null);
       setItems((prev: WorkspaceItems) => ({
         ...prev,
@@ -387,7 +355,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                       <span className="ml-1">{t.btn_generate}</span>
                     </Button>
                   </div>
-                  <div className="max-h-[200px] overflow-y-auto text-xs text-muted-foreground bg-secondary/50 rounded-lg p-3">
+                  <div className="max-h-[200px] overflow-y-auto overscroll-y-contain text-xs text-muted-foreground bg-secondary/50 rounded-lg p-3">
                     {analyzingFile.summary ? (
                       <div className="prose prose-sm">{analyzingFile.summary}</div>
                     ) : (
@@ -447,7 +415,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               </div>
             </div>
             {/* Mobile Sidebar Content */}
-            <div className="flex-1 p-4 overflow-y-auto">
+            <div className="flex-1 p-4 overflow-y-auto overscroll-y-contain">
               {/* Tabs */}
               <div className="bg-secondary/50 p-1 rounded-lg flex text-xs font-medium mb-4">
                 <button

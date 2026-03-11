@@ -6,14 +6,11 @@ import {
   User,
   Save,
   Upload,
-  Image,
   Sparkles,
   Plus,
-  X,
   Trash2,
   Bot,
   Brain,
-  Palette,
   ChevronDown,
   Check
 } from 'lucide-react';
@@ -25,6 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { api } from '@/services/api';
 import type { OCData, OCCustomField, OCConfig, Model } from '@/types';
 
 const OC_STORAGE_KEY = 'palink_oc_data';
@@ -59,7 +57,7 @@ interface OCSettingsProps {
   onUpdate?: () => void;
 }
 
-export const OCSettings: React.FC<OCSettingsProps> = ({ token, models, onUpdate }) => {
+export const OCSettings: React.FC<OCSettingsProps> = ({ token: _token, models, onUpdate }) => {
   const [ocData, setOCData] = useState<OCData>(defaultOCData);
   const [ocConfig, setOCConfig] = useState<OCConfig>(defaultOCConfig);
   const [isSaving, setIsSaving] = useState(false);
@@ -222,22 +220,11 @@ ${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f
 4. 互动场景建议`;
       }
 
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          message: prompt,
-          model: ocConfig.defaultAnalysisModel,
-          temperature: 0.7,
-        }),
+      const res = await api.stream('/api/chat', {
+        message: prompt,
+        model: ocConfig.defaultAnalysisModel,
+        temperature: 0.7,
       });
-
-      if (!res.ok) {
-        throw new Error('分析请求失败');
-      }
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
@@ -502,7 +489,7 @@ ${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f
                             <span className="flex items-center gap-2">
                               <Bot size={16} />
                               {ocConfig.defaultAnalysisModel 
-                                ? models.find(m => m.id === ocConfig.defaultAnalysisModel)?.name || ocConfig.defaultAnalysisModel
+                                ? (() => { const m = models.find(m => m.id === ocConfig.defaultAnalysisModel); return m?.alias || m?.name || ocConfig.defaultAnalysisModel; })()
                                 : '请选择模型'}
                             </span>
                             <ChevronDown 
@@ -540,7 +527,7 @@ ${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f
                                 ocConfig.defaultAnalysisModel === model.id ? 'bg-background' : ''
                               }`}
                             >
-                              <span>{model.name || model.id}</span>
+                              <span>{model.alias || model.name || model.id}</span>
                               {ocConfig.defaultAnalysisModel === model.id && (
                                 <Check size={14} className="text-primary" />
                               )}

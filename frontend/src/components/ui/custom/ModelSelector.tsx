@@ -21,6 +21,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   
   const currentModelObj = models.find(m => m.id === currentModel) || models[0];
+  const displayName = currentModelObj?.alias || currentModelObj?.name || '';
+
+  const getModelDisplayName = (model: Model) => model.alias || model.name;
 
   useClickOutside(containerRef, () => setIsOpen(false));
 
@@ -36,7 +39,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           )}
         >
           <Bot size={14} className="sm:w-3 sm:h-3" />
-          <span className="max-w-[80px] sm:max-w-[100px] truncate">{currentModelObj?.name}</span>
+          <span className="max-w-[80px] sm:max-w-[100px] truncate">{displayName}</span>
           <ChevronDown 
             size={14} 
             className={cn("transition-transform sm:w-3 sm:h-3", isOpen && "rotate-180")} 
@@ -68,7 +71,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     )}
                   </span>
                   <div className="flex-1 text-left min-w-0">
-                    <div className="break-words leading-tight text-sm">{model.name}</div>
+                    <div className="break-words leading-tight text-sm">{getModelDisplayName(model)}</div>
                     <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
                       <span className="truncate">{model.provider}</span>
                       <span>•</span>
@@ -96,7 +99,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         )}
       >
         <Bot size={16} />
-        <span>{currentModelObj?.name}</span>
+        <span>{displayName}</span>
         <ChevronDown 
           size={14} 
           className={cn("transition-transform", isOpen && "rotate-180")} 
@@ -128,7 +131,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   )}
                 </span>
                 <div className="flex-1 text-left">
-                  <div className="font-medium">{model.name}</div>
+                  <div className="font-medium">{getModelDisplayName(model)}</div>
                   <div className="text-[10px] opacity-70 flex items-center gap-2 mt-0.5">
                     <span className="flex items-center gap-1">
                       <Cpu size={10} />

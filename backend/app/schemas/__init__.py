@@ -5,7 +5,7 @@ from .character import (
     BranchCreateRequest, BranchSwitchRequest, CharacterParseRequest, CharacterTranslateRequest
 )
 from .workspace import AnalyzeRequest, UploadRequest, FolderCreate, FileMove
-from .provider import ModelItem, ProviderConfig, TestProviderRequest
+from .provider import ModelItem, ProviderModel, ProviderConfig, TestProviderRequest
 from .system import DefaultModelConfig, MemoryCompressRequest
 
 __all__ = [
@@ -19,7 +19,7 @@ __all__ = [
     # Workspace
     'AnalyzeRequest', 'UploadRequest', 'FolderCreate', 'FileMove',
     # Provider
-    'ModelItem', 'ProviderConfig', 'TestProviderRequest',
+    'ModelItem', 'ProviderModel', 'ProviderConfig', 'TestProviderRequest',
     # System
     'DefaultModelConfig', 'MemoryCompressRequest'
 ]

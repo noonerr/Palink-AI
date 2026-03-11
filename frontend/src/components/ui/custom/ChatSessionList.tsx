@@ -1,7 +1,6 @@
 import React from 'react';
-import { MessageSquare, Edit3, Trash2, CheckSquare, Square, MessageSquarePlus, X } from 'lucide-react';
+import { MessageSquare, Trash2, CheckSquare, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface Session {
@@ -51,35 +50,99 @@ const getMorandiColor = (id: string) => {
   return morandiColors[Math.abs(hash) % morandiColors.length];
 };
 
-export const ChatSessionList: React.FC<ChatSessionListProps> = ({
+/** 单个会话项 —— 自定义比较函数仅检查数据 props，跳过回调引用 */
+const ChatSessionItem = React.memo<{
+  session: Session;
+  isActive: boolean;
+  isDeleteMode: boolean;
+  isSelected: boolean;
+  onSessionSelect: (session: Session) => void;
+  toggleSessionSelect: (id: string) => void;
+  onDeleteSession?: (id: string) => void;
+  showDeleteButton: boolean;
+  label: string;
+}>(({
+  session,
+  isActive,
+  isDeleteMode,
+  isSelected,
+  onSessionSelect,
+  toggleSessionSelect,
+  onDeleteSession,
+  showDeleteButton,
+  label,
+}) => {
+  return (
+    <div
+      onClick={() => {
+        if (isDeleteMode) {
+          toggleSessionSelect(session.id);
+        } else {
+          onSessionSelect(session);
+        }
+      }}
+      className={cn(
+        "flex items-center px-4 py-3 cursor-pointer transition-all overflow-hidden w-full min-w-0 border-b border-border/30",
+        isActive && !isDeleteMode
+          ? "bg-secondary text-foreground"
+          : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {isDeleteMode ? (
+        <div className="shrink-0 mr-3">
+          {isSelected ? (
+            <CheckSquare size={18} className="text-primary" />
+          ) : (
+            <Square size={18} />
+          )}
+        </div>
+      ) : (
+        <div className={`shrink-0 mr-3 w-6 h-6 rounded-md flex items-center justify-center ${getMorandiColor(session.id)}`}>
+          <MessageSquare size={12} className="text-white" />
+        </div>
+      )}
+      
+      <div className="flex-1 min-w-0">
+        <div className="text-base truncate">
+          {label}
+        </div>
+      </div>
+      
+      {!isDeleteMode && showDeleteButton && onDeleteSession && (
+        <button
+          type="button"
+          className="shrink-0 w-8 h-8 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 ml-2"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteSession(session.id);
+          }}
+        >
+          <Trash2 size={16} className="text-muted-foreground hover:text-destructive" />
+        </button>
+      )}
+    </div>
+  );
+}, (prev, next) => {
+  return prev.session.id === next.session.id
+    && prev.session.title === next.session.title
+    && prev.isActive === next.isActive
+    && prev.isDeleteMode === next.isDeleteMode
+    && prev.isSelected === next.isSelected
+    && prev.showDeleteButton === next.showDeleteButton
+    && prev.label === next.label;
+});
+
+export const ChatSessionList = React.memo<ChatSessionListProps>(({
   sessions,
   activeSessionId,
   onSessionSelect,
   isDeleteMode,
-  setIsDeleteMode,
   selectedSessions,
   toggleSessionSelect,
-  onBatchDelete,
-  onNewSession,
   onDeleteSession,
-  showNewButton = true,
   showDeleteButton = true,
-  showHeaderActions = true,
-  headerTitle,
   t
 }) => {
-  const handleActionButtonClick = () => {
-    if (isDeleteMode) {
-      if (selectedSessions.size > 0 && onBatchDelete) {
-        onBatchDelete();
-      } else {
-        setIsDeleteMode(false);
-      }
-    } else {
-      setIsDeleteMode(true);
-    }
-  };
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <ScrollArea className="flex-1 px-0 min-h-0">
@@ -89,61 +152,29 @@ export const ChatSessionList: React.FC<ChatSessionListProps> = ({
             min-width: 0 !important;
             width: 100% !important;
           }
+          @media (max-width: 768px) {
+            .mobile-padding {
+              padding-bottom: 80px; /* 为底部dock栏留出空间 */
+            }
+          }
         `}</style>
-        <div className="space-y-0 w-full min-w-0">
+        <div className="space-y-0 w-full min-w-0 mobile-padding">
           {sessions.map((session) => (
-            <div
+            <ChatSessionItem
               key={session.id}
-              onClick={() => {
-                if (isDeleteMode) {
-                  toggleSessionSelect(session.id);
-                } else {
-                  onSessionSelect(session);
-                }
-              }}
-              className={cn(
-                "flex items-center px-4 py-3 cursor-pointer transition-all overflow-hidden w-full min-w-0 border-b border-border/30",
-                activeSessionId === session.id && !isDeleteMode
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {isDeleteMode ? (
-                <div className="shrink-0 mr-3">
-                  {selectedSessions.has(session.id) ? (
-                    <CheckSquare size={18} className="text-primary" />
-                  ) : (
-                    <Square size={18} />
-                  )}
-                </div>
-              ) : (
-                <div className={`shrink-0 mr-3 w-6 h-6 rounded-md flex items-center justify-center ${getMorandiColor(session.id)}`}>
-                  <MessageSquare size={12} className="text-white" />
-                </div>
-              )}
-              
-              <div className="flex-1 min-w-0">
-                <div className="text-base truncate">
-                  {session.title || t?.new_chat || '新对话'}
-                </div>
-              </div>
-              
-              {!isDeleteMode && showDeleteButton && onDeleteSession && (
-                <button
-                  type="button"
-                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 ml-2"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteSession(session.id);
-                  }}
-                >
-                  <Trash2 size={16} className="text-muted-foreground hover:text-destructive" />
-                </button>
-              )}
-            </div>
+              session={session}
+              isActive={activeSessionId === session.id}
+              isDeleteMode={isDeleteMode}
+              isSelected={selectedSessions.has(session.id)}
+              onSessionSelect={onSessionSelect}
+              toggleSessionSelect={toggleSessionSelect}
+              onDeleteSession={onDeleteSession}
+              showDeleteButton={showDeleteButton}
+              label={session.title || t?.new_chat || '新对话'}
+            />
           ))}
         </div>
       </ScrollArea>
     </div>
   );
-};
+});

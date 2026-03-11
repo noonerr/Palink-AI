@@ -1,5 +1,8 @@
+import logging
 from typing import List, Optional
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     """应用配置"""
@@ -28,15 +31,27 @@ class Settings(BaseSettings):
     def _validate_config(self):
         if not self.SECRET_KEY:
             if self.APP_ENV == "development":
-                self.SECRET_KEY = "palink-secret-v35-stable"
+                self.SECRET_KEY = "palink-dev-secret-change-in-production"
+                logger.warning(
+                    "[SECURITY] Using default SECRET_KEY in development mode. "
+                    "Set SECRET_KEY environment variable for production."
+                )
             else:
-                raise RuntimeError("SECRET_KEY is required when APP_ENV is not development.")
-        
+                raise RuntimeError(
+                    "SECRET_KEY environment variable is required when APP_ENV != 'development'."
+                )
+
         if not self.ADMIN_PASSWORD:
             if self.APP_ENV == "development":
-                self.ADMIN_PASSWORD = "admin123"
+                self.ADMIN_PASSWORD = "admin"
+                logger.warning(
+                    "[SECURITY] Using default ADMIN_PASSWORD in development mode. "
+                    "Set ADMIN_PASSWORD environment variable for production."
+                )
             else:
-                raise RuntimeError("ADMIN_PASSWORD is required when APP_ENV is not development.")
+                raise RuntimeError(
+                    "ADMIN_PASSWORD environment variable is required when APP_ENV != 'development'."
+                )
     
     @property
     def cors_origins_list(self) -> List[str]:

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, MessageSquarePlus, X, Zap, Database, Edit3, Trash2, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Sparkles, MessageSquarePlus, X, Edit3, Trash2, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
+import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
@@ -33,7 +34,7 @@ interface Attachment {
 
 
 export const ChatView: React.FC<ChatViewProps> = ({
-  token,
+  token: _token,
   user,
   models,
   defaultModel,
@@ -88,16 +89,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
     loadingSessionRef.current = sessionId;
     
     try {
-      const res = await fetch(`/api/memory/stats?session_id=${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const data = await api.get(`/api/memory/stats?session_id=${sessionId}`);
       
       // Only update if this is still the current session being loaded
-      if (res.ok && loadingSessionRef.current === sessionId) {
-        const data = await res.json();
-        setMemoryStats(data);
+      if (loadingSessionRef.current === sessionId) {
+        const stats = data.stats || {};
+        setMemoryStats({
+          message_count: stats.message_count ?? 0,
+          token_count: stats.token_count ?? 0,
+          oldest_message_hours: stats.oldest_message_hours ?? 0,
+          compression_needed: data.compression_needed ?? false,
+          compression_reason: data.reason ?? '',
+        });
         
-        // 如果需要压缩，自动触发
         if (data.compression_needed) {
           await autoCompressMemory(sessionId);
         }
@@ -105,7 +109,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } catch (e) {
       console.error('Failed to load memory stats:', e);
     }
-  }, [token]);
+  }, []);
 
   // Auto compress memory
   const autoCompressMemory = async (sessionId: string) => {
@@ -113,17 +117,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (loadingSessionRef.current !== sessionId) return;
     
     try {
-      const res = await fetch(`/api/memory/check-auto-compress?session_id=${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok && loadingSessionRef.current === sessionId) {
-        const data = await res.json();
-        if (data.auto_compressed) {
-          console.log('Memory auto-compressed:', data.message);
-        }
+      const data = await api.post('/api/memory/compress', { session_id: sessionId, compression_ratio: 0.5 });
+      if (loadingSessionRef.current === sessionId && data?.compressed_count > 0) {
+        console.log('Memory auto-compressed:', data.message);
       }
     } catch (e: any) {
-      // Ignore abort errors (happens when switching sessions quickly)
       if (e.name !== 'AbortError') {
         console.error('Auto compress failed:', e);
       }
@@ -135,26 +133,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!activeSessionId || compressing) return;
     setCompressing(true);
     try {
-      const res = await fetch('/api/memory/compress', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          session_id: activeSessionId,
-          compression_ratio: 0.5  // 保留50%
-        })
+      const data = await api.post('/api/memory/compress', {
+        session_id: activeSessionId,
+        compression_ratio: 0.5
       });
-      if (res.ok) {
-        const data = await res.json();
-        alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
-        // 刷新统计
-        await loadMemoryStats(activeSessionId);
-      } else {
-        const error = await res.text();
-        alert('压缩失败: ' + error);
-      }
+      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      await loadMemoryStats(activeSessionId);
     } catch (e) {
       console.error('Manual compress failed:', e);
       alert('压缩失败');
@@ -166,17 +150,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   // Load sessions
   const loadSessions = useCallback(async () => {
     try {
-      const res = await fetch('/api/sessions?type=chat', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSessions(data);
-      }
+      const data = await api.get<Session[]>('/api/sessions?type=chat');
+      setSessions(data);
     } catch (e) {
       console.error('Failed to load sessions:', e);
     }
-  }, [token]);
+  }, []);
 
   // Load messages for active session
   const handleSelectSession = (session: any) => {
@@ -186,50 +165,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/messages`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data);
-        setSuggestions([]);
-        
-        // Load memory stats for this session
-        await loadMemoryStats(sessionId);
-        
-        // Generate suggestions if last message is from assistant
-        const lastMsg = data[data.length - 1];
-        if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
-          // Cancel previous suggestions request
-          if (suggestionsAbortRef.current) {
-            suggestionsAbortRef.current.abort();
-          }
-          suggestionsAbortRef.current = new AbortController();
-          const currentAbortController = suggestionsAbortRef.current;
-          
-          fetch('/api/chat/suggestions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ message: lastMsg.content, model: currentModel }),
-            signal: currentAbortController.signal
-          })
-            .then(r => r.json())
-            .then(data => {
-              // Only update if this request wasn't aborted
-              if (Array.isArray(data) && !currentAbortController.signal.aborted) {
-                setSuggestions(data);
-              }
-            })
-            .catch(() => {});
+      const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
+      setMessages(data);
+      setSuggestions([]);
+      
+      await loadMemoryStats(sessionId);
+      
+      const lastMsg = data[data.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
+        if (suggestionsAbortRef.current) {
+          suggestionsAbortRef.current.abort();
         }
+        suggestionsAbortRef.current = new AbortController();
+        const currentAbortController = suggestionsAbortRef.current;
+        
+        api.post('/api/chat/suggestions',
+          { message: lastMsg.content, model: currentModel },
+          { signal: currentAbortController.signal }
+        )
+          .then((data: string[]) => {
+            if (Array.isArray(data) && !currentAbortController.signal.aborted) {
+              setSuggestions(data);
+            }
+          })
+          .catch(() => {});
       }
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
-  }, [token, currentModel, loadMemoryStats]);
+  }, [currentModel, loadMemoryStats]);
 
   useEffect(() => {
     loadSessions();
@@ -250,13 +214,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   useEffect(() => {
     const fetchUserSettings = async () => {
       try {
-        const res = await fetch('/api/users/me/settings', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const settings = await res.json();
-          setMemoryMode(settings.memory_mode || 'rule');
-        }
+        const settings = await api.get('/api/users/me/settings');
+        setMemoryMode(settings.memory_mode || 'rule');
       } catch (e) {
         console.error('Failed to fetch user settings:', e);
       }
@@ -266,7 +225,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     
     window.addEventListener('userSettingsUpdated', fetchUserSettings);
     return () => window.removeEventListener('userSettingsUpdated', fetchUserSettings);
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -285,19 +244,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ filename: file.name, data: dataUrl })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAttachments(prev => [...prev, { type, name: file.name, url: data.url }]);
-      }
+      const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
+      setAttachments(prev => [...prev, { type, name: file.name, url: data.url }]);
     } catch (e) {
       console.error('Upload failed:', e);
     } finally {
@@ -339,22 +287,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     let fullReasoning = '';
     
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const res = await api.stream('/api/chat', {
           session_id: activeSessionId,
           session_type: 'chat',
           message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
           model: currentModel,
           images: [],
           files: []
-        }),
-        signal: abortControllerRef.current.signal
-      });
+        }, { signal: abortControllerRef.current.signal });
       
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
@@ -403,15 +343,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
       
       if (fullContent.length > 20) {
-        fetch('/api/chat/suggestions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ message: fullContent, model: currentModel })
-        })
-          .then(r => r.json())
+        api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
           .then(setSuggestions)
           .catch(() => {});
       }
@@ -466,22 +398,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     let fullReasoning = '';
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const res = await api.stream('/api/chat', {
           session_id: activeSessionId,
           session_type: 'chat',
           message: text,
           model: currentModel,
           images: attachments.filter(a => a.type === 'image').map(a => a.url),
           files: attachments.filter(a => a.type === 'file').map(a => a.url)
-        }),
-        signal: abortControllerRef.current.signal
-      });
+        }, { signal: abortControllerRef.current.signal });
 
       if (!activeSessionId) {
         setTimeout(loadSessions, 1000);
@@ -532,15 +456,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       // Get suggestions after message completes
       if (fullContent.length > 20) {
-        fetch('/api/chat/suggestions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ message: fullContent, model: currentModel })
-        })
-          .then(r => r.json())
+        api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
           .then(setSuggestions)
           .catch(() => {});
       }
@@ -571,14 +487,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     try {
       if (pendingDelete.type === 'batch') {
         const idsToDelete = Array.from(selectedSessions);
-        await fetch('/api/sessions/batch', {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ session_ids: idsToDelete })
-        });
+        await api.delete('/api/sessions/batch', { session_ids: idsToDelete });
         
         if (activeSessionId && idsToDelete.includes(activeSessionId)) {
           setActiveSessionId(null);
@@ -588,10 +497,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setIsDeleteMode(false);
         loadSessions();
       } else if (pendingDelete.type === 'single') {
-        await fetch(`/api/sessions/${pendingDelete.id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        await api.delete(`/api/sessions/${pendingDelete.id}`);
         
         if (activeSessionId === pendingDelete.id) {
           setActiveSessionId(null);
@@ -600,10 +506,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         loadSessions();
       } else if (pendingDelete.type === 'message') {
         if (activeSessionId) {
-          await fetch(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          await api.delete(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`);
           setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
         }
       }
@@ -649,12 +552,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!activeSessionId || selectedMessages.size === 0) return;
     try {
       for (const messageId of Array.from(selectedMessages)) {
-        await fetch(`/api/sessions/${activeSessionId}/messages/${messageId}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        await api.delete(`/api/sessions/${activeSessionId}/messages/${messageId}`);
       }
-      setMessages(prev => prev.filter(m => !selectedMessages.has(m.id)));
+      setMessages(prev => prev.filter(m => m.id === undefined || !selectedMessages.has(String(m.id))));
       setSelectedMessages(new Set());
       setShowMessageSelect(false);
     } catch (e) {
@@ -666,25 +566,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!activeSessionId) return;
     
     try {
-      const res = await fetch(`/api/sessions/${activeSessionId}/messages/${messageId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: newContent })
+      await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[messageIndex] = {
+          ...newMessages[messageIndex],
+          content: newContent
+        };
+        return newMessages;
       });
-      
-      if (res.ok) {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[messageIndex] = {
-            ...newMessages[messageIndex],
-            content: newContent
-          };
-          return newMessages;
-        });
-      }
     } catch (e) {
       console.error('Failed to edit message:', e);
     }
@@ -817,7 +707,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Welcome Content */}
-          <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-auto">
+          <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-auto overscroll-y-contain">
             <div className="w-full max-w-2xl flex flex-col items-center animate-fade-in-up">
               {/* Model Display */}
               <div className="mb-10 text-center">
@@ -831,7 +721,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   })()}
                 </div>
                 <h1 className="text-3xl font-semibold mb-2">
-                  {currentModelObj?.name}
+                  {currentModelObj?.alias || currentModelObj?.name}
                 </h1>
                 <p className="text-muted-foreground">
                   {currentModelObj?.description || t.welcome_greeting}
@@ -1076,8 +966,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
                       onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
                       canEdit={msg.role === 'assistant' && !streaming}
-                      isSelected={msg.id ? selectedMessages.has(msg.id) : false}
-                      onToggleSelect={msg.id ? () => toggleMessageSelect(msg.id) : undefined}
+                      isSelected={msg.id !== undefined ? selectedMessages.has(String(msg.id)) : false}
+                      onToggleSelect={msg.id !== undefined ? () => toggleMessageSelect(String(msg.id)) : undefined}
                       showSelect={showMessageSelect}
                       isCharacterChat={false}
                       memoryMode={memoryMode}

@@ -13,12 +13,15 @@ from openai import AsyncOpenAI
 from ..core import get_db, settings, get_password_hash
 from ..api.dependencies import get_current_user, get_admin
 from ..models import User, ChatSession, ChatMessage, SystemSetting
+from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
 
 
-# --- Provider helpers (shared with workspace/models) ---
+# --- 管理员重置密码的请求体（字段与用户自改密码的 PasswordReset 区分） ---
+class AdminPasswordReset(BaseModel):
+    password: str
 
 def _providers_path() -> str:
     return os.path.join(settings.DATA_DIR, "providers.json")
@@ -48,39 +51,7 @@ def _find_model(model_id: str):
     return None, None
 
 
-# --- Schemas ---
-
-class ProviderModel(BaseModel):
-    id: str
-    alias: str = ""
-    name: str = ""
-    icon: Optional[str] = "🤖"
-    description: Optional[str] = ""
-    context_length: Optional[int] = 4096
-    avatar: Optional[str] = ""
-
-
-class ProviderConfig(BaseModel):
-    id: str
-    name: str
-    base_url: str
-    api_key: str
-    models: List[ProviderModel] = []
-    is_active: bool = True
-
-
-class DefaultModelConfig(BaseModel):
-    default_chat_model: Optional[str] = ""
-    default_workspace_model: Optional[str] = ""
-    default_outline_model: Optional[str] = ""
-    daily_topic_model: Optional[str] = ""
-
-
-class PasswordReset(BaseModel):
-    password: str
-
-
-# --- Provider routes ---
+# --- Provider helpers (shared with workspace/models) ---
 
 @router.get("/providers")
 async def get_providers_api(user: User = Depends(get_admin)):
@@ -146,7 +117,7 @@ async def delete_user(user_id: int, current_user: User = Depends(get_admin), db:
 
 
 @router.post("/users/{user_id}/reset_password")
-async def reset_user_password(user_id: int, req: PasswordReset, user: User = Depends(get_admin), db: Session = Depends(get_db)):
+async def reset_user_password(user_id: int, req: AdminPasswordReset, user: User = Depends(get_admin), db: Session = Depends(get_db)):
     usr = db.query(User).filter(User.id == user_id).first()
     if not usr:
         raise HTTPException(status_code=404, detail="User not found")
