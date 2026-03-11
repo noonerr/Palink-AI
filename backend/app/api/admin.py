@@ -13,7 +13,8 @@ from openai import AsyncOpenAI
 from ..core import get_db, settings, get_password_hash
 from ..api.dependencies import get_current_user, get_admin
 from ..models import User, ChatSession, ChatMessage, SystemSetting
-from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig
+from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig, TestProviderRequest
+from ..models.system import ProviderTestResult
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -169,3 +170,46 @@ async def update_starter_questions(questions: List[str], user: User = Depends(ge
         db.add(SystemSetting(key="last_starters_update", value=now_iso))
     db.commit()
     return {"status": "ok"}
+
+
+# --- Provider connection test ---
+
+@router.post("/test-provider")
+async def test_provider_connection(
+    req: TestProviderRequest,
+    user: User = Depends(get_admin),
+    db: Session = Depends(get_db),
+):
+    """Test connectivity to an AI provider by listing its models."""
+    try:
+        client = AsyncOpenAI(
+            api_key=req.api_key,
+            base_url=req.base_url,
+            timeout=15.0,
+        )
+        models = await client.models.list()
+        model_count = len(models.data) if models.data else 0
+        message = f"连接成功，发现 {model_count} 个模型"
+        success = True
+    except Exception as e:
+        message = f"连接失败: {e}"
+        success = False
+
+    # Find provider name for logging
+    provider_name = ""
+    for p in _get_providers():
+        if p.get("id") == req.provider_id:
+            provider_name = p.get("name", "")
+            break
+
+    db.add(ProviderTestResult(
+        provider_id=req.provider_id,
+        provider_name=provider_name,
+        success=success,
+        message=message,
+        base_url=req.base_url,
+        user_id=user.id,
+    ))
+    db.commit()
+
+    return {"success": success, "message": message}

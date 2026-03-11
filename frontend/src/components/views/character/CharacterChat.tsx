@@ -32,6 +32,7 @@ import { StageIndicator } from '@/components/ui/custom/StageIndicator';
 import { StageControls } from '@/components/ui/custom/StageControls';
 import { WorldBookOverview } from '@/components/ui/custom/WorldBookOverview';
 import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
+import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type {
   Character, Model, User as UserType,
   CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch,
@@ -287,6 +288,7 @@ export interface CharacterChatProps {
   confirmDeleteMixed: () => Promise<void>;
   clearSelection: () => void;
   // memory
+  memoryMode: string;
   memoryStats: {
     message_count: number;
     token_count: number;
@@ -315,6 +317,12 @@ export interface CharacterChatProps {
   setShowWorldBookOverview: (v: boolean) => void;
   selectedWorldBookId: string | null;
   setSelectedWorldBookId: (id: string | null) => void;
+  // plot line
+  pl: any; // usePlotLine return type
+  showPlotLineManager: boolean;
+  setShowPlotLineManager: (v: boolean) => void;
+  selectedPlotLineId: string | null;
+  setSelectedPlotLineId: (id: string | null) => void;
   // navigation
   setViewState: (v: 'list' | 'edit' | 'chat') => void;
 }
@@ -352,6 +360,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     wb, showWorldBookManager, setShowWorldBookManager,
     showWorldBookOverview, setShowWorldBookOverview,
     selectedWorldBookId, setSelectedWorldBookId,
+    pl, showPlotLineManager, setShowPlotLineManager,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    selectedPlotLineId: _selectedPlotLineId, setSelectedPlotLineId: _setSelectedPlotLineId,
     setViewState,
   } = props;
 
@@ -487,23 +498,18 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               currentModel={selectedModel}
               onSelect={setSelectedModel}
             />
-            {/* World Book stage badge — compact on mobile */}
-            {selectedSession && wb.sessionStatus?.active && (
-              <Button
-                variant="ghost" size="sm"
-                className="h-8 gap-1 text-xs flex-shrink-0"
-                onClick={() => setShowWorldBookOverview(true)}
-                title="世界书阶段"
-              >
-                <BookOpen size={14} />
-                <span className="hidden sm:inline">
-                  阶段 {(wb.sessionStatus.current_stage_index ?? 0) + 1}/{wb.sessionStatus.total_stages ?? '?'}
-                </span>
-                <span className="sm:hidden">
-                  {(wb.sessionStatus.current_stage_index ?? 0) + 1}/{wb.sessionStatus.total_stages ?? '?'}
-                </span>
-              </Button>
-            )}
+                {/* World book badge */}
+                {selectedSession && wb.sessionStatus?.active && (
+                  <Button
+                    variant="ghost" size="sm"
+                    className="h-8 gap-1 text-xs flex-shrink-0"
+                    onClick={() => setShowWorldBookOverview(true)}
+                    title="世界书"
+                  >
+                    <BookOpen size={14} />
+                    <span className="hidden sm:inline">{wb.sessionStatus.active_entries_count ?? 0} 条</span>
+                  </Button>
+                )}
           </div>
 
           {/* Right side — ⋮ overflow menu + delete toggle */}
@@ -547,43 +553,33 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   </>
                 )}
 
-                {/* World Book stage controls */}
-                {selectedSession && wb.sessionStatus?.active && (
-                  <>
-                    <DropdownMenuItem onClick={() => setShowWorldBookOverview(true)}>
-                      <BookOpen size={14} className="mr-2" />
-                      世界书概览
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={wb.sessionStatus.current_stage_index <= 0}
-                      onClick={async () => {
-                        if (selectedSession) {
-                          await wb.prevStage(selectedSession.id);
-                          await wb.loadSessionStatus(selectedSession.id);
-                        }
-                      }}
-                    >
-                      上一阶段
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={wb.sessionStatus.current_stage_index >= (wb.sessionStatus.total_stages ?? 1) - 1}
-                      onClick={async () => {
-                        if (selectedSession) {
-                          await wb.nextStage(selectedSession.id);
-                          await wb.loadSessionStatus(selectedSession.id);
-                        }
-                      }}
-                    >
-                      下一阶段
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
-                )}
-
                 {/* World book manager */}
                 <DropdownMenuItem onClick={() => setShowWorldBookManager(true)}>
                   <BookOpen size={14} className="mr-2" />
                   管理世界书
+                </DropdownMenuItem>
+
+                {/* Plot line manager */}
+                {selectedSession && pl.sessionStatus?.active && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={pl.sessionStatus.current_stage_index <= 0}
+                      onClick={async () => { await pl.prevStage(selectedSession.id); await pl.loadSessionStatus(selectedSession.id); }}
+                    >
+                      上一阶段
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={pl.sessionStatus.current_stage_index >= (pl.sessionStatus.total_stages ?? 1) - 1}
+                      onClick={async () => { await pl.nextStage(selectedSession.id); await pl.loadSessionStatus(selectedSession.id); }}
+                    >
+                      下一阶段
+                    </DropdownMenuItem>
+                  </>
+                )}
+                <DropdownMenuItem onClick={() => setShowPlotLineManager(true)}>
+                  <BookOpen size={14} className="mr-2" />
+                  管理剧情线
                 </DropdownMenuItem>
 
                 {/* Memory */}
@@ -643,15 +639,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 <p className="text-muted-foreground text-sm sm:text-base">开始与这个角色对话吧！</p>
               </div>
 
-              <div className="w-full max-w-md mb-6 px-4 sm:px-0">
-                <WorldBookSelector
-                  worldBooks={wb.worldBooks}
-                  selectedId={selectedWorldBookId}
-                  onSelect={setSelectedWorldBookId}
-                  loading={wb.loading}
-                />
-              </div>
-
               <div className="flex items-center gap-3">
                 <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowWorldBookManager(true)}>
                   <BookOpen size={14} />
@@ -693,7 +680,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
             {wb.sessionStatus?.active && (
               <StageIndicator
                 status={wb.sessionStatus}
-                onStageClick={() => setShowWorldBookOverview(true)}
               />
             )}
             <div className="px-3 sm:px-6 py-4 sm:py-6">
@@ -850,13 +836,35 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         status={wb.sessionStatus || { active: false }}
         isOpen={showWorldBookOverview}
         onClose={() => setShowWorldBookOverview(false)}
-        onJump={async (index) => {
-          if (selectedSession) {
-            await wb.jumpToStage(selectedSession.id, index);
-            await wb.loadSessionStatus(selectedSession.id);
-          }
-        }}
       />
+
+      {/* ── Plot Line Manager Dialog ── */}
+      {showPlotLineManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowPlotLineManager(false)}>
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <PlotLineManager
+              plotLines={pl.plotLines}
+              selectedPlotLine={pl.selectedPlotLine}
+              loading={pl.loading}
+              parsing={pl.parsing}
+              models={models}
+              selectedModel={selectedModel}
+              t={t}
+              onLoad={pl.loadPlotLines}
+              onCreate={pl.createPlotLine}
+              onUpdate={pl.updatePlotLine}
+              onDelete={pl.deletePlotLine}
+              onParse={pl.parsePlotLine}
+              onSelect={(id: string) => pl.loadPlotLineDetail(id)}
+              onClose={() => setShowPlotLineManager(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── World Book Manager Dialog ── */}
       {showWorldBookManager && (
@@ -870,16 +878,12 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               worldBooks={wb.worldBooks}
               selectedWorldBook={wb.selectedWorldBook}
               loading={wb.loading}
-              parsing={wb.parsing}
-              models={models}
-              selectedModel={selectedModel}
               t={t}
               onLoad={wb.loadWorldBooks}
               onCreate={wb.createWorldBook}
               onUpdate={wb.updateWorldBook}
               onDelete={wb.deleteWorldBook}
               onImport={wb.importWorldBook}
-              onParse={wb.parseWorldBook}
               onSelect={(id) => wb.loadWorldBookDetail(id)}
               onClose={() => setShowWorldBookManager(false)}
             />

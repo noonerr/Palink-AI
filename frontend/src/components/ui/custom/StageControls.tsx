@@ -1,12 +1,12 @@
 /**
- * StageControls — 世界书阶段手动控制按钮（放在二级菜单内）
+ * StageControls — 剧情线阶段手动控制按钮（Phase 6D）
  */
 import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { WorldBookStatus } from '@/types';
+import type { PlotLineStatus } from '@/types';
 
 interface StageControlsProps {
-  status: WorldBookStatus;
+  status: PlotLineStatus;
   onNext: () => void;
   onPrev: () => void;
   onJump: (index: number) => void;
@@ -24,7 +24,7 @@ export const StageControls: React.FC<StageControlsProps> = ({
 
   return (
     <div className="space-y-3">
-      <div className="text-xs font-medium text-muted-foreground">世界书阶段控制</div>
+      <div className="text-xs font-medium text-muted-foreground">剧情线阶段控制</div>
 
       <div className="flex items-center gap-2">
         <button
@@ -43,7 +43,7 @@ export const StageControls: React.FC<StageControlsProps> = ({
         <button
           onClick={onNext}
           disabled={isLast}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
         >
           下一阶段
           <ChevronRight className="w-3.5 h-3.5" />
@@ -59,7 +59,7 @@ export const StageControls: React.FC<StageControlsProps> = ({
               onClick={() => onJump(i)}
               className={`w-7 h-7 rounded-md text-xs font-medium transition-colors ${
                 i === current
-                  ? 'bg-blue-500/25 text-blue-300 ring-1 ring-blue-500/40'
+                  ? 'bg-purple-500/25 text-purple-300 ring-1 ring-purple-500/40'
                   : i < current
                     ? 'bg-green-500/10 text-green-400/70 hover:bg-green-500/20'
                     : 'bg-white/5 text-muted-foreground/50 hover:bg-white/10'

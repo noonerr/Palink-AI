@@ -49,6 +49,14 @@ class WorldBookStageResponse(BaseModel):
     priority: int
     token_count: int
     image_prompt: Optional[str] = None
+    # Keyword-trigger fields
+    keys: Optional[List[str]] = None
+    secondary_keys: Optional[List[str]] = None
+    scan_depth: int = 4
+    position: int = 4
+    selective: bool = False
+    probability: int = 100
+    constant: bool = False
 
     class Config:
         from_attributes = True
@@ -61,9 +69,16 @@ class WorldBookStageUpdate(BaseModel):
     transition_hint: Optional[str] = None
     priority: Optional[int] = None
     image_prompt: Optional[str] = None
+    keys: Optional[List[str]] = None
+    secondary_keys: Optional[List[str]] = None
+    scan_depth: Optional[int] = None
+    position: Optional[int] = None
+    selective: Optional[bool] = None
+    probability: Optional[int] = None
+    constant: Optional[bool] = None
 
 
-# ── WorldBook Detail (with stages) ──
+# ── WorldBook Detail (with entries) ──
 
 class WorldBookDetailResponse(BaseModel):
     id: str
@@ -86,15 +101,12 @@ class WorldBookDetailResponse(BaseModel):
 
 class SessionWorldBookCreate(BaseModel):
     world_book_id: str
-    stage_transition_mode: str = "auto"  # "auto" / "manual"
 
 
 class SessionWorldBookResponse(BaseModel):
     id: str
     session_id: str
     world_book_id: str
-    current_stage_index: int
-    stage_transition_mode: str
     world_book: Optional[WorldBookResponse] = None
     stages: Optional[List[WorldBookStageResponse]] = None
     created_at: str
@@ -104,18 +116,20 @@ class SessionWorldBookResponse(BaseModel):
         from_attributes = True
 
 
-# ── Stage Transition ──
+# ── WorldBook Status (keyword-trigger mode) ──
 
-class StageTransitionRequest(BaseModel):
-    action: str  # "next" / "prev" / "jump"
-    target_stage_index: Optional[int] = None  # Required when action == "jump"
+class WorldBookStatus(BaseModel):
+    active: bool
+    world_book_id: Optional[str] = None
+    world_book_name: Optional[str] = None
+    active_entries_count: int = 0
+    entries_overview: Optional[List[dict]] = None
 
 
-class StageTransitionResponse(BaseModel):
-    previous_stage_index: int
-    current_stage_index: int
-    stage_title: Optional[str] = None
-    total_stages: int
+# ── WorldBook Parse ──
+
+class WorldBookParseRequest(BaseModel):
+    model: Optional[str] = None
 
 
 # ── Parse Request ──

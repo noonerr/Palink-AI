@@ -15,4 +15,5 @@ class ChatMessage(Base):
     model = Column(String)
     created_at = Column(DateTime, default=utc_now)
     tokens = Column(Integer, default=0)
+    prompt_tokens = Column(Integer, default=0)
     session = relationship("ChatSession", back_populates="messages")

@@ -1,25 +1,22 @@
 /**
- * WorldBookOverview — 侧边滑出面板，世界书阶段时间线 + 快速跳转
+ * WorldBookOverview — 侧边滑出面板，展示当前已激活的世界书词条
  */
 import React from 'react';
-import { BookOpen, X, ChevronRight, CheckCircle, Circle, PlayCircle } from 'lucide-react';
-// GlassCard reserved for future styling
+import { BookOpen, X, Zap } from 'lucide-react';
 import type { WorldBookStatus } from '@/types';
 
 interface WorldBookOverviewProps {
   status: WorldBookStatus;
   isOpen: boolean;
   onClose: () => void;
-  onJump: (index: number) => void;
 }
 
 export const WorldBookOverview: React.FC<WorldBookOverviewProps> = ({
-  status, isOpen, onClose, onJump,
+  status, isOpen, onClose,
 }) => {
   if (!isOpen || !status.active) return null;
 
-  const current = status.current_stage_index ?? 0;
-  const stages = status.stages_overview || [];
+  const entries = status.entries_overview || [];
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
@@ -38,8 +35,7 @@ export const WorldBookOverview: React.FC<WorldBookOverviewProps> = ({
             <div>
               <h3 className="font-semibold text-sm">{status.world_book_name || '世界书概览'}</h3>
               <p className="text-[11px] text-muted-foreground">
-                阶段 {current + 1} / {status.total_stages}
-                {status.stage_transition_mode === 'auto' && ' · 自动过渡'}
+                当前已激活 {status.active_entries_count} 条词条
               </p>
             </div>
           </div>
@@ -51,63 +47,31 @@ export const WorldBookOverview: React.FC<WorldBookOverviewProps> = ({
           </button>
         </div>
 
-        {/* Timeline */}
+        {/* Entry list */}
         <div className="flex-1 overflow-y-auto p-4">
-          <div className="relative">
-            {/* Vertical line */}
-            <div className="absolute left-[11px] top-3 bottom-3 w-[2px] bg-white/10" />
-
-            <div className="space-y-1">
-              {stages.map((stage, i) => {
-                const isCompleted = i < current;
-                const isCurrent = i === current;
-                const isFuture = i > current;
-
-                return (
-                  <button
-                    key={i}
-                    onClick={() => onJump(i)}
-                    className={`
-                      relative w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all
-                      ${isCurrent ? 'bg-blue-500/10 ring-1 ring-blue-500/20' : 'hover:bg-white/5'}
-                    `}
-                  >
-                    {/* Status icon */}
-                    <div className="relative z-10 mt-0.5 shrink-0">
-                      {isCompleted && <CheckCircle className="w-6 h-6 text-green-400" />}
-                      {isCurrent && <PlayCircle className="w-6 h-6 text-blue-400" />}
-                      {isFuture && <Circle className="w-6 h-6 text-white/20" />}
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-sm font-medium ${
-                          isCurrent ? 'text-blue-300' : isCompleted ? 'text-foreground' : 'text-muted-foreground/60'
-                        }`}>
-                          {stage.title || `阶段 ${i + 1}`}
-                        </span>
-                        {isCurrent && (
-                          <span className="px-1.5 py-0.5 text-[10px] rounded bg-blue-500/20 text-blue-300">当前</span>
-                        )}
-                      </div>
-                      {stage.summary && (
-                        <p className={`text-[11px] mt-0.5 line-clamp-2 ${
-                          isFuture ? 'text-muted-foreground/40' : 'text-muted-foreground'
-                        }`}>
-                          {stage.summary}
-                        </p>
-                      )}
-                    </div>
-
-                    <ChevronRight className={`w-4 h-4 shrink-0 mt-0.5 ${
-                      isCurrent ? 'text-blue-400' : 'text-white/10'
-                    }`} />
-                  </button>
-                );
-              })}
+          {entries.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <p className="text-sm">暂无激活的词条</p>
+              <p className="text-xs mt-1">对话中匹配到关键词后会自动注入</p>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-2">
+              {entries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-start gap-2 p-2.5 rounded-lg bg-blue-500/10 ring-1 ring-blue-500/20"
+                >
+                  <Zap className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-blue-300">{entry.title || '无标题'}</p>
+                    {entry.keys_preview && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">关键词: {entry.keys_preview}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

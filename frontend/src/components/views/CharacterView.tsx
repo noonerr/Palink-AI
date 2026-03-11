@@ -1,8 +1,9 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
 import { useWorldBook } from '@/hooks/useWorldBook';
+import { usePlotLine } from '@/hooks/usePlotLine';
 import { api } from '@/services/api';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 import { CharacterList } from './character/CharacterList';
@@ -90,7 +91,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [selectedWorldBookId, setSelectedWorldBookId] = useState<string | null>(null);
   
   // World Book hook
+  const [showPlotLineManager, setShowPlotLineManager] = useState(false);
+  const [selectedPlotLineId, setSelectedPlotLineId] = useState<string | null>(null);
+
+  // World Book hook
   const wb = useWorldBook();
+  // PlotLine hook
+  const pl = usePlotLine();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -669,6 +676,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     } catch {
       // Session may not have a world book associated
     }
+    // Load plot line status for this session
+    try {
+      await pl.loadSessionStatus(session.id);
+    } catch {
+      // Session may not have a plot line associated
+    }
   };
 
   const handleNewSession = () => {
@@ -894,6 +907,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           setShowWorldBookOverview={setShowWorldBookOverview}
           selectedWorldBookId={selectedWorldBookId}
           setSelectedWorldBookId={setSelectedWorldBookId}
+          pl={pl}
+          showPlotLineManager={showPlotLineManager}
+          setShowPlotLineManager={setShowPlotLineManager}
+          selectedPlotLineId={selectedPlotLineId}
+          setSelectedPlotLineId={setSelectedPlotLineId}
           setViewState={setViewState}
         />
       )}

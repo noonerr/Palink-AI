@@ -1,9 +1,9 @@
 /**
- * WorldBookManager — 世界书管理界面
- * 列表、创建、编辑、导入、AI解析、阶段预览
+ * WorldBookManager — 世界书管理界面（Phase 6B 关键词模式）
+ * 列表、创建、编辑、导入、词条预览
  */
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Sparkles, Trash2, ChevronDown, ChevronUp, BookOpen, FileJson, X } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, BookOpen, FileJson, X } from 'lucide-react';
 import { GlassCard } from './GlassCard';
 import type { WorldBook, WorldBookDetail } from '@/types';
 import type { Translations } from '@/types';
@@ -12,23 +12,19 @@ interface WorldBookManagerProps {
   worldBooks: WorldBook[];
   selectedWorldBook: WorldBookDetail | null;
   loading: boolean;
-  parsing: boolean;
-  models: Array<{ id: string; name?: string; alias?: string }>;
-  selectedModel: string;
   t: Translations;
   onLoad: () => void;
   onCreate: (data: { name: string; description?: string; raw_content?: string }) => Promise<WorldBook>;
   onUpdate: (id: string, data: { name?: string; description?: string; raw_content?: string }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onImport: (file: File) => Promise<WorldBook>;
-  onParse: (id: string, model?: string) => Promise<void>;
   onSelect: (id: string) => void;
   onClose: () => void;
 }
 
 export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
-  worldBooks, selectedWorldBook, loading, parsing, models: _models, selectedModel,
-  t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onImport, onParse, onSelect, onClose,
+  worldBooks, selectedWorldBook, loading,
+  t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onImport, onSelect, onClose,
 }) => {
   const [showCreate, setShowCreate] = useState(false);
   const [_editingId, _setEditingId] = useState<string | null>(null);
@@ -74,16 +70,6 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
             <h3 className="font-semibold text-lg">{selectedWorldBook.name}</h3>
           </div>
           <div className="flex items-center gap-2">
-            {!selectedWorldBook.is_parsed && selectedWorldBook.raw_content && (
-              <button
-                onClick={() => onParse(selectedWorldBook.id, selectedModel)}
-                disabled={parsing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 transition-colors text-sm disabled:opacity-50"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                {parsing ? 'AI解析中...' : 'AI智能分段'}
-              </button>
-            )}
           </div>
         </div>
 
@@ -95,17 +81,8 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
           {selectedWorldBook.stages.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p>暂无阶段</p>
-              {selectedWorldBook.raw_content && (
-                <button
-                  onClick={() => onParse(selectedWorldBook.id, selectedModel)}
-                  disabled={parsing}
-                  className="mt-3 px-4 py-2 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 transition-colors text-sm"
-                >
-                  <Sparkles className="w-4 h-4 inline mr-1" />
-                  使用AI自动分段
-                </button>
-              )}
+              <p>暂无词条</p>
+              <p className="text-xs mt-1">导入 SillyTavern 世界书 JSON 或自行添加词条</p>
             </div>
           ) : (
             selectedWorldBook.stages.map((stage) => (
@@ -118,9 +95,17 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
                     <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/20 text-blue-400 text-xs font-bold">
                       {stage.stage_index + 1}
                     </span>
-                    <span className="font-medium text-sm">{stage.title || `阶段 ${stage.stage_index + 1}`}</span>
-                    {stage.priority >= 8 && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-400">关键</span>
+                    <span className="font-medium text-sm">{stage.title || `词条 ${stage.stage_index + 1}`}</span>
+                    {stage.constant && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-400">常量</span>
+                    )}
+                    {stage.priority >= 8 && !stage.constant && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-orange-500/20 text-orange-400">高优先</span>
+                    )}
+                    {(stage.keys ?? []).length > 0 && (
+                      <span className="text-[10px] text-blue-400/60">
+                        {(stage.keys ?? []).slice(0, 2).join(', ')}{(stage.keys ?? []).length > 2 ? '...' : ''}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -129,18 +114,37 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
                   </div>
                 </button>
                 {expandedStages.has(stage.id) && (
-                  <div className="px-3 pb-3 border-t border-white/5">
-                    {stage.summary && (
-                      <p className="text-xs text-muted-foreground mt-2 mb-1 italic">{stage.summary}</p>
+                  <div className="px-3 pb-3 border-t border-white/5 space-y-2">
+                    <div className="mt-2">
+                      <label className="text-[11px] text-muted-foreground mb-1 block">关键词（英文逗号分隔）</label>
+                      <input
+                        defaultValue={(stage.keys ?? []).join(', ')}
+                        placeholder="dragon, magic sword, castle..."
+                        className="w-full px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs focus:outline-none focus:border-blue-500/50"
+                        readOnly
+                      />
+                    </div>
+                    {(stage.selective) && stage.secondary_keys && stage.secondary_keys.length > 0 && (
+                      <div>
+                        <label className="text-[11px] text-muted-foreground mb-1 block">二级关键词</label>
+                        <input
+                          defaultValue={(stage.secondary_keys ?? []).join(', ')}
+                          className="w-full px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs focus:outline-none focus:border-blue-500/50"
+                          readOnly
+                        />
+                      </div>
                     )}
-                    <pre className="text-xs mt-2 whitespace-pre-wrap text-foreground/80 max-h-48 overflow-y-auto">
+                    <div className="flex gap-4 text-[11px] text-muted-foreground">
+                      <span>概率: {stage.probability}%</span>
+                      <span>扫描深度: {stage.scan_depth}</span>
+                      {stage.selective && <span className="text-orange-400">双键模式</span>}
+                    </div>
+                    {stage.summary && (
+                      <p className="text-xs text-muted-foreground italic">{stage.summary}</p>
+                    )}
+                    <pre className="text-xs whitespace-pre-wrap text-foreground/80 max-h-48 overflow-y-auto">
                       {stage.content}
                     </pre>
-                    {stage.transition_hint && (
-                      <p className="text-[11px] text-blue-400/80 mt-2">
-                        过渡条件: {stage.transition_hint}
-                      </p>
-                    )}
                   </div>
                 )}
               </GlassCard>
@@ -238,7 +242,7 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
                     <span className="font-medium text-sm">{wb.name}</span>
                     {wb.is_parsed && (
                       <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">
-                        {wb.stage_count}阶段
+                        {wb.stage_count}词条
                       </span>
                     )}
                     {wb.format === 'silly_tavern_v2' && (

@@ -22,7 +22,8 @@ from ..models import User, Character, CharacterChatSession, CharacterChatMessage
 from ..models.system import UserSetting
 from ..character_card import extract_chara_card_from_png
 from ..memory_module.service import MemoryService
-from ..services.worldbook_service import build_worldbook_context, check_stage_transition
+from ..services.worldbook_service import build_worldbook_context
+from ..services.plotline_service import build_plotline_context
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
@@ -540,7 +541,8 @@ async def translate_character(
         client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
         prompt = (
             f"Translate the following character card fields to {lang_name}. "
-            f"Return a valid JSON object with the same keys. Keep proper nouns (character names) unchanged.\n\n"
+            f"Return a valid JSON object with the same keys. You MUST translate ALL 6 fields. "
+            f"Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
             + json.dumps(fields_to_translate, ensure_ascii=False)
         )
         resp = await client.chat.completions.create(
@@ -570,6 +572,7 @@ async def translate_character(
         char.is_processing = False
         char.processing_status = ""
         db.commit()
+        db.refresh(char)
         return {"status": "ok", "character": _char_to_dict(char)}
     except Exception as e:
         char.is_processing = False
@@ -1017,13 +1020,26 @@ async def character_chat(
     # ── Build messages array ────────────────────────────────────────────
     system_prompt = _build_char_system_prompt(char, user_nickname)
 
-    # ── Inject world book context ───────────────────────────────────────
+    # ── Inject world book context (keyword-trigger) ─────────────────────
     try:
-        wb_context = build_worldbook_context(db, session_id)
+        from ..models.character import CharacterChatMessage as CCM
+        recent_for_wb = db.query(CCM).filter(
+            CCM.session_id == session_id
+        ).order_by(CCM.created_at.desc()).limit(8).all()[::-1]
+        recent_msgs_for_wb = [{"role": m.role, "content": m.content} for m in recent_for_wb]
+        wb_context = build_worldbook_context(db, session_id, recent_msgs_for_wb)
         if wb_context:
             system_prompt += "\n\n" + wb_context
     except Exception as e:
         logger.warning(f"World book context injection failed: {e}")
+
+    # ── Inject plot line context (linear stage) ──────────────────────────
+    try:
+        pl_context = build_plotline_context(db, session_id)
+        if pl_context:
+            system_prompt += "\n\n" + pl_context
+    except Exception as e:
+        logger.warning(f"Plot line context injection failed: {e}")
 
     if memory_mode != "disabled":
         try:
@@ -1193,26 +1209,9 @@ async def character_chat(
                     content=final,
                     model=req.model,
                     tokens=token_count,
+                    prompt_tokens=prompt_tokens,
                 ))
                 new_db.commit()
-
-                # Check stage transition (every message, async)
-                try:
-                    from ..models.character import CharacterChatMessage as CCM
-                    recent = new_db.query(CCM).filter(
-                        CCM.session_id == session_id
-                    ).order_by(CCM.created_at.desc()).limit(6).all()[::-1]
-                    recent_msgs = [{"role": m.role, "content": m.content} for m in recent]
-                    # Note: check_stage_transition is async but we're in a sync context here;
-                    # we use a simple asyncio call. The transition SSE is sent separately.
-                    import asyncio
-                    transition = asyncio.get_event_loop().run_until_complete(
-                        check_stage_transition(new_db, session_id, recent_msgs, req.model)
-                    )
-                    if transition and transition.get("should_transition"):
-                        logger.info(f"Stage transition for session {session_id}: {transition}")
-                except Exception as e:
-                    logger.warning(f"Stage transition check failed: {e}")
 
                 # Store memories if enabled
                 if memory_mode != "disabled":

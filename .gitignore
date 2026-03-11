@@ -26,6 +26,10 @@ temp_extract*/
 backup_*/
 empty_del_*/
 
+# ML model files
+backend/models/
+data/
+
 # OS
 .DS_Store
 Thumbs.db

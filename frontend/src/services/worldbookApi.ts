@@ -8,7 +8,6 @@ import type {
   WorldBookStage,
   SessionWorldBook,
   WorldBookStatus,
-  StageTransitionResult,
 } from '@/types';
 
 // ── World Book CRUD ──
@@ -27,7 +26,7 @@ export const worldbookApi = {
     tags?: string[];
   }) => api.post<WorldBook>('/api/worldbooks', data),
 
-  /** 获取世界书详情（含阶段列表） */
+  /** 获取世界书详情（含词条列表） */
   get: (id: string) => api.get<WorldBookDetail>(`/api/worldbooks/${id}`),
 
   /** 编辑世界书 */
@@ -48,11 +47,7 @@ export const worldbookApi = {
     return api.post<WorldBook>('/api/worldbooks/import', formData);
   },
 
-  /** AI分段解析 */
-  parse: (id: string, model?: string) =>
-    api.post<WorldBook>(`/api/worldbooks/${id}/parse`, { model }),
-
-  /** 编辑单个阶段 */
+  /** 编辑单个词条 */
   updateStage: (worldBookId: string, stageId: string, data: {
     title?: string;
     content?: string;
@@ -60,6 +55,13 @@ export const worldbookApi = {
     transition_hint?: string;
     priority?: number;
     image_prompt?: string;
+    keys?: string[];
+    secondary_keys?: string[];
+    scan_depth?: number;
+    position?: number;
+    selective?: boolean;
+    probability?: number;
+    constant?: boolean;
   }) => api.put<WorldBookStage>(`/api/worldbooks/${worldBookId}/stages/${stageId}`, data),
 
   // ── Session association ──
@@ -67,7 +69,6 @@ export const worldbookApi = {
   /** 为对话关联世界书 */
   associateSession: (sessionId: string, data: {
     world_book_id: string;
-    stage_transition_mode?: string;
   }) => api.post<SessionWorldBook>(`/api/character-sessions/${sessionId}/worldbook`, data),
 
   /** 取消对话的世界书关联 */
@@ -77,11 +78,5 @@ export const worldbookApi = {
   /** 获取对话的世界书状态 */
   getSessionStatus: (sessionId: string) =>
     api.get<WorldBookStatus>(`/api/character-sessions/${sessionId}/worldbook/status`),
-
-  /** 手动切换阶段 */
-  transitionStage: (sessionId: string, action: 'next' | 'prev' | 'jump', targetIndex?: number) =>
-    api.post<StageTransitionResult>(
-      `/api/character-sessions/${sessionId}/worldbook/transition`,
-      { action, target_stage_index: targetIndex },
-    ),
 };
+

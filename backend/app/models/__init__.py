@@ -6,6 +6,7 @@ from .character import Character, CharacterChatSession, CharacterChatMessage, Ch
 from .workspace import UserFolder, UserFile
 from .system import SystemSetting, UserSetting, ProviderTestResult
 from .worldbook import WorldBook, WorldBookStage, SessionWorldBook
+from .plotline import PlotLine, PlotStage, SessionPlotLine
 
 __all__ = [
     'Base',
@@ -14,4 +15,5 @@ __all__ = [
     'UserFolder', 'UserFile',
     'SystemSetting', 'UserSetting', 'ProviderTestResult',
     'WorldBook', 'WorldBookStage', 'SessionWorldBook',
+    'PlotLine', 'PlotStage', 'SessionPlotLine',
 ]

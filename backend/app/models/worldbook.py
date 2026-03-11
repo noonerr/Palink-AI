@@ -24,8 +24,8 @@ class WorldBook(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 
     user = relationship("User")
-    stages = relationship("WorldBookStage", back_populates="world_book", cascade="all, delete-orphan",
-                          order_by="WorldBookStage.stage_index")
+    entries = relationship("WorldBookStage", back_populates="world_book", cascade="all, delete-orphan",
+                           order_by="WorldBookStage.stage_index")
 
 
 class WorldBookStage(Base):
@@ -40,9 +40,17 @@ class WorldBookStage(Base):
     priority = Column(Integer, default=5)  # 1-10, higher = more critical
     token_count = Column(Integer, default=0)
     image_prompt = Column(Text, nullable=True)  # Reserved for future text-to-image
+    # Keyword-trigger fields (Phase 6A)
+    keys = Column(Text, nullable=True)           # JSON array string
+    secondary_keys = Column(Text, nullable=True) # JSON array string
+    scan_depth = Column(Integer, default=4)
+    position = Column(Integer, default=4)
+    selective = Column(Boolean, default=False)
+    probability = Column(Integer, default=100)
+    constant = Column(Boolean, default=False)
     created_at = Column(DateTime, default=utc_now)
 
-    world_book = relationship("WorldBook", back_populates="stages")
+    world_book = relationship("WorldBook", back_populates="entries")
 
 
 class SessionWorldBook(Base):
@@ -53,8 +61,8 @@ class SessionWorldBook(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = Column(String, ForeignKey("character_chat_sessions.id", ondelete="CASCADE"))
     world_book_id = Column(String, ForeignKey("world_books.id", ondelete="CASCADE"))
-    current_stage_index = Column(Integer, default=0)
-    stage_transition_mode = Column(String, default="auto")  # "auto" / "manual"
+    current_stage_index = Column(Integer, nullable=True)
+    stage_transition_mode = Column(String, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 

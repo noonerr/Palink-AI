@@ -1,4 +1,4 @@
-"""World Book API routes — CRUD, import, parse, session association, stage control."""
+"""World Book API routes — CRUD, import, session association, keyword-trigger."""
 import json
 import uuid
 from datetime import datetime, timezone
@@ -14,7 +14,6 @@ from ..schemas.worldbook import (
     WorldBookCreate, WorldBookUpdate, WorldBookResponse,
     WorldBookDetailResponse, WorldBookStageResponse, WorldBookStageUpdate,
     SessionWorldBookCreate, SessionWorldBookResponse,
-    StageTransitionRequest, StageTransitionResponse,
     WorldBookParseRequest,
 )
 
@@ -27,7 +26,7 @@ def _utc_now():
 
 
 def _wb_to_response(wb: WorldBook) -> dict:
-    stage_count = len(wb.stages) if wb.stages else 0
+    stage_count = len(wb.entries) if wb.entries else 0
     tags = None
     if wb.tags:
         try:
@@ -48,6 +47,16 @@ def _wb_to_response(wb: WorldBook) -> dict:
     }
 
 
+def _parse_keys(field) -> list:
+    """Safely parse a JSON-encoded keys field."""
+    if not field:
+        return []
+    try:
+        return json.loads(field)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 def _stage_to_response(s: WorldBookStage) -> dict:
     return {
         "id": s.id,
@@ -60,6 +69,13 @@ def _stage_to_response(s: WorldBookStage) -> dict:
         "priority": s.priority,
         "token_count": s.token_count,
         "image_prompt": s.image_prompt,
+        "keys": _parse_keys(s.keys),
+        "secondary_keys": _parse_keys(s.secondary_keys),
+        "scan_depth": s.scan_depth if s.scan_depth is not None else 4,
+        "position": s.position if s.position is not None else 4,
+        "selective": bool(s.selective),
+        "probability": s.probability if s.probability is not None else 100,
+        "constant": bool(s.constant),
     }
 
 
@@ -128,7 +144,7 @@ async def get_worldbook(
         "format": wb.format,
         "tags": tags,
         "is_parsed": wb.is_parsed,
-        "stages": [_stage_to_response(s) for s in wb.stages],
+        "stages": [_stage_to_response(s) for s in wb.entries],
         "created_at": str(wb.created_at) if wb.created_at else "",
         "updated_at": str(wb.updated_at) if wb.updated_at else "",
     }
@@ -234,8 +250,7 @@ async def import_worldbook(
     )
     db.add(wb)
 
-    # Auto-create stages from entries: constant entries become global (priority 10),
-    # others become sequenced stages
+    # Auto-create entries from lorebook: keyword-trigger mode
     stage_index = 0
     for _key, entry in sorted(entries.items(), key=lambda x: x[1].get("order", 0)):
         if entry.get("disable", False):
@@ -248,12 +263,19 @@ async def import_worldbook(
             id=str(uuid.uuid4()),
             world_book_id=wb.id,
             stage_index=stage_index,
-            title=entry.get("comment", f"Stage {stage_index}"),
+            title=entry.get("comment", f"Entry {stage_index}"),
             content=entry_content,
             summary=None,
-            transition_hint=", ".join(entry.get("key", [])) if entry.get("key") else None,
+            transition_hint=None,
             priority=10 if is_constant else 5,
-            token_count=len(entry_content) // 4,  # Rough estimate
+            token_count=len(entry_content) // 4,
+            keys=json.dumps(entry.get("key", [])),
+            secondary_keys=json.dumps(entry.get("keysecondary", [])),
+            scan_depth=entry.get("scanDepth", 4),
+            position=entry.get("position", 4),
+            selective=entry.get("selective", False),
+            probability=entry.get("probability", 100),
+            constant=is_constant,
             created_at=_utc_now(),
         )
         db.add(stage)
@@ -265,35 +287,6 @@ async def import_worldbook(
     db.commit()
     db.refresh(wb)
     return _wb_to_response(wb)
-
-
-# ──────────────────────────────────────────────
-# AI Parse (placeholder — implemented in Phase 2)
-# ──────────────────────────────────────────────
-
-@router.post("/{world_book_id}/parse")
-async def parse_worldbook(
-    world_book_id: str,
-    req: WorldBookParseRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """AI驱动的世界书分段解析"""
-    from ..services.worldbook_service import parse_worldbook_into_stages
-
-    wb = db.query(WorldBook).filter(WorldBook.id == world_book_id, WorldBook.user_id == user.id).first()
-    if not wb:
-        raise HTTPException(404, "World book not found")
-    if not wb.raw_content:
-        raise HTTPException(400, "World book has no content to parse")
-
-    try:
-        wb = await parse_worldbook_into_stages(db, world_book_id, req.model)
-        return _wb_to_response(wb)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Parse failed: {str(e)}")
 
 
 # ──────────────────────────────────────────────
@@ -331,6 +324,20 @@ async def update_stage(
         stage.priority = max(1, min(10, req.priority))
     if req.image_prompt is not None:
         stage.image_prompt = req.image_prompt
+    if req.keys is not None:
+        stage.keys = json.dumps(req.keys)
+    if req.secondary_keys is not None:
+        stage.secondary_keys = json.dumps(req.secondary_keys)
+    if req.scan_depth is not None:
+        stage.scan_depth = req.scan_depth
+    if req.position is not None:
+        stage.position = req.position
+    if req.selective is not None:
+        stage.selective = req.selective
+    if req.probability is not None:
+        stage.probability = req.probability
+    if req.constant is not None:
+        stage.constant = req.constant
 
     wb.updated_at = _utc_now()
     db.commit()
@@ -371,8 +378,6 @@ async def associate_worldbook(
         id=str(uuid.uuid4()),
         session_id=session_id,
         world_book_id=req.world_book_id,
-        current_stage_index=0,
-        stage_transition_mode=req.stage_transition_mode,
         created_at=_utc_now(),
         updated_at=_utc_now(),
     )
@@ -384,10 +389,8 @@ async def associate_worldbook(
         "id": swb.id,
         "session_id": swb.session_id,
         "world_book_id": swb.world_book_id,
-        "current_stage_index": swb.current_stage_index,
-        "stage_transition_mode": swb.stage_transition_mode,
         "world_book": _wb_to_response(wb),
-        "stages": [_stage_to_response(s) for s in wb.stages],
+        "stages": [_stage_to_response(s) for s in wb.entries],
         "created_at": str(swb.created_at),
         "updated_at": str(swb.updated_at),
     }
@@ -435,83 +438,24 @@ async def get_worldbook_status(
         return {"active": False}
 
     wb = db.query(WorldBook).filter(WorldBook.id == swb.world_book_id).first()
-    stages = db.query(WorldBookStage).filter(
+    entry_count = db.query(WorldBookStage).filter(
         WorldBookStage.world_book_id == swb.world_book_id
-    ).order_by(WorldBookStage.stage_index).all()
-
-    current_stage = None
-    for s in stages:
-        if s.stage_index == swb.current_stage_index:
-            current_stage = _stage_to_response(s)
-            break
+    ).count()
+    entries_overview = [
+        {
+            "id": e.id,
+            "title": e.title,
+            "keys_preview": ", ".join(_parse_keys(e.keys)[:3]) if e.keys else ("[constant]" if e.constant else ""),
+        }
+        for e in db.query(WorldBookStage).filter(
+            WorldBookStage.world_book_id == swb.world_book_id
+        ).order_by(WorldBookStage.stage_index).limit(20).all()
+    ]
 
     return {
         "active": True,
         "world_book_id": swb.world_book_id,
         "world_book_name": wb.name if wb else None,
-        "current_stage_index": swb.current_stage_index,
-        "total_stages": len(stages),
-        "stage_transition_mode": swb.stage_transition_mode,
-        "current_stage": current_stage,
-        "stages_overview": [{"index": s.stage_index, "title": s.title, "summary": s.summary} for s in stages],
-    }
-
-
-@router_session_wb.post("/{session_id}/worldbook/transition")
-async def transition_stage(
-    session_id: str,
-    req: StageTransitionRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """手动切换世界书阶段"""
-    from ..models.character import CharacterChatSession
-    session = db.query(CharacterChatSession).filter(
-        CharacterChatSession.id == session_id,
-        CharacterChatSession.user_id == user.id,
-    ).first()
-    if not session:
-        raise HTTPException(404, "Session not found")
-
-    swb = db.query(SessionWorldBook).filter(SessionWorldBook.session_id == session_id).first()
-    if not swb:
-        raise HTTPException(404, "No world book associated with this session")
-
-    total_stages = db.query(WorldBookStage).filter(
-        WorldBookStage.world_book_id == swb.world_book_id
-    ).count()
-
-    if total_stages == 0:
-        raise HTTPException(400, "World book has no stages")
-
-    previous = swb.current_stage_index
-
-    if req.action == "next":
-        new_index = min(swb.current_stage_index + 1, total_stages - 1)
-    elif req.action == "prev":
-        new_index = max(swb.current_stage_index - 1, 0)
-    elif req.action == "jump":
-        if req.target_stage_index is None:
-            raise HTTPException(400, "target_stage_index required for jump action")
-        if req.target_stage_index < 0 or req.target_stage_index >= total_stages:
-            raise HTTPException(400, f"target_stage_index must be 0-{total_stages - 1}")
-        new_index = req.target_stage_index
-    else:
-        raise HTTPException(400, "action must be 'next', 'prev', or 'jump'")
-
-    swb.current_stage_index = new_index
-    swb.updated_at = _utc_now()
-    db.commit()
-
-    # Get title of new stage
-    new_stage = db.query(WorldBookStage).filter(
-        WorldBookStage.world_book_id == swb.world_book_id,
-        WorldBookStage.stage_index == new_index,
-    ).first()
-
-    return {
-        "previous_stage_index": previous,
-        "current_stage_index": new_index,
-        "stage_title": new_stage.title if new_stage else None,
-        "total_stages": total_stages,
+        "active_entries_count": entry_count,
+        "entries_overview": entries_overview,
     }

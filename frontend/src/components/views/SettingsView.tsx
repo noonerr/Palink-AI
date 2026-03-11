@@ -34,6 +34,7 @@ import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { Switch } from '@/components/ui/switch';
 import { OCSettings } from '@/components/ui/custom/OCSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelEditor } from './ModelEditor';
 import { PRESETS, EMOJIS } from './settings-constants';
 import type { Model, Provider, User as UserType } from '@/types';
@@ -52,7 +53,7 @@ interface SettingsViewProps {
   onLangToggle?: () => void;
 }
 
-type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about';
+type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage';
 type ModelSubTab = 'llm' | 'local';
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -445,13 +446,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSaveProvider = async () => {
     const modelsToSave = pModels.map(model => {
       // 确保每个模型同时有 id, name 和 alias 字段
-      // name 是用户在 ModelEditor 中编辑的显示名称，alias 应与 name 保持同步
-      const displayName = model.name || model.alias || model.id || '';
       const saveModel: any = { 
         ...model,
         id: model.id || '',
-        name: displayName,
-        alias: displayName
+        name: model.name || model.alias || model.id || '',
+        alias: model.alias || model.name || model.id || ''
       };
       return saveModel;
     });
@@ -548,6 +547,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }
   
   menuItems.push(
+    { id: 'usage' as SettingsTab, label: '用量统计', icon: Zap },
     { id: 'about' as SettingsTab, label: t.settings_about, icon: AlertCircle }
   );
 
@@ -1321,6 +1321,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="h-full">
               <OCSettings token={token} models={models} />
             </div>
+          )}
+
+          {/* Usage Tab */}
+          {activeTab === 'usage' && (
+            <ScrollArea className="h-full">
+              <div className="p-4 sm:p-6">
+                <TokenUsagePanel token={token} />
+              </div>
+            </ScrollArea>
           )}
 
           {/* About Tab */}

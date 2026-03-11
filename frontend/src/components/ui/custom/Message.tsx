@@ -207,7 +207,9 @@ type MessagePart = {
     iterations++;
   } while (content !== prevContent && iterations < 5);
   
-  content = cleanGrokOutput(content);
+  if (!isCharacterChat) {
+    content = cleanGrokOutput(content);
+  }
   
   let allTags = [
     { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' }

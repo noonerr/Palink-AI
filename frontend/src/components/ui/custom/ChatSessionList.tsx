@@ -177,4 +177,6 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
       </ScrollArea>
     </div>
   );
+}, (prevProps, nextProps) => {
+  return false;
 });

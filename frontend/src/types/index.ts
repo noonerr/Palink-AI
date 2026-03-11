@@ -213,6 +213,14 @@ export interface WorldBookStage {
   priority: number;
   token_count: number;
   image_prompt?: string;
+  // Keyword-trigger fields
+  keys?: string[];
+  secondary_keys?: string[];
+  scan_depth: number;
+  position: number;
+  selective: boolean;
+  probability: number;
+  constant: boolean;
 }
 
 export interface WorldBookDetail extends Omit<WorldBook, 'stage_count'> {
@@ -223,8 +231,6 @@ export interface SessionWorldBook {
   id: string;
   session_id: string;
   world_book_id: string;
-  current_stage_index: number;
-  stage_transition_mode: 'auto' | 'manual';
   world_book?: WorldBook;
   stages?: WorldBookStage[];
   created_at: string;
@@ -235,16 +241,65 @@ export interface WorldBookStatus {
   active: boolean;
   world_book_id?: string;
   world_book_name?: string;
+  active_entries_count: number;
+  entries_overview?: Array<{ id: string; title?: string; keys_preview: string }>;
+}
+
+export interface PlotLine {
+  id: string;
+  name: string;
+  description?: string;
+  raw_content?: string;
+  tags?: string[];
+  is_parsed: boolean;
+  stage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlotStage {
+  id: string;
+  plot_line_id: string;
+  stage_index: number;
+  title?: string;
+  content: string;
+  summary?: string;
+  transition_hint?: string;
+  priority: number;
+  token_count: number;
+}
+
+export interface PlotLineDetail extends Omit<PlotLine, 'stage_count'> {
+  stages: PlotStage[];
+}
+
+export interface SessionPlotLine {
+  id: string;
+  session_id: string;
+  plot_line_id: string;
+  current_stage_index: number;
+  stage_transition_mode: 'auto' | 'manual';
+  plot_line?: PlotLine;
+  stages?: PlotStage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlotLineStatus {
+  active: boolean;
+  plot_line_id?: string;
+  plot_line_name?: string;
   current_stage_index?: number;
   total_stages?: number;
   stage_transition_mode?: string;
-  current_stage?: WorldBookStage;
+  current_stage?: PlotStage;
   stages_overview?: Array<{ index: number; title?: string; summary?: string }>;
 }
 
-export interface StageTransitionResult {
+export interface PlotStageTransitionResult {
   previous_stage_index: number;
   current_stage_index: number;
   stage_title?: string;
   total_stages: number;
 }
+

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>标签解析测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-case { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .expected { margin-top: 10px; padding: 10px; background: #f0f0f0; border-radius: 3px; }
+        .tag { padding: 2px 5px; border-radius: 3px; margin: 0 2px; }
+        .action { background: #fff3cd; color: #856404; }
+        .thinking { background: #f3e5f5; color: #7b1fa2; }
+        .content { background: #f8f9fa; color: #212529; }
+    </style>
+</head>
+<body>
+    <h1>标签解析测试</h1>
+    
+    <div class="test-case">
+        <h3>测试用例 1: 基本标签解析</h3>
+        <p>输入: <code>这是普通内容 &lt;|a|>这是动作&lt;|/a|> 这是普通内容 &lt;|t|>这是思考&lt;|/t|></code></p>
+        <div class="expected">
+            <h4>预期输出:</h4>
+            <p><span class="tag content">这是普通内容 </span><span class="tag action">这是动作</span><span class="tag content"> 这是普通内容 </span><span class="tag thinking">这是思考</span></p>
+        </div>
+    </div>
+    
+    <div class="test-case">
+        <h3>测试用例 2: 嵌套标签</h3>
+        <p>输入: <code>&lt;|a|>动作1&lt;|/a|> 普通内容 &lt;|a|>动作2&lt;|/a|></code></p>
+        <div class="expected">
+            <h4>预期输出:</h4>
+            <p><span class="tag action">动作1</span><span class="tag content"> 普通内容 </span><span class="tag action">动作2</span></p>
+        </div>
+    </div>
+    
+    <div class="test-case">
+        <h3>测试用例 3: 只有普通内容</h3>
+        <p>输入: <code>这是只有普通内容的情况</code></p>
+        <div class="expected">
+            <h4>预期输出:</h4>
+            <p><span class="tag content">这是只有普通内容的情况</span></p>
+        </div>
+    </div>
+    
+    <div class="test-case">
+        <h3>测试用例 4: 转义标签</h3>
+        <p>输入: <code>&amp;lt;|a|&amp;gt;转义的动作&amp;lt;|/a|&amp;gt;</code></p>
+        <div class="expected">
+            <h4>预期输出:</h4>
+            <p><span class="tag action">转义的动作</span></p>
+        </div>
+    </div>
+    
+    <p><strong>说明:</strong> 请在前端应用中测试这些用例，确保标签被正确解析和渲染。</p>
+</body>
+</html>

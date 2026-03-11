@@ -214,7 +214,7 @@ export function useCharacterChat({
       }, { signal: abortControllerRef.current.signal });
 
       if (!selectedSession) {
-        setTimeout(() => loadSessions(selectedCharacter.id), 1000);
+        loadSessions(selectedCharacter.id);
       }
 
       const reader = response.body?.getReader();

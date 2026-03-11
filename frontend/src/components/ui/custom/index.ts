@@ -4,7 +4,7 @@
  */
 
 export { AuroraBackground } from './AuroraBackground';
-export { GlassContainer, GlassCard, GlassButton } from './GlassContainer';
+export { GlassCard } from './GlassCard';
 export { KineticButton, useKinetic } from './KineticButton';
 export { 
   ThemeProvider, 

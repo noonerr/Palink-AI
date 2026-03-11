@@ -65,6 +65,7 @@ class CharacterChatMessage(Base):
     content = Column(Text)
     model = Column(String, nullable=True)
     tokens = Column(Integer, default=0)
+    prompt_tokens = Column(Integer, default=0)
     created_at = Column(DateTime, default=utc_now)
     session = relationship("CharacterChatSession", back_populates="messages")
     branch = relationship("CharacterChatSessionBranch")

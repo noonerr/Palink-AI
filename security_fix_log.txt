@@ -1,0 +1,45 @@
+Date: 2026-03-07T17:56:12.793Z
+Scope: main.py
+
+Summary:
+Fixed security-sensitive defaults (secret/admin/CORS), closed an unauthenticated file download path, and corrected workspace delete behavior to avoid orphaned files and incorrect storage accounting.
+
+Detailed changes:
+1) Secrets & admin password
+- Before: SECRET_KEY and default admin password were hardcoded in main.py.
+- After: SECRET_KEY and ADMIN_PASSWORD are read from env.
+- Behavior:
+  - APP_ENV=development: falls back to previous defaults with WARNING logs.
+  - APP_ENV!=development: missing values raise RuntimeError on startup (fail fast).
+
+2) CORS policy
+- Before: allow_origins=["*"] in all environments.
+- After: CORS_ORIGINS controls allowed origins.
+- Behavior:
+  - APP_ENV=development: defaults to "*" with WARNING logs if unset.
+  - APP_ENV!=development: missing CORS_ORIGINS raises RuntimeError.
+
+3) Workspace file download authorization
+- Before: /api/workspace/file/{file_id} allowed any authenticated or unauthenticated user to fetch any file by ID.
+- After: endpoint requires current user and enforces ownership (UserFile.user_id == current user).
+- Impact: prevents cross-user data leakage.
+
+4) Workspace delete correctness
+- Before: deleting folders only removed folder rows (no recursive deletion), and storage_used only deducted sizes of explicitly listed file_ids.
+- After: folder deletion is recursive:
+  - Collect all descendant folder IDs.
+  - Delete all files in those folders.
+  - Deduct storage_used for every removed file.
+  - Delete folder rows in bulk.
+- Error handling: file delete failures log a warning with path + error.
+
+Required environment variables for production:
+- APP_ENV=production
+- SECRET_KEY=your-strong-secret
+- ADMIN_PASSWORD=strong-admin-password
+- CORS_ORIGINS=https://your-frontend.example.com
+
+Suggested manual checks:
+- Start server with APP_ENV=production and verify it fails fast when required env vars are missing.
+- Login as non-admin and verify /api/workspace/file/{file_id} only serves own files.
+- Delete a folder with nested files; confirm storage_used decreases appropriately and files are removed from disk.
