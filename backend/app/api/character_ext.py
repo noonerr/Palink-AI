@@ -138,6 +138,13 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户") ->
     if char.description:
         parts.append(f"Description: {char.description}")
     parts.append(f'The user\'s name is "{user_nickname}".')
+    parts.append(
+        'Response format rules:\n'
+        '- Wrap spoken dialogue in double quotes: "Hello!"\n'
+        '- Wrap actions, narration, and internal thoughts in asterisks: *she smiled softly*\n'
+        '- Do NOT use XML tags like <action> or <thinking>.\n'
+        '- Write naturally, mixing dialogue and actions in the same response.'
+    )
     return "\n\n".join(parts)
 
 
@@ -1223,12 +1230,14 @@ async def character_chat(
                                 session_id=session_id,
                                 role="user",
                                 content=req.message,
+                                branch_id=branch_id,
                             )
                             mem_svc.store_memory(
                                 user_id=user.id,
                                 session_id=session_id,
                                 role="assistant",
                                 content=full_content,
+                                branch_id=branch_id,
                             )
                             new_db.commit()
                     except Exception as e:

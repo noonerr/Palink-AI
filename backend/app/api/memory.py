@@ -4,6 +4,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..core import get_db
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 class CompressRequest(BaseModel):
     session_id: str
+    branch_id: Optional[str] = None
     model: str = ""
     compression_ratio: float = 0.5
 
@@ -25,18 +27,23 @@ class CompressRequest(BaseModel):
 @router.get("/stats")
 def get_memory_stats(
     session_id: str,
+    branch_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """获取会话记忆统计信息"""
     try:
         service = MemoryCompressionService(db)
-        result = service.check_compression_needed(current_user.id, session_id)
+        result = service.check_compression_needed(current_user.id, session_id, branch_id)
+        stats = result.get("stats", {})
         return {
             "session_id": session_id,
-            "stats": result.get("stats", {}),
+            "branch_id": branch_id,
+            "message_count": stats.get("message_count", 0),
+            "token_count": stats.get("token_count", 0),
+            "oldest_message_hours": stats.get("oldest_message_hours", 0),
             "compression_needed": result.get("needed", False),
-            "reason": result.get("reason", ""),
+            "compression_reason": result.get("reason", ""),
         }
     except Exception as e:
         logger.error(f"获取记忆统计失败: {e}")
@@ -46,13 +53,14 @@ def get_memory_stats(
 @router.get("/check-auto-compress")
 def check_auto_compress(
     session_id: str,
+    branch_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """检查是否需要自动压缩"""
     try:
         service = MemoryCompressionService(db)
-        result = service.check_compression_needed(current_user.id, session_id)
+        result = service.check_compression_needed(current_user.id, session_id, branch_id)
         return result
     except Exception as e:
         logger.error(f"检查自动压缩失败: {e}")
@@ -72,6 +80,7 @@ async def compress_memory(
             user_id=current_user.id,
             session_id=body.session_id,
             compression_ratio=body.compression_ratio,
+            branch_id=body.branch_id,
         )
         return result
     except Exception as e:

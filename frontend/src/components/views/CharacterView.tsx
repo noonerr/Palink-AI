@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
@@ -40,7 +40,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     const ocData = getOCData();
     if (ocData?.name) return ocData.name;
     if (character?.user_nickname) return character.user_nickname;
-    return user.username || '用户';
+    return user.username || '鐢ㄦ埛';
   };
   
   const [sessions, setSessions] = useState<CharacterChatSession[]>([]);
@@ -50,7 +50,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
   const [loading, setLoading] = useState(true);
   
-  // 对话分支相关状态
+  // 瀵硅瘽鍒嗘敮鐩稿叧鐘舵€?
   const [branches, setBranches] = useState<CharacterChatSessionBranch[]>([]);
   const [selectedBranch, setSelectedBranch] = useState<CharacterChatSessionBranch | null>(null);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
@@ -113,10 +113,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   }, []);
 
-  const autoCompressMemory = async (sessionId: string) => {
+  const autoCompressMemory = async (sessionId: string, branchId?: string) => {
     if (loadingSessionRef.current !== sessionId) return;
     try {
-      const data = await api.get(`/api/memory/check-auto-compress?session_id=${sessionId}`);
+      const branchParam = branchId ? `&branch_id=${branchId}` : ``;
+      const data = await api.get(`/api/memory/check-auto-compress?session_id=${sessionId}${branchParam}`);
       if (loadingSessionRef.current === sessionId && data.auto_compressed) {
         console.log('Memory auto-compressed:', data.message);
       }
@@ -127,15 +128,16 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   };
 
-  const loadMemoryStats = useCallback(async (sessionId: string) => {
+  const loadMemoryStats = useCallback(async (sessionId: string, branchId?: string) => {
     if (!sessionId) return;
     loadingSessionRef.current = sessionId;
     try {
-      const data = await api.get(`/api/memory/stats?session_id=${sessionId}`);
+      const branchParam = branchId ? `&branch_id=${branchId}` : ``;
+      const data = await api.get(`/api/memory/stats?session_id=${sessionId}${branchParam}`);
       if (loadingSessionRef.current === sessionId) {
         setMemoryStats(data);
         if (data.compression_needed) {
-          await autoCompressMemory(sessionId);
+          await autoCompressMemory(sessionId, branchId);
         }
       }
     } catch (e) {
@@ -143,7 +145,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   }, []);
 
-  // ── Chat hook ──────────────────────────────────────────
+  // 鈹€鈹€ Chat hook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const {
     isGenerating,
     inputValue,
@@ -181,7 +183,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     loadMemoryStats,
   });
 
-  // ── Message selection hook ─────────────────────────────
+  // 鈹€鈹€ Message selection hook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const {
     isMixedDeleteMode,
     setIsMixedDeleteMode,
@@ -206,7 +208,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     fetchUserSettings();
     wb.loadWorldBooks();
     
-    // 监听用户设置更新事件
+    // 鐩戝惉鐢ㄦ埛璁剧疆鏇存柊浜嬩欢
     const handleSettingsUpdate = (e: any) => {
       if (e.detail?.showModelReasoning !== undefined) {
         setShowModelReasoning(e.detail.showModelReasoning);
@@ -251,7 +253,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           pollCharacterStatus(processingChar.id);
         }
       }
-      // 不要在这里清除 processingCharacter，让轮询函数自己处理
+      // 涓嶈鍦ㄨ繖閲屾竻闄?processingCharacter锛岃杞鍑芥暟鑷繁澶勭悊
     } catch (e) {
       console.error('Failed to load characters:', e);
     } finally {
@@ -295,6 +297,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setSelectedBranch(branch);
       setMessages(data.messages || []);
       await loadBranches(selectedSession.id);
+      await loadMemoryStats(selectedSession.id, branch.id);
     } catch (e) {
       console.error('Failed to switch branch:', e);
     }
@@ -336,14 +339,20 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const handleStorylineNavigate = useCallback(async (branchId: string, _messageId: number | null, _isLeaf: boolean) => {
     if (!selectedSession) return;
     try {
-      await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch`);
-      const data = await api.get(`/api/character-sessions/${selectedSession.id}/messages`);
-      setMessages(data);
-      await loadBranches(selectedSession.id);
+      // POST response already contains the full branch history
+      const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch`);
+      setMessages(data.messages || []);
+      await loadBranches(selectedSession.id); // also sets selectedBranch to active
+      await loadMemoryStats(selectedSession.id, branchId);
+      // Refresh branch tree so storyline map shows updated active node
+      try {
+        const treeData = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`);
+        setBranchTree(treeData);
+      } catch {}
     } catch (e) {
       console.error('Failed to navigate storyline:', e);
     }
-  }, [selectedSession, loadBranches]);
+  }, [selectedSession, loadBranches, loadMemoryStats]);
 
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
@@ -354,7 +363,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadMemoryStats(sessionId);
       await loadBranches(sessionId);
       
-      // 角色扮演禁用推荐对话功能（节省 tokens）
+      // 瑙掕壊鎵紨绂佺敤鎺ㄨ崘瀵硅瘽鍔熻兘锛堣妭鐪?tokens锛?
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
@@ -366,13 +375,14 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     try {
       const data = await api.post('/api/memory/compress', {
         session_id: selectedSession.id,
+        branch_id: selectedBranch?.id,
         compression_ratio: 0.5
       });
-      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
-      await loadMemoryStats(selectedSession.id);
+      alert(`璁板繂鍘嬬缉瀹屾垚锛乗n鍒犻櫎: ${data.compressed_count} 鏉n淇濈暀: ${data.remaining_count} 鏉n鎽樿: ${data.summary}`);
+      await loadMemoryStats(selectedSession.id, selectedBranch?.id);
     } catch (e: any) {
       console.error('Manual compress failed:', e);
-      alert('压缩失败: ' + (e.message || ''));
+      alert('鍘嬬缉澶辫触: ' + (e.message || ''));
     } finally {
       setCompressing(false);
     }
@@ -437,7 +447,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadCharacters();
     } catch (e: any) {
       console.error('Failed to delete character:', e);
-      alert('删除失败: ' + (e.message || ''));
+      alert('鍒犻櫎澶辫触: ' + (e.message || ''));
     } finally {
       setShowDeleteCharacterConfirm(false);
       setPendingDeleteCharacter(null);
@@ -454,7 +464,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setShowImportOptions(result.character.id);
     } catch (e: any) {
       console.error('Failed to import character:', e);
-      alert('导入失败: ' + (e.message || ''));
+      alert('瀵煎叆澶辫触: ' + (e.message || ''));
     }
   };
 
@@ -465,14 +475,14 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setShowImportOptions(null);
       await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
       
-      setShowProcessingMessage({ show: true, message: '已经开始解析，请稍候...' });
+      setShowProcessingMessage({ show: true, message: '宸茬粡寮€濮嬭В鏋愶紝璇风◢鍊?..' });
       pollCharacterStatus(characterId);
       setTimeout(() => {
         setShowProcessingMessage({ show: false, message: '' });
       }, 3000);
     } catch (e: any) {
       console.error('Failed to parse character:', e);
-      setShowProcessingMessage({ show: true, message: '解析失败: ' + (e.message || '') });
+      setShowProcessingMessage({ show: true, message: '瑙ｆ瀽澶辫触: ' + (e.message || '') });
       setProcessingCharacter(null);
       setForceShowOverlay(null);
       setTimeout(() => {
@@ -488,14 +498,14 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setShowImportOptions(null);
       await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
       
-      setShowProcessingMessage({ show: true, message: '已经开始翻译，请稍候...' });
+      setShowProcessingMessage({ show: true, message: '宸茬粡寮€濮嬬炕璇戯紝璇风◢鍊?..' });
       pollCharacterStatus(characterId);
       setTimeout(() => {
         setShowProcessingMessage({ show: false, message: '' });
       }, 3000);
     } catch (e: any) {
       console.error('Failed to translate character:', e);
-      setShowProcessingMessage({ show: true, message: '翻译失败: ' + (e.message || '') });
+      setShowProcessingMessage({ show: true, message: '缈昏瘧澶辫触: ' + (e.message || '') });
       setProcessingCharacter(null);
       setForceShowOverlay(null);
       setTimeout(() => {
@@ -551,13 +561,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
             } catch { /* ignore */ }
           }
             
-          if (status.processing_status?.includes('完成')) {
-            setShowProcessingMessage({ show: true, message: '角色卡处理完成！' });
+          if (status.processing_status?.includes('瀹屾垚')) {
+            setShowProcessingMessage({ show: true, message: '瑙掕壊鍗″鐞嗗畬鎴愶紒' });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
-          } else if (status.processing_status?.includes('失败')) {
-            setShowProcessingMessage({ show: true, message: `角色卡处理失败：${status.processing_status}` });
+          } else if (status.processing_status?.includes('澶辫触')) {
+            setShowProcessingMessage({ show: true, message: `瑙掕壊鍗″鐞嗗け璐ワ細${status.processing_status}` });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
@@ -596,11 +606,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         }
       } else {
         const error = await res.text();
-        alert('导出失败: ' + error);
+        alert('瀵煎嚭澶辫触: ' + error);
       }
     } catch (e) {
       console.error('Failed to export character:', e);
-      alert('导出失败');
+      alert('瀵煎嚭澶辫触');
     }
   };
 
@@ -620,7 +630,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setInitializingChat(true);
     
     try {
-      // 如果没有现有会话，并且角色有第一条消息，创建一个新会话来初始化
+      // 濡傛灉娌℃湁鐜版湁浼氳瘽锛屽苟涓旇鑹叉湁绗竴鏉℃秷鎭紝鍒涘缓涓€涓柊浼氳瘽鏉ュ垵濮嬪寲
       if (sessions.length === 0 && selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
         const data = await api.post('/api/character-chat', {
           character_id: selectedCharacter.id,
@@ -655,7 +665,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           }
         }
       } else if (initialMessage) {
-        // 如果用户提供了初始消息，直接发送
+        // 濡傛灉鐢ㄦ埛鎻愪緵浜嗗垵濮嬫秷鎭紝鐩存帴鍙戦€?
         await handleSendMessage(initialMessage, []);
       }
     } catch (e) {

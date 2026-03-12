@@ -44,6 +44,7 @@ class MemoryService:
         session_id: str,
         role: str,
         content: str,
+        branch_id: Optional[str] = None,
         **metadata
     ) -> Optional[int]:
         """
@@ -69,7 +70,8 @@ class MemoryService:
                 role=role,
                 content=content,
                 importance_score=metadata.get('importance_score', 0.5),
-                topics=metadata.get('topics', [])
+                topics=metadata.get('topics', []),
+                branch_id=branch_id
             )
         except Exception as e:
             logger.error(f"存储记忆失败: {e}")

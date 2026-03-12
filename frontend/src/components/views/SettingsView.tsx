@@ -53,7 +53,7 @@ interface SettingsViewProps {
   onLangToggle?: () => void;
 }
 
-type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage';
+type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage' | 'user_usage';
 type ModelSubTab = 'llm' | 'local';
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -123,6 +123,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [modelDeleteConfirm, setModelDeleteConfirm] = useState<{ open: boolean; modelId: string }>({ open: false, modelId: '' });
   const [userDeleteConfirm, setUserDeleteConfirm] = useState<{ open: boolean; userId: string }>({ open: false, userId: '' });
   const [providerDeleteConfirm, setProviderDeleteConfirm] = useState<{ open: boolean; providerId: string }>({ open: false, providerId: '' });
+  const [viewingUser, setViewingUser] = useState<UserType | null>(null);
 
   const isAdmin = user.role === 'admin';
 
@@ -1175,27 +1176,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 {usersList.map(u => (
                   <GlassCard key={u.id} className="p-4">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
+                      <button 
+                        onClick={() => { setViewingUser(u); setActiveTab('user_usage'); }}
+                        className="flex items-center gap-4 text-left flex-1"
+                      >
                         <Avatar>
                           <AvatarImage src={u.avatar} />
                           <AvatarFallback>{u.username?.[0]?.toUpperCase()}</AvatarFallback>
                         </Avatar>
-                        <div>
-                          <p className="font-medium">{u.username}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {t.role}: {u.role} • 存储空间: {(u.storage_used! / 1024 / 1024).toFixed(1)}MB • 对话: {u.chat_count}
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            对话Tokens: {u.tokens_chat || 0} • 工作空间Tokens: {u.tokens_workspace || 0} • 角色扮演Tokens: {u.tokens_character || 0} • 总计: {u.tokens_total || 0}
-                          </p>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium">{u.username}</p>
+                            <span className="text-xs text-muted-foreground">
+                              {t.role}: {u.role}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+                            <div className="p-2 rounded-lg bg-muted/40 border border-border/40">
+                              <p className="text-xs text-blue-500 font-medium">输入</p>
+                              <p className="text-sm font-bold">{(u.tokens_chat || 0) + (u.tokens_workspace || 0) + (u.tokens_character || 0)}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/40 border border-border/40">
+                              <p className="text-xs text-green-500 font-medium">输出</p>
+                              <p className="text-sm font-bold">0</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/40 border border-border/40">
+                              <p className="text-xs text-muted-foreground font-medium">请求</p>
+                              <p className="text-sm font-bold">{u.chat_count}次</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/40 border border-border/40">
+                              <p className="text-xs text-muted-foreground font-medium">存储</p>
+                              <p className="text-sm font-bold">{(u.storage_used! / 1024 / 1024).toFixed(1)}MB</p>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex gap-2">
+                      </button>
+                      <div className="flex gap-2 ml-2">
                         <Button 
                           variant="ghost" 
                           size="icon" 
                           className="text-destructive hover:bg-destructive/10"
-                          onClick={() => handleDeleteUser(u.id)}
+                          onClick={(e) => { e.stopPropagation(); handleDeleteUser(u.id); }}
                         >
                           <Trash2 size={14} />
                         </Button>
@@ -1328,6 +1349,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <ScrollArea className="h-full">
               <div className="p-4 sm:p-6">
                 <TokenUsagePanel token={token} />
+              </div>
+            </ScrollArea>
+          )}
+
+          {/* User Usage Tab */}
+          {activeTab === 'user_usage' && viewingUser && (
+            <ScrollArea className="h-full">
+              <div className="p-4 sm:p-6">
+                <div className="mb-4">
+                  <Button
+                    variant="ghost"
+                    onClick={() => { setActiveTab('admin_users'); setViewingUser(null); }}
+                    className="mb-4"
+                  >
+                    <ChevronDown size={18} className="mr-2 -rotate-90" />
+                    返回用户管理
+                  </Button>
+                </div>
+                <TokenUsagePanel 
+                  token={token} 
+                  userId={viewingUser.id}
+                  userName={viewingUser.username}
+                  hideCharacterUsage={true}
+                />
               </div>
             </ScrollArea>
           )}

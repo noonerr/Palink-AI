@@ -154,7 +154,7 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
           }
           @media (max-width: 768px) {
             .mobile-padding {
-              padding-bottom: 80px; /* 为底部dock栏留出空间 */
+              padding-bottom: calc(80px + env(safe-area-inset-bottom));
             }
           }
         `}</style>

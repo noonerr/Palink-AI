@@ -117,7 +117,10 @@
 html {
   scroll-behavior: smooth;
   height: 100%;
-  overflow: hidden;
+  /* iOS Safari 安全区域 */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 body {
@@ -125,14 +128,22 @@ body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   height: 100%;
-  overflow: hidden;
+  height: 100svh;
+  overflow-y: auto;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  /* iOS 滚动优化 */
+  -webkit-overflow-scrolling: touch;
 }
 
 #root {
   height: 100%;
+  height: 100svh;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Prevent scroll chaining on all Radix ScrollArea viewports */
@@ -760,6 +771,47 @@ button,
   
   .gap-mobile-2 {
     gap: 0.5rem;
+  }
+}
+
+/* ========================================
+   iOS Safe Area & Dynamic Viewport Height Support
+   ======================================== */
+
+/* 使用 svh (Small Viewport Height) 适配 - 兼容大多数iOS版本 */
+@supports (height: 100svh) {
+  html, body, #root {
+    height: 100svh;
+  }
+}
+
+/* 兼容不支持 svh 的 iOS 旧版本 */
+@supports not (height: 100svh) {
+  @supports (height: 100dvh) {
+    html, body, #root {
+      height: 100dvh;
+    }
+  }
+  
+  @supports not (height: 100dvh) {
+    html, body, #root {
+      height: 100vh;
+      height: 100%;
+    }
+  }
+}
+
+/* iOS Safari 底部安全区域适配 - 导航栏 */
+@supports (padding: max(0px)) {
+  .ios-safe-area-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+  }
+}
+
+/* iOS Safari 顶部安全区域适配 */
+@supports (padding: max(0px)) {
+  .ios-safe-area-top {
+    padding-top: max(env(safe-area-inset-top), 0px);
   }
 }
 

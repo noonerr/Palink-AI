@@ -126,7 +126,17 @@ function CharacterTable({ rows }: { rows: CharacterEntry[] }) {
 
 /* ───────────── main component ───────────── */
 
-export function TokenUsagePanel({ token: _token }: { token: string }) {
+export function TokenUsagePanel({ 
+  token: _token, 
+  userId,
+  userName,
+  hideCharacterUsage = false
+}: { 
+  token: string;
+  userId?: string;
+  userName?: string;
+  hideCharacterUsage?: boolean;
+}) {
   const [period, setPeriod] = useState<Period>('month');
   const [data, setData] = useState<UsageData | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
@@ -135,10 +145,13 @@ export function TokenUsagePanel({ token: _token }: { token: string }) {
   useEffect(() => {
     setLoading(true);
     setData(null);
-    api.get(`/api/stats/usage?period=${period}`)
+    const url = userId 
+      ? `/api/stats/admin/usage/${userId}?period=${period}`
+      : `/api/stats/usage?period=${period}`;
+    api.get(url)
       .then((res: any) => setData(res))
       .finally(() => setLoading(false));
-  }, [period]);
+  }, [period, userId]);
 
   const periods: Period[] = ['day', 'week', 'month', 'all'];
 
@@ -157,7 +170,7 @@ export function TokenUsagePanel({ token: _token }: { token: string }) {
           )}
           <BarChart2 size={20} className="text-primary" />
           <h2 className="text-lg font-semibold">
-            {detail === 'character' ? '角色聊天详情' : detail === 'regular' ? '普通聊天详情' : '用量统计'}
+            {userName ? `${userName}的用量统计` : detail === 'character' ? '角色聊天详情' : detail === 'regular' ? '普通聊天详情' : '用量统计'}
           </h2>
         </div>
         {/* Period selector */}
@@ -186,7 +199,7 @@ export function TokenUsagePanel({ token: _token }: { token: string }) {
 
       {/* Overview (detail === null) */}
       {!loading && data && !detail && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={`grid gap-4 ${hideCharacterUsage ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
           {/* Regular chat card */}
           <button
             className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
@@ -203,21 +216,23 @@ export function TokenUsagePanel({ token: _token }: { token: string }) {
             </div>
           </button>
 
-          {/* Character chat card */}
-          <button
-            className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
-            onClick={() => setDetail('character')}
-          >
-            <div className="flex items-center gap-2 font-medium">
-              <Sparkles size={16} className="text-purple-500" />
-              角色聊天
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <StatCard label="输入" value={formatTokens(data.character_chat.summary.input)} icon={ArrowUpCircle} color="text-blue-500" />
-              <StatCard label="输出" value={formatTokens(data.character_chat.summary.output)} icon={ArrowDownCircle} color="text-green-500" />
-              <StatCard label="请求" value={`${data.character_chat.summary.requests}次`} icon={Sparkles} color="text-purple-500" />
-            </div>
-          </button>
+          {/* Character chat card - only show if not hiding */}
+          {!hideCharacterUsage && (
+            <button
+              className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
+              onClick={() => setDetail('character')}
+            >
+              <div className="flex items-center gap-2 font-medium">
+                <Sparkles size={16} className="text-purple-500" />
+                角色聊天
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <StatCard label="输入" value={formatTokens(data.character_chat.summary.input)} icon={ArrowUpCircle} color="text-blue-500" />
+                <StatCard label="输出" value={formatTokens(data.character_chat.summary.output)} icon={ArrowDownCircle} color="text-green-500" />
+                <StatCard label="请求" value={`${data.character_chat.summary.requests}次`} icon={Sparkles} color="text-purple-500" />
+              </div>
+            </button>
+          )}
         </div>
       )}
 
@@ -247,8 +262,8 @@ export function TokenUsagePanel({ token: _token }: { token: string }) {
                   <ModelBadgeList models={stats.by_model} />
                 </div>
 
-                {/* By character (only for character chat) */}
-                {detail === 'character' && (
+                {/* By character (only for character chat and not hiding) */}
+                {detail === 'character' && !hideCharacterUsage && (
                   <div>
                     <p className="text-xs text-muted-foreground mb-2 font-medium">按角色</p>
                     <CharacterTable rows={(data.character_chat as CharacterChatStats).by_character} />

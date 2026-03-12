@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, cast, Date
 
@@ -26,11 +26,11 @@ def _since(period: str) -> Optional[datetime]:
     return None  # all
 
 
-@router.get("/usage")
-async def get_usage_stats(
-    period: str = Query("month", pattern="^(day|week|month|all)$"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+def _get_usage_stats_for_user(
+    user_id: str,
+    period: str,
+    db: Session,
+    hide_character_usage: bool = False
 ):
     since = _since(period)
 
@@ -39,7 +39,7 @@ async def get_usage_stats(
         db.query(CharacterChatMessage)
         .join(CharacterChatSession, CharacterChatMessage.session_id == CharacterChatSession.id)
         .filter(
-            CharacterChatSession.user_id == user.id,
+            CharacterChatSession.user_id == user_id,
             CharacterChatMessage.role == "assistant",
         )
     )
@@ -65,7 +65,7 @@ async def get_usage_stats(
         )
         .join(CharacterChatSession, CharacterChatMessage.session_id == CharacterChatSession.id)
         .filter(
-            CharacterChatSession.user_id == user.id,
+            CharacterChatSession.user_id == user_id,
             CharacterChatMessage.role == "assistant",
         )
         .group_by(CharacterChatMessage.model)
@@ -77,28 +77,30 @@ async def get_usage_stats(
         for r in by_model_q.all()
     ]
 
-    # by_character
-    by_char_q = (
-        db.query(
-            Character.name.label("character_name"),
-            func.sum(CharacterChatMessage.prompt_tokens).label("input"),
-            func.sum(CharacterChatMessage.tokens).label("output"),
-            func.count(CharacterChatMessage.id).label("requests"),
+    # by_character (only if not hidden)
+    char_by_character = []
+    if not hide_character_usage:
+        by_char_q = (
+            db.query(
+                Character.name.label("character_name"),
+                func.sum(CharacterChatMessage.prompt_tokens).label("input"),
+                func.sum(CharacterChatMessage.tokens).label("output"),
+                func.count(CharacterChatMessage.id).label("requests"),
+            )
+            .join(CharacterChatSession, CharacterChatMessage.session_id == CharacterChatSession.id)
+            .join(Character, CharacterChatSession.character_id == Character.id)
+            .filter(
+                CharacterChatSession.user_id == user_id,
+                CharacterChatMessage.role == "assistant",
+            )
+            .group_by(Character.name)
         )
-        .join(CharacterChatSession, CharacterChatMessage.session_id == CharacterChatSession.id)
-        .join(Character, CharacterChatSession.character_id == Character.id)
-        .filter(
-            CharacterChatSession.user_id == user.id,
-            CharacterChatMessage.role == "assistant",
-        )
-        .group_by(Character.name)
-    )
-    if since:
-        by_char_q = by_char_q.filter(CharacterChatMessage.created_at >= since)
-    char_by_character = [
-        {"character_name": r.character_name, "input": r.input or 0, "output": r.output or 0, "requests": r.requests}
-        for r in by_char_q.all()
-    ]
+        if since:
+            by_char_q = by_char_q.filter(CharacterChatMessage.created_at >= since)
+        char_by_character = [
+            {"character_name": r.character_name, "input": r.input or 0, "output": r.output or 0, "requests": r.requests}
+            for r in by_char_q.all()
+        ]
 
     # daily
     char_daily_q = (
@@ -109,7 +111,7 @@ async def get_usage_stats(
         )
         .join(CharacterChatSession, CharacterChatMessage.session_id == CharacterChatSession.id)
         .filter(
-            CharacterChatSession.user_id == user.id,
+            CharacterChatSession.user_id == user_id,
             CharacterChatMessage.role == "assistant",
         )
         .group_by(cast(CharacterChatMessage.created_at, Date))
@@ -127,7 +129,7 @@ async def get_usage_stats(
         db.query(ChatMessage)
         .join(ChatSession, ChatMessage.session_id == ChatSession.id)
         .filter(
-            ChatSession.user_id == user.id,
+            ChatSession.user_id == user_id,
             ChatMessage.role == "assistant",
         )
     )
@@ -153,7 +155,7 @@ async def get_usage_stats(
         )
         .join(ChatSession, ChatMessage.session_id == ChatSession.id)
         .filter(
-            ChatSession.user_id == user.id,
+            ChatSession.user_id == user_id,
             ChatMessage.role == "assistant",
         )
         .group_by(ChatMessage.model)
@@ -174,7 +176,7 @@ async def get_usage_stats(
         )
         .join(ChatSession, ChatMessage.session_id == ChatSession.id)
         .filter(
-            ChatSession.user_id == user.id,
+            ChatSession.user_id == user_id,
             ChatMessage.role == "assistant",
         )
         .group_by(cast(ChatMessage.created_at, Date))
@@ -200,3 +202,29 @@ async def get_usage_stats(
             "daily": reg_daily,
         },
     }
+
+
+@router.get("/usage")
+async def get_usage_stats(
+    period: str = Query("month", pattern="^(day|week|month|all)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return _get_usage_stats_for_user(user.id, period, db, hide_character_usage=False)
+
+
+@router.get("/admin/usage/{user_id}")
+async def get_admin_user_usage_stats(
+    user_id: str,
+    period: str = Query("month", pattern="^(day|week|month|all)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return _get_usage_stats_for_user(user_id, period, db, hide_character_usage=True)

@@ -51,6 +51,7 @@ class MemoryStorage:
                 self._init_sqlite_tables()
             
             self._create_indexes()
+            self._migrate_tables()
             
             self.db.commit()
             logger.info(f"记忆表初始化完成 (数据库类型: {'PostgreSQL' if self.is_postgres else 'SQLite'})")
@@ -131,6 +132,18 @@ class MemoryStorage:
             )
         """))
     
+    def _migrate_tables(self):
+        """在现有表上安全添加新列（幂等）"""
+        try:
+            self.db.execute(text("""
+                ALTER TABLE conversation_memories ADD COLUMN branch_id TEXT
+            """))
+            self.db.commit()
+            logger.info("迁移: 添加 branch_id 列")
+        except Exception:
+            # 列已存在，忽略
+            self.db.rollback()
+
     def _create_indexes(self):
         """创建索引"""
         self.db.execute(text("""
@@ -153,7 +166,8 @@ class MemoryStorage:
         role: str,
         content: str,
         importance_score: float = 0.5,
-        topics: List[str] = None
+        topics: List[str] = None,
+        branch_id: Optional[str] = None
     ) -> Optional[int]:
         """
         存储单条记忆
@@ -171,9 +185,9 @@ class MemoryStorage:
             
             sql = text("""
                 INSERT INTO conversation_memories 
-                (user_id, session_id, role, content, embedding, 
+                (user_id, session_id, branch_id, role, content, embedding, 
                  importance_score, topics, tokens_count, created_at)
-                VALUES (:user_id, :session_id, :role, :content, :embedding,
+                VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
                         :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
                 RETURNING id
             """)
@@ -181,6 +195,7 @@ class MemoryStorage:
             result = self.db.execute(sql, {
                 "user_id": user_id,
                 "session_id": session_id,
+                "branch_id": branch_id,
                 "role": role,
                 "content": content,
                 "embedding": embedding_json,
@@ -280,21 +295,25 @@ class MemoryStorage:
         self,
         user_id: int,
         session_id: Optional[str] = None,
-        limit: int = 10
+        limit: int = 10,
+        branch_id: Optional[str] = None
     ) -> List[MemoryEntry]:
         """获取最近记忆（时间倒序）"""
         try:
             if session_id:
-                sql = text("""
+                branch_filter = "AND branch_id = :branch_id" if branch_id else ""
+                sql = text(f"""
                     SELECT 
                         id, user_id, session_id, role, content,
                         importance_score, topics, tokens_count, created_at
                     FROM conversation_memories
-                    WHERE user_id = :user_id AND session_id = :session_id
+                    WHERE user_id = :user_id AND session_id = :session_id {branch_filter}
                     ORDER BY created_at DESC
                     LIMIT :limit
                 """)
                 params = {"user_id": user_id, "session_id": session_id, "limit": limit}
+                if branch_id:
+                    params["branch_id"] = branch_id
             else:
                 sql = text("""
                     SELECT 

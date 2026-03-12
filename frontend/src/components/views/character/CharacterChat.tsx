@@ -689,8 +689,11 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                     <div className="flex-1">
                       <Message
                         message={msg}
-                        userAvatar={msg.role === 'assistant' ? selectedCharacter.avatar : user.avatar}
-                        userName={msg.role === 'assistant' ? selectedCharacter.name : user.username}
+                        userAvatar={user.avatar}
+                        userName={user.username}
+                        characterAvatar={selectedCharacter.avatar}
+                        characterName={selectedCharacter.name}
+                        isCharacterChat={true}
                         models={models}
                         streaming={(isGenerating && idx === messages.length - 1) || regeneratingMessageIndex === idx}
                         isLast={idx === messages.length - 1}

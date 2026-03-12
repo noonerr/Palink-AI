@@ -37,7 +37,7 @@ class MemoryCompressionService:
         self.db = db_session
         self.storage = MemoryStorage(db_session)
     
-    def check_compression_needed(self, user_id: int, session_id: str) -> Dict:
+    def check_compression_needed(self, user_id: int, session_id: str, branch_id: Optional[str] = None) -> Dict:
         """
         检查是否需要压缩记忆
         
@@ -53,7 +53,7 @@ class MemoryCompressionService:
         """
         try:
             # 获取当前会话的统计信息
-            stats = self._get_session_stats(user_id, session_id)
+            stats = self._get_session_stats(user_id, session_id, branch_id)
             
             reasons = []
             
@@ -79,21 +79,22 @@ class MemoryCompressionService:
             logger.error(f"检查压缩需求失败: {e}")
             return {"needed": False, "reason": f"检查失败: {e}", "stats": {}}
     
-    def _get_session_stats(self, user_id: int, session_id: str) -> Dict:
+    def _get_session_stats(self, user_id: int, session_id: str, branch_id: Optional[str] = None) -> Dict:
         """获取会话统计信息"""
         try:
             # 查询消息数量
-            count_sql = text("""
+            branch_filter = "AND branch_id = :branch_id" if branch_id else ""
+            count_sql = text(f"""
                 SELECT COUNT(*) as count, 
                        SUM(LENGTH(content) / 4) as estimated_tokens,
                        MIN(created_at) as oldest_message
                 FROM conversation_memories
-                WHERE user_id = :user_id AND session_id = :session_id
+                WHERE user_id = :user_id AND session_id = :session_id {branch_filter}
             """)
-            result = self.db.execute(count_sql, {
-                "user_id": user_id,
-                "session_id": session_id
-            }).fetchone()
+            params = {"user_id": user_id, "session_id": session_id}
+            if branch_id:
+                params["branch_id"] = branch_id
+            result = self.db.execute(count_sql, params).fetchone()
             
             message_count = result.count or 0
             token_count = int(result.estimated_tokens or 0)
@@ -117,8 +118,9 @@ class MemoryCompressionService:
                 "oldest_message_hours": 0
             }
     
-    async def compress_memory(self, user_id: int, session_id: str, 
-                              compression_ratio: float = 0.5) -> Dict:
+    async def compress_memory(self, user_id: int, session_id: str,
+                              compression_ratio: float = 0.5,
+                              branch_id: Optional[str] = None) -> Dict:
         """
         压缩记忆
         
@@ -133,12 +135,13 @@ class MemoryCompressionService:
         }
         """
         try:
-            # 获取所有记忆
+            # 获取所有记忆（按 branch_id 过滤以实现分支隔离）
             all_memories = await asyncio.to_thread(
                 self.storage.get_recent,
                 user_id=user_id,
                 session_id=session_id,
-                limit=1000  # 获取大量记忆
+                limit=1000,
+                branch_id=branch_id
             )
             
             if len(all_memories) < 10:

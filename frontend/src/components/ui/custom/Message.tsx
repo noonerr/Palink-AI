@@ -43,6 +43,8 @@ interface MessageProps {
   onToggleMessagePartSelect?: (messageIndex: number, partId: string) => void;
   onSelectAllPartsInMessage?: (messageIndex: number) => void;
   isCharacterChat?: boolean;
+  characterAvatar?: string;
+  characterName?: string;
   memoryMode?: string;
 }
 
@@ -77,6 +79,8 @@ const MessageInner: React.FC<MessageProps> = ({
   onToggleWholeMessageSelect,
   onToggleMessagePartSelect,
   isCharacterChat = false,
+  characterAvatar,
+  characterName,
   memoryMode,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -210,89 +214,146 @@ type MessagePart = {
   if (!isCharacterChat) {
     content = cleanGrokOutput(content);
   }
-  
-  let allTags = [
-    { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' }
-  ];
-  
-  if (isCharacterChat) {
-    allTags = [
-      { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
-      { type: 'thinking', start: '<thinking>', end: '</thinking>' },
-      { type: 'thinking', start: '<think>', end: '</think>' },
-      { type: 'thinking', start: '<|t|>', end: '</|t|>' },
-      { type: 'thinking', start: '<|t|>', end: '<|/t|>' },
-      { type: 'action', start: '<action>', end: '</action>' },
-      { type: 'action', start: '[action]', end: '[/action]' },
-      { type: 'action', start: '<|a|>', end: '</|a|>' },
-      { type: 'action', start: '<|a|>', end: '<|/a|>' }
-    ];
+
+  // ─── RP Inline Segment Parsing (character chat AI messages) ──────
+  type InlineSegment = {
+    type: 'speech' | 'action' | 'narration' | 'model_reasoning';
+    content: string;
+  };
+  const rpSegments: InlineSegment[] = [];
+  const useRpParser = isCharacterChat && !isUser;
+
+  if (useRpParser) {
+    let rpContent = content;
+    // 1. Extract <model_reasoning> / <think> (deep reasoning)
+    const reasonRegex = /<(?:model_reasoning|think)>([\s\S]*?)<\/(?:model_reasoning|think)>/gi;
+    let rm: RegExpExecArray | null;
+    while ((rm = reasonRegex.exec(rpContent)) !== null) {
+      rpSegments.push({ type: 'model_reasoning', content: rm[1].trim() });
+    }
+    rpContent = rpContent.replace(reasonRegex, '');
+
+    // 2. Convert legacy XML tags → inline markers
+    rpContent = rpContent.replace(/<thinking>([\s\S]*?)<\/thinking>/gi, ' *$1* ');
+    rpContent = rpContent.replace(/<action>([\s\S]*?)<\/action>/gi, ' *$1* ');
+    rpContent = rpContent.replace(/\[action\]([\s\S]*?)\[\/action\]/gi, ' *$1* ');
+    rpContent = rpContent.replace(/<\|a\|>([\s\S]*?)<\/?\|a\|>/gi, ' *$1* ');
+    rpContent = rpContent.replace(/<\|t\|>([\s\S]*?)<\/?\|t\|>/gi, ' *$1* ');
+    rpContent = rpContent.replace(/<\/?(?:think|thinking|action|model_reasoning)>/gi, '');
+    rpContent = rpContent.replace(/<\/?\|[at]\|>/gi, '');
+    rpContent = rpContent.replace(/\[\/?action\]/gi, '');
+    rpContent = rpContent.replace(/\n{3,}/g, '\n\n').trim();
+
+    // 3. Parse "speech" / 「speech」 and *action* inline
+    const tokenRegex = /("(?:[^"\\]|\\.)*"|「[^」]*」|『[^』]*』)|(\*(?!\*)([\s\S]*?)\*(?!\*))/g;
+    let lastIdx = 0;
+    let tm: RegExpExecArray | null;
+    while ((tm = tokenRegex.exec(rpContent)) !== null) {
+      if (tm.index > lastIdx) {
+        const before = rpContent.slice(lastIdx, tm.index);
+        if (before.trim()) rpSegments.push({ type: 'narration', content: before });
+      }
+      if (tm[1]) {
+        const inner = tm[1].startsWith('"') ? tm[1].slice(1, -1)
+          : tm[1].slice(1, -1); // 「...」 or 『...』
+        rpSegments.push({ type: 'speech', content: inner });
+      } else if (tm[2]) {
+        rpSegments.push({ type: 'action', content: tm[3] });
+      }
+      lastIdx = tm.index + tm[0].length;
+    }
+    if (lastIdx < rpContent.length) {
+      const tail = rpContent.slice(lastIdx);
+      if (tail.trim()) rpSegments.push({ type: 'narration', content: tail });
+    }
   }
-  
+
+  // ─── Tag-based Parsing (regular chat / user messages) ────────────
   const parts: MessagePart[] = [];
-  let remainingContent = content;
-  let actionIndex = 0;
-  let textIndex = 0;
-  
-  try {
-    while (remainingContent.length > 0) {
-      let bestMatch: { tag: any; startIdx: number; endIdx: number } | null = null;
-      
-      for (const tag of allTags) {
-        const startIdx = remainingContent.indexOf(tag.start);
-        if (startIdx !== -1) {
-          const endIdx = remainingContent.indexOf(tag.end, startIdx + tag.start.length);
-          if (endIdx !== -1) {
-            const matchLength = endIdx - startIdx + tag.end.length;
-            if (!bestMatch || 
-                startIdx < bestMatch.startIdx || 
-                (startIdx === bestMatch.startIdx && matchLength > (bestMatch.endIdx - bestMatch.startIdx + bestMatch.tag.end.length))) {
-              bestMatch = { tag, startIdx, endIdx };
+
+  if (!useRpParser) {
+    let allTags = [
+      { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' }
+    ];
+
+    if (isCharacterChat) {
+      allTags = [
+        { type: 'modelReasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
+        { type: 'thinking', start: '<thinking>', end: '</thinking>' },
+        { type: 'thinking', start: '<think>', end: '</think>' },
+        { type: 'thinking', start: '<|t|>', end: '</|t|>' },
+        { type: 'thinking', start: '<|t|>', end: '<|/t|>' },
+        { type: 'action', start: '<action>', end: '</action>' },
+        { type: 'action', start: '[action]', end: '[/action]' },
+        { type: 'action', start: '<|a|>', end: '</|a|>' },
+        { type: 'action', start: '<|a|>', end: '<|/a|>' }
+      ];
+    }
+
+    let remainingContent = content;
+    let actionIndex = 0;
+    let textIndex = 0;
+
+    try {
+      while (remainingContent.length > 0) {
+        let bestMatch: { tag: any; startIdx: number; endIdx: number } | null = null;
+
+        for (const tag of allTags) {
+          const startIdx = remainingContent.indexOf(tag.start);
+          if (startIdx !== -1) {
+            const endIdx = remainingContent.indexOf(tag.end, startIdx + tag.start.length);
+            if (endIdx !== -1) {
+              const matchLength = endIdx - startIdx + tag.end.length;
+              if (!bestMatch || 
+                  startIdx < bestMatch.startIdx || 
+                  (startIdx === bestMatch.startIdx && matchLength > (bestMatch.endIdx - bestMatch.startIdx + bestMatch.tag.end.length))) {
+                bestMatch = { tag, startIdx, endIdx };
+              }
             }
           }
         }
-      }
-      
-      if (bestMatch) {
-        if (bestMatch.startIdx > 0) {
-          const beforeText = remainingContent.substring(0, bestMatch.startIdx);
-          if (typeof beforeText === 'string' && beforeText.trim()) {
-            parts.push({ type: 'text', content: beforeText, id: `text-${textIndex++}` });
+
+        if (bestMatch) {
+          if (bestMatch.startIdx > 0) {
+            const beforeText = remainingContent.substring(0, bestMatch.startIdx);
+            if (typeof beforeText === 'string' && beforeText.trim()) {
+              parts.push({ type: 'text', content: beforeText, id: `text-${textIndex++}` });
+            }
           }
-        }
-        
-        const tagContent = remainingContent.substring(
-          bestMatch.startIdx + bestMatch.tag.start.length,
-          bestMatch.endIdx
-        );
-        const trimmedTagContent = typeof tagContent === 'string' ? tagContent.trim() : '';
-        
-        let partId: string;
-        if (bestMatch.tag.type === 'action') {
-          partId = `action-${actionIndex++}`;
-        } else if (bestMatch.tag.type === 'modelReasoning') {
-          partId = 'modelReasoning';
+
+          const tagContent = remainingContent.substring(
+            bestMatch.startIdx + bestMatch.tag.start.length,
+            bestMatch.endIdx
+          );
+          const trimmedTagContent = typeof tagContent === 'string' ? tagContent.trim() : '';
+
+          let partId: string;
+          if (bestMatch.tag.type === 'action') {
+            partId = `action-${actionIndex++}`;
+          } else if (bestMatch.tag.type === 'modelReasoning') {
+            partId = 'modelReasoning';
+          } else {
+            partId = 'thinking';
+          }
+
+          parts.push({ 
+            type: bestMatch.tag.type as any, 
+            content: trimmedTagContent, 
+            id: partId 
+          });
+
+          remainingContent = remainingContent.substring(bestMatch.endIdx + bestMatch.tag.end.length);
         } else {
-          partId = 'thinking';
+          if (typeof remainingContent === 'string' && remainingContent.trim()) {
+            parts.push({ type: 'text', content: remainingContent, id: `text-${textIndex++}` });
+          }
+          break;
         }
-        
-        parts.push({ 
-          type: bestMatch.tag.type as any, 
-          content: trimmedTagContent, 
-          id: partId 
-        });
-        
-        remainingContent = remainingContent.substring(bestMatch.endIdx + bestMatch.tag.end.length);
-      } else {
-        if (typeof remainingContent === 'string' && remainingContent.trim()) {
-          parts.push({ type: 'text', content: remainingContent, id: `text-${textIndex++}` });
-        }
-        break;
       }
+    } catch (e) {
+      console.error('Error parsing message:', e);
+      parts.length = 0;
     }
-  } catch (e) {
-    console.error('Error parsing message:', e);
-    parts.length = 0;
   }
 
   return (
@@ -345,6 +406,13 @@ type MessagePart = {
               {userName?.[0]?.toUpperCase() || 'U'}
             </AvatarFallback>
           </>
+        ) : isCharacterChat && characterAvatar ? (
+          <>
+            <AvatarImage src={characterAvatar} />
+            <AvatarFallback className="bg-secondary text-foreground text-[10px] sm:text-xs font-medium">
+              {characterName?.[0]?.toUpperCase() || '🤖'}
+            </AvatarFallback>
+          </>
         ) : (
           <AvatarFallback className="bg-transparent text-foreground text-[10px] sm:text-xs p-0">
             {aiIcon?.startsWith('http') || aiIcon?.startsWith('/') || aiIcon?.startsWith('data:') ? (
@@ -360,7 +428,71 @@ type MessagePart = {
         "flex flex-col max-w-[92%] sm:max-w-[85%]",
         isUser && "items-end"
       )}>
-        {parts.length > 0 ? (
+        {useRpParser ? (
+          /* ── Character Chat: Unified RP Bubble ── */
+          <div className="flex items-start gap-2 mt-2">
+            {isMixedDeleteMode && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onToggleWholeMessageSelect && messageIndex !== undefined) onToggleWholeMessageSelect(messageIndex);
+                }}
+                className={cn(
+                  "w-4 h-4 rounded border-2 flex items-center justify-center transition-all shrink-0 mt-1",
+                  isItemSelected ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/50 hover:border-primary"
+                )}
+              >
+                {isItemSelected && (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                )}
+              </button>
+            )}
+            <div className={cn(
+              "flex-1 px-4 py-3 sm:px-5 sm:py-3.5 text-sm sm:text-[15px] leading-[1.85] shadow-sm message-bubble-ai",
+              isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
+            )}>
+              {rpSegments.some(s => s.type === 'model_reasoning') && showModelReasoning && (
+                <details className="mb-3 rounded-lg bg-muted/40 dark:bg-muted/20 overflow-hidden">
+                  <summary className="px-3 py-1.5 text-xs font-medium text-muted-foreground cursor-pointer select-none flex items-center gap-1 hover:bg-muted/60 transition-colors">
+                    <Zap size={10} />
+                    模型深度思考
+                  </summary>
+                  <div className="px-3 py-2 text-xs text-muted-foreground font-mono border-t border-border/50">
+                    {rpSegments.filter(s => s.type === 'model_reasoning').map((s, i) => (
+                      <div key={`mr-${i}`} className="markdown-content">
+                        <ReactMarkdown components={{ code: CodeBlock }}>{s.content}</ReactMarkdown>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              <div className="whitespace-pre-wrap">
+                {(() => {
+                  const segs = rpSegments.filter(s => s.type !== 'model_reasoning');
+                  const isStreamingNow = streaming && isLast;
+                  if (segs.length === 0) {
+                    return isStreamingNow
+                      ? <span className="inline-block w-1.5 h-4 bg-primary animate-pulse align-middle" />
+                      : <span className="text-muted-foreground">{content || ' '}</span>;
+                  }
+                  return segs.map((seg, i) => {
+                    const isLastSeg = isStreamingNow && i === segs.length - 1;
+                    const cursor = isLastSeg ? <span className="inline-block w-0.5 h-[1.1em] bg-current animate-pulse ml-px align-middle opacity-70" /> : null;
+                    switch (seg.type) {
+                      case 'speech':
+                        return <React.Fragment key={`rp-${i}`}><span className="text-emerald-700 dark:text-emerald-400">&ldquo;{seg.content}&rdquo;</span>{cursor}</React.Fragment>;
+                      case 'action':
+                        return <React.Fragment key={`rp-${i}`}><span className="text-amber-700 dark:text-amber-300 italic">*{seg.content}*</span>{cursor}</React.Fragment>;
+                      case 'narration':
+                        return <React.Fragment key={`rp-${i}`}><span className="text-purple-600 dark:text-purple-300">{seg.content}</span>{cursor}</React.Fragment>;
+                      default: return null;
+                    }
+                  });
+                })()}
+              </div>
+            </div>
+          </div>
+        ) : parts.length > 0 ? (
           parts.map((part, partIndex) => {
             if (part.type === 'modelReasoning') {
               if (!showModelReasoning || isUser) return null;
@@ -589,6 +721,12 @@ type MessagePart = {
                 </button>
               )}
             </div>
+
+            {isCharacterChat && messageModel && (
+              <span className="text-[10px] text-muted-foreground/50 font-mono truncate max-w-[100px]" title={messageModel.id}>
+                {(messageModel as any).alias || messageModel.id?.split('/').pop()}
+              </span>
+            )}
             
             <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs shrink-0">
               {tokens !== undefined && tokens > 0 && (
@@ -698,6 +836,8 @@ export const Message = React.memo(MessageInner, (prev, next) => {
   // 身份信息
   if (prev.userAvatar !== next.userAvatar) return false;
   if (prev.userName !== next.userName) return false;
+  if (prev.characterAvatar !== next.characterAvatar) return false;
+  if (prev.characterName !== next.characterName) return false;
   if (prev.messageIndex !== next.messageIndex) return false;
 
   // 按当前消息检查选中状态（避免整体 Set/Map 引用比较）

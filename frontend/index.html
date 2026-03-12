@@ -2,11 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>Palink AI</title>
     
-    <link rel="manifest" href="./manifest.json" />
+    <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#3b82f6" />
     <meta name="description" content="Palink AI - 智能对话助手" />
     <meta name="application-name" content="Palink AI" />
@@ -28,6 +28,8 @@
     
     <meta name="msapplication-TileColor" content="#3b82f6" />
     <meta name="msapplication-tap-highlight" content="no" />
+    <!-- 禁止iOS自动识别电话号码、邮箱，避免样式错乱 -->
+    <meta name="format-detection" content="telephone=no, email=no" />
   </head>
   <body>
     <div id="root"></div>
@@ -47,6 +49,27 @@
           root.innerHTML = '<div style="padding: 20px; text-align: center; color: red;"><h1>发生错误</h1><p>' + event.reason + '</p><button onclick="location.reload()">刷新页面</button></div>';
         }
       };
+    </script>
+    <script>
+      // iOS Safari 地址栏收缩优化
+      // 页面加载完成后，自动触发Safari地址栏收缩
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          window.scrollTo(0, 1);
+        }, 100);
+      });
+
+      // 屏幕旋转、窗口尺寸变化时，重新适配高度并触发UI收缩
+      window.addEventListener('orientationchange', () => {
+        setTimeout(() => {
+          window.scrollTo(0, 1);
+        }, 100);
+      });
+      window.addEventListener('resize', () => {
+        setTimeout(() => {
+          window.scrollTo(0, 1);
+        }, 100);
+      });
     </script>
     <script type="module" src="/src/main.tsx"></script>
     <script>
