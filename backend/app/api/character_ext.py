@@ -124,11 +124,31 @@ def _find_model(model_id: str):
     return None, None
 
 
-def _build_char_system_prompt(char: Character, user_nickname: str = "用户") -> str:
+def _build_char_system_prompt(
+    char: Character, 
+    user_nickname: str = "用户", 
+    prompt_language: str = "auto",
+    ui_language: str = "zh"
+) -> str:
+    is_chinese = _should_use_chinese(prompt_language, ui_language)
+    
+    if is_chinese:
+        return _build_char_system_prompt_chinese(char, user_nickname)
+    else:
+        return _build_char_system_prompt_english(char, user_nickname)
+
+
+def _should_use_chinese(prompt_language: str, ui_language: str) -> bool:
+    if prompt_language == "auto":
+        return ui_language in ("zh", "zh-CN", "zh-TW")
+    return prompt_language == "zh"
+
+
+def _build_char_system_prompt_english(char: Character, user_nickname: str = "用户") -> str:
     parts = []
     if char.system_prompt:
         parts.append(char.system_prompt)
-    parts.append(f"You are {char.name}. Stay in character at all times.")
+    parts.append(f"IMPORTANT: You are {char.name}. You MUST stay in character at all times. DO NOT break character or mention you are an AI assistant.")
     if char.personality:
         parts.append(f"Personality: {char.personality}")
     if char.background:
@@ -142,10 +162,36 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户") ->
         'Response format rules:\n'
         '- Wrap spoken dialogue in double quotes: "Hello!"\n'
         '- Wrap actions, narration, and internal thoughts in asterisks: *she smiled softly*\n'
-        '- Do NOT use XML tags like <action> or <thinking>.\n'
         '- Write naturally, mixing dialogue and actions in the same response.'
     )
-    return "\n\n".join(parts)
+    prompt = "\n\n".join(parts)
+    logger.info(f"Generated English system prompt (length: {len(prompt)}): {prompt[:500]}...")
+    return prompt
+
+
+def _build_char_system_prompt_chinese(char: Character, user_nickname: str = "用户") -> str:
+    parts = []
+    if char.system_prompt:
+        parts.append(char.system_prompt)
+    parts.append(f"【重要】你是 {char.name}。请始终保持角色身份，绝对不要打破角色设定，也不要提到你是AI助手。")
+    if char.personality:
+        parts.append(f"性格：{char.personality}")
+    if char.background:
+        parts.append(f"背景故事：{char.background}")
+    if char.scenario:
+        parts.append(f"场景设定：{char.scenario}")
+    if char.description:
+        parts.append(f"角色描述：{char.description}")
+    parts.append(f'用户的名字是 "{user_nickname}"。')
+    parts.append(
+        '回复格式规则：\n'
+        '- 对话内容用双引号包裹："你好！"\n'
+        '- 动作、旁白和内心想法用星号包裹：*她微微一笑* 或 *内心感到紧张*\n'
+        '- 写作自然流畅，在同一条回复中混合对话和动作。'
+    )
+    prompt = "\n\n".join(parts)
+    logger.info(f"Generated Chinese system prompt (length: {len(prompt)}): {prompt[:500]}...")
+    return prompt
 
 
 def _char_to_dict(c: Character) -> dict:
@@ -957,6 +1003,7 @@ class CharacterChatRequest(BaseModel):
     user_nickname: Optional[str] = None
     images: List[str] = []
     files: List[str] = []
+    ui_language: str = "zh"
 
 
 @router_chat.post("/api/character-chat")
@@ -968,6 +1015,13 @@ async def character_chat(
     char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
+    
+    logger.info(f"Loaded character: name={char.name}, id={char.id}")
+    logger.info(f"  - personality: {char.personality[:100] if char.personality else 'None'}...")
+    logger.info(f"  - background: {char.background[:100] if char.background else 'None'}...")
+    logger.info(f"  - scenario: {char.scenario[:100] if char.scenario else 'None'}...")
+    logger.info(f"  - description: {char.description[:100] if char.description else 'None'}...")
+    logger.info(f"  - system_prompt: {char.system_prompt[:100] if char.system_prompt else 'None'}...")
 
     provider, model_cfg = _find_model(req.model)
     if not provider:
@@ -1020,12 +1074,21 @@ async def character_chat(
 
     # ── Memory context ───────────────────────────────────────────────
     memory_mode = "disabled"
+    prompt_language = "auto"
     user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
-    if user_setting and user_setting.memory_mode:
-        memory_mode = user_setting.memory_mode
+    if user_setting:
+        if user_setting.memory_mode:
+            memory_mode = user_setting.memory_mode
+        if user_setting.prompt_language:
+            prompt_language = user_setting.prompt_language
 
     # ── Build messages array ────────────────────────────────────────────
-    system_prompt = _build_char_system_prompt(char, user_nickname)
+    system_prompt = _build_char_system_prompt(
+        char, 
+        user_nickname, 
+        prompt_language=prompt_language,
+        ui_language=req.ui_language
+    )
 
     # ── Inject world book context (keyword-trigger) ─────────────────────
     try:
@@ -1075,8 +1138,11 @@ async def character_chat(
 
     messages = [{"role": "system", "content": system_prompt}]
 
+    logger.info(f"Messages array initialized with {len(messages)} message (system prompt: {messages[0]['content'][:200]}...")
+    
     if char.mes_example:
         messages.append({"role": "system", "content": f"Example dialogue:\n{char.mes_example}"})
+        logger.info(f"Added example dialogue, total messages: {len(messages)}")
 
     # Load history using ancestor-chain traversal for correct branch context
     if branch_id:
@@ -1092,8 +1158,15 @@ async def character_chat(
             .limit(30)
             .all()[::-1]
         )
+    logger.info(f"Adding {len(history)} history messages to conversation")
     for m in history:
         messages.append({"role": m.role, "content": m.content})
+    
+    logger.info(f"Final messages array has {len(messages)} messages total")
+    for idx, msg in enumerate(messages):
+        role = msg.get('role', 'unknown')
+        content_preview = msg.get('content', '')[:100]
+        logger.info(f"  Message {idx}: role={role}, content='{content_preview}...'")
 
     # ── Handle __INIT__ (send character's first message) ────────────────
     if is_init:

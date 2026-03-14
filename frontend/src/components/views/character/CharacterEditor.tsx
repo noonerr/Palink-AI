@@ -7,6 +7,7 @@ import { X, Save, Image } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Character } from '@/types';
 
 export interface CharacterEditorProps {
@@ -26,9 +27,12 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
   onCancel,
   onImageUpload,
 }) => {
+  const headerClass = "h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0";
+  const bottomPadding = useMobileBottomPadding();
+  
   return (
     <div className="flex-1 flex flex-col w-full h-full overflow-hidden">
-      <div className="h-[54px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
+      <div className={headerClass}>
         <h1 className="text-base font-semibold text-foreground truncate">
           {selectedCharacter ? '编辑角色' : '创建角色'}
         </h1>
@@ -41,7 +45,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({
       </div>
       
       <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-4xl mx-auto w-full pb-6">
+        <div className={`max-w-4xl mx-auto w-full ${bottomPadding}`}>
           <div className="p-8 glass-strong rounded-2xl space-y-8">
             <div className="flex items-start gap-8">
               <div className="relative">

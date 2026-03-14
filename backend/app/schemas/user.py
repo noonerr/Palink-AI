@@ -13,6 +13,7 @@ class UserSettingUpdate(BaseModel):
     show_model_reasoning: Optional[bool] = None
     memory_mode: Optional[str] = None
     memory_model: Optional[str] = None
+    prompt_language: Optional[str] = None
 
 class PasswordReset(BaseModel):
     new_password: str

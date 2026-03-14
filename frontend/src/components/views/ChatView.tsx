@@ -9,6 +9,7 @@ import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Message as MessageType, Model, Session } from '@/types';
 
 // Generate unique ID for messages
@@ -41,6 +42,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   starterQuestions,
   t
 }) => {
+  const bottomPadding = useMobileBottomPadding();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
@@ -78,6 +80,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const suggestionsAbortRef = useRef<AbortController | null>(null);
+  const sessionIdSetRef = useRef(false);
   
   // Load memory stats with session ID tracking to prevent race conditions
   const loadingSessionRef = useRef<string | null>(null);
@@ -253,6 +256,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const consumeSseStream = useCallback(
+    async (res: Response, onJson: (json: Record<string, unknown>) => void) => {
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('Invalid stream response');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const processChunk = (chunk: string) => {
+        buffer += chunk;
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const event of events) {
+          const lines = event.split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+
+            const data = line.slice(6).trim();
+            if (!data || data === '[DONE]') continue;
+
+            try {
+              onJson(JSON.parse(data));
+            } catch {
+              // Ignore malformed events to keep stream resilient.
+            }
+          }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        processChunk(decoder.decode(value, { stream: true }));
+      }
+
+      const tail = decoder.decode();
+      if (tail) processChunk(tail);
+    },
+    []
+  );
+
   const handleRegenerate = async (messageIndex: number) => {
     if (streaming || uploading || messageIndex < 1) return;
     
@@ -295,52 +340,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
           images: [],
           files: []
         }, { signal: abortControllerRef.current.signal });
-      
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            
-            try {
-              const json = JSON.parse(data);
-              
-              if (json.content && json.content.startsWith('Error:')) {
-                const errorMsg = json.content.replace('Error: ', '');
-                setMessages(prev => {
-                  const newMessages = [...prev];
-                  if (newMessages[assistantMessageIndex]) {
-                    newMessages[assistantMessageIndex].content += `\n\n❌ 错误: ${errorMsg}`;
-                  }
-                  return newMessages;
-                });
-                setStreaming(false);
-                return;
-              }
-              
-              if (json.reasoning) fullReasoning += json.reasoning;
-              if (json.model_reasoning) fullReasoning += json.model_reasoning;
-              if (json.content) fullContent += json.content;
-              
-              setMessages(prev => {
-                const newMessages = [...prev];
-                newMessages[assistantMessageIndex] = {
-                  ...newMessages[assistantMessageIndex],
-                  content: fullContent
-                };
-                return newMessages;
-              });
-            } catch (e) {}
-          }
+
+      await consumeSseStream(res, (json) => {
+        const content = typeof json.content === 'string' ? json.content : '';
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+
+        if (content.startsWith('Error:')) {
+          const errorMsg = content.replace('Error: ', '');
+          setMessages(prev => {
+            const newMessages = [...prev];
+            if (newMessages[assistantMessageIndex]) {
+              newMessages[assistantMessageIndex].content += `\n\n❌ 错误: ${errorMsg}`;
+            }
+            return newMessages;
+          });
+          return;
         }
-      }
+
+        if (!content && !reasoning && !modelReasoning) {
+          return;
+        }
+
+        if (reasoning) fullReasoning += reasoning;
+        if (modelReasoning) fullReasoning += modelReasoning;
+        if (content) fullContent += content;
+
+        setMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[assistantMessageIndex] = {
+            ...newMessages[assistantMessageIndex],
+            content: fullContent
+          };
+          return newMessages;
+        });
+      });
       
       if (fullContent.length > 20) {
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
@@ -364,9 +398,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const handleSend = async (overrideText?: string) => {
-    const text = overrideText || input;
+    const text = typeof overrideText === 'string' ? overrideText : input;
     if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
 
+    sessionIdSetRef.current = false; // 重置会话ID设置标记
     setInput('');
     setAttachments([]);
     setStreaming(true);
@@ -411,48 +446,37 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setTimeout(loadSessions, 1000);
       }
 
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
+      await consumeSseStream(res, (json) => {
+        const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
+        const content = typeof json.content === 'string' ? json.content : '';
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
 
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            
-            try {
-              const json = JSON.parse(data);
-              // 处理会话 ID（新会话）
-              if (json.session_id && !activeSessionId) {
-                setActiveSessionId(json.session_id);
-                loadSessions();
-              }
-              
-              // 只有在有内容时才更新消息
-              const hasContent = json.reasoning || json.model_reasoning || json.content;
-              if (hasContent) {
-                if (json.reasoning) fullReasoning += json.reasoning;
-                if (json.model_reasoning) fullReasoning += json.model_reasoning;
-                if (json.content) fullContent += json.content;
-                
-                setMessages(prev => {
-                  const newMessages = [...prev];
-                  const lastMessage = newMessages[newMessages.length - 1];
-                  newMessages[newMessages.length - 1] = {
-                    ...lastMessage,
-                    content: fullContent
-                  };
-                  return newMessages;
-                });
-              }
-            } catch (e) {}
-          }
+        // 处理会话 ID（新会话）- 只设置一次
+        if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
+          sessionIdSetRef.current = true;
+          setActiveSessionId(sessionId);
+          loadSessions();
         }
-      }
+
+        if (!content && !reasoning && !modelReasoning) {
+          return;
+        }
+
+        if (reasoning) fullReasoning += reasoning;
+        if (modelReasoning) fullReasoning += modelReasoning;
+        if (content) fullContent += content;
+
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const lastMessage = newMessages[newMessages.length - 1];
+          newMessages[newMessages.length - 1] = {
+            ...lastMessage,
+            content: fullContent
+          };
+          return newMessages;
+        });
+      });
 
       // Get suggestions after message completes
       if (fullContent.length > 20) {
@@ -597,7 +621,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
         {/* Sidebar */}
         <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none">
+          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
             {/* Header */}
             <div className="h-[54px] flex items-center justify-between px-4 shrink-0 border-b border-border/50">
               <div className="flex items-center gap-2">
@@ -708,7 +732,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           {/* Welcome Content */}
           <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-auto overscroll-y-contain">
-            <div className="w-full max-w-2xl flex flex-col items-center animate-fade-in-up">
+            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
               {/* Model Display */}
               <div className="mb-10 text-center">
                 <div className="w-24 h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
@@ -804,7 +828,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
       {/* Sidebar */}
       <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none">
+        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
           {/* Header */}
           <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-2">
@@ -945,7 +969,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Messages */}
         <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6">
-            <div className="max-w-3xl mx-auto space-y-6">
+            <div className={`max-w-3xl mx-auto space-y-6 ${bottomPadding}`}>
               {messages.map((msg, idx) => (
                 <div key={msg.id || idx} className="flex items-start gap-2">
                   <div className="flex-1">

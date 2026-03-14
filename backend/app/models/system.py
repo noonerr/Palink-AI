@@ -18,6 +18,7 @@ class UserSetting(Base):
     show_model_reasoning = Column(Boolean, default=True)
     memory_mode = Column(String, default="rule")
     memory_model = Column(String, nullable=True)
+    prompt_language = Column(String, default="auto")
     user = relationship("User", back_populates="settings")
 
 class ProviderTestResult(Base):

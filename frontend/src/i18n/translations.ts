@@ -113,6 +113,11 @@ export const TRANSLATIONS = {
     memory_mode_rule: "规则记忆",
     memory_mode_vector: "向量记忆",
     memory_mode_desc: "向量记忆提供更好的语义理解和更大的记忆容量",
+    prompt_language: "提示词语言",
+    prompt_language_desc: "角色扮演时 AI 提示词的语言",
+    prompt_lang_auto: "自动",
+    prompt_lang_zh: "中文",
+    prompt_lang_en: "English",
     appearance: "外观",
     language: "语言"
   },
@@ -228,6 +233,11 @@ export const TRANSLATIONS = {
     memory_mode_rule: "Rule-based Memory",
     memory_mode_vector: "Vector Memory",
     memory_mode_desc: "Vector memory provides better semantic understanding and larger memory capacity",
+    prompt_language: "Prompt Language",
+    prompt_language_desc: "Language for AI prompts in roleplay",
+    prompt_lang_auto: "Auto",
+    prompt_lang_zh: "中文",
+    prompt_lang_en: "English",
     appearance: "Appearance",
     language: "Language"
   }

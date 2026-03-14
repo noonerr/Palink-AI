@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Character } from '@/types';
 
 export interface CharacterListProps {
@@ -53,9 +54,12 @@ export const CharacterList: React.FC<CharacterListProps> = ({
   onStopProcessing,
   onSetShowImportOptions,
 }) => {
+  const headerClass = "h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0";
+  const bottomPadding = useMobileBottomPadding();
+  
   return (
     <div className="flex-1 flex flex-col w-full h-full">
-      <div className="h-[54px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
+      <div className={headerClass}>
         <h1 className="text-base font-semibold text-foreground truncate">
           {t.nav_characters || '角色扮演'}
         </h1>
@@ -88,7 +92,7 @@ export const CharacterList: React.FC<CharacterListProps> = ({
       </div>
       
       <div className="flex-1 overflow-y-auto w-full max-h-full">
-        <div className="w-full px-6 py-6">
+        <div className={`w-full px-6 py-6 ${bottomPadding}`}>
           {characters.length === 0 && (
             <div className="text-center py-20">
               <div className="w-24 h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">

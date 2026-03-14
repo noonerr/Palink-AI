@@ -157,7 +157,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </button>
           ) : (
             <button
-              onClick={onSend}
+              onClick={() => onSend()}
               disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
               className={cn(
                 "w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all touch-target",

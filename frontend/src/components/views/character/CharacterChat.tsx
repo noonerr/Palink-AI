@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
@@ -330,6 +331,7 @@ export interface CharacterChatProps {
 /* ─── Component ──────────────────────────────────────── */
 
 export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
+  const bottomPadding = useMobileBottomPadding();
   const {
     selectedCharacter, user, t, lang,
     models, selectedModel, setSelectedModel,
@@ -376,7 +378,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         >
           <div className="absolute inset-0 bg-black/40" />
           <div
-            className="absolute left-0 top-0 bottom-0 w-[85%] max-w-[320px] bg-background shadow-2xl animate-slide-in-left flex flex-col z-[60]"
+            className="absolute inset-y-0 left-0 w-64 bg-background shadow-2xl animate-slide-in-left flex flex-col z-[60] pt-[env(safe-area-inset-top)]"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 shrink-0">
@@ -417,7 +419,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       {/* ── Desktop Sidebar ── */}
       <div className={`transition-all duration-300 ease-in-out hidden md:flex ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
         <div className="w-64 h-full flex-shrink-0 border-r border-border/50 glass flex flex-col">
-          <div className="h-[54px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
+          <div className="h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-8 h-8 bg-gradient-to-br from-primary/20 to-primary/5 rounded-xl flex items-center justify-center text-lg shadow-lg shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
                 {selectedCharacter.avatar ? (
@@ -624,7 +626,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         {/* ── Empty state / new chat ── */}
         {messages.length === 0 && !selectedSession && !initializingChat && (
           <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-y-auto">
-            <div className="w-full max-w-2xl flex flex-col items-center animate-fade-in-up">
+            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
               <div className="mb-6 sm:mb-10 text-center">
                 <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
                   {selectedCharacter.avatar ? (
@@ -667,7 +669,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         {/* ── Initializing spinner ── */}
         {initializingChat && (
           <div className="flex-1 flex items-center justify-center p-8 w-full overflow-y-auto">
-            <div className="w-full flex flex-col items-center animate-fade-in-up">
+            <div className={`w-full flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
               <div className="animate-spin text-primary mb-4"><Bot size={32} /></div>
               <p className="text-muted-foreground">正在加载对话...</p>
             </div>
@@ -682,7 +684,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 status={wb.sessionStatus}
               />
             )}
-            <div className="px-3 sm:px-6 py-4 sm:py-6">
+            <div className={`px-3 sm:px-6 py-4 sm:py-6 ${bottomPadding}`}>
               <div className="w-full space-y-4 sm:space-y-6">
                 {messages.map((msg, idx) => (
                   <div key={msg.id || idx} className="flex items-start gap-2">

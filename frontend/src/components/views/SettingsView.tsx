@@ -21,7 +21,8 @@ import {
   Sun,
   Moon,
   RefreshCw,
-  Zap
+  Zap,
+  MessageSquareText
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -37,6 +38,7 @@ import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelEditor } from './ModelEditor';
 import { PRESETS, EMOJIS } from './settings-constants';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Model, Provider, User as UserType } from '@/types';
 
 interface SettingsViewProps {
@@ -69,6 +71,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   lang,
   onLangToggle
 }) => {
+  const bottomPadding = useMobileBottomPadding();
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
   const [modelSubTab, setModelSubTab] = useState<ModelSubTab>('llm');
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -95,6 +98,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Memory mode state
   const [memoryMode, setMemoryMode] = useState<string>('rule');
   const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
+  const [promptLanguage, setPromptLanguage] = useState<string>('auto');
 
   // Admin defaults state
   const [defChat, setDefChat] = useState(systemDefaults.default_chat_model || '');
@@ -154,6 +158,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const settings = await api.get('/api/users/me/settings');
       setMemoryMode(settings.memory_mode || 'rule');
       setShowModelReasoning(settings.show_model_reasoning !== false);
+      setPromptLanguage(settings.prompt_language || 'auto');
     } catch (e) {
       console.error('Failed to fetch memory mode:', e);
     }
@@ -178,6 +183,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } catch (e) {
       console.error('Failed to save model reasoning setting:', e);
       toast.error('保存深度思考设置失败');
+    }
+  };
+
+  const handleSavePromptLanguage = async (newLang: string) => {
+    try {
+      await api.put('/api/users/me/settings', { prompt_language: newLang });
+      setPromptLanguage(newLang);
+      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { promptLanguage: newLang } }));
+    } catch (e) {
+      console.error('Failed to save prompt language:', e);
+      toast.error('保存提示词语言失败');
     }
   };
 
@@ -630,7 +646,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {/* Profile Tab */}
               {activeTab === 'profile' && (
                 <ScrollArea className="h-full">
-                  <div className="space-y-6 animate-fade-in pr-2">
+                  <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
                   <h3 className="text-2xl font-semibold">{t.settings_profile}</h3>
                 
                 <GlassCard className="p-6">
@@ -1057,7 +1073,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Admin Defaults Tab */}
           {activeTab === 'admin_defaults' && isAdmin && (
             <ScrollArea className="h-full">
-              <div className="space-y-6 animate-fade-in pr-2">
+              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
               <h3 className="text-2xl font-semibold">{t.admin_defaults}</h3>
               
               <GlassCard className="p-6">
@@ -1169,7 +1185,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Admin Users Tab */}
           {activeTab === 'admin_users' && isAdmin && (
             <ScrollArea className="h-full">
-              <div className="space-y-6 animate-fade-in pr-2">
+              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
               <h3 className="text-2xl font-semibold">{t.admin_users}</h3>
               
               <div className="space-y-2">
@@ -1232,7 +1248,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Appearance Tab */}
           {activeTab === 'appearance' && (
             <ScrollArea className="h-full">
-              <div className="space-y-6 animate-fade-in pr-2">
+              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
               <h3 className="text-2xl font-semibold">{t.appearance || '外观设置'}</h3>
               
               <GlassCard className="p-6">
@@ -1307,7 +1323,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Language Tab */}
           {activeTab === 'language' && (
             <ScrollArea className="h-full">
-              <div className="space-y-6 animate-fade-in pr-2">
+              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
               <h3 className="text-2xl font-semibold">{t.language || '语言设置'}</h3>
               
               <GlassCard className="p-6">
@@ -1331,6 +1347,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       {t.switch_language || '切换语言'}
                     </Button>
                   </div>
+
+                  <div className="flex items-center justify-between py-3">
+                    <div className="flex items-center gap-3">
+                      <MessageSquareText size={20} className="text-muted-foreground" />
+                      <div>
+                        <p className="font-medium">{t.prompt_language || '提示词语言'}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t.prompt_language_desc || '角色扮演时 AI 提示词的语言'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant={promptLanguage === 'auto' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => handleSavePromptLanguage('auto')}
+                      >
+                        {t.prompt_lang_auto || '自动'}
+                      </Button>
+                      <Button
+                        variant={promptLanguage === 'zh' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => handleSavePromptLanguage('zh')}
+                      >
+                        {t.prompt_lang_zh || '中文'}
+                      </Button>
+                      <Button
+                        variant={promptLanguage === 'en' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => handleSavePromptLanguage('en')}
+                      >
+                        {t.prompt_lang_en || 'English'}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </GlassCard>
               </div>
@@ -1347,7 +1398,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Usage Tab */}
           {activeTab === 'usage' && (
             <ScrollArea className="h-full">
-              <div className="p-4 sm:p-6">
+              <div className={`p-4 sm:p-6 ${bottomPadding}`}>
                 <TokenUsagePanel token={token} />
               </div>
             </ScrollArea>
@@ -1356,7 +1407,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* User Usage Tab */}
           {activeTab === 'user_usage' && viewingUser && (
             <ScrollArea className="h-full">
-              <div className="p-4 sm:p-6">
+              <div className={`p-4 sm:p-6 ${bottomPadding}`}>
                 <div className="mb-4">
                   <Button
                     variant="ghost"
@@ -1380,7 +1431,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* About Tab */}
           {activeTab === 'about' && (
             <ScrollArea className="h-full">
-              <div className="text-center py-12 animate-fade-in pr-2">
+              <div className={`text-center py-12 animate-fade-in pr-2 ${bottomPadding}`}>
               <div className="w-24 h-24 bg-gradient-to-br from-primary to-primary/60 rounded-3xl mx-auto flex items-center justify-center mb-6 shadow-xl shadow-primary/20">
                 <span className="text-primary-foreground text-4xl font-bold">P</span>
               </div>
@@ -1426,7 +1477,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              <div className="px-6 sm:px-8 py-6 sm:py-8">
+              <div className={`px-6 sm:px-8 py-6 sm:py-8 ${bottomPadding}`}>
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                   <div className="xl:col-span-4 space-y-5">
                     {!editingProvider.id && (

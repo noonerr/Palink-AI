@@ -52,20 +52,15 @@
     </script>
     <script>
       // iOS Safari 地址栏收缩优化
-      // 页面加载完成后，自动触发Safari地址栏收缩
+      // 页面加载完成后触发Safari地址栏收缩
       window.addEventListener('load', () => {
         setTimeout(() => {
           window.scrollTo(0, 1);
         }, 100);
       });
 
-      // 屏幕旋转、窗口尺寸变化时，重新适配高度并触发UI收缩
+      // 屏幕旋转时重新适配
       window.addEventListener('orientationchange', () => {
-        setTimeout(() => {
-          window.scrollTo(0, 1);
-        }, 100);
-      });
-      window.addEventListener('resize', () => {
         setTimeout(() => {
           window.scrollTo(0, 1);
         }, 100);
@@ -73,22 +68,30 @@
     </script>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Temporary stability fix: disable PWA caching and clear stale SWs.
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.getRegistrations()
-            .then((registrations) => {
-              registrations.forEach((registration) => registration.unregister());
+          navigator.serviceWorker.register('/sw.js')
+            .then((registration) => {
+              console.log('SW registered:', registration);
+
+              registration.addEventListener('updatefound', () => {
+                const newWorker = registration.installing;
+                newWorker.addEventListener('statechange', () => {
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    if (confirm('有新版本可用，是否刷新更新？')) {
+                      window.location.reload();
+                    }
+                  }
+                });
+              });
             })
             .catch((error) => {
-              console.log('Service Worker cleanup failed:', error);
+              console.log('SW registration failed:', error);
             });
 
-          if ('caches' in window) {
-            caches.keys().then((keys) => {
-              keys.forEach((key) => caches.delete(key));
-            });
-          }
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            window.location.reload();
+          });
         });
       }
     </script>

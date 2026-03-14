@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
 import { Sidebar } from '@/components/ui/custom/Sidebar';
+
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, AUTH_FAILURE_EVENT } from '@/services/api';
 import type { User, Model, Language, Theme } from '@/types';
@@ -83,7 +84,7 @@ const TRANSLATIONS = {
     role: "角色",
     about_title: "关于 Palink AI",
     about_desc: "企业级 AI 协作空间",
-    version: "版本 18.0 (Redesigned)",
+    version: "版本 0.19.0",
     privacy_policy: "隐私协议",
     edit_provider: "编辑服务商",
     add_provider_title: "添加服务商",
@@ -422,7 +423,7 @@ function App() {
             onLogout={handleLogout}
             t={t}
           />
-          <main className="flex-1 relative flex flex-col h-full glass-strong md:rounded-2xl md:border-l md:border-border/50 overflow-hidden">
+          <main className="flex-1 relative flex flex-col h-full glass-strong md:rounded-2xl md:border-l md:border-border/50 overflow-hidden" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
             <Routes>
               <Route path="/" element={<Navigate to="/chat" replace />} />
               <Route path="/chat" element={

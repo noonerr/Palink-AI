@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from openai import AsyncOpenAI
 from ..schemas.chat import ChatRequest
 from ..services.chat_service import ChatService
 from ..core import get_db, settings
+from ..core.database import SessionLocal
 from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting
 from ..memory_module.service import MemoryService
@@ -132,9 +134,85 @@ async def chat_stream(
         total_tokens = 0
         prompt_tokens = 0
         completion_tokens = 0
+        assistant_message_id = None
+        last_saved_content_len = 0
+        last_saved_reasoning_len = 0
+        last_flush_ts = 0.0
+        memory_stored = False
+        save_db = SessionLocal()
+
+        def persist_snapshot(force: bool = False):
+            nonlocal assistant_message_id
+            nonlocal last_saved_content_len
+            nonlocal last_saved_reasoning_len
+            nonlocal last_flush_ts
+
+            has_content = bool(full_content or full_reasoning)
+            if not has_content:
+                return
+
+            content_delta = len(full_content) - last_saved_content_len
+            reasoning_delta = len(full_reasoning) - last_saved_reasoning_len
+            changed = content_delta > 0 or reasoning_delta > 0
+
+            if not force:
+                if not changed:
+                    return
+                # Reduce DB churn: flush when enough delta is accumulated or enough time elapsed.
+                if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
+                    return
+
+            final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
+            token_count = completion_tokens if completion_tokens > 0 else len(full_content) // 2
+
+            try:
+                if assistant_message_id is None:
+                    msg = ChatMessage(
+                        session_id=session_id,
+                        role="assistant",
+                        content=final,
+                        model=req.model,
+                        tokens=token_count,
+                        prompt_tokens=prompt_tokens,
+                    )
+                    save_db.add(msg)
+                    save_db.commit()
+                    save_db.refresh(msg)
+                    assistant_message_id = msg.id
+                else:
+                    msg = save_db.query(ChatMessage).filter(ChatMessage.id == assistant_message_id).first()
+                    if msg is None:
+                        msg = ChatMessage(
+                            session_id=session_id,
+                            role="assistant",
+                            content=final,
+                            model=req.model,
+                            tokens=token_count,
+                            prompt_tokens=prompt_tokens,
+                        )
+                        save_db.add(msg)
+                        save_db.commit()
+                        save_db.refresh(msg)
+                        assistant_message_id = msg.id
+                    else:
+                        msg.content = final
+                        msg.model = req.model
+                        msg.tokens = token_count
+                        msg.prompt_tokens = prompt_tokens
+                        save_db.commit()
+
+                last_saved_content_len = len(full_content)
+                last_saved_reasoning_len = len(full_reasoning)
+                last_flush_ts = time.monotonic()
+            except Exception as persist_error:
+                save_db.rollback()
+                logger.warning(f"Failed to persist assistant snapshot: {persist_error}")
 
         try:
-            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+            if is_new_session:
+                yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+
+            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"], timeout=30.0)
             stream_kwargs = dict(
                 model=req.model,
                 messages=messages,
@@ -147,9 +225,6 @@ async def chat_stream(
             except Exception:
                 stream_kwargs.pop("stream_options", None)
                 stream = await client.chat.completions.create(**stream_kwargs)
-
-            if is_new_session:
-                yield f"data: {json.dumps({'session_id': session_id})}\n\n"
 
             async for chunk in stream:
                 usage = getattr(chunk, "usage", None)
@@ -171,37 +246,50 @@ async def chat_stream(
                     full_content += content
                     resp["content"] = content
                 if resp:
+                    persist_snapshot()
                     yield f"data: {json.dumps(resp, ensure_ascii=False)}\n\n"
+
+            if not full_content and not full_reasoning:
+                full_content = "Error: 模型未返回任何可显示内容，请切换模型或稍后重试。"
+                persist_snapshot(force=True)
+                yield f"data: {json.dumps({'content': full_content, 'error': True}, ensure_ascii=False)}\n\n"
 
             if total_tokens > 0:
                 yield f"data: {json.dumps({'type': 'usage', 'total_tokens': total_tokens, 'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens})}\n\n"
 
+            persist_snapshot(force=True)
             yield "data: [DONE]\n\n"
-
-            # ── Save assistant message ──────────────────────────────────
-            from ..core.database import SessionLocal
-            new_db = SessionLocal()
+        except asyncio.CancelledError:
+            # Client disconnected: keep already-generated content for later resume.
+            if not full_content and not full_reasoning:
+                full_content = "Error: 请求已中断，未收到模型回复。"
+            persist_snapshot(force=True)
+            raise
+        except Exception as e:
+            logger.error(f"Chat stream error: {e}")
+            if not full_content and not full_reasoning:
+                full_content = f"Error: {str(e)}"
+                yield f"data: {json.dumps({'content': full_content, 'error': True}, ensure_ascii=False)}\n\n"
+            persist_snapshot(force=True)
+        finally:
             try:
-                final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
-                token_count = completion_tokens if completion_tokens > 0 else len(full_content) // 2
-                chat_service_new = ChatService(new_db)
-                chat_service_new.save_assistant_message(session_id, final, req.model, token_count)
+                persist_snapshot(force=True)
 
-                # ── Store memory ────────────────────────────────────────
-                if memory_mode != "disabled":
+                if memory_mode != "disabled" and full_content and not memory_stored:
                     try:
-                        mem_svc = MemoryService(new_db)
+                        if full_content.strip().startswith("Error:"):
+                            return
+                        mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
                             mem_svc.store_memory(user.id, session_id, "user", req.message)
                             mem_svc.store_memory(user.id, session_id, "assistant", full_content)
+                            save_db.commit()
+                            memory_stored = True
                     except Exception as e:
+                        save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")
             finally:
-                new_db.close()
-
-        except Exception as e:
-            logger.error(f"Chat stream error: {e}")
-            yield f"data: {json.dumps({'content': f'Error: {str(e)}', 'error': True})}\n\n"
+                save_db.close()
 
     return StreamingResponse(
         event_generator(),

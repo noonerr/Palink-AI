@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
@@ -181,6 +181,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setSelectedSession,
     loadSessions,
     loadMemoryStats,
+    uiLanguage: lang,
   });
 
   // 鈹€鈹€ Message selection hook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

@@ -25,6 +25,7 @@ interface UseCharacterChatOptions {
   setSelectedSession: (session: CharacterChatSession | null) => void;
   loadSessions: (characterId: string) => Promise<void>;
   loadMemoryStats: (sessionId: string) => Promise<void>;
+  uiLanguage?: string;
 }
 
 const TIMEOUT_WARNING_MS = 15000;
@@ -41,6 +42,7 @@ export function useCharacterChat({
   setSelectedSession,
   loadSessions,
   loadMemoryStats,
+  uiLanguage = 'zh',
 }: UseCharacterChatOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -101,6 +103,7 @@ export function useCharacterChat({
         dialogue_mode: dialogueMode,
         branch_id: selectedBranch?.id,
         user_nickname: getDisplayName(selectedCharacter),
+        ui_language: uiLanguage,
       }, { signal: abortControllerRef.current.signal });
 
       const reader = response.body?.getReader();
@@ -211,6 +214,7 @@ export function useCharacterChat({
         dialogue_mode: dialogueMode,
         branch_id: selectedBranch?.id,
         user_nickname: getDisplayName(selectedCharacter),
+        ui_language: uiLanguage,
       }, { signal: abortControllerRef.current.signal });
 
       if (!selectedSession) {

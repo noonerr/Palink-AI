@@ -23,6 +23,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { api } from '@/services/api';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { FileItem, Folder as FolderType, Model, WorkspaceItems } from '@/types';
 
 interface WorkspaceViewProps {
@@ -40,6 +41,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   systemDefaults,
   t
 }) => {
+  const bottomPadding = useMobileBottomPadding();
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);
   const [items, setItems] = useState<WorkspaceItems>({ folders: [], files: [], usage: 0, limit: 0 });
   const [loading, setLoading] = useState(false);
@@ -647,6 +649,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
         {/* File List */}
         <ScrollArea className="flex-1 p-6">
+          <div className={`${bottomPadding}`}>
           {/* Create Folder Input */}
           {isCreateFolder && (
             <div className="mb-4 flex items-center gap-2 animate-fade-in-up">
@@ -789,6 +792,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               ))}
             </div>
           )}
+          </div>
         </ScrollArea>
       </div>
 

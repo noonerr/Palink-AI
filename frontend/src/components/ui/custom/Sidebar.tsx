@@ -40,13 +40,13 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMob
       to={to}
       className={cn(
         'sidebar-item rounded-xl flex items-center justify-center transition-all duration-200',
-        'hover:bg-primary/10',
+        'hover:bg-sidebar-accent',
         isMobile 
           ? 'flex-col gap-1 py-2 px-3 flex-1 min-w-0'
           : 'w-12 h-12',
         isActive 
-          ? 'active bg-primary text-primary-foreground shadow-lg shadow-primary/25' 
-          : 'text-muted-foreground hover:text-foreground'
+          ? 'active bg-sidebar-primary text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/25' 
+          : 'text-sidebar-foreground hover:text-sidebar-foreground'
       )}
       title={tooltip}
     >
@@ -69,11 +69,11 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
   t
 }) => {
   return (
-    <aside className="w-[72px] h-full flex flex-col items-center py-5">
+    <aside className="w-[72px] h-full flex flex-col items-center py-5 bg-sidebar text-sidebar-foreground">
       {/* Logo */}
       <div className="mb-8">
-        <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-md shadow-primary/20">
-          <span className="text-primary-foreground font-bold text-lg">P</span>
+        <div className="w-10 h-10 bg-sidebar-primary rounded-xl flex items-center justify-center shadow-md shadow-sidebar-primary/20">
+          <span className="text-sidebar-primary-foreground font-bold text-lg">P</span>
         </div>
       </div>
 
@@ -104,11 +104,11 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
           tooltip={t.nav_config || 'Settings'}
         />
         
-        <div className="w-8 h-px bg-border my-1" />
+        <div className="w-8 h-px bg-sidebar-border my-1" />
         
         <button
           onClick={onThemeToggle}
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-all"
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
           title={isDark ? 'Light Mode' : 'Dark Mode'}
         >
           {isDark ? <Sun size={18} /> : <Moon size={18} />}
@@ -116,7 +116,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         
         <button
           onClick={onLangToggle}
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-all"
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-semibold text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
           title={t.lang_switch || 'Switch Language'}
         >
           {(lang || 'zh').toUpperCase()}
@@ -124,7 +124,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         
         <button
           onClick={onLogout}
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
           title={t.logout || 'Logout'}
         >
           <LogOut size={18} />
@@ -148,7 +148,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
   t
 }) => {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-[9999] glass-strong flex items-center justify-around px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+    <nav className="fixed bottom-0 left-0 right-0 z-[9999] glass-strong flex items-center justify-around px-2 pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]">
       <NavItem
         icon={MessageSquare}
         to="/chat"
