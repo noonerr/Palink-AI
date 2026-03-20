@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
@@ -8,7 +9,10 @@ import { api } from '@/services/api';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 import { CharacterList } from './character/CharacterList';
 import { CharacterEditor } from './character/CharacterEditor';
+import { CharacterProfile } from './character/CharacterProfile';
 import { CharacterChat } from './character/CharacterChat';
+import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
+import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch } from '@/types';
 
@@ -21,7 +25,7 @@ interface CharacterViewProps {
   lang?: 'zh' | 'en';
 }
 
-type ViewState = 'list' | 'edit' | 'chat';
+type ViewState = 'list' | 'edit' | 'profile' | 'chat';
 
 export const CharacterView: React.FC<CharacterViewProps> = ({
   token: _token,
@@ -31,16 +35,20 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   systemDefaults,
   lang
 }) => {
+  const { characterId } = useParams<{ characterId?: string }>();
+  const navigate = useNavigate();
+  
   const [viewState, setViewState] = useState<ViewState>('list');
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
+  const [viewingCharacter, setViewingCharacter] = useState<Character | null>(null);
   const [editingCharacter, setEditingCharacter] = useState<Partial<Character>>({});
   
   const getDisplayName = (character?: Character | Partial<Character> | null): string => {
     const ocData = getOCData();
     if (ocData?.name) return ocData.name;
     if (character?.user_nickname) return character.user_nickname;
-    return user.username || '鐢ㄦ埛';
+    return user.username || '用户';
   };
   
   const [sessions, setSessions] = useState<CharacterChatSession[]>([]);
@@ -50,7 +58,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
   const [loading, setLoading] = useState(true);
   
-  // 瀵硅瘽鍒嗘敮鐩稿叧鐘舵€?
+  // 对话分支相关状态
   const [branches, setBranches] = useState<CharacterChatSessionBranch[]>([]);
   const [selectedBranch, setSelectedBranch] = useState<CharacterChatSessionBranch | null>(null);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
@@ -209,7 +217,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     fetchUserSettings();
     wb.loadWorldBooks();
     
-    // 鐩戝惉鐢ㄦ埛璁剧疆鏇存柊浜嬩欢
+    // 监听用户设置更新事件
     const handleSettingsUpdate = (e: any) => {
       if (e.detail?.showModelReasoning !== undefined) {
         setShowModelReasoning(e.detail.showModelReasoning);
@@ -247,6 +255,14 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const data = await api.get('/api/characters');
       setCharacters(data);
       
+      // 如果有 characterId 参数，自动打开对应的角色介绍页面
+      if (characterId) {
+        const targetCharacter = data.find((c: Character) => c.id === characterId);
+        if (targetCharacter) {
+          handleViewProfile(targetCharacter);
+        }
+      }
+      
       const processingChar = data.find((c: any) => c.is_processing);
       if (processingChar) {
         if (!processingCharacter) {
@@ -254,7 +270,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           pollCharacterStatus(processingChar.id);
         }
       }
-      // 涓嶈鍦ㄨ繖閲屾竻闄?processingCharacter锛岃杞鍑芥暟鑷繁澶勭悊
     } catch (e) {
       console.error('Failed to load characters:', e);
     } finally {
@@ -364,7 +379,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadMemoryStats(sessionId);
       await loadBranches(sessionId);
       
-      // 瑙掕壊鎵紨绂佺敤鎺ㄨ崘瀵硅瘽鍔熻兘锛堣妭鐪?tokens锛?
+      // 角色扮演禁用推荐对话功能（节省tokens）
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
@@ -379,11 +394,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         branch_id: selectedBranch?.id,
         compression_ratio: 0.5
       });
-      alert(`璁板繂鍘嬬缉瀹屾垚锛乗n鍒犻櫎: ${data.compressed_count} 鏉n淇濈暀: ${data.remaining_count} 鏉n鎽樿: ${data.summary}`);
+      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(selectedSession.id, selectedBranch?.id);
     } catch (e: any) {
       console.error('Manual compress failed:', e);
-      alert('鍘嬬缉澶辫触: ' + (e.message || ''));
+      alert('压缩失败: ' + (e.message || ''));
     } finally {
       setCompressing(false);
     }
@@ -448,7 +463,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadCharacters();
     } catch (e: any) {
       console.error('Failed to delete character:', e);
-      alert('鍒犻櫎澶辫触: ' + (e.message || ''));
+      alert('删除失败: ' + (e.message || ''));
     } finally {
       setShowDeleteCharacterConfirm(false);
       setPendingDeleteCharacter(null);
@@ -465,48 +480,27 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setShowImportOptions(result.character.id);
     } catch (e: any) {
       console.error('Failed to import character:', e);
-      alert('瀵煎叆澶辫触: ' + (e.message || ''));
+      alert('导入失败: ' + (e.message || ''));
     }
   };
 
-  const handleParseCharacter = async (characterId: string) => {
+  const handleParseAndTranslateCharacter = async (characterId: string) => {
+    console.log('[handleParseAndTranslateCharacter] Starting for character:', characterId, 'selectedModel:', selectedModel);
     try {
       setProcessingCharacter(characterId);
       setForceShowOverlay(characterId);
       setShowImportOptions(null);
+      
+      setShowProcessingMessage({ show: true, message: '已经开始解析，请稍候...' });
+      
+      console.log('[handleParseAndTranslateCharacter] Calling parse API...');
       await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
+      console.log('[handleParseAndTranslateCharacter] Parse API called successfully');
       
-      setShowProcessingMessage({ show: true, message: '宸茬粡寮€濮嬭В鏋愶紝璇风◢鍊?..' });
-      pollCharacterStatus(characterId);
-      setTimeout(() => {
-        setShowProcessingMessage({ show: false, message: '' });
-      }, 3000);
+      pollCharacterStatus(characterId, true);
     } catch (e: any) {
-      console.error('Failed to parse character:', e);
-      setShowProcessingMessage({ show: true, message: '瑙ｆ瀽澶辫触: ' + (e.message || '') });
-      setProcessingCharacter(null);
-      setForceShowOverlay(null);
-      setTimeout(() => {
-        setShowProcessingMessage({ show: false, message: '' });
-      }, 3000);
-    }
-  };
-
-  const handleTranslateCharacter = async (characterId: string) => {
-    try {
-      setProcessingCharacter(characterId);
-      setForceShowOverlay(characterId);
-      setShowImportOptions(null);
-      await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
-      
-      setShowProcessingMessage({ show: true, message: '宸茬粡寮€濮嬬炕璇戯紝璇风◢鍊?..' });
-      pollCharacterStatus(characterId);
-      setTimeout(() => {
-        setShowProcessingMessage({ show: false, message: '' });
-      }, 3000);
-    } catch (e: any) {
-      console.error('Failed to translate character:', e);
-      setShowProcessingMessage({ show: true, message: '缈昏瘧澶辫触: ' + (e.message || '') });
+      console.error('[handleParseAndTranslateCharacter] Failed:', e);
+      setShowProcessingMessage({ show: true, message: '处理失败: ' + (e.message || '') });
       setProcessingCharacter(null);
       setForceShowOverlay(null);
       setTimeout(() => {
@@ -538,20 +532,54 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   };
 
-  const pollCharacterStatus = async (characterId: string) => {
+  const pollCharacterStatus = async (characterId: string, autoTranslate: boolean = false) => {
+    console.log('[pollCharacterStatus] Starting poll for character:', characterId, 'autoTranslate:', autoTranslate);
+    
     if (pollingInterval) {
       clearInterval(pollingInterval);
     }
     
+    let translationStarted = false;
+    
     const interval = setInterval(async () => {
       try {
         const status = await api.get(`/api/characters/${characterId}/status`);
+        console.log('[pollCharacterStatus] Status:', status);
           
         if (!status.is_processing) {
-          if (pollingInterval) {
-            clearInterval(pollingInterval);
+          console.log('[pollCharacterStatus] Not processing anymore, autoTranslate:', autoTranslate, 'translationStarted:', translationStarted);
+          
+          if (autoTranslate && !translationStarted && !status.processing_status?.includes('失败')) {
+            console.log('[pollCharacterStatus] Starting translation...');
+            translationStarted = true;
+            setShowProcessingMessage({ show: true, message: '已经开始翻译，请稍候...' });
+            
+            try {
+              await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
+              console.log('[pollCharacterStatus] Translation API called successfully');
+              pollCharacterStatus(characterId, false);
+            } catch (translateError: any) {
+              console.error('[pollCharacterStatus] Translation failed:', translateError);
+              setShowProcessingMessage({ show: true, message: '翻译失败: ' + (translateError.message || '') });
+              clearInterval(interval);
+              if (pollingInterval === interval) {
+                setPollingInterval(null);
+              }
+              setProcessingCharacter(null);
+              setForceShowOverlay(null);
+              setTimeout(() => {
+                setShowProcessingMessage({ show: false, message: '' });
+              }, 3000);
+            }
+            return;
+          }
+          
+          console.log('[pollCharacterStatus] Clearing interval and finishing');
+          clearInterval(interval);
+          if (pollingInterval === interval) {
             setPollingInterval(null);
           }
+          
           setProcessingCharacter(null);
           setForceShowOverlay(null);
           await loadCharacters();
@@ -562,13 +590,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
             } catch { /* ignore */ }
           }
             
-          if (status.processing_status?.includes('瀹屾垚')) {
-            setShowProcessingMessage({ show: true, message: '瑙掕壊鍗″鐞嗗畬鎴愶紒' });
+          if (status.processing_status?.includes('完成')) {
+            setShowProcessingMessage({ show: true, message: '角色卡处理完成！' });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
-          } else if (status.processing_status?.includes('澶辫触')) {
-            setShowProcessingMessage({ show: true, message: `瑙掕壊鍗″鐞嗗け璐ワ細${status.processing_status}` });
+          } else if (status.processing_status?.includes('失败')) {
+            setShowProcessingMessage({ show: true, message: `角色卡处理失败：${status.processing_status}` });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
@@ -607,11 +635,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         }
       } else {
         const error = await res.text();
-        alert('瀵煎嚭澶辫触: ' + error);
+        alert('导出失败: ' + error);
       }
     } catch (e) {
       console.error('Failed to export character:', e);
-      alert('瀵煎嚭澶辫触');
+      alert('导出失败');
     }
   };
 
@@ -622,6 +650,28 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setMemoryStats(null);
     setSuggestions([]);
     await loadSessions(character.id);
+    setViewState('chat');
+  };
+
+  const handleViewProfile = (character: Character) => {
+    setViewingCharacter(character);
+    setSelectedWorldBookId(null);
+    setSelectedPlotLineId(null);
+    setViewState('profile');
+    // 更新 URL 为包含角色 ID 的路径
+    navigate(`/characters/${character.id}`, { replace: true });
+  };
+
+  const handleStartChatFromProfile = async () => {
+    if (!viewingCharacter) return;
+    
+    setSelectedCharacter(viewingCharacter);
+    setSelectedSession(null);
+    setMessages([]);
+    setMemoryStats(null);
+    setSuggestions([]);
+    await loadSessions(viewingCharacter.id);
+    
     setViewState('chat');
   };
 
@@ -664,9 +714,18 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
               console.error('Failed to associate world book:', err);
             }
           }
+          // Associate plot line if selected
+          if (selectedPlotLineId) {
+            try {
+              await pl.associateSession(data.session_id, selectedPlotLineId);
+              await pl.loadSessionStatus(data.session_id);
+            } catch (err) {
+              console.error('Failed to associate plot line:', err);
+            }
+          }
         }
       } else if (initialMessage) {
-        // 濡傛灉鐢ㄦ埛鎻愪緵浜嗗垵濮嬫秷鎭紝鐩存帴鍙戦€?
+        // 如果用户提供了初始消息，直接发送
         await handleSendMessage(initialMessage, []);
       }
     } catch (e) {
@@ -801,14 +860,14 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           showDeleteCharacterConfirm={showDeleteCharacterConfirm}
           t={t}
           onStartChat={handleStartChat}
+          onViewProfile={handleViewProfile}
           onCreateCharacter={handleCreateCharacter}
           onEditCharacter={handleEditCharacter}
           onDeleteCharacter={handleDeleteCharacter}
           onConfirmDeleteCharacter={confirmDeleteCharacter}
           onSetShowDeleteCharacterConfirm={setShowDeleteCharacterConfirm}
           onImportCharacter={handleImportCharacter}
-          onParseCharacter={handleParseCharacter}
-          onTranslateCharacter={handleTranslateCharacter}
+          onParseAndTranslateCharacter={handleParseAndTranslateCharacter}
           onExportCharacter={handleExportCharacter}
           onStopProcessing={handleStopProcessing}
           onSetShowImportOptions={setShowImportOptions}
@@ -823,6 +882,28 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           onSave={handleSaveCharacter}
           onCancel={() => { setViewState('list'); setEditingCharacter({}); setSelectedCharacter(null); }}
           onImageUpload={handleImageUpload}
+        />
+      )}
+
+      {viewState === 'profile' && viewingCharacter && (
+        <CharacterProfile
+          character={viewingCharacter}
+          onBack={() => {
+            setViewState('list');
+            setViewingCharacter(null);
+            // 返回时清除 URL 参数
+            navigate('/characters', { replace: true });
+          }}
+          onStartChat={handleStartChatFromProfile}
+          onEdit={handleEditCharacter}
+          selectedWorldBookId={selectedWorldBookId}
+          setSelectedWorldBookId={setSelectedWorldBookId}
+          selectedPlotLineId={selectedPlotLineId}
+          setSelectedPlotLineId={setSelectedPlotLineId}
+          showWorldBookManager={showWorldBookManager}
+          setShowWorldBookManager={setShowWorldBookManager}
+          showPlotLineManager={showPlotLineManager}
+          setShowPlotLineManager={setShowPlotLineManager}
         />
       )}
 
@@ -925,6 +1006,61 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           setSelectedPlotLineId={setSelectedPlotLineId}
           setViewState={setViewState}
         />
+      )}
+
+      {/* ── World Book Manager Dialog ── */}
+      {showWorldBookManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowWorldBookManager(false)}>
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <WorldBookManager
+              worldBooks={wb.worldBooks}
+              selectedWorldBook={wb.selectedWorldBook}
+              loading={wb.loading}
+              t={t}
+              onLoad={wb.loadWorldBooks}
+              onCreate={wb.createWorldBook}
+              onUpdate={wb.updateWorldBook}
+              onDelete={wb.deleteWorldBook}
+              onImport={wb.importWorldBook}
+              onSelect={(id) => wb.loadWorldBookDetail(id)}
+              onClose={() => setShowWorldBookManager(false)}
+              selectedForProfileId={selectedWorldBookId}
+              onSelectForProfile={setSelectedWorldBookId}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── Plot Line Manager Dialog ── */}
+      {showPlotLineManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowPlotLineManager(false)}>
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <PlotLineManager
+              plotLines={pl.plotLines}
+              selectedPlotLine={pl.selectedPlotLine}
+              loading={pl.loading}
+              parsing={pl.parsing}
+              models={models}
+              selectedModel={selectedModel}
+              t={t}
+              onLoad={pl.loadPlotLines}
+              onCreate={pl.createPlotLine}
+              onUpdate={pl.updatePlotLine}
+              onDelete={pl.deletePlotLine}
+              onParse={pl.parsePlotLine}
+              onSelect={(id: string) => pl.loadPlotLineDetail(id)}
+              onClose={() => setShowPlotLineManager(false)}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

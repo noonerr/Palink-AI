@@ -470,96 +470,102 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       </div>
 
       {/* ── Main chat area ── */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0">
+      <div className="flex-1 flex flex-col h-full overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0 bg-slate-50 dark:bg-slate-950">
         {/* ── Header toolbar ── */}
-        <div className="h-[54px] flex items-center justify-between px-4 md:px-6 border-b border-border/50 glass z-10 flex-shrink-0">
-          <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-1">
-            {/* Mobile hamburger */}
+        <header className="h-16 px-4 flex items-center justify-between z-40 pt-safe">
+          <div className="flex items-center space-x-3">
+            {/* Mobile hamburger / Back button */}
             <Button
               variant="ghost" size="icon"
-              className="h-9 w-9 md:hidden rounded-lg hover:bg-secondary/80 transition-all flex-shrink-0"
+              className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0"
               onClick={() => setMobileSidebarOpen(true)}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </Button>
             {/* Desktop sidebar toggle */}
             <Button
-              variant="default" size="icon"
-              className="h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all hidden md:flex flex-shrink-0"
+              variant="ghost" size="icon"
+              className="h-12 w-12 rounded-2xl bg-primary/10 hover:bg-primary/20 text-primary transition-all hidden md:flex flex-shrink-0"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             >
               {!sidebarCollapsed ? (
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-chevron-left"><path d="m15 18-6-6 6-6"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
               ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-chevron-right"><path d="m9 18 6-6-6-6"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
               )}
             </Button>
-            {/* Model selector — always visible */}
-            <ModelSelector
-              models={models}
-              currentModel={selectedModel}
-              onSelect={setSelectedModel}
-            />
-                {/* World book badge */}
-                {selectedSession && wb.sessionStatus?.active && (
-                  <Button
-                    variant="ghost" size="sm"
-                    className="h-8 gap-1 text-xs flex-shrink-0"
-                    onClick={() => setShowWorldBookOverview(true)}
-                    title="世界书"
-                  >
-                    <BookOpen size={14} />
-                    <span className="hidden sm:inline">{wb.sessionStatus.active_entries_count ?? 0} 条</span>
-                  </Button>
-                )}
+            {/* Character avatar and name */}
+            <div className="w-10 h-10 rounded-2xl overflow-hidden flex-shrink-0">
+              {selectedCharacter.avatar ? (
+                <img src={selectedCharacter.avatar} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="w-6 h-6 text-gray-400 dark:text-gray-500">
+                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor" />
+                  </svg>
+                </div>
+              )}
+            </div>
+            <div>
+              <h2 className="font-semibold text-slate-900 dark:text-white">{selectedCharacter.name}</h2>
+            </div>
           </div>
 
-          {/* Right side — ⋮ overflow menu + delete toggle */}
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {/* Dialogue mode — visible on md+ */}
-            <div className="hidden md:block">
-              <DialogueModeSelector
-                currentMode={dialogueMode}
-                onSelect={setDialogueMode}
-                lang={lang}
-              />
-            </div>
+          {/* Right side actions */}
+          <div className="flex items-center gap-1">
+            {/* World book button */}
+            {selectedSession && (
+              <Button
+                variant="ghost" size="icon"
+                className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                onClick={() => setShowWorldBookManager(true)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
+                </svg>
+              </Button>
+            )}
+            
+            {/* Storyline button */}
+            {selectedSession && (
+              <Button
+                variant="ghost" size="icon"
+                className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                onClick={fetchBranchTree}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="6" y1="3" x2="6" y2="15"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+                </svg>
+              </Button>
+            )}
 
-            {/* ⋮ overflow menu */}
+            {/* More options menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <MoreVertical size={16} />
+                <Button variant="ghost" size="icon" className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
+                  </svg>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
-                {/* Dialogue mode — mobile only */}
-                <div className="md:hidden">
-                  <DropdownMenuItem onClick={() => setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person')}>
-                    <UserIcon size={14} className="mr-2" />
-                    {dialogueMode === 'first_person'
-                      ? (lang === 'zh' ? '切换故事模式' : 'Switch to Story')
-                      : (lang === 'zh' ? '切换第一人称' : 'Switch to 1st Person')}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </div>
-
-                {/* Branch / Storyline */}
-                {selectedSession && (
-                  <>
-                    <DropdownMenuItem onClick={fetchBranchTree}>
-                      <GitBranch size={14} className="mr-2" />
-                      故事线
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
-                )}
-
-                {/* World book manager */}
-                <DropdownMenuItem onClick={() => setShowWorldBookManager(true)}>
-                  <BookOpen size={14} className="mr-2" />
-                  管理世界书
+                {/* Dialogue mode */}
+                <DropdownMenuItem onClick={() => setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person')}>
+                  <UserIcon size={14} className="mr-2" />
+                  {dialogueMode === 'first_person'
+                    ? (lang === 'zh' ? '切换故事模式' : 'Switch to Story')
+                    : (lang === 'zh' ? '切换第一人称' : 'Switch to 1st Person')}
                 </DropdownMenuItem>
+                
+                {/* Model selector */}
+                <DropdownMenuSeparator />
+                <div className="px-2 py-1.5">
+                  <ModelSelector
+                    models={models}
+                    currentModel={selectedModel}
+                    onSelect={setSelectedModel}
+                  />
+                </div>
 
                 {/* Plot line manager */}
                 {selectedSession && pl.sessionStatus?.active && (
@@ -598,30 +604,30 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                     )}
                   </>
                 )}
+
+                {/* Delete toggle */}
+                {selectedSession && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={async () => {
+                        if (isMixedDeleteMode && (selectedWholeMessages.size > 0 || selectedMessageParts.size > 0)) {
+                          await handleMixedDelete();
+                        } else {
+                          setIsMixedDeleteMode(!isMixedDeleteMode);
+                          if (isMixedDeleteMode) clearSelection();
+                        }
+                      }}
+                    >
+                      <Trash2 size={14} className="mr-2" />
+                      {(selectedWholeMessages.size > 0 || selectedMessageParts.size > 0) ? "删除选中" : (isMixedDeleteMode ? "取消选择模式" : "选择删除")}
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
-
-            {/* Delete toggle */}
-            {selectedSession && (
-              <Button
-                variant={(selectedWholeMessages.size > 0 || selectedMessageParts.size > 0) ? "destructive" : (isMixedDeleteMode ? "default" : "secondary")}
-                size="icon"
-                className="h-8 w-8"
-                onClick={async () => {
-                  if (isMixedDeleteMode && (selectedWholeMessages.size > 0 || selectedMessageParts.size > 0)) {
-                    await handleMixedDelete();
-                  } else {
-                    setIsMixedDeleteMode(!isMixedDeleteMode);
-                    if (isMixedDeleteMode) clearSelection();
-                  }
-                }}
-                title={(selectedWholeMessages.size > 0 || selectedMessageParts.size > 0) ? "删除选中" : (isMixedDeleteMode ? "取消选择模式" : "选择删除")}
-              >
-                <Trash2 size={16} />
-              </Button>
-            )}
           </div>
-        </div>
+        </header>
 
         {/* ── Empty state / new chat ── */}
         {messages.length === 0 && !selectedSession && !initializingChat && (
@@ -678,90 +684,94 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
         {/* ── Messages area ── */}
         {(messages.length > 0 || selectedSession) && (
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto px-4 space-y-4 pt-4 pb-4">
             {wb.sessionStatus?.active && (
               <StageIndicator
                 status={wb.sessionStatus}
               />
             )}
-            <div className={`px-3 sm:px-6 py-4 sm:py-6 ${bottomPadding}`}>
-              <div className="w-full space-y-4 sm:space-y-6">
-                {messages.map((msg, idx) => (
-                  <div key={msg.id || idx} className="flex items-start gap-2">
-                    <div className="flex-1">
-                      <Message
-                        message={msg}
-                        userAvatar={user.avatar}
-                        userName={user.username}
-                        characterAvatar={selectedCharacter.avatar}
-                        characterName={selectedCharacter.name}
-                        isCharacterChat={true}
-                        models={models}
-                        streaming={(isGenerating && idx === messages.length - 1) || regeneratingMessageIndex === idx}
-                        isLast={idx === messages.length - 1}
-                        t={t}
-                        tokens={msg.tokens}
-                        memoryMode={memoryMode}
-                        memoryStats={idx === messages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
-                        onCompress={idx === messages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
-                        compressing={compressing}
-                        onRegenerate={msg.role === 'assistant' && !isGenerating ? () => handleRegenerate(idx) : undefined}
-                        canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && messages[idx - 1]?.role === 'user'}
-                        showModelReasoning={showModelReasoning}
-                        onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
-                        canEdit={msg.role === 'assistant' && !isGenerating}
-                        isMixedDeleteMode={isMixedDeleteMode}
-                        messageIndex={idx}
-                        selectedWholeMessages={selectedWholeMessages}
-                        selectedMessageParts={selectedMessageParts}
-                        onToggleWholeMessageSelect={toggleWholeMessageSelect}
-                        onToggleMessagePartSelect={toggleMessagePartSelect}
-                        onSelectAllPartsInMessage={selectAllPartsInMessage}
-                      />
-                    </div>
-                  </div>
+            {messages.map((msg, idx) => (
+              <Message
+                key={msg.id || idx}
+                message={msg}
+                userAvatar={user.avatar}
+                userName={user.username}
+                characterAvatar={selectedCharacter.avatar}
+                characterName={selectedCharacter.name}
+                isCharacterChat={true}
+                models={models}
+                streaming={(isGenerating && idx === messages.length - 1) || regeneratingMessageIndex === idx}
+                isLast={idx === messages.length - 1}
+                t={t}
+                tokens={msg.tokens}
+                memoryMode={memoryMode}
+                memoryStats={idx === messages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
+                onCompress={idx === messages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
+                compressing={compressing}
+                onRegenerate={msg.role === 'assistant' && !isGenerating ? () => handleRegenerate(idx) : undefined}
+                canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && messages[idx - 1]?.role === 'user'}
+                showModelReasoning={showModelReasoning}
+                onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                canEdit={msg.role === 'assistant' && !isGenerating}
+                isMixedDeleteMode={isMixedDeleteMode}
+                messageIndex={idx}
+                selectedWholeMessages={selectedWholeMessages}
+                selectedMessageParts={selectedMessageParts}
+                onToggleWholeMessageSelect={toggleWholeMessageSelect}
+                onToggleMessagePartSelect={toggleMessagePartSelect}
+                onSelectAllPartsInMessage={selectAllPartsInMessage}
+              />
+            ))}
+
+            {suggestions.length > 0 && !isGenerating && (
+              <div className="flex flex-wrap gap-2 pl-4 sm:pl-12 animate-fade-in-up">
+                {suggestions.map((s, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSendMessage(s, [])}
+                    className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-full text-xs font-medium transition-colors"
+                  >
+                    <Sparkles size={10} className="inline mr-1" />
+                    {s}
+                  </button>
                 ))}
-
-                {suggestions.length > 0 && !isGenerating && (
-                  <div className="flex flex-wrap gap-2 pl-4 sm:pl-12 animate-fade-in-up">
-                    {suggestions.map((s, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => handleSendMessage(s, [])}
-                        className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-full text-xs font-medium transition-colors"
-                      >
-                        <Sparkles size={10} className="inline mr-1" />
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <div ref={messagesEndRef} />
               </div>
-            </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
         )}
 
         {/* ── Chat input ── */}
-        <div className="p-3 sm:p-4 pb-0 md:pb-4 border-t border-border/50 flex-shrink-0">
-          <div className="w-full">
-            <ChatInput
-              value={inputValue}
-              onChange={setInputValue}
-              onSend={handleSendWithInput}
-              onUpload={handleUpload}
-              attachments={attachments}
-              onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-              models={models}
-              currentModel={selectedModel}
-              onModelChange={setSelectedModel}
-              disabled={isGenerating}
-              uploading={uploading}
-              placeholder={`与 ${selectedCharacter.name} 对话...`}
-              streaming={isGenerating}
-              onStop={() => abortControllerRef.current?.abort()}
-            />
+        <div className="px-4 pt-0 pb-0 bg-gradient-to-t from-slate-50 dark:from-slate-950 via-slate-50/95 dark:via-slate-950/95 to-transparent">
+          <div className="bg-slate-100 dark:bg-slate-800/50 rounded-3xl p-0 flex items-end">
+            <Button
+              variant="ghost" size="icon"
+              className="h-11 w-11 rounded-2xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              onClick={() => setMobileSidebarOpen(true)}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14"/><path d="M5 12h14"/>
+              </svg>
+            </Button>
+            <div className="flex-1">
+              <ChatInput
+                value={inputValue}
+                onChange={setInputValue}
+                onSend={handleSendWithInput}
+                onUpload={handleUpload}
+                attachments={attachments}
+                onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
+                models={models}
+                currentModel={selectedModel}
+                onModelChange={setSelectedModel}
+                disabled={isGenerating}
+                uploading={uploading}
+                placeholder={`与 ${selectedCharacter.name} 对话...`}
+                streaming={isGenerating}
+                onStop={() => abortControllerRef.current?.abort()}
+              />
+            </div>
           </div>
         </div>
       </div>

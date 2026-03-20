@@ -3,7 +3,8 @@ import { Loader2 } from 'lucide-react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
-import { Sidebar } from '@/components/ui/custom/Sidebar';
+import { DesktopLayout } from '@/components/layout/DesktopLayout';
+import { MobileLayout } from '@/components/layout/MobileLayout';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, AUTH_FAILURE_EVENT } from '@/services/api';
@@ -126,7 +127,7 @@ const TRANSLATIONS = {
     old_pwd_required: "请输入旧密码",
     new_pwd_required: "请输入新密码",
     pwd_min_length: "新密码至少需要6个字符",
-    pwd_same_as_old: "新密码不能与旧密码相同",
+    pwd_same_as_old: "新不能与旧密码相同",
     pwd_changed: "密码修改成功",
     pwd_change_failed: "密码修改失败",
     pwd_change_error: "密码修改出错",
@@ -267,20 +268,47 @@ const TRANSLATIONS = {
   }
 };
 
-const ChatView = lazy(() =>
-  import('@/components/views/ChatView').then((module) => ({ default: module.ChatView }))
+const ChatViewDesktop = lazy(() =>
+  import('@/components/views/desktop/ChatView').then((module) => ({ default: module.ChatView }))
 );
-const WorkspaceView = lazy(() =>
-  import('@/components/views/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
+const WorkspaceViewDesktop = lazy(() =>
+  import('@/components/views/desktop/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
 );
-const SettingsView = lazy(() =>
-  import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
+const SettingsViewDesktop = lazy(() =>
+  import('@/components/views/desktop/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
-const CharacterView = lazy(() =>
-  import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
+const CharacterViewDesktop = lazy(() =>
+  import('@/components/views/desktop/CharacterView').then((module) => ({ default: module.CharacterView }))
+);
+
+const ChatViewMobile = lazy(() =>
+  import('@/components/views/mobile/ChatView').then((module) => ({ default: module.ChatView }))
+);
+const WorkspaceViewMobile = lazy(() =>
+  import('@/components/views/mobile/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
+);
+const SettingsViewMobile = lazy(() =>
+  import('@/components/views/mobile/SettingsView').then((module) => ({ default: module.SettingsView }))
+);
+const CharacterViewMobile = lazy(() =>
+  import('@/components/views/mobile/CharacterView').then((module) => ({ default: module.CharacterView }))
 );
 
 const USER_FETCH_TIMEOUT_MS = 12000;
+
+const detectDevice = (): 'desktop' | 'mobile' => {
+  if (typeof window === 'undefined') return 'desktop';
+  
+  const saved = localStorage.getItem('ui_mode');
+  if (saved === 'desktop' || saved === 'mobile') {
+    return saved as 'desktop' | 'mobile';
+  }
+  
+  const userAgent = window.navigator.userAgent.toLowerCase();
+  const isMobileDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+  
+  return isMobileDevice ? 'mobile' : 'desktop';
+};
 
 const RouteFallback = () => (
   <div className="h-full min-h-[240px] flex items-center justify-center">
@@ -289,6 +317,7 @@ const RouteFallback = () => (
 );
 
 function App() {
+  const [device, setDevice] = useState<'desktop' | 'mobile'>(detectDevice);
   const [token, setToken] = useState<string | null>(localStorage.getItem('palink_token'));
   const [user, setUser] = useState<User | null>(null);
   const [isDark, setIsDark] = useState<Theme>(localStorage.getItem('theme') as Theme || 'light');
@@ -300,7 +329,21 @@ function App() {
 
   const t = TRANSLATIONS[lang];
 
-  // Apply theme
+  const switchDevice = useCallback((newDevice: 'desktop' | 'mobile') => {
+    localStorage.setItem('ui_mode', newDevice);
+    window.location.reload();
+  }, []);
+
+  useEffect(() => {
+    const handleUiModeChange = (e: CustomEvent) => {
+      if (e.detail?.mode) {
+        switchDevice(e.detail.mode);
+      }
+    };
+    window.addEventListener('uiModeChange', handleUiModeChange as EventListener);
+    return () => window.removeEventListener('uiModeChange', handleUiModeChange as EventListener);
+  }, [switchDevice]);
+
   useEffect(() => {
     if (isDark === 'dark') {
       document.documentElement.classList.add('dark');
@@ -311,7 +354,6 @@ function App() {
     document.documentElement.setAttribute('data-theme', isDark);
   }, [isDark]);
 
-  // 监听 API 层 401 事件，统一登出
   useEffect(() => {
     const onAuthFailure = () => {
       setToken(null);
@@ -322,7 +364,6 @@ function App() {
     return () => window.removeEventListener(AUTH_FAILURE_EVENT, onAuthFailure);
   }, []);
 
-  // Load user data
   useEffect(() => {
     let isMounted = true;
     const controller = new AbortController();
@@ -356,7 +397,6 @@ function App() {
     };
   }, [token]);
 
-  // Load config
   const loadConfig = useCallback(() => {
     if (token) {
       api.get('/api/models', { skipAuth: true }).then(setModels).catch(() => {});
@@ -408,80 +448,161 @@ function App() {
     );
   }
 
+  const sidebarProps = {
+    user,
+    isDark: isDark === 'dark',
+    onThemeToggle: toggleTheme,
+    lang,
+    onLangToggle: toggleLang,
+    onLogout: handleLogout,
+    t,
+    switchDevice,
+    currentDevice: device,
+  };
+
+  const routes = (
+    <Routes>
+      <Route path="/" element={<Navigate to="/chat" replace />} />
+      <Route path="/chat" element={
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <ChatViewDesktop
+              token={token}
+              user={user}
+              models={models}
+              defaultModel={systemDefaults.default_chat_model || models[0]?.id}
+              starterQuestions={starterQuestions}
+              t={t}
+            />
+          ) : (
+            <ChatViewMobile
+              token={token}
+              user={user}
+              models={models}
+              defaultModel={systemDefaults.default_chat_model || models[0]?.id}
+              starterQuestions={starterQuestions}
+              t={t}
+            />
+          )}
+        </Suspense>
+      } />
+      <Route path="/workspace" element={
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <WorkspaceViewDesktop
+              token={token}
+              user={user}
+              models={models}
+              systemDefaults={systemDefaults}
+              t={t}
+            />
+          ) : (
+            <WorkspaceViewMobile
+              token={token}
+              user={user}
+              models={models}
+              systemDefaults={systemDefaults}
+              t={t}
+            />
+          )}
+        </Suspense>
+      } />
+      <Route path="/settings" element={
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <SettingsViewDesktop
+              token={token}
+              user={user}
+              models={models}
+              systemDefaults={systemDefaults}
+              onLogout={handleLogout}
+              onUpdateDefaults={loadConfig}
+              t={t}
+              isDark={isDark === 'dark'}
+              onThemeToggle={toggleTheme}
+              lang={lang}
+              onLangToggle={toggleLang}
+              switchDevice={switchDevice}
+              currentDevice={device}
+            />
+          ) : (
+            <SettingsViewMobile
+              token={token}
+              user={user}
+              models={models}
+              systemDefaults={systemDefaults}
+              onLogout={handleLogout}
+              onUpdateDefaults={loadConfig}
+              t={t}
+              isDark={isDark === 'dark'}
+              onThemeToggle={toggleTheme}
+              lang={lang}
+              onLangToggle={toggleLang}
+              switchDevice={switchDevice}
+              currentDevice={device}
+            />
+          )}
+        </Suspense>
+      } />
+      <Route path="/characters" element={
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <CharacterViewDesktop
+              token={token}
+              user={user}
+              models={models}
+              t={t}
+              systemDefaults={systemDefaults}
+              lang={lang}
+            />
+          ) : (
+            <CharacterViewMobile
+              token={token}
+              user={user}
+              models={models}
+              t={t}
+              systemDefaults={systemDefaults}
+              lang={lang}
+            />
+          )}
+        </Suspense>
+      } />
+      <Route path="/characters/:characterId" element={
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <CharacterViewDesktop
+              token={token}
+              user={user}
+              models={models}
+              t={t}
+              systemDefaults={systemDefaults}
+              lang={lang}
+            />
+          ) : (
+            <CharacterViewMobile
+              token={token}
+              user={user}
+              models={models}
+              t={t}
+              systemDefaults={systemDefaults}
+              lang={lang}
+            />
+          )}
+        </Suspense>
+      } />
+      <Route path="*" element={<Navigate to="/chat" replace />} />
+    </Routes>
+  );
+
   return (
     <BrowserRouter>
-      <div className="h-screen w-full flex flex-col md:flex-row relative overflow-hidden">
+      <div className="h-screen w-full flex flex-col relative overflow-hidden bg-background">
         <AuroraBackground />
-        
-        <div className="relative z-10 flex flex-col md:flex-row w-full h-full">
-          <Sidebar
-            user={user}
-            isDark={isDark === 'dark'}
-            onThemeToggle={toggleTheme}
-            lang={lang}
-            onLangToggle={toggleLang}
-            onLogout={handleLogout}
-            t={t}
-          />
-          <main className="flex-1 relative flex flex-col h-full glass-strong md:rounded-2xl md:border-l md:border-border/50 overflow-hidden" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat" element={
-                <Suspense fallback={<RouteFallback />}>
-                  <ChatView
-                    token={token}
-                    user={user}
-                    models={models}
-                    defaultModel={systemDefaults.default_chat_model || models[0]?.id}
-                    starterQuestions={starterQuestions}
-                    t={t}
-                  />
-                </Suspense>
-              } />
-              <Route path="/workspace" element={
-                <Suspense fallback={<RouteFallback />}>
-                  <WorkspaceView
-                    token={token}
-                    user={user}
-                    models={models}
-                    systemDefaults={systemDefaults}
-                    t={t}
-                  />
-                </Suspense>
-              } />
-              <Route path="/settings" element={
-                <Suspense fallback={<RouteFallback />}>
-                  <SettingsView
-                    token={token}
-                    user={user}
-                    models={models}
-                    systemDefaults={systemDefaults}
-                    onLogout={handleLogout}
-                    onUpdateDefaults={loadConfig}
-                    t={t}
-                    isDark={isDark === 'dark'}
-                    onThemeToggle={toggleTheme}
-                    lang={lang}
-                    onLangToggle={toggleLang}
-                  />
-                </Suspense>
-              } />
-              <Route path="/characters" element={
-                <Suspense fallback={<RouteFallback />}>
-                  <CharacterView
-                    token={token}
-                    user={user}
-                    models={models}
-                    t={t}
-                    systemDefaults={systemDefaults}
-                    lang={lang}
-                  />
-                </Suspense>
-              } />
-              <Route path="*" element={<Navigate to="/chat" replace />} />
-            </Routes>
-          </main>
-        </div>
+        {device === 'desktop' ? (
+          <DesktopLayout {...sidebarProps}>{routes}</DesktopLayout>
+        ) : (
+          <MobileLayout {...sidebarProps}>{routes}</MobileLayout>
+        )}
       </div>
       <Toaster richColors position="top-right" />
     </BrowserRouter>

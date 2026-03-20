@@ -25,7 +25,6 @@ interface UseCharacterChatOptions {
   setSelectedSession: (session: CharacterChatSession | null) => void;
   loadSessions: (characterId: string) => Promise<void>;
   loadMemoryStats: (sessionId: string) => Promise<void>;
-  uiLanguage?: string;
 }
 
 const TIMEOUT_WARNING_MS = 15000;
@@ -42,7 +41,6 @@ export function useCharacterChat({
   setSelectedSession,
   loadSessions,
   loadMemoryStats,
-  uiLanguage = 'zh',
 }: UseCharacterChatOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -62,6 +60,48 @@ export function useCharacterChat({
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const consumeSseStream = useCallback(
+    async (response: Response, onJson: (json: Record<string, unknown>) => void) => {
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Invalid stream response');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const processChunk = (chunk: string) => {
+        buffer += chunk;
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const event of events) {
+          const lines = event.split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+
+            const data = line.slice(6).trim();
+            if (!data || data === '[DONE]') continue;
+
+            try {
+              onJson(JSON.parse(data));
+            } catch {
+              // Ignore malformed chunks to keep the stream resilient.
+            }
+          }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        processChunk(decoder.decode(value, { stream: true }));
+      }
+
+      const tail = decoder.decode();
+      if (tail) processChunk(tail);
+    },
+    []
+  );
 
   const handleRegenerate = useCallback(async (messageIndex: number) => {
     if (!selectedCharacter || isGenerating || uploading || messageIndex < 1) return;
@@ -92,6 +132,8 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    let resolvedSessionId: string | null = selectedSession?.id || null;
+    let sessionSynced = false;
 
     try {
       const response = await api.stream('/api/character-chat', {
@@ -103,53 +145,61 @@ export function useCharacterChat({
         dialogue_mode: dialogueMode,
         branch_id: selectedBranch?.id,
         user_nickname: getDisplayName(selectedCharacter),
-        ui_language: uiLanguage,
       }, { signal: abortControllerRef.current.signal });
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
+      await consumeSseStream(response, (json) => {
+        const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const content = typeof json.content === 'string' ? json.content : '';
 
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const json = JSON.parse(data);
-              if (json.session_id && !selectedSession) {
-                setSelectedSession({ ...json } as any);
-                loadSessions(selectedCharacter.id);
-              }
-              if (json.reasoning) fullReasoning += json.reasoning;
-              if (json.content) fullContent += json.content;
-
-              setMessages(prev => {
-                const newMessages = [...prev];
-                newMessages[assistantMessageIndex] = {
-                  ...newMessages[assistantMessageIndex],
-                  content: fullReasoning
-                    ? `<think>${fullReasoning}</think>${fullContent}`
-                    : fullContent,
-                };
-                return newMessages;
-              });
-            } catch (_e) { /* parse error, skip */ }
+        if (sessionId) {
+          resolvedSessionId = sessionId;
+          if (!selectedSession && !sessionSynced) {
+            sessionSynced = true;
+            const now = new Date().toISOString();
+            setSelectedSession({
+              id: sessionId,
+              dialogue_mode: dialogueMode,
+              created_at: now,
+              updated_at: now,
+            });
+            loadSessions(selectedCharacter.id);
           }
         }
-      }
 
-      if (selectedSession?.id) {
-        await loadMemoryStats(selectedSession.id);
+        if (!reasoning && !modelReasoning && !content) return;
+
+        if (reasoning) fullReasoning += reasoning;
+        if (modelReasoning) fullReasoning += modelReasoning;
+        if (content) fullContent += content;
+
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx === -1) return newMessages;
+
+          newMessages[assistantIdx] = {
+            ...newMessages[assistantIdx],
+            content: fullReasoning
+              ? `<think>${fullReasoning}</think>${fullContent}`
+              : fullContent,
+          };
+          return newMessages;
+        });
+      });
+
+      if (resolvedSessionId) {
+        await loadMemoryStats(resolvedSessionId);
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         setMessages(prev => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex].content += `\n[Error: ${e.message}]`;
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx >= 0) {
+            newMessages[assistantIdx].content += `\n[Error: ${e.message}]`;
+          }
           return newMessages;
         });
       }
@@ -158,13 +208,19 @@ export function useCharacterChat({
       setRegeneratingMessageIndex(null);
       abortControllerRef.current = null;
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, consumeSseStream]);
 
   const handleSendMessage = useCallback(async (content: string, images: string[]) => {
     if (!selectedCharacter) return;
 
     const text = content || inputValue;
     if ((!text.trim() && attachments.length === 0) || isGenerating || uploading) return;
+
+    const pendingAttachments = attachments;
+    const outgoingImages = pendingAttachments.length > 0
+      ? pendingAttachments.filter(a => a.type === 'image').map(a => a.url)
+      : images;
+    const outgoingFiles = pendingAttachments.filter(a => a.type === 'file').map(a => a.url);
 
     setCurrentError(null);
     setTimeoutWarning(false);
@@ -174,7 +230,7 @@ export function useCharacterChat({
     setSuggestions([]);
 
     setRetryMessageContent(text);
-    setRetryMessageImages(images);
+    setRetryMessageImages(outgoingImages);
 
     setRequestStartTime(Date.now());
     timeoutRef.current = setTimeout(() => {
@@ -182,9 +238,9 @@ export function useCharacterChat({
     }, TIMEOUT_WARNING_MS);
 
     let displayContent = text;
-    if (attachments.length > 0) {
+    if (pendingAttachments.length > 0) {
       displayContent += '\n\n';
-      attachments.forEach(att => {
+      pendingAttachments.forEach(att => {
         displayContent += att.type === 'image'
           ? `![${att.name}](${att.url})\n`
           : `[📎 ${att.name}](${att.url})\n`;
@@ -203,6 +259,8 @@ export function useCharacterChat({
     let fullContent = '';
     let fullReasoning = '';
     let hasReceivedData = false;
+    let resolvedSessionId: string | null = selectedSession?.id || null;
+    let sessionSynced = false;
 
     try {
       const response = await api.stream('/api/character-chat', {
@@ -214,20 +272,15 @@ export function useCharacterChat({
         dialogue_mode: dialogueMode,
         branch_id: selectedBranch?.id,
         user_nickname: getDisplayName(selectedCharacter),
-        ui_language: uiLanguage,
+        images: outgoingImages,
+        files: outgoingFiles,
       }, { signal: abortControllerRef.current.signal });
 
       if (!selectedSession) {
         loadSessions(selectedCharacter.id);
       }
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
+      await consumeSseStream(response, (json) => {
         if (!hasReceivedData) {
           hasReceivedData = true;
           setTimeoutWarning(false);
@@ -236,38 +289,49 @@ export function useCharacterChat({
           }
         }
 
-        const lines = decoder.decode(value, { stream: true }).split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const json = JSON.parse(data);
-              if (json.session_id && !selectedSession) {
-                setSelectedSession({ ...json } as any);
-                loadSessions(selectedCharacter.id);
-              }
-              if (json.reasoning) fullReasoning += json.reasoning;
-              if (json.content) fullContent += json.content;
+        const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const content = typeof json.content === 'string' ? json.content : '';
 
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastMessage = newMessages[newMessages.length - 1];
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullReasoning
-                    ? `<think>${fullReasoning}</think>${fullContent}`
-                    : fullContent,
-                };
-                return newMessages;
-              });
-            } catch (_e) { /* parse error, skip */ }
+        if (sessionId) {
+          resolvedSessionId = sessionId;
+          if (!selectedSession && !sessionSynced) {
+            sessionSynced = true;
+            const now = new Date().toISOString();
+            setSelectedSession({
+              id: sessionId,
+              dialogue_mode: dialogueMode,
+              created_at: now,
+              updated_at: now,
+            });
+            loadSessions(selectedCharacter.id);
           }
         }
-      }
 
-      if (selectedSession?.id) {
-        await loadMemoryStats(selectedSession.id);
+        if (!reasoning && !modelReasoning && !content) return;
+
+        if (reasoning) fullReasoning += reasoning;
+        if (modelReasoning) fullReasoning += modelReasoning;
+        if (content) fullContent += content;
+
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx === -1) return newMessages;
+
+          newMessages[assistantIdx] = {
+            ...newMessages[assistantIdx],
+            content: fullReasoning
+              ? `<think>${fullReasoning}</think>${fullContent}`
+              : fullContent,
+          };
+          return newMessages;
+        });
+      });
+
+      if (resolvedSessionId) {
+        await loadMemoryStats(resolvedSessionId);
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
@@ -276,8 +340,11 @@ export function useCharacterChat({
 
         setMessages(prev => {
           const newMessages = [...prev];
-          newMessages[newMessages.length - 1].content =
-            `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx >= 0) {
+            newMessages[assistantIdx].content =
+              `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
+          }
           return newMessages;
         });
       }
@@ -290,7 +357,7 @@ export function useCharacterChat({
         clearTimeout(timeoutRef.current);
       }
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, consumeSseStream]);
 
   const handleSendWithInput = useCallback(async () => {
     if (inputValue.trim() || attachments.length > 0) {

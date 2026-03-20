@@ -469,9 +469,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         setMessages(prev => {
           const newMessages = [...prev];
-          const lastMessage = newMessages[newMessages.length - 1];
-          newMessages[newMessages.length - 1] = {
-            ...lastMessage,
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+
+          if (assistantIdx === -1) {
+            newMessages.push({
+              id: assistantMessageId,
+              role: 'assistant',
+              content: fullContent,
+              model: currentModel
+            });
+            return newMessages;
+          }
+
+          newMessages[assistantIdx] = {
+            ...newMessages[assistantIdx],
             content: fullContent
           };
           return newMessages;
@@ -488,7 +499,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       if ((e as Error).name !== 'AbortError') {
         setMessages(prev => {
           const newMessages = [...prev];
-          newMessages[newMessages.length - 1].content += `\n[Error: ${(e as Error).message}]`;
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx >= 0) {
+            newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
+          }
           return newMessages;
         });
       }
@@ -621,9 +635,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
         {/* Sidebar */}
         <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
+          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)] border-r border-border/40">
             {/* Header */}
-            <div className="h-[54px] flex items-center justify-between px-4 shrink-0 border-b border-border/50">
+            <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
               <div className="flex items-center gap-2">
                 <Button
                   variant="ghost"
@@ -692,7 +706,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Chat Area */}
         <div className="flex-1 flex flex-col h-full overflow-hidden">
           {/* Header */}
-          <div className="h-[54px] flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
+          <div className="h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 bg-background">
             <div className="flex items-center gap-2 min-w-0">
               <Button
                 variant="ghost"
@@ -776,7 +790,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Input Area */}
-          <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
+          <div className="px-2 sm:px-3 pt-2 sm:pt-3 border-t border-border/50 bg-background/70 backdrop-blur-xl pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-4">
             <div className="max-w-3xl mx-auto">
               <ChatInput
                 value={input}
@@ -828,7 +842,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
       {/* Sidebar */}
       <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
+        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)] border-r border-border/40">
           {/* Header */}
           <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-2">
@@ -899,7 +913,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {/* Chat Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Header */}
-        <div className="h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
+        <div className="h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 bg-background">
           <div className="flex items-center gap-2 min-w-0">
             <Button
               variant="ghost"
@@ -950,7 +964,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onClick={handleDeleteSelectedMessages}
                     >
                       <Trash2 size={14} className="sm:mr-1.5" />
-                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
+                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
                     </Button>
                   )}
                 </>
@@ -1022,7 +1036,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Input Area */}
-        <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
+        <div className="px-2 sm:px-3 pt-2 sm:pt-3 border-t border-border/50 bg-background/70 backdrop-blur-xl pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-4">
           <div className="max-w-3xl mx-auto">
             <ChatInput
               value={input}

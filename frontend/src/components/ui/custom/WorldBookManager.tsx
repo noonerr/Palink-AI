@@ -20,11 +20,14 @@ interface WorldBookManagerProps {
   onImport: (file: File) => Promise<WorldBook>;
   onSelect: (id: string) => void;
   onClose: () => void;
+  selectedForProfileId?: string | null;
+  onSelectForProfile?: (id: string | null) => void;
 }
 
 export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
   worldBooks, selectedWorldBook, loading,
   t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onImport, onSelect, onClose,
+  selectedForProfileId, onSelectForProfile,
 }) => {
   const [showCreate, setShowCreate] = useState(false);
   const [_editingId, _setEditingId] = useState<string | null>(null);
@@ -161,7 +164,7 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
       <div className="flex items-center justify-between p-4 border-b border-white/10">
         <div className="flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-blue-400" />
-          <h3 className="font-semibold">世界书管理</h3>
+          <h3 className="font-semibold text-lg">世界书</h3>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm cursor-pointer">
@@ -231,10 +234,20 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
           </div>
         ) : (
           worldBooks.map(wb => (
-            <GlassCard key={wb.id} className="p-3" hover>
+            <GlassCard 
+              key={wb.id} 
+              className={`p-3 ${selectedForProfileId === wb.id ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
+              hover
+            >
               <div className="flex items-center justify-between">
                 <button
-                  onClick={() => onSelect(wb.id)}
+                  onClick={() => {
+                    if (onSelectForProfile) {
+                      onSelectForProfile(selectedForProfileId === wb.id ? null : wb.id);
+                    } else {
+                      onSelect(wb.id);
+                    }
+                  }}
                   className="flex-1 text-left"
                 >
                   <div className="flex items-center gap-2">

@@ -6,7 +6,9 @@ import {
   Sun,
   Moon,
   LogOut,
-  Bot
+  Bot,
+  Monitor,
+  Smartphone
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -21,6 +23,8 @@ interface SidebarProps {
   onLangToggle?: () => void;
   onLogout?: () => void;
   t: Record<string, string>;
+  switchDevice?: (newDevice: 'desktop' | 'mobile') => void;
+  currentDevice?: 'desktop' | 'mobile';
 }
 
 interface NavItemProps {
@@ -58,6 +62,21 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMob
   );
 };
 
+const getCurrentVariant = (): 'desktop' | 'mobile' => {
+  const saved = localStorage.getItem('ui_mode');
+  if (saved === 'desktop' || saved === 'mobile') {
+    return saved as 'desktop' | 'mobile';
+  }
+  const userAgent = typeof window !== 'undefined' ? window.navigator.userAgent.toLowerCase() : '';
+  const isMobileDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+  return isMobileDevice ? 'mobile' : 'desktop';
+};
+
+const switchUiVariant = (target: 'desktop' | 'mobile') => {
+  localStorage.setItem('ui_mode', target);
+  window.location.reload();
+};
+
 // Desktop Sidebar Component
 export const DesktopSidebar: React.FC<SidebarProps> = ({
   user,
@@ -66,10 +85,14 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
   lang,
   onLangToggle,
   onLogout,
-  t
+  t,
+  switchDevice,
+  currentDevice = 'desktop'
 }) => {
+  const nextVariant = currentDevice === 'desktop' ? 'mobile' : 'desktop';
+
   return (
-    <aside className="w-[72px] h-full flex flex-col items-center py-5 bg-sidebar text-sidebar-foreground">
+    <aside className="w-[72px] h-full flex flex-col items-center pt-[max(1rem,env(safe-area-inset-top))] pb-5 bg-sidebar text-sidebar-foreground border-r border-sidebar-border/40">
       {/* Logo */}
       <div className="mb-8">
         <div className="w-10 h-10 bg-sidebar-primary rounded-xl flex items-center justify-center shadow-md shadow-sidebar-primary/20">
@@ -121,6 +144,14 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           {(lang || 'zh').toUpperCase()}
         </button>
+
+        <button
+          onClick={() => switchDevice && switchDevice(nextVariant)}
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
+          title={nextVariant === 'mobile' ? 'Switch to Mobile UI' : 'Switch to Desktop UI'}
+        >
+          {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
+        </button>
         
         <button
           onClick={onLogout}
@@ -147,36 +178,36 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
 export const MobileBottomNav: React.FC<SidebarProps> = ({
   t
 }) => {
+  const tabs = [
+    { id: '/chat', icon: MessageSquare, label: t.nav_chat || 'Chat' },
+    { id: '/workspace', icon: FolderOpen, label: t.nav_files || 'Workspace' },
+    { id: '/characters', icon: Bot, label: t.nav_characters || 'Roleplay' },
+    { id: '/settings', icon: Settings, label: t.nav_config || 'Settings' }
+  ];
+
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-[9999] glass-strong flex items-center justify-around px-2 pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]">
-      <NavItem
-        icon={MessageSquare}
-        to="/chat"
-        tooltip={t.nav_chat || 'Chat'}
-        label={t.nav_chat || 'Chat'}
-        isMobile
-      />
-      <NavItem
-        icon={FolderOpen}
-        to="/workspace"
-        tooltip={t.nav_files || 'Workspace'}
-        label={t.nav_files || 'Workspace'}
-        isMobile
-      />
-      <NavItem
-        icon={Bot}
-        to="/characters"
-        tooltip={t.nav_characters || 'Roleplay'}
-        label={t.nav_characters || 'Roleplay'}
-        isMobile
-      />
-      <NavItem
-        icon={Settings}
-        to="/settings"
-        tooltip={t.nav_config || 'Settings'}
-        label={t.nav_config || 'Settings'}
-        isMobile
-      />
+    <nav className="fixed bottom-0 left-0 right-0 mx-4 mb-0 h-[72px] bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[28px] border border-white/50 dark:border-slate-700/40 shadow-xl flex items-center justify-around pb-safe z-50 pointer-events-auto">
+      {tabs.map((item) => {
+        const IconComponent = item.icon;
+        const isActive = location.pathname === item.id;
+        return (
+          <Link
+            key={item.id}
+            to={item.id}
+            className={`relative flex flex-col items-center justify-center space-y-0.5 w-1/4 h-full transition-all duration-300 active:scale-[0.98] ${
+              isActive ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'
+            }`}
+          >
+            <div className={`absolute inset-1 rounded-2xl transition-all duration-300 ${
+              isActive ? 'bg-white/40 dark:bg-white/10' : ''
+            }`} />
+            <div className={`relative z-10 transition-all duration-300 ${isActive ? 'scale-110' : ''}`}>
+              <IconComponent size={isActive ? 26 : 24} strokeWidth={isActive ? 2.5 : 2} />
+            </div>
+            <span className={`relative z-10 text-[11px] font-medium ${isActive ? 'font-semibold' : ''}`}>{item.label}</span>
+          </Link>
+        );
+      })}
     </nav>
   );
 };

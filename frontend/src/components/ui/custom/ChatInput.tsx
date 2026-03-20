@@ -48,8 +48,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Prevent accidental sends while users are composing text with IME.
+    if ((e.nativeEvent as KeyboardEvent).isComposing) {
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (disabled || uploading || streaming) {
+        return;
+      }
       onSend();
     }
   };
@@ -93,8 +101,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       )}
 
-      {/* Input Container */}
-      <div className="glass-strong rounded-2xl p-1 sm:p-2 shadow-xl shadow-primary/10 border border-border/30 w-full">
+      {/* Input Container - Simplified style matching demo */}
+      <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
           value={value}
@@ -107,69 +115,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           disabled={disabled || uploading}
           rows={1}
           className={cn(
-            "w-full bg-transparent border-none outline-none resize-none",
-            "min-h-[40px] sm:min-h-[36px] max-h-[200px] py-2 sm:py-1.5 px-2 sm:px-1",
-            "text-base sm:text-foreground placeholder:text-muted-foreground",
+            "flex-1 bg-transparent border-none focus:ring-0 px-2 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 max-h-28 resize-none outline-none",
             "disabled:opacity-50"
           )}
         />
-
-        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
-          <div className="flex items-center gap-1">
-            <ModelSelector
-              models={models}
-              currentModel={currentModel}
-              onSelect={onModelChange}
-              size="sm"
-            />
-            
-            <div className="w-px h-4 bg-border mx-1 sm:mx-2" />
-            
-            <button
-              onClick={() => imgInputRef.current?.click()}
-              disabled={uploading}
-              className="p-2.5 sm:p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-all disabled:opacity-50 touch-target"
-              title="Upload Image"
-            >
-              {uploading ? <Loader2 size={20} className="animate-spin sm:w-[18px] sm:h-[18px]" /> : <Image size={20} className="sm:w-[18px] sm:h-[18px]" />}
-            </button>
-            
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="p-2.5 sm:p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-all disabled:opacity-50 touch-target"
-              title="Upload File"
-            >
-              <Paperclip size={20} className="sm:w-[18px] sm:h-[18px]" />
-            </button>
-          </div>
-
-          {streaming ? (
-            <button
-              onClick={onStop}
-              className={cn(
-                "w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all touch-target",
-                "bg-destructive text-destructive-foreground hover:opacity-90 active:scale-95",
-                "shadow-lg shadow-destructive/25"
-              )}
-            >
-              <Square size={16} className="sm:w-[14px] sm:h-[14px]" fill="currentColor" />
-            </button>
-          ) : (
-            <button
-              onClick={() => onSend()}
-              disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
-              className={cn(
-                "w-11 h-11 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all touch-target",
-                "bg-primary text-primary-foreground hover:opacity-90 active:scale-95",
-                "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100",
-                "shadow-lg shadow-primary/25"
-              )}
-            >
-              <ArrowUp size={20} className="sm:w-[18px] sm:h-[18px]" strokeWidth={2.5} />
-            </button>
-          )}
-        </div>
+        
+        {streaming ? (
+          <button
+            onClick={onStop}
+            className={cn(
+              "h-11 w-11 rounded-2xl flex items-center justify-center transition-all",
+              "bg-destructive text-destructive-foreground hover:opacity-90 active:scale-[0.96]",
+              "ml-1"
+            )}
+          >
+            <Square size={20} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            onClick={() => onSend()}
+            disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
+            className={cn(
+              "h-11 w-11 rounded-2xl flex items-center justify-center transition-all ml-1",
+              "bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 active:scale-[0.96]",
+              "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+            )}
+          >
+            <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       <input

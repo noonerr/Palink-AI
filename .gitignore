@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 .venv/
 __pycache__/
@@ -28,6 +28,8 @@ empty_del_*/
 
 # ML model files
 backend/models/
+backend/app/models/
+*.gguf
 data/
 
 # OS

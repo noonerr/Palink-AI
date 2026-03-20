@@ -10,8 +10,9 @@ RUN npm run build
 
 # Runtime stage
 FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY --from=build /app/public/icons /usr/share/nginx/html/icons
+COPY --from=build /app/dist/desktop /usr/share/nginx/html/desktop
+COPY --from=build /app/dist/mobile /usr/share/nginx/html/mobile
+COPY public/index.html /usr/share/nginx/html/index.html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

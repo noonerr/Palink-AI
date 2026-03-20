@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "dev:desktop": "vite --config vite.config.desktop.ts",
+    "dev:mobile": "vite --config vite.config.mobile.ts",
+    "build": "npm run build:desktop && npm run build:mobile && npm run postbuild",
+    "build:desktop": "vite build --config vite.config.desktop.ts",
+    "build:mobile": "vite build --config vite.config.mobile.ts",
+    "postbuild": "node postbuild.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },

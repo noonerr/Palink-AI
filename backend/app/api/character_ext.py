@@ -445,6 +445,8 @@ async def parse_character_card(
     db: Session = Depends(get_db)
 ):
     """解析角色卡：支持从 URL 或从已导入的角色卡用 AI 解析"""
+    logger.info(f"Received parse request: character_id={req.character_id}, model={req.model}, user_id={user.id}")
+    
     if not req.character_id and not req.image_url:
         raise HTTPException(status_code=400, detail="Either character_id or image_url is required")
 
@@ -493,6 +495,7 @@ async def parse_character_card(
                 char.is_processing = False
                 db.commit()
                 raise HTTPException(status_code=400, detail="Model not found")
+            provider = p
 
         fields_to_parse = {
             "description": char.description or "",
@@ -505,20 +508,68 @@ async def parse_character_card(
             client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
             prompt = (
                 "Parse the following character card content, extract and organize the information. "
-                "Return a valid JSON object with the same keys, clean up any messy format, "
-                "and improve the content to be more coherent and structured.\n\n"
+                "IMPORTANT: Return ONLY a valid JSON object with the same keys. Do NOT include any other text, explanations, or markdown formatting. "
+                "Clean up any messy format and improve the content to be more coherent and structured.\n\n"
+                f"IMPORTANT: Replace all user placeholders like {{user}}, {{user}}, user, etc. with the character's name '{char.name}'.\n\n"
+                "Return ONLY the JSON object, nothing else.\n\n"
                 + json.dumps(fields_to_parse, ensure_ascii=False)
             )
+            
+            logger.info(f"Sending request to model: {model_id}, provider: {provider['name']}")
+            
             resp = await client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
             )
-            content = resp.choices[0].message.content
+            
+            logger.info(f"Received response type: {type(resp)}")
+            
+            if isinstance(resp, str):
+                content = resp
+            else:
+                content = resp.choices[0].message.content
+            
+            logger.info(f"Response content: {content[:500]}...")
+            
             import re
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(0))
+            
+            def extract_json(text):
+                logger.info(f"Attempting to extract JSON from text (length: {len(text)}): {text[:1000]}...")
+                
+                try:
+                    result = json.loads(text)
+                    logger.info("Successfully parsed JSON directly")
+                    return result
+                except Exception as e:
+                    logger.info(f"Direct JSON parse failed: {e}")
+                
+                match = re.search(r'\{[\s\S]*\}', text)
+                if match:
+                    try:
+                        result = json.loads(match.group(0))
+                        logger.info("Successfully extracted JSON using regex")
+                        return result
+                    except Exception as e:
+                        logger.info(f"Regex JSON extract failed: {e}")
+                
+                lines = text.strip().split('\n')
+                for i in range(len(lines)):
+                    try:
+                        candidate = '\n'.join(lines[:i+1])
+                        result = json.loads(candidate)
+                        logger.info(f"Successfully parsed JSON from first {i+1} lines")
+                        return result
+                    except:
+                        continue
+                
+                logger.error(f"Failed to extract JSON from text: {text}")
+                raise ValueError("Could not extract valid JSON from response")
+            
+            try:
+                parsed = extract_json(content)
+                logger.info(f"Successfully parsed JSON: {parsed}")
+                
                 if parsed.get("description"):
                     char.description = parsed["description"]
                 if parsed.get("personality"):
@@ -527,12 +578,21 @@ async def parse_character_card(
                     char.scenario = parsed["scenario"]
                 if parsed.get("background"):
                     char.background = parsed["background"]
+            except Exception as json_err:
+                logger.error(f"JSON parsing failed: {json_err}")
+                char.is_processing = False
+                char.processing_status = f"JSON parsing failed: {json_err}"
+                db.commit()
+                raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {json_err}")
 
             char.is_processing = False
-            char.processing_status = ""
+            char.processing_status = "完成"
             db.commit()
             return {"status": "ok", "character": _char_to_dict(char)}
         except Exception as e:
+            import traceback
+            error_msg = f"Parsing failed: {e}\n{traceback.format_exc()}"
+            logger.error(error_msg)
             char.is_processing = False
             char.processing_status = f"Parsing failed: {e}"
             db.commit()
@@ -552,6 +612,8 @@ async def translate_character(
     db: Session = Depends(get_db)
 ):
     """用 AI 翻译角色卡内容"""
+    logger.info(f"Received translate request: character_id={req.character_id}, model={req.model}, user_id={user.id}")
+    
     char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
@@ -594,21 +656,68 @@ async def translate_character(
         client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
         prompt = (
             f"Translate the following character card fields to {lang_name}. "
-            f"Return a valid JSON object with the same keys. You MUST translate ALL 6 fields. "
-            f"Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
+            f"IMPORTANT: Return ONLY a valid JSON object with the same keys. Do NOT include any other text, explanations, or markdown formatting. "
+            f"You MUST translate ALL 6 fields. Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
+            f"IMPORTANT: Replace all user placeholders like {{user}}, {{user}}, user, etc. with the character's name '{char.name}'.\n\n"
+            "Return ONLY the JSON object, nothing else.\n\n"
             + json.dumps(fields_to_translate, ensure_ascii=False)
         )
+        
+        logger.info(f"Sending translation request to model: {model_id}, provider: {provider['name']}")
+        
         resp = await client.chat.completions.create(
             model=model_id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
-        content = resp.choices[0].message.content
-        # Extract JSON
+        
+        logger.info(f"Received translation response type: {type(resp)}")
+        
+        if isinstance(resp, str):
+            content = resp
+        else:
+            content = resp.choices[0].message.content
+        
+        logger.info(f"Translation response content: {content[:500]}...")
+        
         import re
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match:
-            translated = json.loads(match.group(0))
+        
+        def extract_json(text):
+            logger.info(f"[Translate] Attempting to extract JSON from text (length: {len(text)}): {text[:1000]}...")
+            
+            try:
+                result = json.loads(text)
+                logger.info("[Translate] Successfully parsed JSON directly")
+                return result
+            except Exception as e:
+                logger.info(f"[Translate] Direct JSON parse failed: {e}")
+            
+            match = re.search(r'\{[\s\S]*\}', text)
+            if match:
+                try:
+                    result = json.loads(match.group(0))
+                    logger.info("[Translate] Successfully extracted JSON using regex")
+                    return result
+                except Exception as e:
+                    logger.info(f"[Translate] Regex JSON extract failed: {e}")
+            
+            lines = text.strip().split('\n')
+            for i in range(len(lines)):
+                try:
+                    candidate = '\n'.join(lines[:i+1])
+                    result = json.loads(candidate)
+                    logger.info(f"[Translate] Successfully parsed JSON from first {i+1} lines")
+                    return result
+                except:
+                    continue
+            
+            logger.error(f"[Translate] Failed to extract JSON from text: {text}")
+            raise ValueError("Could not extract valid JSON from response")
+        
+        try:
+            translated = extract_json(content)
+            logger.info(f"Successfully parsed translation JSON: {translated}")
+            
             if translated.get("description"):
                 char.description = translated["description"]
             if translated.get("personality"):
@@ -621,13 +730,22 @@ async def translate_character(
                 char.background = translated["background"]
             if translated.get("system_prompt"):
                 char.system_prompt = translated["system_prompt"]
+        except Exception as json_err:
+            logger.error(f"Translation JSON parsing failed: {json_err}")
+            char.is_processing = False
+            char.processing_status = f"Translation JSON parsing failed: {json_err}"
+            db.commit()
+            raise HTTPException(status_code=500, detail=f"Failed to parse translation AI response: {json_err}")
 
         char.is_processing = False
-        char.processing_status = ""
+        char.processing_status = "完成"
         db.commit()
         db.refresh(char)
         return {"status": "ok", "character": _char_to_dict(char)}
     except Exception as e:
+        import traceback
+        error_msg = f"Translation failed: {e}\n{traceback.format_exc()}"
+        logger.error(error_msg)
         char.is_processing = False
         char.processing_status = f"Translation failed: {e}"
         db.commit()
