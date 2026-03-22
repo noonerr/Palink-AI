@@ -9,8 +9,8 @@ import { api } from '@/services/api';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 import { CharacterList } from './character/CharacterList';
 import { CharacterEditor } from './character/CharacterEditor';
-import { CharacterProfile } from './character/CharacterProfile';
 import { CharacterChat } from './character/CharacterChat';
+// import { CharacterProfile } from './character/CharacterProfile';
 import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
 import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
@@ -256,12 +256,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setCharacters(data);
       
       // 如果有 characterId 参数，自动打开对应的角色介绍页面
-      if (characterId) {
-        const targetCharacter = data.find((c: Character) => c.id === characterId);
-        if (targetCharacter) {
-          handleViewProfile(targetCharacter);
-        }
-      }
+      // if (characterId) {
+      //   const targetCharacter = data.find((c: Character) => c.id === characterId);
+      //   if (targetCharacter) {
+      //     handleViewProfile(targetCharacter);
+      //   }
+      // }
       
       const processingChar = data.find((c: any) => c.is_processing);
       if (processingChar) {
@@ -860,7 +860,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           showDeleteCharacterConfirm={showDeleteCharacterConfirm}
           t={t}
           onStartChat={handleStartChat}
-          onViewProfile={handleViewProfile}
+          // onViewProfile={handleViewProfile}
           onCreateCharacter={handleCreateCharacter}
           onEditCharacter={handleEditCharacter}
           onDeleteCharacter={handleDeleteCharacter}
@@ -885,7 +885,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         />
       )}
 
-      {viewState === 'profile' && viewingCharacter && (
+      {/* {viewState === 'profile' && viewingCharacter && (
         <CharacterProfile
           character={viewingCharacter}
           onBack={() => {
@@ -905,7 +905,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           showPlotLineManager={showPlotLineManager}
           setShowPlotLineManager={setShowPlotLineManager}
         />
-      )}
+      )} */}
 
       {viewState === 'chat' && selectedCharacter && (
         <CharacterChat

@@ -3,13 +3,13 @@
  * 全新的响应式布局设计
  */
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import {
   Bot, Plus, Upload, Play, Sparkles, Download, Edit3, Trash2, Search,
-  Sun, Moon, MessageSquare, X, Check, ChevronRight, ChevronLeft
+  MessageSquare, Check, ChevronRight, ChevronLeft
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
-import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Character } from '@/types';
 
 export interface CharacterListProps {
@@ -50,6 +50,34 @@ const getCharacterCategory = (char: Character) => {
   return '角色';
 };
 
+const IOS_LIKE_LAYOUT_TRANSITION = {
+  type: 'spring' as const,
+  stiffness: 520,
+  damping: 46,
+  mass: 0.95,
+  delay: 0.016,
+  restSpeed: 0.08,
+  restDelta: 0.001,
+};
+
+const IOS_LIKE_EXIT_TRANSITION = {
+  duration: 0.18,
+  ease: [0.4, 0, 1, 1] as [number, number, number, number],
+};
+
+const IOS_DOCK_LAYOUT_TRANSITION = {
+  duration: 0.38,
+  ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
+};
+
+const hasSameCharacterOrder = (a: Character[], b: Character[]) => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].id !== b[i].id) return false;
+  }
+  return true;
+};
+
 const CharacterCard = ({ 
   char, 
   onClick, 
@@ -81,7 +109,7 @@ const CharacterCard = ({
 }) => (
   <div 
     onClick={() => isSelectMode ? onToggleSelect(char.id) : onClick()}
-    className={`group relative rounded-3xl cursor-pointer transition-all duration-800 cubic-bezier(0.25, 0.46, 0.45, 0.94) hover:scale-[1.05] overflow-hidden transform-gpu will-change-transform ${
+    className={`group relative rounded-3xl cursor-pointer transition-all duration-500 overflow-hidden transform-gpu will-change-transform ${
       isSelected ? 'ring-2 ring-primary ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-950' : ''
     }`}
   >
@@ -248,14 +276,30 @@ const DesktopSidebar = ({
   onCreateCharacter: () => void;
   windowWidth: number;
 }) => {
+  const expandedWidth = windowWidth >= 640 ? 224 : 192;
+
   return (
     <>
-      <div className={`h-full flex flex-col border-r border-border transition-all duration-300 ${
-        sidebarCollapsed ? 'w-0' : 'w-48 sm:w-56'
-      }`}>
-        <div className={`w-48 sm:w-56 h-full flex flex-col transition-all duration-300 ${
-          sidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
-        }`}>
+      <motion.div
+        layout
+        className="h-full flex flex-col border-l border-border overflow-hidden"
+        style={{ width: sidebarCollapsed ? 0 : expandedWidth }}
+        transition={{
+          layout: IOS_DOCK_LAYOUT_TRANSITION,
+        }}
+      >
+        <motion.div
+          className="h-full flex flex-col"
+          animate={{
+            opacity: sidebarCollapsed ? 0 : 1,
+            x: sidebarCollapsed ? 18 : 0,
+            pointerEvents: sidebarCollapsed ? 'none' : 'auto',
+          }}
+          transition={{
+            duration: 0.24,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+        >
           <div className="px-4 sm:px-5 flex-shrink-0 border-b border-border">
             <div className="py-4">
               <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-1">欢迎回来</p>
@@ -263,9 +307,9 @@ const DesktopSidebar = ({
                 <h2 className="font-semibold text-slate-900 dark:text-white text-lg">角色扮演</h2>
                 <button
                   onClick={() => setSidebarCollapsed(true)}
-                  className="p-2 rounded-xl hover:bg-muted transition-colors"
+                  className="p-2 rounded-xl hover:bg-muted transition-all duration-300 ease-in-out hover:scale-110 active:scale-95"
                 >
-                  <ChevronLeft size={20} />
+                  <ChevronRight size={20} className="transition-transform duration-300" />
                 </button>
               </div>
             </div>
@@ -338,16 +382,16 @@ const DesktopSidebar = ({
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
       
       {sidebarCollapsed && (
         <button
           onClick={() => setSidebarCollapsed(false)}
-          className="absolute top-1/2 left-0 -translate-y-1/2 z-20 bg-background border border-l-0 border-border rounded-r-lg shadow-lg hover:bg-muted transition-all duration-300 p-2 pl-1.5"
+          className="absolute top-1/2 right-0 -translate-y-1/2 z-20 bg-background border border-r-0 border-border rounded-l-lg shadow-lg hover:bg-muted transition-all duration-400 ease-out p-2 pr-1.5 hover:scale-105 active:scale-95"
           title="展开侧边栏"
         >
-          <ChevronRight size={18} className="sm:w-5 sm:h-5" />
+          <ChevronLeft size={18} className="sm:w-5 sm:h-5 transition-transform duration-300" />
         </button>
       )}
     </>
@@ -381,17 +425,25 @@ const MobileView = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const lastScrollY = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const bottomPadding = useMobileBottomPadding();
   const maxScroll = 120;
 
+  const filteredCharacters = characters.filter((char) => {
+    const matchesSearch = !searchQuery.trim() ||
+      char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
+
+    const charCategory = getCharacterCategory(char);
+    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
+
+    return matchesSearch && matchesCategory;
+  });
+
+  const [visibleCharacters, setVisibleCharacters] = useState<Character[]>(filteredCharacters);
+  const [pendingCategoryCharacters, setPendingCategoryCharacters] = useState<Character[] | null>(null);
+  const prevCategoryRef = useRef(activeCategory);
+
   const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(i => i !== id);
-      } else {
-        return [...prev, id];
-      }
-    });
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -400,6 +452,38 @@ const MobileView = ({
     setScrollProgress(progress);
     lastScrollY.current = currentScrollY;
   }, []);
+
+  useEffect(() => {
+    const categoryChanged = prevCategoryRef.current !== activeCategory;
+    prevCategoryRef.current = activeCategory;
+
+    if (!categoryChanged) {
+      if (!hasSameCharacterOrder(visibleCharacters, filteredCharacters)) {
+        setVisibleCharacters(filteredCharacters);
+      }
+      return;
+    }
+
+    const nextIds = new Set(filteredCharacters.map((c) => c.id));
+    const stay = visibleCharacters.filter((c) => nextIds.has(c.id));
+    const hasLeaving = stay.length !== visibleCharacters.length;
+
+    if (!hasLeaving) {
+      setVisibleCharacters(filteredCharacters);
+      setPendingCategoryCharacters(null);
+      return;
+    }
+
+    setPendingCategoryCharacters(filteredCharacters);
+    setVisibleCharacters(stay);
+  }, [filteredCharacters, activeCategory, visibleCharacters]);
+
+  const handleCategoryExitComplete = useCallback(() => {
+    if (pendingCategoryCharacters) {
+      setVisibleCharacters(pendingCategoryCharacters);
+      setPendingCategoryCharacters(null);
+    }
+  }, [pendingCategoryCharacters]);
 
   const getHeaderStyle = () => {
     const pt = 20 - scrollProgress * 10;
@@ -432,19 +516,8 @@ const MobileView = ({
   const getButtonGap = () => 1.2 - scrollProgress * 0.4;
   const getButtonHeight = () => 42 - scrollProgress * 3;
 
-  const filteredCharacters = characters.filter((char) => {
-    const matchesSearch = !searchQuery.trim() || 
-      char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const charCategory = getCharacterCategory(char);
-    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
-    
-    return matchesSearch && matchesCategory;
-  });
-  
   return (
-    <div className="absolute inset-0 flex flex-col pt-safe">
+    <div className="flex flex-col w-full h-full pt-safe">
       <header className="px-5 sm:px-6 flex-shrink-0 transition-all duration-400 ease-in-out" style={getHeaderStyle()}>
         <div className="flex items-center justify-between">
           <div className="relative">
@@ -578,7 +651,7 @@ const MobileView = ({
         onScroll={handleScroll} 
         className="flex-1 overflow-y-auto px-5 sm:px-6 pb-[100px] sm:pb-[120px]"
       >
-        {filteredCharacters.length === 0 && (
+        {visibleCharacters.length === 0 && (
           <div className="text-center py-16 sm:py-20">
             <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-4xl sm:text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">
               <Bot size={40} className="sm:w-12 sm:h-12" />
@@ -592,18 +665,30 @@ const MobileView = ({
           </div>
         )}
         
-        {filteredCharacters.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 sm:gap-5 transition-all duration-800 cubic-bezier(0.25, 0.46, 0.45, 0.94)">
-              {filteredCharacters.map((char, index) => (
-                <div
+        {visibleCharacters.length > 0 && (
+          <motion.div
+            className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 sm:gap-5"
+            layout
+            transition={{
+              layout: IOS_LIKE_LAYOUT_TRANSITION,
+            }}
+          >
+            <AnimatePresence initial={false} onExitComplete={handleCategoryExitComplete}>
+              {visibleCharacters.map((char) => (
+                <motion.div
                   key={char.id}
-                  className="transition-all duration-800 cubic-bezier(0.25, 0.46, 0.45, 0.94) transform-gpu will-change-transform"
-                  style={{
-                    transitionDelay: `${Math.min(index * 50, 400)}ms`,
+                  layout="position"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{
+                    layout: IOS_LIKE_LAYOUT_TRANSITION,
+                    opacity: IOS_LIKE_EXIT_TRANSITION,
+                    y: IOS_LIKE_EXIT_TRANSITION,
                   }}
+                  className="transform-gpu will-change-transform"
                 >
                   <CharacterCard 
-                    key={char.id} 
                     char={char}
                     isSelectMode={isSelectMode}
                     isSelected={selectedIds.includes(char.id)}
@@ -618,10 +703,11 @@ const MobileView = ({
                     onDeleteCharacter={onDeleteCharacter}
                     onStopProcessing={onStopProcessing}
                   />
-                </div>
+                </motion.div>
               ))}
-            </div>
-          )}
+            </AnimatePresence>
+          </motion.div>
+        )}
       </div>
       
       {isSelectMode && selectedIds.length > 0 && (
@@ -729,6 +815,21 @@ const DesktopView = ({
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  const filteredCharacters = characters.filter((char) => {
+    const matchesSearch = !searchQuery.trim() ||
+      char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
+
+    const charCategory = getCharacterCategory(char);
+    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
+
+    return matchesSearch && matchesCategory;
+  });
+
+  const [visibleCharacters, setVisibleCharacters] = useState<Character[]>(filteredCharacters);
+  const [pendingCategoryCharacters, setPendingCategoryCharacters] = useState<Character[] | null>(null);
+  const prevCategoryRef = useRef(activeCategory);
+
   useEffect(() => {
     const handleResize = () => {
       setWindowWidth(window.innerWidth);
@@ -740,47 +841,53 @@ const DesktopView = ({
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
       if (prev.includes(id)) {
-        return prev.filter(i => i !== id);
-      } else {
-        return [...prev, id];
+        return prev.filter((i) => i !== id);
       }
+      return [...prev, id];
     });
   };
 
-  const filteredCharacters = characters.filter((char) => {
-    const matchesSearch = !searchQuery.trim() || 
-      char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const charCategory = getCharacterCategory(char);
-    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
-    
-    return matchesSearch && matchesCategory;
-  });
+  useEffect(() => {
+    const categoryChanged = prevCategoryRef.current !== activeCategory;
+    prevCategoryRef.current = activeCategory;
+
+    if (!categoryChanged) {
+      if (!hasSameCharacterOrder(visibleCharacters, filteredCharacters)) {
+        setVisibleCharacters(filteredCharacters);
+      }
+      return;
+    }
+
+    const nextIds = new Set(filteredCharacters.map((c) => c.id));
+    const stay = visibleCharacters.filter((c) => nextIds.has(c.id));
+    const hasLeaving = stay.length !== visibleCharacters.length;
+
+    if (!hasLeaving) {
+      setVisibleCharacters(filteredCharacters);
+      setPendingCategoryCharacters(null);
+      return;
+    }
+
+    setPendingCategoryCharacters(filteredCharacters);
+    setVisibleCharacters(stay);
+  }, [filteredCharacters, activeCategory, visibleCharacters]);
+
+  const handleCategoryExitComplete = useCallback(() => {
+    if (pendingCategoryCharacters) {
+      setVisibleCharacters(pendingCategoryCharacters);
+      setPendingCategoryCharacters(null);
+    }
+  }, [pendingCategoryCharacters]);
 
   return (
-    <div className="absolute inset-0 flex">
-      <DesktopSidebar
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
-        activeCategory={activeCategory}
-        setActiveCategory={setActiveCategory}
-        sidebarCollapsed={sidebarCollapsed}
-        setSidebarCollapsed={setSidebarCollapsed}
-        isSelectMode={isSelectMode}
-        setIsSelectMode={setIsSelectMode}
-        setSelectedIds={setSelectedIds}
-        onImportCharacter={onImportCharacter}
-        onCreateCharacter={onCreateCharacter}
-        windowWidth={windowWidth}
-      />
-
-      <div className="flex-1 flex flex-col overflow-hidden">
+    <LayoutGroup id="character-desktop-reflow">
+      <motion.div className="flex w-full h-full" layout transition={{ layout: IOS_DOCK_LAYOUT_TRANSITION }}>
+      <motion.div className="flex-1 flex flex-col overflow-hidden" layout transition={{ layout: IOS_DOCK_LAYOUT_TRANSITION }}>
         <div 
           ref={scrollContainerRef} 
-          className="flex-1 overflow-y-auto p-5 sm:p-6"
+          className="flex-1 overflow-y-auto p-5 sm:p-6 transition-all duration-500 ease-in-out"
         >
-          {filteredCharacters.length === 0 && (
+          {visibleCharacters.length === 0 && (
             <div className="text-center py-16 sm:py-20">
               <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-4xl sm:text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">
                 <Bot size={40} className="sm:w-12 sm:h-12" />
@@ -794,38 +901,52 @@ const DesktopView = ({
             </div>
           )}
           
-          {filteredCharacters.length > 0 && (
-            <div className={`grid gap-5 sm:gap-6 transition-all duration-800 cubic-bezier(0.25, 0.46, 0.45, 0.94) ${
-              sidebarCollapsed 
-                ? 'grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5' 
-                : 'grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-            }`}>
-              {filteredCharacters.map((char, index) => (
-                <div
-                  key={char.id}
-                  className="transition-all duration-800 cubic-bezier(0.25, 0.46, 0.45, 0.94) transform-gpu will-change-transform"
-                  style={{
-                    transitionDelay: `${Math.min(index * 50, 400)}ms`,
-                  }}
-                >
-                  <CharacterCard 
-                    char={char}
-                    isSelectMode={isSelectMode}
-                    isSelected={selectedIds.includes(char.id)}
-                    onToggleSelect={toggleSelect}
-                    onClick={() => { if (!isSelectMode) onViewProfile(char); }}
-                    processingCharacter={processingCharacter}
-                    forceShowOverlay={forceShowOverlay}
-                    onStartChat={onStartChat}
-                    onParseAndTranslateCharacter={onParseAndTranslateCharacter}
-                    onExportCharacter={onExportCharacter}
-                    onEditCharacter={onEditCharacter}
-                    onDeleteCharacter={onDeleteCharacter}
-                    onStopProcessing={onStopProcessing}
-                  />
-                </div>
-              ))}
-            </div>
+          {visibleCharacters.length > 0 && (
+            <motion.div 
+              className="flex flex-wrap items-start gap-5 sm:gap-6"
+              layout
+              layoutDependency={sidebarCollapsed}
+              transition={{
+                layout: IOS_DOCK_LAYOUT_TRANSITION,
+              }}
+            >
+              <AnimatePresence initial={false} onExitComplete={handleCategoryExitComplete}>
+                {visibleCharacters.map((char) => (
+                  <motion.div
+                    key={char.id}
+                    layout="position"
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    transition={{
+                      layout: IOS_DOCK_LAYOUT_TRANSITION,
+                      opacity: IOS_LIKE_EXIT_TRANSITION,
+                      y: IOS_LIKE_EXIT_TRANSITION,
+                    }}
+                    style={{
+                      width: 'clamp(170px, 18vw, 250px)',
+                    }}
+                    className="will-change-transform"
+                  >
+                    <CharacterCard 
+                      char={char}
+                      isSelectMode={isSelectMode}
+                      isSelected={selectedIds.includes(char.id)}
+                      onToggleSelect={toggleSelect}
+                      onClick={() => { if (!isSelectMode) onViewProfile(char); }}
+                      processingCharacter={processingCharacter}
+                      forceShowOverlay={forceShowOverlay}
+                      onStartChat={onStartChat}
+                      onParseAndTranslateCharacter={onParseAndTranslateCharacter}
+                      onExportCharacter={onExportCharacter}
+                      onEditCharacter={onEditCharacter}
+                      onDeleteCharacter={onDeleteCharacter}
+                      onStopProcessing={onStopProcessing}
+                    />
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </motion.div>
           )}
         </div>
         
@@ -855,7 +976,22 @@ const DesktopView = ({
             </div>
           </div>
         )}
-      </div>
+      </motion.div>
+
+      <DesktopSidebar
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        activeCategory={activeCategory}
+        setActiveCategory={setActiveCategory}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        isSelectMode={isSelectMode}
+        setIsSelectMode={setIsSelectMode}
+        setSelectedIds={setSelectedIds}
+        onImportCharacter={onImportCharacter}
+        onCreateCharacter={onCreateCharacter}
+        windowWidth={windowWidth}
+      />
 
       <ConfirmDialog
         open={showDeleteCharacterConfirm}
@@ -903,7 +1039,8 @@ const DesktopView = ({
           </div>
         </div>
       )}
-    </div>
+      </motion.div>
+    </LayoutGroup>
   );
 };
 

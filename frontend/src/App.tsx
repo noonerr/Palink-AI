@@ -3,8 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
-import { DesktopLayout } from '@/components/layout/DesktopLayout';
-import { MobileLayout } from '@/components/layout/MobileLayout';
+import { DesktopSidebar, MobileBottomNav } from '@/components/ui/custom/Sidebar';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, AUTH_FAILURE_EVENT } from '@/services/api';
@@ -269,29 +268,29 @@ const TRANSLATIONS = {
 };
 
 const ChatViewDesktop = lazy(() =>
-  import('@/components/views/desktop/ChatView').then((module) => ({ default: module.ChatView }))
+  import('@/components/views/ChatView').then((module) => ({ default: module.ChatView }))
 );
 const WorkspaceViewDesktop = lazy(() =>
-  import('@/components/views/desktop/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
+  import('@/components/views/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
 );
 const SettingsViewDesktop = lazy(() =>
-  import('@/components/views/desktop/SettingsView').then((module) => ({ default: module.SettingsView }))
+  import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
 const CharacterViewDesktop = lazy(() =>
-  import('@/components/views/desktop/CharacterView').then((module) => ({ default: module.CharacterView }))
+  import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
 );
 
 const ChatViewMobile = lazy(() =>
-  import('@/components/views/mobile/ChatView').then((module) => ({ default: module.ChatView }))
+  import('@/components/views/ChatView').then((module) => ({ default: module.ChatView }))
 );
 const WorkspaceViewMobile = lazy(() =>
-  import('@/components/views/mobile/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
+  import('@/components/views/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
 );
 const SettingsViewMobile = lazy(() =>
-  import('@/components/views/mobile/SettingsView').then((module) => ({ default: module.SettingsView }))
+  import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
 const CharacterViewMobile = lazy(() =>
-  import('@/components/views/mobile/CharacterView').then((module) => ({ default: module.CharacterView }))
+  import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
 );
 
 const USER_FETCH_TIMEOUT_MS = 12000;
@@ -598,11 +597,13 @@ function App() {
     <BrowserRouter>
       <div className="h-screen w-full flex flex-col relative overflow-hidden bg-background">
         <AuroraBackground />
-        {device === 'desktop' ? (
-          <DesktopLayout {...sidebarProps}>{routes}</DesktopLayout>
-        ) : (
-          <MobileLayout {...sidebarProps}>{routes}</MobileLayout>
-        )}
+        <div className="flex flex-1 overflow-hidden">
+          {device === 'desktop' && <DesktopSidebar {...sidebarProps} />}
+          <main className="flex-1 overflow-hidden">
+            {routes}
+          </main>
+        </div>
+        {device === 'mobile' && <MobileBottomNav {...sidebarProps} />}
       </div>
       <Toaster richColors position="top-right" />
     </BrowserRouter>

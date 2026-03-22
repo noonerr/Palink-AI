@@ -53,6 +53,8 @@ interface SettingsViewProps {
   onThemeToggle?: () => void;
   lang?: string;
   onLangToggle?: () => void;
+  switchDevice?: (newDevice: 'desktop' | 'mobile') => void;
+  currentDevice?: 'desktop' | 'mobile';
 }
 
 type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage' | 'user_usage';
@@ -69,7 +71,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isDark,
   onThemeToggle,
   lang,
-  onLangToggle
+  onLangToggle,
+  switchDevice,
+  currentDevice
 }) => {
   const bottomPadding = useMobileBottomPadding();
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');

@@ -1,13 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Copy, Check, Zap, Database, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
 import { CodeBlock } from './CodeBlock';
-import { SmoothOutput } from './SmoothOutput';
-import { RpSegmentRenderer } from './RpSegmentRenderer';
-import { TagSegmentRenderer } from './TagSegmentRenderer';
-import { MessageParserService } from '@/services/messageParserService';
+// import { SmoothOutput } from './SmoothOutput';
+// import { RpSegmentRenderer } from './RpSegmentRenderer';
+// import { TagSegmentRenderer } from './TagSegmentRenderer';
+// import { MessageParserService } from '@/services/messageParserService';
 import type { Message as MessageType, Model } from '@/types';
 
 interface MessageProps {
@@ -92,13 +92,13 @@ const MessageInner: React.FC<MessageProps> = ({
   
   const messageModel = models.find(m => m.id === message.model);
 
-  const segments = useMemo(() => {
-    return MessageParserService.parseMessage(message.content, {
-      isCharacterChat,
-      isUser,
-      showModelReasoning
-    });
-  }, [message.content, isCharacterChat, isUser, showModelReasoning]);
+  // const segments = useMemo(() => {
+  //   return MessageParserService.parseMessage(message.content, {
+  //     isCharacterChat,
+  //     isUser,
+  //     showModelReasoning
+  //   });
+  // }, [message.content, isCharacterChat, isUser, showModelReasoning]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -196,84 +196,23 @@ const MessageInner: React.FC<MessageProps> = ({
           "flex flex-col",
           isUser && "items-end"
         )}>
-          {isCharacterChat ? (
-            <div className="flex items-start gap-2">
-              {isMixedDeleteMode && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (onToggleWholeMessageSelect && messageIndex !== undefined) onToggleWholeMessageSelect(messageIndex);
-                  }}
-                  className={cn(
-                    "w-4 h-4 rounded border-2 flex items-center justify-center transition-all shrink-0 mt-1",
-                    isItemSelected ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/50 hover:border-primary"
-                  )}
-                >
-                  {isItemSelected && (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-                  )}
-                </button>
-              )}
-              <div className={cn(
-                "px-5 py-3.5 text-[15px] leading-relaxed",
-                isUser 
-                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
-                isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
-              )}>
-                <div className="whitespace-pre-wrap">
-                  {(() => {
-                    const rpSegs = segments.filter(s => s.type !== 'modelReasoning');
-                    const isStreamingNow = streaming && isLast;
-                    if (rpSegs.length === 0) {
-                      return isStreamingNow
-                        ? <span className="inline-block w-1.5 h-4 bg-primary animate-pulse align-middle" />
-                        : <span className="text-muted-foreground">{message.content || ' '}</span>;
-                    }
-                    return rpSegs.map((seg, i) => {
-                      const isLastSeg = isStreamingNow && i === rpSegs.length - 1;
-                      return (
-                        <RpSegmentRenderer 
-                          key={seg.id} 
-                          segment={seg} 
-                          streaming={streaming}
-                          isLast={isLastSeg}
-                        />
-                      );
-                    });
-                  })()}
-                </div>
+          <div className={cn(
+            "px-5 py-3.5 text-[15px] leading-relaxed",
+            isUser 
+              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
+              : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
+            isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
+          )}>
+            {isUser ? (
+              <div className="whitespace-pre-wrap">{message.content}</div>
+            ) : (
+              <div className="markdown-content">
+                <ReactMarkdown components={{ code: CodeBlock }}>
+                  {message.content || " "}
+                </ReactMarkdown>
               </div>
-            </div>
-          ) : segments.length > 0 ? (
-            segments.map((part, partIndex) => (
-              <TagSegmentRenderer
-                key={`${partIndex}-${part.id}`}
-                segment={part}
-                showModelReasoning={showModelReasoning}
-                isUser={isUser}
-                streaming={streaming}
-                isLast={isLast && partIndex === segments.length - 1}
-              />
-            ))
-          ) : (
-            <div className={cn(
-              "px-5 py-3.5 text-[15px] leading-relaxed",
-              isUser 
-                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg'
-            )}>
-              {isUser ? (
-                <div className="whitespace-pre-wrap">{message.content}</div>
-              ) : (
-                <div className="markdown-content">
-                  <ReactMarkdown components={{ code: CodeBlock }}>
-                    {message.content || " "}
-                  </ReactMarkdown>
-                </div>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           {!isUser && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 max-w-full">
