@@ -813,6 +813,7 @@ const DesktopView = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
+  const [layoutKey, setLayoutKey] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const filteredCharacters = characters.filter((char) => {
@@ -831,11 +832,19 @@ const DesktopView = ({
   const prevCategoryRef = useRef(activeCategory);
 
   useEffect(() => {
+    let timeout: NodeJS.Timeout;
     const handleResize = () => {
-      setWindowWidth(window.innerWidth);
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        setWindowWidth(window.innerWidth);
+        setLayoutKey(prev => prev + 1);
+      }, 150);
     };
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(timeout);
+    };
   }, []);
 
   const toggleSelect = (id: string) => {
@@ -903,9 +912,15 @@ const DesktopView = ({
           
           {visibleCharacters.length > 0 && (
             <motion.div 
-              className="flex flex-wrap items-start gap-5 sm:gap-6"
+              className="grid gap-5 sm:gap-6 mx-auto"
+              style={{ 
+                gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                maxWidth: '1600px',
+                paddingLeft: '1.25rem',
+                paddingRight: '1.25rem'
+              }}
               layout
-              layoutDependency={sidebarCollapsed}
+              layoutDependency={[sidebarCollapsed, layoutKey]}
               transition={{
                 layout: IOS_DOCK_LAYOUT_TRANSITION,
               }}
@@ -914,7 +929,8 @@ const DesktopView = ({
                 {visibleCharacters.map((char) => (
                   <motion.div
                     key={char.id}
-                    layout="position"
+                    layout
+                    layoutDependency={layoutKey}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -6 }}
@@ -924,7 +940,7 @@ const DesktopView = ({
                       y: IOS_LIKE_EXIT_TRANSITION,
                     }}
                     style={{
-                      width: 'clamp(170px, 18vw, 250px)',
+                      maxWidth: '240px',
                     }}
                     className="will-change-transform"
                   >
