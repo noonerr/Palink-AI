@@ -66,7 +66,7 @@ const IOS_LIKE_EXIT_TRANSITION = {
 };
 
 const IOS_DOCK_LAYOUT_TRANSITION = {
-  duration: 0.38,
+  duration: 0.32,
   ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
 };
 
@@ -279,122 +279,96 @@ const DesktopSidebar = ({
   const expandedWidth = windowWidth >= 640 ? 224 : 192;
 
   return (
-    <>
-      <motion.div
-        layout
-        className="h-full flex flex-col border-l border-border overflow-hidden"
-        style={{ width: sidebarCollapsed ? 0 : expandedWidth }}
-        transition={{
-          layout: IOS_DOCK_LAYOUT_TRANSITION,
-        }}
-      >
-        <motion.div
-          className="h-full flex flex-col"
-          animate={{
-            opacity: sidebarCollapsed ? 0 : 1,
-            x: sidebarCollapsed ? 18 : 0,
-            pointerEvents: sidebarCollapsed ? 'none' : 'auto',
-          }}
-          transition={{
-            duration: 0.24,
-            ease: [0.22, 1, 0.36, 1],
-          }}
-        >
-          <div className="px-4 sm:px-5 flex-shrink-0 border-b border-border">
-            <div className="py-4">
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-1">欢迎回来</p>
-              <div className="flex items-center justify-between">
-                <h2 className="font-semibold text-slate-900 dark:text-white text-lg">角色扮演</h2>
-                <button
-                  onClick={() => setSidebarCollapsed(true)}
-                  className="p-2 rounded-xl hover:bg-muted transition-all duration-300 ease-in-out hover:scale-110 active:scale-95"
-                >
-                  <ChevronRight size={20} className="transition-transform duration-300" />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              <Button 
-                variant={isSelectMode ? 'default' : 'ghost'} 
-                onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds([]); }}
-                className="text-xs sm:text-sm rounded-2xl h-10 col-span-2"
+    <motion.div
+      className="h-full flex flex-col border-l border-border bg-background flex-shrink-0 overflow-hidden"
+      animate={{ width: sidebarCollapsed ? 0 : expandedWidth }}
+      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <div style={{ width: expandedWidth, flexShrink: 0 }} className="h-full flex flex-col">
+        <div className="px-4 sm:px-5 flex-shrink-0 border-b border-border">
+          <div className="py-4">
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-1">欢迎回来</p>
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900 dark:text-white text-lg">角色扮演</h2>
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                className="p-2 rounded-xl hover:bg-muted transition-all duration-300 ease-in-out hover:scale-110 active:scale-95"
               >
-                {isSelectMode ? '取消' : '多选'}
-              </Button>
-              <div className="relative">
-                <Button variant="secondary" asChild className="rounded-2xl w-full h-10">
-                  <label className="cursor-pointer flex items-center justify-center gap-1.5 text-xs sm:text-sm">
-                    <Upload size={14} />
-                    导入
-                  </label>
-                </Button>
-                <input 
-                  type="file" 
-                  accept=".png,.json" 
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      onImportCharacter(file);
-                      e.target.value = '';
-                    }
-                  }}
-                />
-              </div>
-              <Button onClick={onCreateCharacter} className="rounded-2xl text-xs sm:text-sm h-10">
-                <Plus size={14} className="mr-1" />
-                创建
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input
-                  type="text"
-                  placeholder="搜索角色..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2.5 bg-slate-100 dark:bg-slate-800/50 rounded-2xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/20"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">分类</h3>
-              <div className="flex flex-wrap gap-1.5">
-                {CATEGORIES.map((category) => (
-                  <button
-                    key={category.id}
-                    onClick={() => setActiveCategory(category.id)}
-                    className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
-                      activeCategory === category.id
-                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-                        : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }`}
-                  >
-                    {category.name}
-                  </button>
-                ))}
-              </div>
+                <ChevronRight size={20} className="transition-transform duration-300" />
+              </button>
             </div>
           </div>
-        </motion.div>
-      </motion.div>
-      
-      {sidebarCollapsed && (
-        <button
-          onClick={() => setSidebarCollapsed(false)}
-          className="absolute top-1/2 right-0 -translate-y-1/2 z-20 bg-background border border-r-0 border-border rounded-l-lg shadow-lg hover:bg-muted transition-all duration-400 ease-out p-2 pr-1.5 hover:scale-105 active:scale-95"
-          title="展开侧边栏"
-        >
-          <ChevronLeft size={18} className="sm:w-5 sm:h-5 transition-transform duration-300" />
-        </button>
-      )}
-    </>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant={isSelectMode ? 'default' : 'ghost'}
+              onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds([]); }}
+              className="text-xs sm:text-sm rounded-2xl h-10 col-span-2"
+            >
+              {isSelectMode ? '取消' : '多选'}
+            </Button>
+            <div className="relative">
+              <Button variant="secondary" asChild className="rounded-2xl w-full h-10">
+                <label className="cursor-pointer flex items-center justify-center gap-1.5 text-xs sm:text-sm">
+                  <Upload size={14} />
+                  导入
+                </label>
+              </Button>
+              <input
+                type="file"
+                accept=".png,.json"
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    onImportCharacter(file);
+                    e.target.value = '';
+                  }
+                }}
+              />
+            </div>
+            <Button onClick={onCreateCharacter} className="rounded-2xl text-xs sm:text-sm h-10">
+              <Plus size={14} className="mr-1" />
+              创建
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                type="text"
+                placeholder="搜索角色..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-2.5 bg-slate-100 dark:bg-slate-800/50 rounded-2xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">分类</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {CATEGORIES.map((category) => (
+                <button
+                  key={category.id}
+                  onClick={() => setActiveCategory(category.id)}
+                  className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
+                    activeCategory === category.id
+                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                      : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {category.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 };
 
@@ -813,8 +787,8 @@ const DesktopView = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
-  const [layoutKey, setLayoutKey] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const expandedWidth = windowWidth >= 640 ? 224 : 192;
 
   const filteredCharacters = characters.filter((char) => {
     const matchesSearch = !searchQuery.trim() ||
@@ -828,8 +802,6 @@ const DesktopView = ({
   });
 
   const [visibleCharacters, setVisibleCharacters] = useState<Character[]>(filteredCharacters);
-  const [pendingCategoryCharacters, setPendingCategoryCharacters] = useState<Character[] | null>(null);
-  const prevCategoryRef = useRef(activeCategory);
 
   useEffect(() => {
     let timeout: NodeJS.Timeout;
@@ -837,7 +809,6 @@ const DesktopView = ({
       clearTimeout(timeout);
       timeout = setTimeout(() => {
         setWindowWidth(window.innerWidth);
-        setLayoutKey(prev => prev + 1);
       }, 150);
     };
     window.addEventListener('resize', handleResize);
@@ -857,142 +828,113 @@ const DesktopView = ({
   };
 
   useEffect(() => {
-    const categoryChanged = prevCategoryRef.current !== activeCategory;
-    prevCategoryRef.current = activeCategory;
-
-    if (!categoryChanged) {
-      if (!hasSameCharacterOrder(visibleCharacters, filteredCharacters)) {
-        setVisibleCharacters(filteredCharacters);
-      }
-      return;
-    }
-
-    const nextIds = new Set(filteredCharacters.map((c) => c.id));
-    const stay = visibleCharacters.filter((c) => nextIds.has(c.id));
-    const hasLeaving = stay.length !== visibleCharacters.length;
-
-    if (!hasLeaving) {
-      setVisibleCharacters(filteredCharacters);
-      setPendingCategoryCharacters(null);
-      return;
-    }
-
-    setPendingCategoryCharacters(filteredCharacters);
-    setVisibleCharacters(stay);
-  }, [filteredCharacters, activeCategory, visibleCharacters]);
-
-  const handleCategoryExitComplete = useCallback(() => {
-    if (pendingCategoryCharacters) {
-      setVisibleCharacters(pendingCategoryCharacters);
-      setPendingCategoryCharacters(null);
-    }
-  }, [pendingCategoryCharacters]);
+    setVisibleCharacters(filteredCharacters);
+  }, [filteredCharacters]);
 
   return (
-    <LayoutGroup id="character-desktop-reflow">
-      <motion.div className="flex w-full h-full" layout transition={{ layout: IOS_DOCK_LAYOUT_TRANSITION }}>
-      <motion.div className="flex-1 flex flex-col overflow-hidden" layout transition={{ layout: IOS_DOCK_LAYOUT_TRANSITION }}>
-        <div 
-          ref={scrollContainerRef} 
-          className="flex-1 overflow-y-auto p-5 sm:p-6 transition-all duration-500 ease-in-out"
+    <div className="flex w-full h-full relative">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto p-5 sm:p-6"
         >
-          {visibleCharacters.length === 0 && (
-            <div className="text-center py-16 sm:py-20">
-              <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-4xl sm:text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">
-                <Bot size={40} className="sm:w-12 sm:h-12" />
+            {visibleCharacters.length === 0 && (
+              <div className="text-center py-16 sm:py-20">
+                <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-4xl sm:text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">
+                  <Bot size={40} className="sm:w-12 sm:h-12" />
+                </div>
+                <h3 className="text-lg sm:text-xl font-semibold mb-1.5 sm:mb-2">暂无角色</h3>
+                <p className="text-xs sm:text-sm text-muted-foreground mb-4 sm:mb-6">创建您的第一个角色开始角色扮演吧！</p>
+                <Button onClick={onCreateCharacter} className="text-xs sm:text-sm">
+                  <Plus size={16} className="sm:w-4.5 sm:h-4.5 mr-1.5 sm:mr-2" />
+                  创建角色
+                </Button>
               </div>
-              <h3 className="text-lg sm:text-xl font-semibold mb-1.5 sm:mb-2">暂无角色</h3>
-              <p className="text-xs sm:text-sm text-muted-foreground mb-4 sm:mb-6">创建您的第一个角色开始角色扮演吧！</p>
-              <Button onClick={onCreateCharacter} className="text-xs sm:text-sm">
-                <Plus size={16} className="sm:w-4.5 sm:h-4.5 mr-1.5 sm:mr-2" />
-                创建角色
-              </Button>
-            </div>
-          )}
+            )}
+            
+            {visibleCharacters.length > 0 && (
+              <LayoutGroup>
+                <motion.div
+                  className="grid gap-5 sm:gap-6 mx-auto"
+                  style={{ 
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                    maxWidth: '1600px',
+                    paddingLeft: '1.25rem',
+                    paddingRight: '1.25rem'
+                  }}
+                  layout
+                  transition={{
+                    layout: IOS_LIKE_LAYOUT_TRANSITION,
+                  }}
+                >
+                  <AnimatePresence initial={false}>
+                    {visibleCharacters.map((char) => (
+                      <motion.div
+                        key={char.id}
+                        layout="position"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{
+                          layout: IOS_LIKE_LAYOUT_TRANSITION,
+                          opacity: IOS_LIKE_EXIT_TRANSITION,
+                          y: IOS_LIKE_EXIT_TRANSITION,
+                        }}
+                        style={{
+                          maxWidth: '240px',
+                        }}
+                        className="transform-gpu will-change-transform"
+                      >
+                        <CharacterCard 
+                          char={char}
+                          isSelectMode={isSelectMode}
+                          isSelected={selectedIds.includes(char.id)}
+                          onToggleSelect={toggleSelect}
+                          onClick={() => { if (!isSelectMode) onViewProfile(char); }}
+                          processingCharacter={processingCharacter}
+                          forceShowOverlay={forceShowOverlay}
+                          onStartChat={onStartChat}
+                          onParseAndTranslateCharacter={onParseAndTranslateCharacter}
+                          onExportCharacter={onExportCharacter}
+                          onEditCharacter={onEditCharacter}
+                          onDeleteCharacter={onDeleteCharacter}
+                          onStopProcessing={onStopProcessing}
+                        />
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              </LayoutGroup>
+            )}
+          </div>
           
-          {visibleCharacters.length > 0 && (
-            <motion.div 
-              className="grid gap-5 sm:gap-6 mx-auto"
-              style={{ 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                maxWidth: '1600px',
-                paddingLeft: '1.25rem',
-                paddingRight: '1.25rem'
-              }}
-              layout
-              layoutDependency={[sidebarCollapsed, layoutKey]}
-              transition={{
-                layout: IOS_DOCK_LAYOUT_TRANSITION,
-              }}
-            >
-              <AnimatePresence initial={false} onExitComplete={handleCategoryExitComplete}>
-                {visibleCharacters.map((char) => (
-                  <motion.div
-                    key={char.id}
-                    layout
-                    layoutDependency={layoutKey}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -6 }}
-                    transition={{
-                      layout: IOS_DOCK_LAYOUT_TRANSITION,
-                      opacity: IOS_LIKE_EXIT_TRANSITION,
-                      y: IOS_LIKE_EXIT_TRANSITION,
-                    }}
-                    style={{
-                      maxWidth: '240px',
-                    }}
-                    className="will-change-transform"
-                  >
-                    <CharacterCard 
-                      char={char}
-                      isSelectMode={isSelectMode}
-                      isSelected={selectedIds.includes(char.id)}
-                      onToggleSelect={toggleSelect}
-                      onClick={() => { if (!isSelectMode) onViewProfile(char); }}
-                      processingCharacter={processingCharacter}
-                      forceShowOverlay={forceShowOverlay}
-                      onStartChat={onStartChat}
-                      onParseAndTranslateCharacter={onParseAndTranslateCharacter}
-                      onExportCharacter={onExportCharacter}
-                      onEditCharacter={onEditCharacter}
-                      onDeleteCharacter={onDeleteCharacter}
-                      onStopProcessing={onStopProcessing}
-                    />
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </motion.div>
+          {isSelectMode && selectedIds.length > 0 && (
+            <div className="p-3.5 sm:p-4 border-t border-border">
+              <div className="bg-background border border-border rounded-2xl p-3.5 sm:p-4 flex items-center justify-between">
+                <div className="flex items-center space-x-2.5 sm:space-x-3">
+                  <div className="flex -space-x-1.5 sm:-space-x-2">
+                    {selectedIds.slice(0, 4).map(id => {
+                      const char = characters.find(c => c.id === id);
+                      return char ? (
+                        <img key={id} src={char.avatar || ''} className="w-8 h-8 sm:w-9 sm:h-9 rounded-2xl border-2 border-slate-900 dark:border-slate-900 object-cover" alt="" />
+                      ) : null;
+                    })}
+                    {selectedIds.length > 4 && (
+                      <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-2xl border-2 border-slate-900 dark:border-slate-900 bg-slate-800 flex items-center justify-center text-[10px] sm:text-xs font-bold text-slate-300">
+                        +{selectedIds.length - 4}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-xs sm:text-sm font-bold">已选 {selectedIds.length} 人</span>
+                </div>
+                <Button variant="default" className="h-9 sm:h-10 rounded-xl text-xs sm:text-sm">
+                  <MessageSquare size={14} className="sm:w-4 sm:h-4 mr-1.5 sm:mr-2" />
+                  创建群聊
+                </Button>
+              </div>
+            </div>
           )}
         </div>
-        
-        {isSelectMode && selectedIds.length > 0 && (
-          <div className="p-3.5 sm:p-4 border-t border-border">
-            <div className="bg-background border border-border rounded-2xl p-3.5 sm:p-4 flex items-center justify-between">
-              <div className="flex items-center space-x-2.5 sm:space-x-3">
-                <div className="flex -space-x-1.5 sm:-space-x-2">
-                  {selectedIds.slice(0, 4).map(id => {
-                    const char = characters.find(c => c.id === id);
-                    return char ? (
-                      <img key={id} src={char.avatar || ''} className="w-8 h-8 sm:w-9 sm:h-9 rounded-2xl border-2 border-slate-900 dark:border-slate-900 object-cover" alt="" />
-                    ) : null;
-                  })}
-                  {selectedIds.length > 4 && (
-                    <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-2xl border-2 border-slate-900 dark:border-slate-900 bg-slate-800 flex items-center justify-center text-[10px] sm:text-xs font-bold text-slate-300">
-                      +{selectedIds.length - 4}
-                    </div>
-                  )}
-                </div>
-                <span className="text-xs sm:text-sm font-bold">已选 {selectedIds.length} 人</span>
-              </div>
-              <Button variant="default" className="h-9 sm:h-10 rounded-xl text-xs sm:text-sm">
-                <MessageSquare size={14} className="sm:w-4 sm:h-4 mr-1.5 sm:mr-2" />
-                创建群聊
-              </Button>
-            </div>
-          </div>
-        )}
-      </motion.div>
 
       <DesktopSidebar
         searchQuery={searchQuery}
@@ -1008,6 +950,16 @@ const DesktopView = ({
         onCreateCharacter={onCreateCharacter}
         windowWidth={windowWidth}
       />
+
+      {sidebarCollapsed && (
+        <button
+          onClick={() => setSidebarCollapsed(false)}
+          className="absolute top-1/2 right-0 -translate-y-1/2 z-20 bg-background border border-r-0 border-border rounded-l-lg shadow-lg hover:bg-muted transition-all duration-300 ease-out p-2 pr-1.5 hover:scale-105 active:scale-95"
+          title="展开侧边栏"
+        >
+          <ChevronLeft size={18} className="sm:w-5 sm:h-5 transition-transform duration-300" />
+        </button>
+      )}
 
       <ConfirmDialog
         open={showDeleteCharacterConfirm}
@@ -1055,8 +1007,7 @@ const DesktopView = ({
           </div>
         </div>
       )}
-      </motion.div>
-    </LayoutGroup>
+    </div>
   );
 };
 
