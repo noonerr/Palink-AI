@@ -212,13 +212,13 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
           </Link>
         );
       })}
-      <button
+      {/* <button
         onClick={() => switchDevice && switchDevice(nextVariant)}
         className="absolute -top-12 right-4 w-10 h-10 rounded-full bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl border border-white/50 dark:border-slate-700/40 shadow-lg flex items-center justify-center text-sidebar-foreground hover:bg-sidebar-accent transition-all z-50"
         title={nextVariant === 'mobile' ? 'Switch to Mobile UI' : 'Switch to Desktop UI'}
       >
         {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
-      </button>
+      </button> */}
     </nav>
   );
 };

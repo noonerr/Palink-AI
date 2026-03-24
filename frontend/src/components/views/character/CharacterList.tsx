@@ -137,7 +137,7 @@ const CharacterCard = ({
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/30 to-transparent rounded-3xl" />
       
       {isSelectMode && (
-        <div className={`absolute top-4 right-4 sm:top-5 sm:right-5 w-8 h-8 sm:w-10 sm:h-10 rounded-full border-2 flex items-center justify-center transition-all z-20 ${
+        <div className={`absolute top-4 right-4 sm:top-5 sm:right-5 w-9 h-9 sm:w-10 sm:h-10 rounded-full border-2 flex items-center justify-center transition-all z-20 ${
           isSelected 
             ? 'bg-primary border-primary shadow-lg shadow-primary/50' 
             : 'bg-black/30 border-white/60 backdrop-blur-md'
@@ -149,7 +149,7 @@ const CharacterCard = ({
       {(processingCharacter === char.id || forceShowOverlay === char.id) && (
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50 rounded-3xl">
           <div className="text-white text-center p-5 sm:p-7">
-            <div className="w-14 h-14 sm:w-18 sm:h-18 border-3 sm:border-4 border-white border-t-transparent rounded-full animate-spin mx-auto mb-4 sm:mb-5" />
+            <div className="w-14 h-14 sm:w-18 sm:h-18 border-4 border-white border-t-transparent rounded-full animate-spin mx-auto mb-4 sm:mb-5" />
             <p className="text-lg sm:text-xl mb-5 sm:mb-6 font-semibold">
               {char.processing_status && !char.processing_status.includes('完成') && !char.processing_status.includes('重置') 
                 ? char.processing_status 
@@ -172,8 +172,8 @@ const CharacterCard = ({
       
       <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 rounded-3xl" />
       
-      <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 z-20 transition-opacity duration-300 group-hover:opacity-0 pointer-events-none rounded-b-3xl">
-        <span className="inline-block px-2 py-1 sm:px-2.5 sm:py-1 bg-white/10 backdrop-blur-md rounded-full text-xs font-medium text-white/80 mb-1.5 sm:mb-2">
+      <div className="absolute bottom-0 left-0 right-0 p-3.5 sm:p-4 z-20 transition-opacity duration-300 group-hover:opacity-0 pointer-events-none rounded-b-3xl">
+        <span className="inline-block px-2.5 py-1.25 sm:px-2.5 sm:py-1 bg-white/10 backdrop-blur-md rounded-full text-xs sm:text-sm font-medium text-white/80 mb-1.5 sm:mb-2">
           {getCharacterCategory(char)}
         </span>
         <h3 className="text-white font-semibold text-base sm:text-lg leading-tight truncate">{char.name}</h3>
@@ -187,59 +187,59 @@ const CharacterCard = ({
       </div>
       
       {!isSelectMode && (
-        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-end p-2 sm:p-2.5 rounded-3xl">
+        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-30 flex items-end p-2.5 sm:p-2.5 rounded-3xl">
           <div className="w-full">
-            <div className="flex flex-wrap items-center gap-1 mb-1.5">
+            <div className="flex flex-wrap items-center gap-1.25 mb-2.5">
               <Button 
                 variant="default" 
                 size="sm" 
-                className="flex-1 text-[11px] h-7 bg-white/90 text-slate-900 hover:bg-white"
+                className="flex-1 text-xs h-9 bg-white/90 text-slate-900 hover:bg-white"
                 onClick={(e) => { e.stopPropagation(); onStartChat(char); }}
                 disabled={char.is_processing || processingCharacter === char.id}
               >
-                <Play size={12} className="mr-1" />
+                <Play size={14} className="mr-1.25" />
                 <span className="hidden sm:inline">开始对话</span>
                 <span className="sm:hidden">对话</span>
               </Button>
             </div>
-            <div className="flex items-center gap-1 justify-center">
+            <div className="flex items-center gap-2 justify-center">
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onParseAndTranslateCharacter(char.id); }}
                 disabled={char.is_processing || processingCharacter === char.id}
                 title="AI解析并翻译角色卡"
               >
-                <Sparkles size={14} className="text-white" />
+                <Sparkles size={16} className="text-white" />
               </Button>
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0 hidden sm:inline-flex"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0 hidden sm:inline-flex"
                 onClick={(e) => { e.stopPropagation(); onExportCharacter(char, 'png'); }}
                 title="导出为PNG"
                 disabled={char.is_processing || processingCharacter === char.id}
               >
-                <Download size={14} className="text-white" />
+                <Download size={16} className="text-white" />
               </Button>
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onEditCharacter(char); }}
                 disabled={char.is_processing || processingCharacter === char.id}
               >
-                <Edit3 size={14} className="text-white" />
+                <Edit3 size={16} className="text-white" />
               </Button>
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-7 w-7 p-0 bg-white/20 hover:bg-red-500/40 backdrop-blur-md border-0"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-red-500/40 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onDeleteCharacter(char.id); }}
                 disabled={char.is_processing || processingCharacter === char.id}
               >
-                <Trash2 size={14} className="text-white" />
+                <Trash2 size={16} className="text-white" />
               </Button>
             </div>
           </div>
@@ -837,8 +837,8 @@ const DesktopView = ({
   }, [filteredCharacters]);
 
   return (
-    <LayoutGroup>
-      <div className="flex w-full h-full relative">
+    <div className="flex w-full h-full relative">
+      <LayoutGroup>
         <motion.div
           className="flex-1 flex flex-col overflow-hidden"
           layout
@@ -944,10 +944,9 @@ const DesktopView = ({
               </div>
             </div>
           )}
-        </div>
-      </motion.div>
+        </motion.div>
 
-      <DesktopSidebar
+        <DesktopSidebar
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         activeCategory={activeCategory}
@@ -961,6 +960,7 @@ const DesktopView = ({
         onCreateCharacter={onCreateCharacter}
         windowWidth={windowWidth}
       />
+      </LayoutGroup>
 
       {sidebarCollapsed && (
         <button
@@ -1018,7 +1018,7 @@ const DesktopView = ({
           </div>
         </div>
       )}
-    </LayoutGroup>
+      </div>
   );
 };
 

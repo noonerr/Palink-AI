@@ -743,8 +743,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         )}
 
         {/* ── Chat input ── */}
-        <div className="px-4 pt-0 pb-0 bg-gradient-to-t from-slate-50 dark:from-slate-950 via-slate-50/95 dark:via-slate-950/95 to-transparent">
-          <div className="bg-slate-100 dark:bg-slate-800/50 rounded-3xl p-0 flex items-end">
+        <div className="px-4 pt-2 pb-20 sm:pb-0 bg-gradient-to-t from-slate-50 dark:from-slate-950 via-slate-50/95 dark:via-slate-950/95 to-transparent">
+          <div className="bg-slate-100 dark:bg-slate-800/50 rounded-3xl p-2 flex items-end">
             <Button
               variant="ghost" size="icon"
               className="h-11 w-11 rounded-2xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
@@ -819,7 +819,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
       {/* ── Timeout Warning ── */}
       {timeoutWarning && isGenerating && (
-        <div className="fixed bottom-4 right-4 z-50 max-w-sm w-full">
+        <div className="fixed bottom-24 sm:bottom-4 right-4 z-50 max-w-sm w-full">
           <div className="bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 shadow-lg">
             <div className="flex items-start gap-3">
               <Clock className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />

@@ -32,7 +32,7 @@ export const ErrorToast: React.FC<ErrorToastProps> = ({
   const [showDetails, setShowDetails] = React.useState(false);
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 max-w-md w-full ${className}`}>
+    <div className={`fixed bottom-24 sm:bottom-4 right-4 z-50 max-w-md w-full ${className}`}>
       <Alert variant="destructive" className="border-l-4 border-orange-500 shadow-lg">
         <div className="flex items-start gap-3">
           {errorIcons[errorInfo.type]}
