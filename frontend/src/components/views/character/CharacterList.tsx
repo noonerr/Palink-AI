@@ -282,7 +282,12 @@ const DesktopSidebar = ({
     <motion.div
       className="h-full flex flex-col border-l border-border bg-background flex-shrink-0 overflow-hidden"
       animate={{ width: sidebarCollapsed ? 0 : expandedWidth }}
-      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+      layout
+      transition={{
+        duration: 0.3,
+        ease: [0.22, 1, 0.36, 1],
+        layout: IOS_LIKE_LAYOUT_TRANSITION,
+      }}
     >
       <div style={{ width: expandedWidth, flexShrink: 0 }} className="h-full flex flex-col">
         <div className="px-4 sm:px-5 flex-shrink-0 border-b border-border">
@@ -832,12 +837,19 @@ const DesktopView = ({
   }, [filteredCharacters]);
 
   return (
-    <div className="flex w-full h-full relative">
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto p-5 sm:p-6"
+    <LayoutGroup>
+      <div className="flex w-full h-full relative">
+        <motion.div
+          className="flex-1 flex flex-col overflow-hidden"
+          layout
+          transition={{
+            layout: IOS_LIKE_LAYOUT_TRANSITION,
+          }}
         >
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto p-5 sm:p-6"
+          >
             {visibleCharacters.length === 0 && (
               <div className="text-center py-16 sm:py-20">
                 <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-4xl sm:text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20">
@@ -853,38 +865,37 @@ const DesktopView = ({
             )}
             
             {visibleCharacters.length > 0 && (
-              <LayoutGroup>
-                <motion.div
-                  className="grid gap-5 sm:gap-6 mx-auto"
-                  style={{ 
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                    maxWidth: '1600px',
-                    paddingLeft: '1.25rem',
-                    paddingRight: '1.25rem'
-                  }}
-                  layout
-                  transition={{
-                    layout: IOS_LIKE_LAYOUT_TRANSITION,
-                  }}
-                >
-                  <AnimatePresence initial={false}>
-                    {visibleCharacters.map((char) => (
-                      <motion.div
-                        key={char.id}
-                        layout="position"
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{
-                          layout: IOS_LIKE_LAYOUT_TRANSITION,
-                          opacity: IOS_LIKE_EXIT_TRANSITION,
-                          y: IOS_LIKE_EXIT_TRANSITION,
-                        }}
-                        style={{
-                          maxWidth: '240px',
-                        }}
-                        className="transform-gpu will-change-transform"
-                      >
+              <motion.div
+                className="grid gap-5 sm:gap-6 mx-auto"
+                style={{ 
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                  maxWidth: '1600px',
+                  paddingLeft: '1.25rem',
+                  paddingRight: '1.25rem'
+                }}
+                layout
+                transition={{
+                  layout: IOS_LIKE_LAYOUT_TRANSITION,
+                }}
+              >
+                <AnimatePresence initial={false}>
+                  {visibleCharacters.map((char) => (
+                    <motion.div
+                      key={char.id}
+                      layout="position"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{
+                        layout: IOS_LIKE_LAYOUT_TRANSITION,
+                        opacity: IOS_LIKE_EXIT_TRANSITION,
+                        y: IOS_LIKE_EXIT_TRANSITION,
+                      }}
+                      style={{
+                        maxWidth: '240px',
+                      }}
+                      className="transform-gpu will-change-transform"
+                    >
                         <CharacterCard 
                           char={char}
                           isSelectMode={isSelectMode}
@@ -904,8 +915,7 @@ const DesktopView = ({
                     ))}
                   </AnimatePresence>
                 </motion.div>
-              </LayoutGroup>
-            )}
+              )}
           </div>
           
           {isSelectMode && selectedIds.length > 0 && (
@@ -935,6 +945,7 @@ const DesktopView = ({
             </div>
           )}
         </div>
+      </motion.div>
 
       <DesktopSidebar
         searchQuery={searchQuery}
@@ -1007,7 +1018,7 @@ const DesktopView = ({
           </div>
         </div>
       )}
-    </div>
+    </LayoutGroup>
   );
 };
 
