@@ -306,7 +306,7 @@ const DesktopSidebar = ({
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-3">
             <Button
               variant={isSelectMode ? 'default' : 'ghost'}
               onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds([]); }}
@@ -492,7 +492,7 @@ const MobileView = ({
     const collapsedWidth = 100;
     return collapsedWidth + (baseWidth - collapsedWidth) * scrollProgress;
   };
-  const getButtonGap = () => 1.2 - scrollProgress * 0.4;
+  const getButtonGap = () => 2 - scrollProgress * 0.5;
   const getButtonHeight = () => 42 - scrollProgress * 3;
 
   return (

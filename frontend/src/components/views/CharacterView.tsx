@@ -654,12 +654,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   };
 
   const handleViewProfile = (character: Character) => {
-    setViewingCharacter(character);
-    setSelectedWorldBookId(null);
-    setSelectedPlotLineId(null);
-    setViewState('profile');
-    // 更新 URL 为包含角色 ID 的路径
-    navigate(`/characters/${character.id}`, { replace: true });
+    handleStartChat(character);
   };
 
   const handleStartChatFromProfile = async () => {

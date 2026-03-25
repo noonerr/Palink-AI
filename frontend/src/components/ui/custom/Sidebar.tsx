@@ -56,7 +56,7 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMob
     >
       <Icon size={isMobile ? 20 : 22} strokeWidth={isActive ? 2.5 : 2} />
       {isMobile && label && (
-        <span className="text-[10px] font-medium truncate max-w-full">{label}</span>
+        <span className="text-[12px] font-medium truncate max-w-full">{label}</span>
       )}
     </Link>
   );
@@ -92,7 +92,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
   const nextVariant = currentDevice === 'desktop' ? 'mobile' : 'desktop';
 
   return (
-    <aside className="w-[72px] h-full flex flex-col items-center pt-[max(1rem,env(safe-area-inset-top))] pb-5 bg-sidebar text-sidebar-foreground border-r border-sidebar-border/40">
+    <aside className="w-[64px] h-full flex flex-col items-center pt-[max(1rem,env(safe-area-inset-top))] pb-5 bg-sidebar text-sidebar-foreground border-r border-sidebar-border/40">
       {/* Logo */}
       <div className="mb-8">
         <div className="w-10 h-10 bg-sidebar-primary rounded-xl flex items-center justify-center shadow-md shadow-sidebar-primary/20">
@@ -190,7 +190,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 mx-4 mb-0 h-[72px] bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[28px] border border-white/50 dark:border-slate-700/40 shadow-xl flex items-center justify-around pb-safe z-50 pointer-events-auto">
+    <nav className="fixed bottom-0 left-0 right-0 mx-2 mb-1 h-[64px] bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[24px] border border-white/50 dark:border-slate-700/40 shadow-xl flex items-center justify-around pb-safe z-50 pointer-events-auto">
       {tabs.map((item) => {
         const IconComponent = item.icon;
         const isActive = location.pathname === item.id;
@@ -206,9 +206,9 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
               isActive ? 'bg-white/40 dark:bg-white/10' : ''
             }`} />
             <div className={`relative z-10 transition-all duration-300 ${isActive ? 'scale-110' : ''}`}>
-              <IconComponent size={isActive ? 26 : 24} strokeWidth={isActive ? 2.5 : 2} />
+              <IconComponent size={isActive ? 22 : 20} strokeWidth={isActive ? 2.5 : 2} />
             </div>
-            <span className={`relative z-10 text-[11px] font-medium ${isActive ? 'font-semibold' : ''}`}>{item.label}</span>
+            <span className={`relative z-10 text-[12px] font-medium ${isActive ? 'font-semibold' : ''}`}>{item.label}</span>
           </Link>
         );
       })}

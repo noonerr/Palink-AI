@@ -7,6 +7,7 @@ import {
   Bot, Plus, X, Play, Sparkles, Trash2, BookOpen, GitBranch,
   Check, ChevronDown, Clock, MoreVertical,
   User as UserIcon,
+  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -474,25 +475,29 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         {/* ── Header toolbar ── */}
         <header className="h-16 px-4 flex items-center justify-between z-40 pt-safe">
           <div className="flex items-center space-x-3">
-            {/* Mobile hamburger / Back button */}
+            {/* Back button */}
             <Button
               variant="ghost" size="icon"
               className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0"
-              onClick={() => setMobileSidebarOpen(true)}
+              onClick={() => setViewState('list')}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </Button>
-            {/* Desktop sidebar toggle */}
+            {/* History button */}
             <Button
               variant="ghost" size="icon"
-              className="h-12 w-12 rounded-2xl bg-primary/10 hover:bg-primary/20 text-primary transition-all hidden md:flex flex-shrink-0"
+              className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0 md:hidden"
+              onClick={() => setMobileSidebarOpen(true)}
+            >
+              <History size={24} strokeWidth={1.5} />
+            </Button>
+            {/* Desktop History button */}
+            <Button
+              variant="ghost" size="icon"
+              className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0 hidden md:flex"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             >
-              {!sidebarCollapsed ? (
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-              )}
+              <History size={24} strokeWidth={1.5} />
             </Button>
             {/* Character avatar and name */}
             <div className="w-10 h-10 rounded-2xl overflow-hidden flex-shrink-0">
