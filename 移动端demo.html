@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+<title>完美版｜三横线菜单按钮正确位置</title>
+<style>
+* {margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,sans-serif;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100vh;overflow:hidden;background:radial-gradient(circle at 50% 50%,#2d2d44 0%,#1a1a2e 100%);}
+
+/* 历史侧边栏：固定宽度，默认隐藏左侧 */
+.history-side{
+  position:fixed;top:0;left:0;
+  width:280px;height:100vh;
+  background:rgba(255,255,255,0.08);backdrop-filter:blur(30px);
+  border-right:1px solid rgba(255,255,255,0.15);
+  padding:80px 20px 20px;
+  color:#fff;z-index:5;
+  transform:translateX(-100%); /* 默认完全隐藏 */
+  transition:transform 0.4s cubic-bezier(0.22,0.65,0.22,1);
+  position:relative;
+}
+.history-side.open{transform:translateX(0);}
+
+.history-side h3{font-size:18px;margin-bottom:20px;opacity:0.9;}
+.history-item{padding:12px 16px;border-radius:12px;background:rgba(255,255,255,0.05);margin-bottom:10px;font-size:14px;opacity:0.8;}
+
+/* 【核心修复】三横线菜单按钮：固定定位，精确计算位置 */
+.menu-btn{
+  position:fixed; /* 使用fixed定位，独立于所有父容器 */
+  top:24px;left:20px; /* 主页状态：左上方 */
+  z-index:20; /* 最高层级，确保可见 */
+  width:44px;height:44px;border-radius:50%;
+  background:rgba(255,255,255,0.12);
+  backdrop-filter:blur(30px);border:1px solid rgba(255,255,255,0.2);
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:22px;cursor:pointer;
+  /* 关键动画：慢-快-慢的自然过渡 */
+  transition:all 0.4s cubic-bezier(0.22,0.65,0.22,1);
+  visibility:visible;
+  opacity:1;
+}
+/* 历史面板展开时：向左偏移到历史记录界面内部右上方 */
+.menu-btn.offset{
+  /* 精准计算：历史面板宽度280px - 右边距20px - 按钮宽度44px = 216px */
+  left:calc(280px - 20px - 44px); 
+  background:rgba(255,255,255,0.2);
+  box-shadow:0 0 12px rgba(255,255,255,0.2);
+  transform:rotate(180deg); /* 旋转180度作为状态指示 */
+}
+
+/* 主容器：覆盖全屏，可右推 */
+.main-container{
+  position:fixed;top:0;left:0;
+  width:100vw;height:100vh;
+  background:radial-gradient(circle at 50% 50%,#2d2d44 0%,#1a1a2e 100%);
+  transition:transform 0.4s cubic-bezier(0.22,0.65,0.22,1);
+  z-index:10;
+}
+.main-container.pushed{transform:translateX(280px);}
+
+.page{
+  position:absolute;inset:0;
+  display:none;
+  padding:20px;
+}
+.page.active{display:block;}
+
+.page-content{
+  position:absolute;top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  text-align:center;color:#fff;
+}
+.page-content h2{font-size:28px;margin-bottom:16px;color:#a8c8ff;}
+.page-content p{font-size:15px;opacity:0.7;}
+
+/* 主页内容 */
+.home-content{position:absolute;top:32%;left:50%;transform:translate(-50%,0);width:85%;max-width:400px;display:flex;flex-direction:column;align-items:center;gap:24px;color:#fff;text-align:center;}
+.home-title{font-size:32px;font-weight:800;color:#a8c8ff;}
+.home-desc{font-size:15px;opacity:0.7;}
+.ai-input-box{width:100%;height:52px;border-radius:35px;background:rgba(255,255,255,0.09);border:1px solid rgba(255,255,255,0.18);backdrop-filter:blur(30px);display:flex;align-items:center;padding:0 22px;margin-top:10px;}
+.ai-input-placeholder{color:rgba(255,255,255,0.7);font-size:14px;}
+
+/* 底部Dock导航 */
+.dock{
+  position:fixed;left:50%;bottom:20px;
+  transform:translateX(-50%);
+  width:92%;height:70px;border-radius:35px;
+  background:rgba(255,255,255,0.09);
+  border:1px solid rgba(255,255,255,0.18);
+  backdrop-filter:blur(30px);
+  display:flex;align-items:center;justify-content:space-around;
+  z-index:15;
+  user-select:none;
+}
+.dock-item{
+  position:relative;
+  display:flex;flex-direction:column;
+  align-items:center;gap:4px;
+  width:22%;text-align:center;
+  color:rgba(255,255,255,0.65);
+  cursor:pointer;z-index:2;
+}
+.dock-item.active{color:#fff;}
+.dock-icon{font-size:24px;}
+.dock-text{font-size:10px;}
+
+.dock-slider{
+  position:absolute;z-index:1;
+  top:50%;transform:translateY(-50%);
+  height:52px !important;
+  border-radius:26px;
+  background:rgba(255,255,255,0.42);
+  /* 触控跟手动画设置：慢-快-慢 */
+  transition:left 0.3s cubic-bezier(0.22, 0.65, 0.22, 1), width 0.3s cubic-bezier(0.22, 0.65, 0.22, 1);
+}
+.dock-slider.dragging{background:rgba(255,255,255,0.6);transition:none;}
+/* 鼠标模式下的动画（保持原有） */
+.dock-slider.mouse-mode{
+  transition:left 0.4s cubic-bezier(0.22, 0.65, 0.22, 1), width 0.4s cubic-bezier(0.22, 0.65, 0.22, 1);
+}
+</style>
+</head>
+<body>
+
+<!-- 历史侧边栏 -->
+<div class="history-side" id="historySide">
+  <h3>📜 历史对话</h3>
+  <div class="history-item">你好，初次咨询</div>
+  <div class="history-item">帮我写一段代码</div>
+  <div class="history-item">Dock栏样式调整</div>
+  <div class="history-item">AI问答记录</div>
+</div>
+
+<!-- 主容器（可右推） -->
+<div class="main-container" id="mainContainer">
+  <!-- 四个独立页面 -->
+  <div class="page active" id="page-home">
+    <div class="home-content">
+      <div class="home-title">你好呀👋</div>
+      <div class="home-desc">有什么问题，随时问AI</div>
+      <div class="ai-input-box">
+        <div class="ai-input-placeholder">在这里输入你的问题...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-discover">
+    <div class="page-content">
+      <h2>🔍 发现</h2>
+      <p>这里可以放置推荐内容、热门话题、AI功能探索</p>
+    </div>
+  </div>
+
+  <div class="page" id="page-library">
+    <div class="page-content">
+      <h2>📁 文件库</h2>
+      <p>保存的文档、图片、生成记录、收藏内容都在这里</p>
+    </div>
+  </div>
+
+  <div class="page" id="page-more">
+    <div class="page-content">
+      <h2>⋯ 更多设置</h2>
+      <p>个人中心、主题切换、账号管理、功能开关</p>
+    </div>
+  </div>
+
+  <!-- 底部Dock导航 -->
+  <div class="dock" id="dock">
+    <div class="dock-slider" id="slider"></div>
+    <div class="dock-item active" data-page="home">
+      <div class="dock-icon">🏠</div><div class="dock-text">主页</div>
+    </div>
+    <div class="dock-item" data-page="discover">
+      <div class="dock-icon">🔍</div><div class="dock-text">发现</div>
+    </div>
+    <div class="dock-item" data-page="library">
+      <div class="dock-icon">📁</div><div class="dock-text">文件</div>
+    </div>
+    <div class="dock-item" data-page="more">
+      <div class="dock-icon">⋯</div><div class="dock-text">更多</div>
+    </div>
+  </div>
+</div>
+
+<!-- 三横线菜单按钮：放在body下，确保fixed定位有效 -->
+<div class="menu-btn" id="menuBtn">☰</div>
+
+<script>
+// ========== 三横线菜单按钮 + 主页右推动画逻辑 ==========
+const historySide = document.getElementById('historySide');
+const mainContainer = document.getElementById('mainContainer');
+const menuBtn = document.getElementById('menuBtn');
+
+let isHistoryOpen = false;
+
+// 切换历史记录显示状态
+function toggleHistory(){
+  if(isHistoryOpen){
+    // 关闭：侧边栏滑回 + 主页复位 + 按钮复位
+    historySide.classList.remove('open');
+    mainContainer.classList.remove('pushed');
+    menuBtn.classList.remove('offset');
+  }else{
+    // 打开：侧边栏滑出 + 主页右推 + 按钮向左偏移到历史记录界面内部右上方
+    historySide.classList.add('open');
+    mainContainer.classList.add('pushed');
+    menuBtn.classList.add('offset');
+  }
+  isHistoryOpen = !isHistoryOpen;
+}
+
+menuBtn.addEventListener('click', toggleHistory);
+
+// 点击主页区域关闭侧边栏
+mainContainer.addEventListener('click',e=>{
+  if(!isHistoryOpen) return;
+  // 只在点击非按钮区域时关闭
+  if(!e.target.closest('.menu-btn') && !e.target.closest('.dock-item')){
+    toggleHistory();
+  }
+});
+
+// ========== 四页面切换逻辑（完全保留） ==========
+const pages = {
+  home:document.getElementById('page-home'),
+  discover:document.getElementById('page-discover'),
+  library:document.getElementById('page-library'),
+  more:document.getElementById('page-more')
+};
+const dockItems = Array.from(document.querySelectorAll('.dock-item'));
+
+// ========== 触控跟手Dock高亮 + 鼠标原有逻辑 ==========
+const slider = document.getElementById('slider');
+const dock = document.getElementById('dock');
+const PAD = 4;
+let isTouch = false; // 标记是否为触控操作
+
+function perfectFit(item){
+  let w = item.offsetWidth - PAD * 2;
+  let l = item.offsetLeft + PAD;
+  slider.style.width = w + 'px';
+  slider.style.left = l + 'px';
+  slider.style.height = '52px';
+}
+
+function snap(){
+  let sCen = slider.offsetLeft + slider.offsetWidth/2;
+  let target = dockItems.reduce((a,b)=>{
+    let aC = a.offsetLeft + a.offsetWidth/2;
+    let bC = b.offsetLeft + b.offsetWidth/2;
+    return Math.abs(aC-sCen) < Math.abs(bC-sCen) ? a : b;
+  });
+  let targetPage = target.dataset.page;
+  Object.values(pages).forEach(p=>p.classList.remove('active'));
+  pages[targetPage].classList.add('active');
+  dockItems.forEach(i=>i.classList.remove('active'));
+  target.classList.add('active');
+  perfectFit(target);
+  // 切换页面时关闭侧边栏
+  if(isHistoryOpen) toggleHistory();
+}
+
+function clampPos(x){
+  const maxLeft = dock.offsetWidth - slider.offsetWidth;
+  return Math.max(0, Math.min(x, maxLeft));
+}
+
+// 【核心修改】触控跟手高亮实现
+let currentTouchTarget = null; // 当前触控目标dock项
+
+// 触控开始：记录初始状态
+dock.addEventListener('touchstart', e => {
+  isTouch = true; // 标记为触控操作
+  slider.classList.remove('mouse-mode'); // 启用触控动画
+  currentTouchTarget = getTargetItem(e.touches[0]);
+  if(currentTouchTarget) {
+    perfectFit(currentTouchTarget); // 立即定位到初始触控项
+  }
+});
+
+// 触控移动：实时更新高亮位置（跟手效果）
+document.addEventListener('touchmove', e => {
+  if(!isTouch) return;
+  e.preventDefault();
+  
+  const touch = e.touches[0];
+  const targetItem = getTargetItem(touch);
+  
+  // 只有当触控目标改变时才更新高亮
+  if(targetItem && targetItem !== currentTouchTarget) {
+    currentTouchTarget = targetItem;
+    perfectFit(targetItem); // 平滑过渡到新目标（慢-快-慢）
+  }
+});
+
+// 触控结束：执行页面切换并恢复状态
+document.addEventListener('touchend', () => {
+  if(!isTouch) return;
+  isTouch = false;
+  
+  if(currentTouchTarget) {
+    // 切换到当前高亮的页面
+    const targetPage = currentTouchTarget.dataset.page;
+    Object.values(pages).forEach(p=>p.classList.remove('active'));
+    pages[targetPage].classList.add('active');
+    dockItems.forEach(i=>i.classList.remove('active'));
+    currentTouchTarget.classList.add('active');
+    perfectFit(currentTouchTarget);
+    // 切换页面时关闭侧边栏
+    if(isHistoryOpen) toggleHistory();
+  }
+  
+  currentTouchTarget = null;
+  slider.classList.add('mouse-mode'); // 恢复鼠标模式动画
+});
+
+// 根据触摸点获取对应的dock项
+function getTargetItem(touch) {
+  const dockRect = dock.getBoundingClientRect();
+  if(touch.clientY < dockRect.top || touch.clientY > dockRect.bottom) {
+    return null; // 触摸点不在dock区域内
+  }
+  
+  // 遍历所有dock项，找到包含触摸点的项
+  for(let item of dockItems) {
+    const rect = item.getBoundingClientRect();
+    if(touch.clientX >= rect.left && touch.clientX <= rect.right) {
+      return item;
+    }
+  }
+  return null;
+}
+
+// 【保留】鼠标操作逻辑：只有点击或拖动才触发高亮变化
+let isDrag = false, startX = 0, startLeft = 0;
+
+// 鼠标按下：启用拖动模式
+dock.addEventListener('mousedown', e => {
+  isDrag = true;
+  slider.classList.add('dragging');
+  slider.classList.add('mouse-mode'); // 启用鼠标动画
+  startX = e.clientX;
+  startLeft = slider.offsetLeft;
+});
+
+// 鼠标移动：仅在拖动状态下更新位置
+document.addEventListener('mousemove', e => {
+  if(!isDrag) return; // 非拖动状态不响应鼠标移动
+  let moveX = e.clientX - startX;
+  slider.style.left = clampPos(startLeft + moveX) + 'px';
+});
+
+// 鼠标释放：执行吸附和页面切换
+document.addEventListener('mouseup', () => {
+  if(!isDrag) return;
+  isDrag = false;
+  slider.classList.remove('dragging');
+  snap();
+});
+
+// 鼠标点击：直接切换页面
+dockItems.forEach(item=>{
+  item.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if(isTouch) return; // 触控模式下不响应鼠标点击
+    
+    dockItems.forEach(i=>i.classList.remove('active'));
+    item.classList.add('active');
+    let targetPage = item.dataset.page;
+    Object.values(pages).forEach(p=>p.classList.remove('active'));
+    pages[targetPage].classList.add('active');
+    perfectFit(item);
+    // 切换页面时关闭侧边栏
+    if(isHistoryOpen) toggleHistory();
+  });
+});
+
+// 初始化
+window.onload=()=>{
+  perfectFit(dockItems[0]);
+  slider.classList.add('mouse-mode'); // 默认启用鼠标模式动画
+};
+window.onresize=()=>{
+  const activeItem = dockItems.find(i=>i.classList.contains('active'));
+  perfectFit(activeItem);
+};
+</script>
+
+</body>
+</html>

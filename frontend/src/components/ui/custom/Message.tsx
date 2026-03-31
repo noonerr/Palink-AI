@@ -199,7 +199,7 @@ const MessageInner: React.FC<MessageProps> = ({
           <div className={cn(
             "px-5 py-3.5 text-[15px] leading-relaxed",
             isUser 
-              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
+              ? 'bg-slate-900 text-white dark:bg-[#2f3654] dark:text-slate-100 rounded-3xl rounded-br-lg' 
               : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
             isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
           )}>

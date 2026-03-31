@@ -101,53 +101,51 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       )}
 
-      {/* Input Container - With rounded border matching navigation style */}
-      <div className="bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[24px] border border-white/50 dark:border-slate-700/40 shadow-xl p-3">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => {
-              onChange(e.target.value);
-              autoResize();
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={disabled || uploading}
-            rows={1}
-            className={cn(
-              "flex-1 bg-transparent border-none focus:ring-0 px-2 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 max-h-28 resize-none outline-none",
-              "disabled:opacity-50"
-            )}
-          />
-          
-          {streaming ? (
-            <button
-              onClick={onStop}
-              className={cn(
-                "h-11 w-11 rounded-2xl flex items-center justify-center transition-all",
-                "bg-destructive text-destructive-foreground hover:opacity-90 active:scale-[0.96]",
-                "ml-1"
-              )}
-            >
-              <Square size={20} fill="currentColor" />
-            </button>
-          ) : (
-            <button
-              onClick={() => onSend()}
-              disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
-              className={cn(
-                "h-11 w-11 rounded-2xl flex items-center justify-center transition-all ml-1",
-                "bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 active:scale-[0.96]",
-                "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-              )}
-            >
-              <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
-              </svg>
-            </button>
+      {/* Input Container - Simplified style matching demo */}
+      <div className="flex items-end gap-2">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            autoResize();
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={disabled || uploading}
+          rows={1}
+          className={cn(
+            "flex-1 bg-transparent border-none focus:ring-0 px-2 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 max-h-28 resize-none outline-none",
+            "disabled:opacity-50"
           )}
-        </div>
+        />
+        
+        {streaming ? (
+          <button
+            onClick={onStop}
+            className={cn(
+              "h-11 w-11 rounded-2xl flex items-center justify-center transition-all",
+              "bg-destructive text-destructive-foreground hover:opacity-90 active:scale-[0.96]",
+              "ml-1"
+            )}
+          >
+            <Square size={20} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            onClick={() => onSend()}
+            disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
+            className={cn(
+              "h-11 w-11 rounded-2xl flex items-center justify-center transition-all ml-1",
+              "bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 active:scale-[0.96]",
+              "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+            )}
+          >
+            <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       <input

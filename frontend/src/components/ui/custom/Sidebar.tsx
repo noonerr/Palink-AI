@@ -1,7 +1,7 @@
-import React from 'react';
-import { 
-  MessageSquare, 
-  FolderOpen, 
+﻿import React from 'react';
+import {
+  MessageSquare,
+  FolderOpen,
   Settings,
   Sun,
   Moon,
@@ -38,18 +38,18 @@ interface NavItemProps {
 const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMobile }) => {
   const location = useLocation();
   const isActive = location.pathname === to;
-  
+
   return (
     <Link
       to={to}
       className={cn(
         'sidebar-item rounded-xl flex items-center justify-center transition-all duration-200',
         'hover:bg-sidebar-accent',
-        isMobile 
+        isMobile
           ? 'flex-col gap-1 py-2 px-3 flex-1 min-w-0'
           : 'w-12 h-12',
-        isActive 
-          ? 'active bg-sidebar-primary text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/25' 
+        isActive
+          ? 'active bg-sidebar-primary text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/25'
           : 'text-sidebar-foreground hover:text-sidebar-foreground'
       )}
       title={tooltip}
@@ -60,21 +60,6 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMob
       )}
     </Link>
   );
-};
-
-const getCurrentVariant = (): 'desktop' | 'mobile' => {
-  const saved = localStorage.getItem('ui_mode');
-  if (saved === 'desktop' || saved === 'mobile') {
-    return saved as 'desktop' | 'mobile';
-  }
-  const userAgent = typeof window !== 'undefined' ? window.navigator.userAgent.toLowerCase() : '';
-  const isMobileDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
-  return isMobileDevice ? 'mobile' : 'desktop';
-};
-
-const switchUiVariant = (target: 'desktop' | 'mobile') => {
-  localStorage.setItem('ui_mode', target);
-  window.location.reload();
 };
 
 // Desktop Sidebar Component
@@ -126,9 +111,9 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
           to="/settings"
           tooltip={t.nav_config || 'Settings'}
         />
-        
+
         <div className="w-8 h-px bg-sidebar-border my-1" />
-        
+
         <button
           onClick={onThemeToggle}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
@@ -136,7 +121,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           {isDark ? <Sun size={18} /> : <Moon size={18} />}
         </button>
-        
+
         <button
           onClick={onLangToggle}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-semibold text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
@@ -152,7 +137,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
         </button>
-        
+
         <button
           onClick={onLogout}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
@@ -160,7 +145,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           <LogOut size={18} />
         </button>
-        
+
         <div className="mt-2">
           <Avatar className="w-9 h-9 ring-2 ring-transparent hover:ring-primary/50 transition-all cursor-pointer">
             <AvatarImage src={user?.avatar} />
@@ -176,49 +161,101 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
 
 // Mobile Bottom Navigation Component
 export const MobileBottomNav: React.FC<SidebarProps> = ({
-  t,
-  switchDevice,
-  currentDevice = 'mobile'
+  t
 }) => {
   const location = useLocation();
-  const nextVariant = currentDevice === 'desktop' ? 'mobile' : 'desktop';
-  const tabs = [
+  const dockRef = React.useRef<HTMLDivElement | null>(null);
+  const itemRefs = React.useRef<Record<string, HTMLAnchorElement | null>>({});
+  const [slider, setSlider] = React.useState<{ left: number; width: number; ready: boolean }>({ left: 0, width: 0, ready: false });
+  const tabs = React.useMemo(() => [
     { id: '/chat', icon: MessageSquare, label: t.nav_chat || 'Chat' },
     { id: '/workspace', icon: FolderOpen, label: t.nav_files || 'Workspace' },
     { id: '/characters', icon: Bot, label: t.nav_characters || 'Roleplay' },
     { id: '/settings', icon: Settings, label: t.nav_config || 'Settings' }
-  ];
+  ], [t.nav_chat, t.nav_files, t.nav_characters, t.nav_config]);
+
+  const getActiveId = React.useCallback(() => {
+    const exact = tabs.find((tab) => location.pathname === tab.id);
+    if (exact) return exact.id;
+    const nested = tabs.find((tab) => location.pathname.startsWith(`${tab.id}/`));
+    return nested?.id || '/chat';
+  }, [location.pathname, tabs]);
+
+  const updateSlider = React.useCallback((targetId?: string) => {
+    const dock = dockRef.current;
+    if (!dock) return;
+
+    const activeId = targetId || getActiveId();
+    const target = itemRefs.current[activeId];
+    if (!target) return;
+
+    const dockRect = dock.getBoundingClientRect();
+    const itemRect = target.getBoundingClientRect();
+    const pad = 4;
+
+    const nextLeft = itemRect.left - dockRect.left + pad;
+    const nextWidth = Math.max(itemRect.width - pad * 2, 0);
+
+    setSlider((prev) => {
+      if (prev.ready && Math.abs(prev.left - nextLeft) < 0.5 && Math.abs(prev.width - nextWidth) < 0.5) {
+        return prev;
+      }
+      return {
+        left: nextLeft,
+        width: nextWidth,
+        ready: true,
+      };
+    });
+  }, [getActiveId]);
+
+  React.useEffect(() => {
+    updateSlider();
+  }, [updateSlider, location.pathname]);
+
+  React.useEffect(() => {
+    const onResize = () => updateSlider();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [updateSlider]);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 mx-2 mb-1 h-[64px] bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[24px] border border-white/50 dark:border-slate-700/40 shadow-xl flex items-center justify-around pb-safe z-50 pointer-events-auto">
-      {tabs.map((item) => {
-        const IconComponent = item.icon;
-        const isActive = location.pathname === item.id;
-        return (
-          <Link
-            key={item.id}
-            to={item.id}
-            className={`relative flex flex-col items-center justify-center space-y-0.5 w-1/4 h-full transition-all duration-300 active:scale-[0.98] ${
-              isActive ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'
-            }`}
-          >
-            <div className={`absolute inset-1 rounded-2xl transition-all duration-300 ${
-              isActive ? 'bg-white/40 dark:bg-white/10' : ''
-            }`} />
-            <div className={`relative z-10 transition-all duration-300 ${isActive ? 'scale-110' : ''}`}>
-              <IconComponent size={isActive ? 22 : 20} strokeWidth={isActive ? 2.5 : 2} />
-            </div>
-            <span className={`relative z-10 text-[12px] font-medium ${isActive ? 'font-semibold' : ''}`}>{item.label}</span>
-          </Link>
-        );
-      })}
-      {/* <button
-        onClick={() => switchDevice && switchDevice(nextVariant)}
-        className="absolute -top-12 right-4 w-10 h-10 rounded-full bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl border border-white/50 dark:border-slate-700/40 shadow-lg flex items-center justify-center text-sidebar-foreground hover:bg-sidebar-accent transition-all z-50"
-        title={nextVariant === 'mobile' ? 'Switch to Mobile UI' : 'Switch to Desktop UI'}
+    <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pb-[calc(20px+env(safe-area-inset-bottom))] pointer-events-auto" data-dock="true">
+      <div
+        ref={dockRef}
+        className="relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border border-white/[0.18] bg-white/[0.09] backdrop-blur-[30px]"
+        data-dock="true"
       >
-        {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
-      </button> */}
+        <div
+          className={cn(
+            'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] bg-white/[0.42] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
+            !slider.ready && 'opacity-0'
+          )}
+          style={{ left: slider.left, width: slider.width }}
+        />
+        {tabs.map((item) => {
+          const IconComponent = item.icon;
+          const isActive = getActiveId() === item.id;
+          return (
+            <Link
+              key={item.id}
+              to={item.id}
+              ref={(el) => {
+                itemRefs.current[item.id] = el;
+              }}
+              className={cn(
+                'relative z-[2] flex h-full w-[22%] flex-col items-center justify-center gap-1 text-center transition-all duration-300 active:scale-[0.98]',
+                isActive ? 'text-white' : 'text-white/65'
+              )}
+              data-dock="true"
+            >
+              <IconComponent size={22} strokeWidth={isActive ? 2.5 : 2} />
+              <span className={cn('text-[10px] leading-none', isActive ? 'font-semibold' : 'font-medium')}>
+                {item.label}
+              </span>
+            </Link>
+          );
+        })}
+      </div>
     </nav>
   );
 };

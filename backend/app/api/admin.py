@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
-from ..core import get_db, settings, get_password_hash
+from ..core import get_db, settings, get_password_hash, validate_password_policy
 from ..api.dependencies import get_current_user, get_admin
 from ..models import User, ChatSession, ChatMessage, SystemSetting
 from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig, TestProviderRequest
 from ..models.system import ProviderTestResult
+from ..services.provider_registry import get_providers, invalidate_provider_cache
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -29,27 +30,14 @@ def _providers_path() -> str:
 
 
 def _get_providers() -> list:
-    try:
-        with open(_providers_path(), "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
+    return get_providers()
 
 
 def _save_providers(data: list):
     os.makedirs(settings.DATA_DIR, exist_ok=True)
-    with open(_providers_path(), "w") as f:
+    with open(_providers_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def _find_model(model_id: str):
-    for p in _get_providers():
-        if p.get("is_active"):
-            for m in p.get("models", []):
-                mid = m["id"] if isinstance(m, dict) else m
-                if mid == model_id:
-                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
-    return None, None
+    invalidate_provider_cache()
 
 
 # --- Provider helpers (shared with workspace/models) ---
@@ -122,8 +110,11 @@ async def reset_user_password(user_id: int, req: AdminPasswordReset, user: User 
     usr = db.query(User).filter(User.id == user_id).first()
     if not usr:
         raise HTTPException(status_code=404, detail="User not found")
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    pw_error = validate_password_policy(req.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
     usr.hashed_password = get_password_hash(req.password)
     db.commit()
     return {"status": "ok"}

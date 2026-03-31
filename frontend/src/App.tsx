@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
 import { DesktopSidebar, MobileBottomNav } from '@/components/ui/custom/Sidebar';
+import { cn } from '@/lib/utils';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, AUTH_FAILURE_EVENT } from '@/services/api';
@@ -117,6 +118,8 @@ const TRANSLATIONS = {
     no_projects: "暂无项目",
     appearance: "外观",
     language: "语言",
+    developer_mode: "开发者模式",
+    developer_mode_desc: "开启后普通聊天不会请求真实模型，而是返回示例流式回复",
     language_models: "语言模型",
     local_models: "本地模型",
     refresh_models: "刷新模型列表",
@@ -244,6 +247,8 @@ const TRANSLATIONS = {
     no_projects: "No projects yet",
     appearance: "Appearance",
     language: "Language",
+    developer_mode: "Developer Mode",
+    developer_mode_desc: "When enabled, normal chat uses local mocked streaming replies instead of real model requests",
     language_models: "Language Models",
     local_models: "Local Models",
     refresh_models: "Refresh Model List",
@@ -268,7 +273,7 @@ const TRANSLATIONS = {
 };
 
 const ChatViewDesktop = lazy(() =>
-  import('@/components/views/ChatView').then((module) => ({ default: module.ChatView }))
+  import('@/components/views/ChatViewDesktop').then((module) => ({ default: module.ChatViewDesktop }))
 );
 const WorkspaceViewDesktop = lazy(() =>
   import('@/components/views/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
@@ -281,7 +286,7 @@ const CharacterViewDesktop = lazy(() =>
 );
 
 const ChatViewMobile = lazy(() =>
-  import('@/components/views/ChatView').then((module) => ({ default: module.ChatView }))
+  import('./components/views/ChatViewMobile').then((module) => ({ default: module.ChatViewMobile }))
 );
 const WorkspaceViewMobile = lazy(() =>
   import('@/components/views/WorkspaceView').then((module) => ({ default: module.WorkspaceView }))
@@ -316,15 +321,16 @@ const RouteFallback = () => (
 );
 
 function App() {
-  const [device, setDevice] = useState<'desktop' | 'mobile'>(detectDevice);
+  const [device] = useState<'desktop' | 'mobile'>(detectDevice);
   const [token, setToken] = useState<string | null>(localStorage.getItem('palink_token'));
   const [user, setUser] = useState<User | null>(null);
   const [isDark, setIsDark] = useState<Theme>(localStorage.getItem('theme') as Theme || 'light');
   const [lang, setLang] = useState<Language>(localStorage.getItem('lang') as Language || 'zh');
   const [models, setModels] = useState<Model[]>([]);
   const [systemDefaults, setSystemDefaults] = useState<any>({});
-  const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [currentModel, setCurrentModel] = useState<string>('');
 
   const t = TRANSLATIONS[lang];
 
@@ -398,15 +404,24 @@ function App() {
 
   const loadConfig = useCallback(() => {
     if (token) {
-      api.get('/api/models', { skipAuth: true }).then(setModels).catch(() => {});
-      api.get('/api/admin/system/defaults').then(setSystemDefaults).catch(() => {});
-      api.get('/api/recommendations/starters').then(setStarterQuestions).catch(() => {});
+      api.get('/api/models', { skipAuth: true }).then(data => {
+        setModels(data);
+      }).catch(() => {});
+      api.get('/api/admin/system/defaults').then(data => {
+        setSystemDefaults(data);
+      }).catch(() => {});
     }
   }, [token]);
 
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
+
+  useEffect(() => {
+    if (models.length > 0 && !currentModel) {
+      setCurrentModel(systemDefaults.default_chat_model || models[0].id);
+    }
+  }, [models, systemDefaults.default_chat_model]);
 
   const handleLogin = (data: { access_token: string }) => {
     setToken(data.access_token);
@@ -438,8 +453,8 @@ function App() {
 
   if (!token || !user) {
     return (
-      <div className="min-h-screen relative">
-        <AuroraBackground />
+      <div className={cn('min-h-screen relative', device === 'mobile' ? 'mobile-theme-bg' : 'bg-background')}>
+        {device === 'desktop' && <AuroraBackground />}
         <div className="relative z-10">
           <AuthScreen onLogin={handleLogin} />
         </div>
@@ -457,6 +472,9 @@ function App() {
     t,
     switchDevice,
     currentDevice: device,
+    models,
+    currentModel,
+    onModelChange: setCurrentModel,
   };
 
   const routes = (
@@ -469,18 +487,24 @@ function App() {
               token={token}
               user={user}
               models={models}
-              defaultModel={systemDefaults.default_chat_model || models[0]?.id}
-              starterQuestions={starterQuestions}
+              currentModel={currentModel}
+              setCurrentModel={setCurrentModel}
               t={t}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
+              isDark={isDark === 'dark'}
             />
           ) : (
             <ChatViewMobile
               token={token}
               user={user}
               models={models}
-              defaultModel={systemDefaults.default_chat_model || models[0]?.id}
-              starterQuestions={starterQuestions}
+              currentModel={currentModel}
+              setCurrentModel={setCurrentModel}
               t={t}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
+              isDark={isDark === 'dark'}
             />
           )}
         </Suspense>
@@ -494,6 +518,7 @@ function App() {
               models={models}
               systemDefaults={systemDefaults}
               t={t}
+              isDark={isDark === 'dark'}
             />
           ) : (
             <WorkspaceViewMobile
@@ -502,6 +527,7 @@ function App() {
               models={models}
               systemDefaults={systemDefaults}
               t={t}
+              isDark={isDark === 'dark'}
             />
           )}
         </Suspense>
@@ -552,7 +578,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              lang={lang}
+              isDark={isDark === 'dark'}
             />
           ) : (
             <CharacterViewMobile
@@ -561,7 +587,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              lang={lang}
+              isDark={isDark === 'dark'}
             />
           )}
         </Suspense>
@@ -575,7 +601,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              lang={lang}
+              isDark={isDark === 'dark'}
             />
           ) : (
             <CharacterViewMobile
@@ -584,7 +610,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              lang={lang}
+              isDark={isDark === 'dark'}
             />
           )}
         </Suspense>
@@ -593,17 +619,27 @@ function App() {
     </Routes>
   );
 
+  const isMobile = device === 'mobile';
+  const historyOpen = isMobile && !sidebarCollapsed;
+
   return (
     <BrowserRouter>
-      <div className="h-screen w-full flex flex-col relative overflow-hidden bg-background">
-        <AuroraBackground />
+      <div className={cn('h-screen w-full flex flex-col relative overflow-hidden', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
+        {device === 'desktop' && <AuroraBackground />}
         <div className="flex flex-1 overflow-hidden">
           {device === 'desktop' && <DesktopSidebar {...sidebarProps} />}
           <main className="flex-1 overflow-hidden">
             {routes}
           </main>
         </div>
-        {device === 'mobile' && <MobileBottomNav {...sidebarProps} />}
+        {device === 'mobile' && (
+          <div className={cn(
+            'transition-transform duration-300 ease-in-out',
+            historyOpen && 'translate-x-[280px]'
+          )}>
+            <MobileBottomNav {...sidebarProps} />
+          </div>
+        )}
       </div>
       <Toaster richColors position="top-right" />
     </BrowserRouter>

@@ -9,16 +9,21 @@ interface ModelSelectorProps {
   currentModel: string;
   onSelect: (modelId: string) => void;
   size?: 'sm' | 'md';
+  triggerStyle?: 'default' | 'icon';
+  theme?: 'dark' | 'light';
 }
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
   models,
   currentModel,
   onSelect,
-  size = 'md'
+  size = 'md',
+  triggerStyle = 'default',
+  theme = 'dark'
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isDarkTheme = theme === 'dark';
   
   const currentModelObj = models.find(m => m.id === currentModel) || models[0];
   const displayName = currentModelObj?.alias || currentModelObj?.name || '';
@@ -27,7 +32,71 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   useClickOutside(containerRef, () => setIsOpen(false));
 
+  const currentModelIcon =
+    currentModelObj?.icon && (currentModelObj.icon.startsWith('/') || currentModelObj.icon.startsWith('http'))
+      ? <img src={currentModelObj.icon} alt="" className="h-4 w-4 object-contain" />
+      : <Bot size={14} className="sm:w-3 sm:h-3" />;
+
   if (size === 'sm') {
+    if (triggerStyle === 'icon') {
+      return (
+        <div ref={containerRef} className="relative">
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className={cn(
+              'flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-xl transition-all',
+              isDarkTheme
+                ? 'border border-slate-600/80 bg-[#2a3048] text-slate-100'
+                : 'border border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 shadow-sm',
+              isOpen && (isDarkTheme ? 'ring-2 ring-slate-500/70' : 'ring-2 ring-[#d7cab2]')
+            )}
+            aria-label="select-model"
+          >
+            {currentModelIcon}
+          </button>
+
+          {isOpen && (
+            <div className="absolute bottom-full left-0 mb-2 w-56 sm:w-64 glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up origin-bottom-left">
+              <div className="max-h-64 overflow-y-auto p-1.5">
+                {models.map(model => (
+                  <button
+                    key={model.id}
+                    onClick={() => {
+                      onSelect(model.id);
+                      setIsOpen(false);
+                    }}
+                    className={cn(
+                      'w-full flex items-start gap-2 sm:gap-3 px-2 sm:px-3 py-2.5 rounded-lg text-sm transition-all touch-target',
+                      currentModel === model.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'text-foreground hover:bg-muted'
+                    )}
+                  >
+                    <span className="text-lg shrink-0">
+                      {model.icon?.startsWith('/') || model.icon?.startsWith('http') ? (
+                        <img src={model.icon} alt="" className="w-5 h-5 object-contain" />
+                      ) : (
+                        model.icon || '🤖'
+                      )}
+                    </span>
+                    <div className="flex-1 text-left min-w-0">
+                      <div className="break-words leading-tight text-sm">{getModelDisplayName(model)}</div>
+                      <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <span className="truncate">{model.provider}</span>
+                        <span>•</span>
+                        <span>{(model.context_length / 1024).toFixed(0)}k</span>
+                      </div>
+                    </div>
+                    {currentModel === model.id && <Check size={14} className="shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div ref={containerRef} className="relative">
         <button
@@ -38,7 +107,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             isOpen && "ring-2 ring-primary/20"
           )}
         >
-          <Bot size={14} className="sm:w-3 sm:h-3" />
+          {currentModelIcon}
           <span className="max-w-[80px] sm:max-w-[100px] truncate">{displayName}</span>
           <ChevronDown 
             size={14} 

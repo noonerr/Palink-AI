@@ -137,7 +137,7 @@ export function useCharacterChat({
 
     try {
       const response = await api.stream('/api/character-chat', {
-        session_id: selectedSession?.id || '',
+        session_id: selectedSession?.id ?? null,
         character_id: selectedCharacter.id,
         message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
         model: selectedModel,
@@ -264,7 +264,7 @@ export function useCharacterChat({
 
     try {
       const response = await api.stream('/api/character-chat', {
-        session_id: selectedSession?.id || '',
+        session_id: selectedSession?.id ?? null,
         character_id: selectedCharacter.id,
         message: text,
         model: selectedModel,
@@ -398,7 +398,12 @@ export function useCharacterChat({
     if (!selectedSession) return;
     try {
       await api.delete(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`);
-      setMessages(prev => prev.filter((_, idx) => idx !== messageIndex));
+      setMessages(prev => prev.filter((msg, idx) => {
+        if (typeof msg.id === 'number') {
+          return msg.id !== messageId;
+        }
+        return idx !== messageIndex;
+      }));
     } catch (e) {
       console.error('Failed to delete message:', e);
     }
@@ -410,8 +415,14 @@ export function useCharacterChat({
       await api.put(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`, { content: newContent });
       setMessages(prev => {
         const newMessages = [...prev];
-        newMessages[messageIndex] = {
-          ...newMessages[messageIndex],
+        const targetIndex = newMessages.findIndex((msg) => msg.id === messageId);
+        const safeIndex = targetIndex >= 0 ? targetIndex : messageIndex;
+        if (safeIndex < 0 || safeIndex >= newMessages.length) {
+          return newMessages;
+        }
+
+        newMessages[safeIndex] = {
+          ...newMessages[safeIndex],
           content: newContent,
         };
         return newMessages;

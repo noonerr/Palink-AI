@@ -2,7 +2,6 @@ import os
 import uuid
 import base64
 import logging
-import json
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -12,18 +11,10 @@ from pydantic import BaseModel
 from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User
+from ..services.provider_registry import get_providers
 
 router = APIRouter(tags=["models"])
 logger = logging.getLogger(__name__)
-
-
-def _get_providers() -> list:
-    cfg = os.path.join(settings.DATA_DIR, "providers.json")
-    try:
-        with open(cfg, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
 
 
 class UploadRequest(BaseModel):
@@ -35,7 +26,7 @@ class UploadRequest(BaseModel):
 async def get_models():
     """获取所有启用服务商的可用模型列表"""
     result = []
-    for p in _get_providers():
+    for p in get_providers():
         if not p.get("is_active"):
             continue
         for m in p.get("models", []):

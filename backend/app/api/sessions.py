@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
+import uuid
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
@@ -18,9 +19,22 @@ class MessageUpdate(BaseModel):
     content: str
 
 
+class CreateSessionRequest(BaseModel):
+    type: str = "chat"
+    title: str = "New Chat"
+
+
+class CreateMessageRequest(BaseModel):
+    role: str
+    content: str
+    model: Optional[str] = None
+
+
 @router.get("")
 async def get_sessions(
     type: str = "chat",
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -28,6 +42,8 @@ async def get_sessions(
         db.query(ChatSession)
         .filter(ChatSession.user_id == user.id, ChatSession.type == type)
         .order_by(ChatSession.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [
@@ -116,6 +132,60 @@ async def delete_message(
     db.delete(message)
     db.commit()
     return {"status": "ok"}
+
+
+@router.post("")
+async def create_session(
+    req: CreateSessionRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session_id = str(uuid.uuid4())
+    new_session = ChatSession(
+        id=session_id,
+        user_id=user.id,
+        title=req.title,
+        type=req.type
+    )
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+    return {
+        "id": new_session.id,
+        "title": new_session.title,
+        "type": new_session.type,
+        "updated_at": new_session.updated_at
+    }
+
+
+@router.post("/{sid}/messages")
+async def create_message(
+    sid: str,
+    req: CreateMessageRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(ChatSession).filter(ChatSession.id == sid, ChatSession.user_id == user.id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    new_message = ChatMessage(
+        session_id=sid,
+        role=req.role,
+        content=req.content,
+        model=req.model
+    )
+    db.add(new_message)
+    db.commit()
+    db.refresh(new_message)
+    
+    return {
+        "id": new_message.id,
+        "role": new_message.role,
+        "content": new_message.content,
+        "model": new_message.model,
+        "created_at": new_message.created_at
+    }
 
 
 @router.put("/{sid}/messages/{mid}")

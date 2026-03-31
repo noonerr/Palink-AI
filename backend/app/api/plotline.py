@@ -157,18 +157,21 @@ async def parse_plot_line(
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
 
-    # Get provider config
-    from ..repositories.provider_repository import ProviderRepository
-    provider_repo = ProviderRepository(db)
-    providers = provider_repo.get_all_providers(current_user.id)
-    active = next((p for p in providers if p.is_active), None)
-    if not active:
-        raise HTTPException(status_code=400, detail="No active provider")
+    from ..services.provider_registry import find_model
+
+    provider, _ = find_model(model)
+    if not provider:
+        raise HTTPException(status_code=400, detail="Model not configured")
+
+    api_base = provider.get("base_url")
+    api_key = provider.get("api_key")
+    if not api_base or not api_key:
+        raise HTTPException(status_code=400, detail="Provider config incomplete")
 
     try:
         result_text = await call_openai_compat(
-            api_base=active.base_url,
-            api_key=active.api_key,
+            api_base=api_base,
+            api_key=api_key,
             model=model,
             messages=[
                 {"role": "system", "content": PARSE_SYSTEM_PROMPT},

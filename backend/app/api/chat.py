@@ -1,9 +1,8 @@
 import asyncio
 import json
 import logging
-import os
 import time
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from openai import AsyncOpenAI
@@ -12,31 +11,14 @@ from ..schemas.chat import ChatRequest
 from ..services.chat_service import ChatService
 from ..core import get_db, settings
 from ..core.database import SessionLocal
+from ..core.rate_limit import enforce_rate_limit
 from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting
 from ..memory_module.service import MemoryService
+from ..services.provider_registry import find_model
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
-
-
-def _get_providers() -> list:
-    cfg = os.path.join(settings.DATA_DIR, "providers.json")
-    try:
-        with open(cfg, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _find_model(model_id: str):
-    for p in _get_providers():
-        if p.get("is_active"):
-            for m in p.get("models", []):
-                mid = m["id"] if isinstance(m, dict) else m
-                if mid == model_id:
-                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
-    return None, None
 
 
 def _build_memory_context(memory_ctx) -> str:
@@ -57,11 +39,19 @@ def _build_memory_context(memory_ctx) -> str:
 @router.post("")
 async def chat_stream(
     req: ChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """处理聊天请求，返回流式响应"""
-    provider, model_cfg = _find_model(req.model)
+    enforce_rate_limit(
+        request,
+        "chat:stream",
+        settings.CHAT_RATE_LIMIT_REQUESTS,
+        settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
+    provider, model_cfg = find_model(req.model)
     if not provider:
         raise HTTPException(status_code=400, detail="Model not configured or not available")
 
@@ -266,9 +256,9 @@ async def chat_stream(
             persist_snapshot(force=True)
             raise
         except Exception as e:
-            logger.error(f"Chat stream error: {e}")
+            logger.exception("Chat stream error")
             if not full_content and not full_reasoning:
-                full_content = f"Error: {str(e)}"
+                full_content = "Error: 服务暂时不可用，请稍后重试。"
                 yield f"data: {json.dumps({'content': full_content, 'error': True}, ensure_ascii=False)}\n\n"
             persist_snapshot(force=True)
         finally:

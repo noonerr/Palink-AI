@@ -1,4 +1,3 @@
-import os
 import json
 import logging
 import re
@@ -11,28 +10,10 @@ from openai import AsyncOpenAI
 
 from ..core import get_db, settings
 from ..models import SystemSetting
+from ..services.provider_registry import find_model
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 logger = logging.getLogger(__name__)
-
-
-def _get_providers() -> list:
-    cfg = os.path.join(settings.DATA_DIR, "providers.json")
-    try:
-        with open(cfg, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _find_model(model_id: str):
-    for p in _get_providers():
-        if p.get("is_active"):
-            for m in p.get("models", []):
-                mid = m["id"] if isinstance(m, dict) else m
-                if mid == model_id:
-                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
-    return None, None
 
 
 @router.get("/starters")
@@ -65,7 +46,7 @@ async def get_starter_questions(db: Session = Depends(get_db)):
             pass
 
     if should_regenerate and model_id:
-        provider, _ = _find_model(model_id)
+        provider, _ = find_model(model_id)
         if provider:
             try:
                 client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])

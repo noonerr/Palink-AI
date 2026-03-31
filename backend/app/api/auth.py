@@ -1,10 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from ..core import get_db, verify_password, get_password_hash, create_access_token
+from ..core import (
+    get_db,
+    settings,
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    validate_password_policy,
+)
+from ..core.rate_limit import enforce_rate_limit
 from ..api.dependencies import get_current_user
 from ..models import User
 
@@ -27,7 +35,17 @@ class ChangePassword(BaseModel):
 
 
 @router.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        "auth:login",
+        settings.LOGIN_RATE_LIMIT_REQUESTS,
+        settings.LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    )
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
@@ -38,11 +56,24 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 
 
 @router.post("/register")
-async def register(req: RegisterRequest, db: Session = Depends(get_db)):
+async def register(
+    req: RegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        "auth:register",
+        settings.REGISTER_RATE_LIMIT_REQUESTS,
+        settings.REGISTER_RATE_LIMIT_WINDOW_SECONDS,
+    )
     if db.query(User).filter(User.username == req.username).first():
         raise HTTPException(status_code=400, detail="Username already exists")
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    pw_error = validate_password_policy(req.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
     user = User(username=req.username, hashed_password=get_password_hash(req.password))
     db.add(user)
     db.commit()
@@ -77,8 +108,14 @@ async def update_my_profile(req: UserUpdate, user: User = Depends(get_current_us
 async def change_my_password(req: ChangePassword, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not verify_password(req.old_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Wrong old password")
-    if len(req.new_password) < 6:
-        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    if req.new_password == req.old_password:
+        raise HTTPException(status_code=400, detail="New password must be different from old password")
+
+    pw_error = validate_password_policy(req.new_password, field_name="New password")
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
     user.hashed_password = get_password_hash(req.new_password)
     db.commit()
     return {"status": "ok"}

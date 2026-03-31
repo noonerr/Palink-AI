@@ -26,6 +26,7 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "memory_mode": setting.memory_mode or "rule",
         "memory_model": setting.memory_model,
         "show_model_reasoning": setting.show_model_reasoning if setting.show_model_reasoning is not None else True,
+        "developer_mode": setting.developer_mode if setting.developer_mode is not None else False,
         "prompt_language": setting.prompt_language or "auto"
     }
 
@@ -39,6 +40,8 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.memory_model = req.memory_model
     if req.show_model_reasoning is not None:
         setting.show_model_reasoning = req.show_model_reasoning
+    if req.developer_mode is not None:
+        setting.developer_mode = req.developer_mode
     if req.prompt_language is not None:
         setting.prompt_language = req.prompt_language
     db.commit()

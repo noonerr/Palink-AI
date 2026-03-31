@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
 import { api } from '@/services/api';
@@ -23,6 +24,7 @@ interface CharacterViewProps {
   t: Record<string, string>;
   systemDefaults?: Record<string, string>;
   lang?: 'zh' | 'en';
+  isDark?: boolean;
 }
 
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
@@ -33,7 +35,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   models,
   t,
   systemDefaults,
-  lang
+  lang,
+  isDark = false
 }) => {
   const { characterId } = useParams<{ characterId?: string }>();
   const navigate = useNavigate();
@@ -833,9 +836,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     };
   }, []);
 
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  const mobilePageBgClass = isDark ? 'bg-[#1a1a2e]' : 'bg-[#f8f3e8]';
+  const rootBgClass = isMobile ? mobilePageBgClass : 'bg-background';
+
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className={cn('relative flex h-full overflow-hidden items-center justify-center', rootBgClass, isDark && 'dark')}>
         <div className="animate-spin text-primary">
           <Bot size={32} />
         </div>
@@ -844,7 +851,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   }
 
   return (
-    <div className="flex w-full h-full">
+    <div className={cn('relative flex h-full overflow-hidden', rootBgClass, isDark && 'dark')}>
       {viewState === 'list' && (
         <CharacterList
           characters={characters}

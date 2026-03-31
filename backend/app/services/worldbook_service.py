@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import Session as DBSession
 
 from ..models.worldbook import WorldBook, WorldBookStage, SessionWorldBook
+from ..models.character import CharacterChatSession
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 def build_worldbook_context(
     db: DBSession,
     session_id: str,
+    user_id: int,
     recent_messages: list | None = None,
 ) -> Optional[str]:
     """
@@ -21,6 +23,13 @@ def build_worldbook_context(
 
     recent_messages: [{"role": "user"|"assistant", "content": "..."}]
     """
+    session = db.query(CharacterChatSession.id).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user_id,
+    ).first()
+    if not session:
+        return None
+
     swb = db.query(SessionWorldBook).filter(SessionWorldBook.session_id == session_id).first()
     if not swb:
         return None

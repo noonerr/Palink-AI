@@ -7,16 +7,21 @@ import json
 import uuid
 import logging
 import base64
+import mimetypes
+import socket
+import ipaddress
 from typing import Optional, List
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
 from ..core import get_db, settings
+from ..core.rate_limit import enforce_rate_limit
 from ..api.dependencies import get_current_user
 from ..models import User, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch
 from ..models.system import UserSetting
@@ -24,6 +29,7 @@ from ..character_card import extract_chara_card_from_png
 from ..memory_module.service import MemoryService
 from ..services.worldbook_service import build_worldbook_context
 from ..services.plotline_service import build_plotline_context
+from ..services.provider_registry import get_providers, find_model
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
@@ -64,7 +70,10 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
     branch only messages up to (and including) the fork-point message are
     loaded so that messages after the fork on a parent branch are excluded.
     """
-    branch = db.query(CharacterChatSessionBranch).filter_by(id=branch_id).first()
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id,
+    ).first()
     if not branch:
         return []
 
@@ -79,7 +88,10 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
         chain.append((cur, up_to))
         if cur.parent_branch_id:
             up_to = cur.parent_message_id  # limit parent to fork point
-            parent = db.query(CharacterChatSessionBranch).filter_by(id=cur.parent_branch_id).first()
+            parent = db.query(CharacterChatSessionBranch).filter(
+                CharacterChatSessionBranch.id == cur.parent_branch_id,
+                CharacterChatSessionBranch.session_id == session_id,
+            ).first()
             cur = parent
         else:
             break
@@ -105,50 +117,107 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
 # Helpers
 # ───────────────────────────────────────────────
 
-def _get_providers() -> list:
-    cfg = os.path.join(settings.DATA_DIR, "providers.json")
+def _is_public_http_url(url: str) -> bool:
     try:
-        with open(cfg, "r") as f:
-            return json.load(f)
+        parsed = urlparse(url)
     except Exception:
-        return []
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    host = parsed.hostname
+    if not host:
+        return False
+
+    lowered_host = host.lower()
+    if lowered_host in {"localhost", "127.0.0.1", "::1"} or lowered_host.endswith(".local"):
+        return False
+
+    def _is_private_or_local_ip(ip_str: str) -> bool:
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+            return (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+                or ip_obj.is_reserved
+                or ip_obj.is_unspecified
+            )
+        except ValueError:
+            return False
+
+    # Host can be a literal IP.
+    if _is_private_or_local_ip(host):
+        return False
+
+    try:
+        target_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addr_info = socket.getaddrinfo(host, target_port, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+
+    for info in addr_info:
+        ip_addr = info[4][0]
+        if _is_private_or_local_ip(ip_addr):
+            return False
+
+    return True
 
 
-def _find_model(model_id: str):
-    for p in _get_providers():
-        if p.get("is_active"):
-            for m in p.get("models", []):
-                mid = m["id"] if isinstance(m, dict) else m
-                if mid == model_id:
-                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
-    return None, None
+def _normalize_model_image_url(img_url: str) -> str:
+    if not isinstance(img_url, str):
+        raise HTTPException(status_code=400, detail="Invalid image URL")
+
+    normalized = img_url.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid image URL")
+
+    if normalized.startswith("data:image"):
+        return normalized
+
+    upload_prefix = None
+    if normalized.startswith("/api/uploads/"):
+        upload_prefix = "/api/uploads/"
+    elif normalized.startswith("/uploads/"):
+        upload_prefix = "/uploads/"
+
+    if upload_prefix:
+        relative_path = normalized.split(upload_prefix, 1)[1]
+        relative_path = relative_path.split("?", 1)[0].split("#", 1)[0]
+        filename = os.path.basename(relative_path)
+        if not filename:
+            raise HTTPException(status_code=400, detail="Invalid uploaded image path")
+
+        file_path = os.path.join(settings.UPLOAD_DIR, filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Uploaded image not found")
+
+        file_size = os.path.getsize(file_path)
+        if file_size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
+
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/png"
+
+        with open(file_path, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode("ascii")
+
+        return f"data:{mime_type};base64,{encoded}"
+
+    if not _is_public_http_url(normalized):
+        raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
+
+    return normalized
 
 
-def _build_char_system_prompt(
-    char: Character, 
-    user_nickname: str = "用户", 
-    prompt_language: str = "auto",
-    ui_language: str = "zh"
-) -> str:
-    is_chinese = _should_use_chinese(prompt_language, ui_language)
-    
-    if is_chinese:
-        return _build_char_system_prompt_chinese(char, user_nickname)
-    else:
-        return _build_char_system_prompt_english(char, user_nickname)
-
-
-def _should_use_chinese(prompt_language: str, ui_language: str) -> bool:
-    if prompt_language == "auto":
-        return ui_language in ("zh", "zh-CN", "zh-TW")
-    return prompt_language == "zh"
-
-
-def _build_char_system_prompt_english(char: Character, user_nickname: str = "用户") -> str:
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户") -> str:
     parts = []
     if char.system_prompt:
         parts.append(char.system_prompt)
-    parts.append(f"IMPORTANT: You are {char.name}. You MUST stay in character at all times. DO NOT break character or mention you are an AI assistant.")
+    parts.append(f"You are {char.name}. Stay in character at all times.")
     if char.personality:
         parts.append(f"Personality: {char.personality}")
     if char.background:
@@ -162,36 +231,10 @@ def _build_char_system_prompt_english(char: Character, user_nickname: str = "用
         'Response format rules:\n'
         '- Wrap spoken dialogue in double quotes: "Hello!"\n'
         '- Wrap actions, narration, and internal thoughts in asterisks: *she smiled softly*\n'
+        '- Do NOT use XML tags like <action> or <thinking>.\n'
         '- Write naturally, mixing dialogue and actions in the same response.'
     )
-    prompt = "\n\n".join(parts)
-    logger.info(f"Generated English system prompt (length: {len(prompt)}): {prompt[:500]}...")
-    return prompt
-
-
-def _build_char_system_prompt_chinese(char: Character, user_nickname: str = "用户") -> str:
-    parts = []
-    if char.system_prompt:
-        parts.append(char.system_prompt)
-    parts.append(f"【重要】你是 {char.name}。请始终保持角色身份，绝对不要打破角色设定，也不要提到你是AI助手。")
-    if char.personality:
-        parts.append(f"性格：{char.personality}")
-    if char.background:
-        parts.append(f"背景故事：{char.background}")
-    if char.scenario:
-        parts.append(f"场景设定：{char.scenario}")
-    if char.description:
-        parts.append(f"角色描述：{char.description}")
-    parts.append(f'用户的名字是 "{user_nickname}"。')
-    parts.append(
-        '回复格式规则：\n'
-        '- 对话内容用双引号包裹："你好！"\n'
-        '- 动作、旁白和内心想法用星号包裹：*她微微一笑* 或 *内心感到紧张*\n'
-        '- 写作自然流畅，在同一条回复中混合对话和动作。'
-    )
-    prompt = "\n\n".join(parts)
-    logger.info(f"Generated Chinese system prompt (length: {len(prompt)}): {prompt[:500]}...")
-    return prompt
+    return "\n\n".join(parts)
 
 
 def _char_to_dict(c: Character) -> dict:
@@ -445,8 +488,6 @@ async def parse_character_card(
     db: Session = Depends(get_db)
 ):
     """解析角色卡：支持从 URL 或从已导入的角色卡用 AI 解析"""
-    logger.info(f"Received parse request: character_id={req.character_id}, model={req.model}, user_id={user.id}")
-    
     if not req.character_id and not req.image_url:
         raise HTTPException(status_code=400, detail="Either character_id or image_url is required")
 
@@ -455,9 +496,16 @@ async def parse_character_card(
             if req.image_url.startswith("data:image"):
                 img_data = base64.b64decode(req.image_url.split(",", 1)[1])
             else:
+                if not _is_public_http_url(req.image_url):
+                    raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
+
                 import urllib.request
                 with urllib.request.urlopen(req.image_url, timeout=10) as r:
-                    img_data = r.read()
+                    img_data = r.read(10 * 1024 * 1024 + 1)
+                if len(img_data) > 10 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to fetch image: {e}")
 
@@ -479,7 +527,7 @@ async def parse_character_card(
         char.processing_status = "Parsing..."
         db.commit()
 
-        providers = _get_providers()
+        providers = get_providers()
         provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
         if not provider:
             char.is_processing = False
@@ -490,12 +538,11 @@ async def parse_character_card(
         if not model_id:
             model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
         else:
-            p, _ = _find_model(model_id)
+            p, _ = find_model(model_id)
             if not p:
                 char.is_processing = False
                 db.commit()
                 raise HTTPException(status_code=400, detail="Model not found")
-            provider = p
 
         fields_to_parse = {
             "description": char.description or "",
@@ -508,68 +555,20 @@ async def parse_character_card(
             client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
             prompt = (
                 "Parse the following character card content, extract and organize the information. "
-                "IMPORTANT: Return ONLY a valid JSON object with the same keys. Do NOT include any other text, explanations, or markdown formatting. "
-                "Clean up any messy format and improve the content to be more coherent and structured.\n\n"
-                f"IMPORTANT: Replace all user placeholders like {{user}}, {{user}}, user, etc. with the character's name '{char.name}'.\n\n"
-                "Return ONLY the JSON object, nothing else.\n\n"
+                "Return a valid JSON object with the same keys, clean up any messy format, "
+                "and improve the content to be more coherent and structured.\n\n"
                 + json.dumps(fields_to_parse, ensure_ascii=False)
             )
-            
-            logger.info(f"Sending request to model: {model_id}, provider: {provider['name']}")
-            
             resp = await client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
             )
-            
-            logger.info(f"Received response type: {type(resp)}")
-            
-            if isinstance(resp, str):
-                content = resp
-            else:
-                content = resp.choices[0].message.content
-            
-            logger.info(f"Response content: {content[:500]}...")
-            
+            content = resp.choices[0].message.content
             import re
-            
-            def extract_json(text):
-                logger.info(f"Attempting to extract JSON from text (length: {len(text)}): {text[:1000]}...")
-                
-                try:
-                    result = json.loads(text)
-                    logger.info("Successfully parsed JSON directly")
-                    return result
-                except Exception as e:
-                    logger.info(f"Direct JSON parse failed: {e}")
-                
-                match = re.search(r'\{[\s\S]*\}', text)
-                if match:
-                    try:
-                        result = json.loads(match.group(0))
-                        logger.info("Successfully extracted JSON using regex")
-                        return result
-                    except Exception as e:
-                        logger.info(f"Regex JSON extract failed: {e}")
-                
-                lines = text.strip().split('\n')
-                for i in range(len(lines)):
-                    try:
-                        candidate = '\n'.join(lines[:i+1])
-                        result = json.loads(candidate)
-                        logger.info(f"Successfully parsed JSON from first {i+1} lines")
-                        return result
-                    except:
-                        continue
-                
-                logger.error(f"Failed to extract JSON from text: {text}")
-                raise ValueError("Could not extract valid JSON from response")
-            
-            try:
-                parsed = extract_json(content)
-                logger.info(f"Successfully parsed JSON: {parsed}")
-                
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
                 if parsed.get("description"):
                     char.description = parsed["description"]
                 if parsed.get("personality"):
@@ -578,21 +577,12 @@ async def parse_character_card(
                     char.scenario = parsed["scenario"]
                 if parsed.get("background"):
                     char.background = parsed["background"]
-            except Exception as json_err:
-                logger.error(f"JSON parsing failed: {json_err}")
-                char.is_processing = False
-                char.processing_status = f"JSON parsing failed: {json_err}"
-                db.commit()
-                raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {json_err}")
 
             char.is_processing = False
-            char.processing_status = "完成"
+            char.processing_status = ""
             db.commit()
             return {"status": "ok", "character": _char_to_dict(char)}
         except Exception as e:
-            import traceback
-            error_msg = f"Parsing failed: {e}\n{traceback.format_exc()}"
-            logger.error(error_msg)
             char.is_processing = False
             char.processing_status = f"Parsing failed: {e}"
             db.commit()
@@ -612,8 +602,6 @@ async def translate_character(
     db: Session = Depends(get_db)
 ):
     """用 AI 翻译角色卡内容"""
-    logger.info(f"Received translate request: character_id={req.character_id}, model={req.model}, user_id={user.id}")
-    
     char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
@@ -625,7 +613,7 @@ async def translate_character(
 
     lang_name = "Chinese (Simplified)" if req.target_language == "zh" else req.target_language
 
-    providers = _get_providers()
+    providers = get_providers()
     provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
     if not provider:
         char.is_processing = False
@@ -636,7 +624,7 @@ async def translate_character(
     if not model_id:
         model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
     else:
-        p, _ = _find_model(model_id)
+        p, _ = find_model(model_id)
         if not p:
             char.is_processing = False
             db.commit()
@@ -656,68 +644,21 @@ async def translate_character(
         client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
         prompt = (
             f"Translate the following character card fields to {lang_name}. "
-            f"IMPORTANT: Return ONLY a valid JSON object with the same keys. Do NOT include any other text, explanations, or markdown formatting. "
-            f"You MUST translate ALL 6 fields. Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
-            f"IMPORTANT: Replace all user placeholders like {{user}}, {{user}}, user, etc. with the character's name '{char.name}'.\n\n"
-            "Return ONLY the JSON object, nothing else.\n\n"
+            f"Return a valid JSON object with the same keys. You MUST translate ALL 6 fields. "
+            f"Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
             + json.dumps(fields_to_translate, ensure_ascii=False)
         )
-        
-        logger.info(f"Sending translation request to model: {model_id}, provider: {provider['name']}")
-        
         resp = await client.chat.completions.create(
             model=model_id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
-        
-        logger.info(f"Received translation response type: {type(resp)}")
-        
-        if isinstance(resp, str):
-            content = resp
-        else:
-            content = resp.choices[0].message.content
-        
-        logger.info(f"Translation response content: {content[:500]}...")
-        
+        content = resp.choices[0].message.content
+        # Extract JSON
         import re
-        
-        def extract_json(text):
-            logger.info(f"[Translate] Attempting to extract JSON from text (length: {len(text)}): {text[:1000]}...")
-            
-            try:
-                result = json.loads(text)
-                logger.info("[Translate] Successfully parsed JSON directly")
-                return result
-            except Exception as e:
-                logger.info(f"[Translate] Direct JSON parse failed: {e}")
-            
-            match = re.search(r'\{[\s\S]*\}', text)
-            if match:
-                try:
-                    result = json.loads(match.group(0))
-                    logger.info("[Translate] Successfully extracted JSON using regex")
-                    return result
-                except Exception as e:
-                    logger.info(f"[Translate] Regex JSON extract failed: {e}")
-            
-            lines = text.strip().split('\n')
-            for i in range(len(lines)):
-                try:
-                    candidate = '\n'.join(lines[:i+1])
-                    result = json.loads(candidate)
-                    logger.info(f"[Translate] Successfully parsed JSON from first {i+1} lines")
-                    return result
-                except:
-                    continue
-            
-            logger.error(f"[Translate] Failed to extract JSON from text: {text}")
-            raise ValueError("Could not extract valid JSON from response")
-        
-        try:
-            translated = extract_json(content)
-            logger.info(f"Successfully parsed translation JSON: {translated}")
-            
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            translated = json.loads(match.group(0))
             if translated.get("description"):
                 char.description = translated["description"]
             if translated.get("personality"):
@@ -730,22 +671,13 @@ async def translate_character(
                 char.background = translated["background"]
             if translated.get("system_prompt"):
                 char.system_prompt = translated["system_prompt"]
-        except Exception as json_err:
-            logger.error(f"Translation JSON parsing failed: {json_err}")
-            char.is_processing = False
-            char.processing_status = f"Translation JSON parsing failed: {json_err}"
-            db.commit()
-            raise HTTPException(status_code=500, detail=f"Failed to parse translation AI response: {json_err}")
 
         char.is_processing = False
-        char.processing_status = "完成"
+        char.processing_status = ""
         db.commit()
         db.refresh(char)
         return {"status": "ok", "character": _char_to_dict(char)}
     except Exception as e:
-        import traceback
-        error_msg = f"Translation failed: {e}\n{traceback.format_exc()}"
-        logger.error(error_msg)
         char.is_processing = False
         char.processing_status = f"Translation failed: {e}"
         db.commit()
@@ -1121,27 +1053,27 @@ class CharacterChatRequest(BaseModel):
     user_nickname: Optional[str] = None
     images: List[str] = []
     files: List[str] = []
-    ui_language: str = "zh"
 
 
 @router_chat.post("/api/character-chat")
 async def character_chat(
     req: CharacterChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    enforce_rate_limit(
+        request,
+        "chat:character",
+        settings.CHARACTER_CHAT_RATE_LIMIT_REQUESTS,
+        settings.CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
-    
-    logger.info(f"Loaded character: name={char.name}, id={char.id}")
-    logger.info(f"  - personality: {char.personality[:100] if char.personality else 'None'}...")
-    logger.info(f"  - background: {char.background[:100] if char.background else 'None'}...")
-    logger.info(f"  - scenario: {char.scenario[:100] if char.scenario else 'None'}...")
-    logger.info(f"  - description: {char.description[:100] if char.description else 'None'}...")
-    logger.info(f"  - system_prompt: {char.system_prompt[:100] if char.system_prompt else 'None'}...")
 
-    provider, model_cfg = _find_model(req.model)
+    provider, model_cfg = find_model(req.model)
     if not provider:
         raise HTTPException(status_code=400, detail="Model not configured")
 
@@ -1164,9 +1096,15 @@ async def character_chat(
         db.add(new_session)
         db.commit()
     else:
-        db.query(CharacterChatSession).filter(CharacterChatSession.id == session_id).update(
-            {"updated_at": datetime.now(timezone.utc)}, synchronize_session=False
-        )
+        existing_session = db.query(CharacterChatSession).filter(
+            CharacterChatSession.id == session_id,
+            CharacterChatSession.user_id == user.id,
+            CharacterChatSession.character_id == char.id,
+        ).first()
+        if not existing_session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        existing_session.updated_at = datetime.now(timezone.utc)
         db.commit()
 
     # ── Ensure active branch ────────────────────────────────────────────
@@ -1189,24 +1127,22 @@ async def character_chat(
                 db.commit()
                 db.refresh(main_branch)
                 branch_id = main_branch.id
+    else:
+        branch = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.id == branch_id,
+            CharacterChatSessionBranch.session_id == session_id,
+        ).first()
+        if not branch:
+            raise HTTPException(status_code=404, detail="Branch not found")
 
     # ── Memory context ───────────────────────────────────────────────
     memory_mode = "disabled"
-    prompt_language = "auto"
     user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
-    if user_setting:
-        if user_setting.memory_mode:
-            memory_mode = user_setting.memory_mode
-        if user_setting.prompt_language:
-            prompt_language = user_setting.prompt_language
+    if user_setting and user_setting.memory_mode:
+        memory_mode = user_setting.memory_mode
 
     # ── Build messages array ────────────────────────────────────────────
-    system_prompt = _build_char_system_prompt(
-        char, 
-        user_nickname, 
-        prompt_language=prompt_language,
-        ui_language=req.ui_language
-    )
+    system_prompt = _build_char_system_prompt(char, user_nickname)
 
     # ── Inject world book context (keyword-trigger) ─────────────────────
     try:
@@ -1215,7 +1151,7 @@ async def character_chat(
             CCM.session_id == session_id
         ).order_by(CCM.created_at.desc()).limit(8).all()[::-1]
         recent_msgs_for_wb = [{"role": m.role, "content": m.content} for m in recent_for_wb]
-        wb_context = build_worldbook_context(db, session_id, recent_msgs_for_wb)
+        wb_context = build_worldbook_context(db, session_id, user.id, recent_msgs_for_wb)
         if wb_context:
             system_prompt += "\n\n" + wb_context
     except Exception as e:
@@ -1223,7 +1159,7 @@ async def character_chat(
 
     # ── Inject plot line context (linear stage) ──────────────────────────
     try:
-        pl_context = build_plotline_context(db, session_id)
+        pl_context = build_plotline_context(db, session_id, user.id)
         if pl_context:
             system_prompt += "\n\n" + pl_context
     except Exception as e:
@@ -1256,11 +1192,8 @@ async def character_chat(
 
     messages = [{"role": "system", "content": system_prompt}]
 
-    logger.info(f"Messages array initialized with {len(messages)} message (system prompt: {messages[0]['content'][:200]}...")
-    
     if char.mes_example:
         messages.append({"role": "system", "content": f"Example dialogue:\n{char.mes_example}"})
-        logger.info(f"Added example dialogue, total messages: {len(messages)}")
 
     # Load history using ancestor-chain traversal for correct branch context
     if branch_id:
@@ -1276,15 +1209,8 @@ async def character_chat(
             .limit(30)
             .all()[::-1]
         )
-    logger.info(f"Adding {len(history)} history messages to conversation")
     for m in history:
         messages.append({"role": m.role, "content": m.content})
-    
-    logger.info(f"Final messages array has {len(messages)} messages total")
-    for idx, msg in enumerate(messages):
-        role = msg.get('role', 'unknown')
-        content_preview = msg.get('content', '')[:100]
-        logger.info(f"  Message {idx}: role={role}, content='{content_preview}...'")
 
     # ── Handle __INIT__ (send character's first message) ────────────────
     if is_init:
@@ -1320,7 +1246,8 @@ async def character_chat(
     if req.images:
         content_payload = [{"type": "text", "text": user_content}]
         for img_url in req.images:
-            content_payload.append({"type": "image_url", "image_url": {"url": img_url}})
+            normalized_img_url = _normalize_model_image_url(img_url)
+            content_payload.append({"type": "image_url", "image_url": {"url": normalized_img_url}})
         user_msg = {"role": "user", "content": content_payload}
     else:
         user_msg = {"role": "user", "content": user_content}
@@ -1437,8 +1364,8 @@ async def character_chat(
                 new_db.close()
 
         except Exception as e:
-            logger.error(f"Character chat stream error: {e}")
-            yield f"data: {json.dumps({'content': f'Error: {str(e)}', 'error': True})}\n\n"
+            logger.exception("Character chat stream error")
+            yield f"data: {json.dumps({'content': 'Error: 服务暂时不可用，请稍后重试。', 'error': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

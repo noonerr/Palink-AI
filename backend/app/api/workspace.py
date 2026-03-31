@@ -3,7 +3,6 @@ import uuid
 import shutil
 import base64
 import logging
-import json
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -16,6 +15,7 @@ from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, UserFolder, UserFile
 from ..schemas import FolderCreate
+from ..services.provider_registry import find_model
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 logger = logging.getLogger(__name__)
@@ -29,23 +29,6 @@ def _clean_id(val: Optional[str]) -> Optional[str]:
     return str(val)
 
 
-def _get_providers() -> list:
-    cfg = os.path.join(settings.DATA_DIR, "providers.json")
-    try:
-        with open(cfg, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _find_model(model_id: str):
-    for p in _get_providers():
-        if p.get("is_active"):
-            for m in p.get("models", []):
-                mid = m["id"] if isinstance(m, dict) else m
-                if mid == model_id:
-                    return p, (m if isinstance(m, dict) else {"id": m, "alias": m})
-    return None, None
 
 
 # --- schemas ---
@@ -206,8 +189,8 @@ async def delete_items(
             if os.path.exists(f.file_path):
                 try:
                     os.remove(f.file_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Failed to delete file '{f.filename}': {e}")
             freed += f.file_size or 0
             db.delete(f)
     if req.folder_ids:
@@ -222,8 +205,15 @@ async def delete_items(
 
 
 @router.get("/file/{file_id}")
-async def download_workspace_file(file_id: str, db: Session = Depends(get_db)):
-    f = db.query(UserFile).filter(UserFile.id == file_id).first()
+async def download_workspace_file(
+    file_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    f = db.query(UserFile).filter(
+        UserFile.id == file_id,
+        UserFile.user_id == user.id,
+    ).first()
     if not f or not os.path.exists(f.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(f.file_path, filename=f.filename)
@@ -239,7 +229,7 @@ async def analyze_workspace_file(
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
 
-    provider, _ = _find_model(req.model)
+    provider, _ = find_model(req.model)
     if not provider:
         raise HTTPException(status_code=400, detail="Model not configured")
 

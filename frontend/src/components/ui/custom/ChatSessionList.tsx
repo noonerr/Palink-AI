@@ -178,5 +178,20 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
     </div>
   );
 }, (prevProps, nextProps) => {
-  return false;
+  if (prevProps.activeSessionId !== nextProps.activeSessionId) return false;
+  if (prevProps.isDeleteMode !== nextProps.isDeleteMode) return false;
+  if (prevProps.showDeleteButton !== nextProps.showDeleteButton) return false;
+  if (prevProps.sessions.length !== nextProps.sessions.length) return false;
+  if (prevProps.selectedSessions.size !== nextProps.selectedSessions.size) return false;
+
+  for (let i = 0; i < prevProps.sessions.length; i++) {
+    const prev = prevProps.sessions[i];
+    const next = nextProps.sessions[i];
+    if (!next) return false;
+    if (prev.id !== next.id || prev.title !== next.title || prev.updated_at !== next.updated_at) {
+      return false;
+    }
+  }
+
+  return true;
 });

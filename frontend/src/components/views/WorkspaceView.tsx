@@ -32,6 +32,7 @@ interface WorkspaceViewProps {
   models: Model[];
   systemDefaults: any;
   t: Record<string, string>;
+  isDark?: boolean;
 }
 
 export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
@@ -222,9 +223,11 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     return (s / 1024 / 1024).toFixed(1) + 'MB';
   };
 
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
   if (workspaceMode === 'chat') {
     return (
-      <div className="flex h-full">
+      <div className={cn('flex h-full relative', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
         {/* Placeholder for workspace chat - would need ChatInterface component */}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -239,7 +242,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   }
 
   return (
-    <div className="flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0">
+    <div className={cn('flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
       {/* Desktop Sidebar with smooth fade animation */}
       <div 
         className={cn(

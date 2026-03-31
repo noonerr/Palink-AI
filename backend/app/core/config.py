@@ -11,6 +11,21 @@ class Settings(BaseSettings):
     
     SECRET_KEY: Optional[str] = None
     ADMIN_PASSWORD: Optional[str] = None
+
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    PASSWORD_MIN_LENGTH: int = 8
+    REQUIRE_PASSWORD_MIXED_CASE: bool = True
+    REQUIRE_PASSWORD_DIGIT: bool = True
+
+    LOGIN_RATE_LIMIT_REQUESTS: int = 10
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    REGISTER_RATE_LIMIT_REQUESTS: int = 5
+    REGISTER_RATE_LIMIT_WINDOW_SECONDS: int = 300
+    CHAT_RATE_LIMIT_REQUESTS: int = 30
+    CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    CHARACTER_CHAT_RATE_LIMIT_REQUESTS: int = 20
+    CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    TRUST_PROXY_HEADERS: bool = False
     
     DATABASE_URL: str = "sqlite:///./data/palink.db"
     
@@ -52,6 +67,11 @@ class Settings(BaseSettings):
                 raise RuntimeError(
                     "ADMIN_PASSWORD environment variable is required when APP_ENV != 'development'."
                 )
+
+        if self.APP_ENV != "development" and (not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*"):
+            raise RuntimeError(
+                "CORS_ORIGINS must be explicitly configured when APP_ENV != 'development'."
+            )
     
     @property
     def cors_origins_list(self) -> List[str]:

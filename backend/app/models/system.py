@@ -16,6 +16,7 @@ class UserSetting(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), unique=True)
     show_model_reasoning = Column(Boolean, default=True)
+    developer_mode = Column(Boolean, default=False)
     memory_mode = Column(String, default="rule")
     memory_model = Column(String, nullable=True)
     prompt_language = Column(String, default="auto")

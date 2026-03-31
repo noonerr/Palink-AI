@@ -193,7 +193,7 @@ const CharacterCard = ({
               <Button 
                 variant="default" 
                 size="sm" 
-                className="flex-1 text-xs h-9 bg-white/90 text-slate-900 hover:bg-white"
+                className="flex-1 text-xs h-9 bg-white/90 text-slate-900 hover:bg-white dark:bg-slate-700/90 dark:text-slate-100 dark:hover:bg-slate-600/90"
                 onClick={(e) => { e.stopPropagation(); onStartChat(char); }}
                 disabled={char.is_processing || processingCharacter === char.id}
               >
@@ -206,7 +206,7 @@ const CharacterCard = ({
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 dark:bg-slate-700/55 dark:hover:bg-slate-600/65 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onParseAndTranslateCharacter(char.id); }}
                 disabled={char.is_processing || processingCharacter === char.id}
                 title="AI解析并翻译角色卡"
@@ -216,7 +216,7 @@ const CharacterCard = ({
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0 hidden sm:inline-flex"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 dark:bg-slate-700/55 dark:hover:bg-slate-600/65 backdrop-blur-md border-0 hidden sm:inline-flex"
                 onClick={(e) => { e.stopPropagation(); onExportCharacter(char, 'png'); }}
                 title="导出为PNG"
                 disabled={char.is_processing || processingCharacter === char.id}
@@ -226,7 +226,7 @@ const CharacterCard = ({
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
+                className="h-8 w-8 p-0 bg-white/20 hover:bg-white/30 dark:bg-slate-700/55 dark:hover:bg-slate-600/65 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onEditCharacter(char); }}
                 disabled={char.is_processing || processingCharacter === char.id}
               >
@@ -362,7 +362,7 @@ const DesktopSidebar = ({
                   onClick={() => setActiveCategory(category.id)}
                   className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
                     activeCategory === category.id
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                      ? 'bg-slate-900 dark:bg-[#343a56] text-white dark:text-slate-100'
                       : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                   }`}
                 >
@@ -615,7 +615,7 @@ const MobileView = ({
                 key={category.id}
                 onClick={() => setActiveCategory(category.id)}
                 className={`whitespace-nowrap px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
-                  activeCategory === category.id ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  activeCategory === category.id ? 'bg-slate-900 dark:bg-[#343a56] text-white dark:text-slate-100' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 {category.name}

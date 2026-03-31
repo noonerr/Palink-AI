@@ -1,6 +1,7 @@
 import os
 import logging
 from typing import List
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..models import ChatSession, ChatMessage, UserSetting, UserFile
@@ -22,7 +23,7 @@ class ChatService:
         
         context_text = ""
         if req.files:
-            context_text = self._process_file_references(req.files)
+            context_text = self._process_file_references(req.files, user_id)
         
         final_user_content = req.message + "\n\n" + context_text
         user_message = {"role": "user", "content": final_user_content}
@@ -48,9 +49,14 @@ class ChatService:
             return session_id, True
         else:
             from datetime import datetime, timezone
-            self.db.query(ChatSession).filter(
-                ChatSession.id == session_id
-            ).update({"updated_at": datetime.now(timezone.utc)})
+            existing_session = self.db.query(ChatSession).filter(
+                ChatSession.id == session_id,
+                ChatSession.user_id == user_id,
+            ).first()
+            if not existing_session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            existing_session.updated_at = datetime.now(timezone.utc)
             self.db.commit()
             return session_id, False
     
@@ -81,22 +87,36 @@ class ChatService:
         ))
         self.db.commit()
     
-    def _process_file_references(self, files: List[str]) -> str:
+    def _process_file_references(self, files: List[str], user_id: int) -> str:
         """处理文件引用"""
-        context_text = ""
+        context_chunks: List[str] = []
         for file_ref in files:
-            content = ""
             if "/api/workspace/file/" in file_ref:
-                fid = file_ref.split("/")[-1]
-                f = self.db.query(UserFile).filter(UserFile.id == fid).first()
-                if f and os.path.exists(f.file_path):
-                    if f.mime_type.startswith('text/') or f.filename.endswith(('.txt', '.md', '.py', '.js', '.json', '.csv')):
-                        try:
-                            with open(f.file_path, 'r', encoding='utf-8', errors='ignore') as fo:
-                                content = fo.read(30000)
-                        except:
-                            content = "[Binary]"
-                    else:
-                        content = f"[Binary File: {f.filename}]"
-            context_text += f"\nFile Reference: {file_ref}\nExtracted Content:\n{content}\n---\n"
-        return context_text
+                fid = file_ref.split("/api/workspace/file/", 1)[1]
+                fid = fid.split("?", 1)[0].split("#", 1)[0].strip("/")
+                if not fid:
+                    continue
+
+                f = self.db.query(UserFile).filter(
+                    UserFile.id == fid,
+                    UserFile.user_id == user_id,
+                ).first()
+                if not f or not os.path.exists(f.file_path):
+                    continue
+
+                content = ""
+                mime_type = f.mime_type or ""
+                if mime_type.startswith('text/') or f.filename.endswith(('.txt', '.md', '.py', '.js', '.ts', '.json', '.csv')):
+                    try:
+                        with open(f.file_path, 'r', encoding='utf-8', errors='ignore') as fo:
+                            content = fo.read(30000)
+                    except Exception:
+                        content = "[Unreadable text content]"
+                else:
+                    content = f"[Binary File: {f.filename}]"
+
+                context_chunks.append(
+                    f"\nFile Reference: {file_ref}\nExtracted Content:\n{content}\n---\n"
+                )
+
+        return "".join(context_chunks)

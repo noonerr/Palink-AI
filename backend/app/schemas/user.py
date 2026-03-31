@@ -11,6 +11,7 @@ class ChangePassword(BaseModel):
 
 class UserSettingUpdate(BaseModel):
     show_model_reasoning: Optional[bool] = None
+    developer_mode: Optional[bool] = None
     memory_mode: Optional[str] = None
     memory_model: Optional[str] = None
     prompt_language: Optional[str] = None

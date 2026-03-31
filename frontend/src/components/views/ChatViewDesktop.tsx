@@ -10,6 +10,7 @@ import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
+import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
 import type { Message as MessageType, Model, Session } from '@/types';
 
 // Generate unique ID for messages
@@ -23,7 +24,6 @@ interface ChatViewProps {
   models: Model[];
   currentModel: string;
   setCurrentModel: (modelId: string) => void;
-  starterQuestions: string[];
   t: Record<string, string>;
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (value: boolean) => void;
@@ -38,13 +38,16 @@ interface Attachment {
 
 
 
-export const ChatView: React.FC<ChatViewProps> = ({
+export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   token: _token,
   user,
   models,
-  defaultModel,
-  starterQuestions,
-  t
+  currentModel,
+  setCurrentModel,
+  t,
+  sidebarCollapsed,
+  setSidebarCollapsed,
+  isDark
 }) => {
   const bottomPadding = useMobileBottomPadding();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -52,13 +55,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [currentModel, setCurrentModel] = useState(defaultModel);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'single'; id: string } | { type: 'batch' } | { type: 'message'; messageId: number; messageIndex: number } | null>(null);
@@ -78,6 +79,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   } | null>(null);
   const [compressing, setCompressing] = useState(false);
   const [memoryMode, setMemoryMode] = useState<string>("rule");
+  const [developerMode, setDeveloperMode] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
   
@@ -164,6 +166,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }, []);
 
+  const ensureDeveloperSession = useCallback(async (seedText: string) => {
+    if (activeSessionId) {
+      return activeSessionId;
+    }
+
+    try {
+      const title = (seedText || '').trim().slice(0, 24) || t.new_chat || 'New Chat';
+      const created = await api.post<{ id: string }>('/api/sessions', {
+        type: 'chat',
+        title,
+      });
+      if (created?.id) {
+        setActiveSessionId(created.id);
+        return created.id;
+      }
+    } catch (error) {
+      console.error('Failed to create developer-mode session:', error);
+    }
+
+    return null;
+  }, [activeSessionId, t.new_chat]);
+
+  const streamMockIntoMessage = useCallback(async (seedText: string, assistantMessageId: string) => {
+    let fullContent = '';
+    await streamMockAssistantReply(
+      seedText,
+      (chunk) => {
+        fullContent += chunk;
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx === -1) {
+            return newMessages;
+          }
+          newMessages[assistantIdx] = {
+            ...newMessages[assistantIdx],
+            content: fullContent,
+          };
+          return newMessages;
+        });
+      },
+      { signal: abortControllerRef.current?.signal }
+    );
+    return fullContent;
+  }, []);
+
   // Load messages for active session
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
@@ -223,6 +271,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       try {
         const settings = await api.get('/api/users/me/settings');
         setMemoryMode(settings.memory_mode || 'rule');
+        setDeveloperMode(settings.developer_mode === true);
       } catch (e) {
         console.error('Failed to fetch user settings:', e);
       }
@@ -237,10 +286,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streaming]);
-
-  useEffect(() => {
-    setCurrentModel(defaultModel);
-  }, [defaultModel]);
 
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
@@ -334,6 +379,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+
+    if (developerMode) {
+      try {
+        fullContent = await streamMockIntoMessage(userMessage.content, assistantMessageId);
+        setSuggestions(buildMockSuggestions());
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+            if (assistantIdx >= 0) {
+              newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
+            }
+            return newMessages;
+          });
+        }
+      } finally {
+        setStreaming(false);
+        setRegeneratingMessageIndex(null);
+        setIsSendingMessage(false);
+        abortControllerRef.current = null;
+      }
+      return;
+    }
     
     try {
       const res = await api.stream('/api/chat', {
@@ -435,6 +504,51 @@ export const ChatView: React.FC<ChatViewProps> = ({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+
+    if (developerMode) {
+      try {
+        const sessionId = await ensureDeveloperSession(text);
+        if (sessionId) {
+          await api.post(`/api/sessions/${sessionId}/messages`, {
+            role: 'user',
+            content: displayContent,
+            model: currentModel,
+          });
+          if (!activeSessionId) {
+            setActiveSessionId(sessionId);
+          }
+        }
+
+        fullContent = await streamMockIntoMessage(text, assistantMessageId);
+
+        if (sessionId) {
+          await api.post(`/api/sessions/${sessionId}/messages`, {
+            role: 'assistant',
+            content: fullContent,
+            model: currentModel,
+          });
+          await loadSessions();
+        }
+
+        setSuggestions(buildMockSuggestions());
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+            if (assistantIdx >= 0) {
+              newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
+            }
+            return newMessages;
+          });
+        }
+      } finally {
+        setStreaming(false);
+        setIsSendingMessage(false);
+        abortControllerRef.current = null;
+      }
+      return;
+    }
 
     try {
       const res = await api.stream('/api/chat', {
@@ -755,27 +869,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {currentModelObj?.description || t.welcome_greeting}
                 </p>
               </div>
-
-              {/* Starter Questions */}
-              {starterQuestions.length > 0 && (
-                <div className="w-full max-w-xl">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-4 text-center">
-                    <Sparkles size={12} className="inline mr-1" />
-                    {t.suggested_topics}
-                  </p>
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {starterQuestions.map((q, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => handleSend(q)}
-                        className="px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl text-sm text-foreground/80 hover:text-foreground transition-all hover:scale-105"
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
 

@@ -4,10 +4,19 @@ export const useMobileBottomPadding = () => {
   const [paddingClass, setPaddingClass] = useState<string>('pb-32 sm:pb-0');
 
   useEffect(() => {
+    let rafId: number | null = null;
+
+    const getPaddingClass = (totalPadding: number) => {
+      if (totalPadding <= 80) return 'pb-20 sm:pb-0';
+      if (totalPadding <= 112) return 'pb-28 sm:pb-0';
+      if (totalPadding <= 144) return 'pb-36 sm:pb-0';
+      return 'pb-32 sm:pb-0';
+    };
+
     const updatePadding = () => {
       const isMobile = window.innerWidth < 768;
       if (!isMobile) {
-        setPaddingClass('sm:pb-0');
+        setPaddingClass((prev) => (prev === 'sm:pb-0' ? prev : 'sm:pb-0'));
         return;
       }
 
@@ -15,34 +24,33 @@ export const useMobileBottomPadding = () => {
       if (bottomNav) {
         const navHeight = bottomNav.getBoundingClientRect().height;
         const totalPadding = navHeight + 32;
-        
-        if (totalPadding <= 80) {
-          setPaddingClass('pb-20 sm:pb-0');
-        } else if (totalPadding <= 112) {
-          setPaddingClass('pb-28 sm:pb-0');
-        } else if (totalPadding <= 144) {
-          setPaddingClass('pb-36 sm:pb-0');
-        } else {
-          setPaddingClass('pb-32 sm:pb-0');
-        }
+        const nextClass = getPaddingClass(totalPadding);
+        setPaddingClass((prev) => (prev === nextClass ? prev : nextClass));
       } else {
-        setPaddingClass('pb-32 sm:pb-0');
+        setPaddingClass((prev) => (prev === 'pb-32 sm:pb-0' ? prev : 'pb-32 sm:pb-0'));
       }
     };
 
-    const timeoutId = setTimeout(updatePadding, 100);
-    window.addEventListener('resize', updatePadding);
-    
-    const observer = new MutationObserver(() => {
-      setTimeout(updatePadding, 100);
-    });
-    
-    observer.observe(document.body, { childList: true, subtree: true });
+    const scheduleUpdate = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(updatePadding);
+    };
+
+    const timeoutId = setTimeout(scheduleUpdate, 100);
+    window.addEventListener('resize', scheduleUpdate);
+    window.addEventListener('orientationchange', scheduleUpdate);
+    window.addEventListener('load', scheduleUpdate);
 
     return () => {
       clearTimeout(timeoutId);
-      window.removeEventListener('resize', updatePadding);
-      observer.disconnect();
+      window.removeEventListener('resize', scheduleUpdate);
+      window.removeEventListener('orientationchange', scheduleUpdate);
+      window.removeEventListener('load', scheduleUpdate);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
     };
   }, []);
 

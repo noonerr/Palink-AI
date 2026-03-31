@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session as DBSession
 
 from ..models.plotline import PlotLine, PlotStage, SessionPlotLine
+from ..models.character import CharacterChatSession
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,16 @@ TRANSITION_CHECK_PROMPT = """你是故事推进判断器。
 def build_plotline_context(
     db: DBSession,
     session_id: str,
+    user_id: int,
 ) -> Optional[str]:
     """获取当前剧情阶段内容，用于注入到角色对话提示词中。"""
+    session = db.query(CharacterChatSession.id).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user_id,
+    ).first()
+    if not session:
+        return None
+
     spl = db.query(SessionPlotLine).filter(SessionPlotLine.session_id == session_id).first()
     if not spl:
         return None
@@ -108,7 +117,8 @@ async def check_plot_transition(
 
     try:
         answer = await llm_call_fn(prompt)
-        return "YES" in answer.upper()
+        normalized = str(answer).strip().upper()
+        return normalized == "YES"
     except Exception as e:
         logger.warning("Plot transition check failed: %s", e)
         return False

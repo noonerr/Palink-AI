@@ -21,13 +21,9 @@ interface ChatViewProps {
   token: string;
   user: { avatar?: string; username: string };
   models: Model[];
-  currentModel: string;
-  setCurrentModel: (modelId: string) => void;
+  defaultModel: string;
   starterQuestions: string[];
   t: Record<string, string>;
-  sidebarCollapsed: boolean;
-  setSidebarCollapsed: (value: boolean) => void;
-  isDark?: boolean;
 }
 
 interface Attachment {
@@ -80,7 +76,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [memoryMode, setMemoryMode] = useState<string>("rule");
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
-  
+  // Mobile detection - NOT A STATE (avoid re-render loops)
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const suggestionsAbortRef = useRef<AbortController | null>(null);
@@ -168,6 +166,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
     setActiveSessionId(sessionId);
+    // 只在移动端下折叠侧栏
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarCollapsed(true);
+    }
   };
 
   const loadMessages = useCallback(async (sessionId: string) => {
@@ -203,12 +205,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, [currentModel, loadMemoryStats]);
 
   useEffect(() => {
+    // 仅在挂载时加载一次，禁用所有自动重新加载
     loadSessions();
-  }, [loadSessions]);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (activeSessionId && !isSendingMessage) {
-      // Reset memory stats when switching sessions
       setMemoryStats(null);
       loadMessages(activeSessionId);
     } else if (!activeSessionId) {
@@ -216,7 +218,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setSuggestions([]);
       setMemoryStats(null);
     }
-  }, [activeSessionId, loadMessages, isSendingMessage]);
+  }, [activeSessionId, isSendingMessage]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const fetchUserSettings = async () => {
@@ -473,9 +475,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         setMessages(prev => {
           const newMessages = [...prev];
-          const lastMessage = newMessages[newMessages.length - 1];
-          newMessages[newMessages.length - 1] = {
-            ...lastMessage,
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+
+          if (assistantIdx === -1) {
+            newMessages.push({
+              id: assistantMessageId,
+              role: 'assistant',
+              content: fullContent,
+              model: currentModel
+            });
+            return newMessages;
+          }
+
+          newMessages[assistantIdx] = {
+            ...newMessages[assistantIdx],
             content: fullContent
           };
           return newMessages;
@@ -492,7 +505,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       if ((e as Error).name !== 'AbortError') {
         setMessages(prev => {
           const newMessages = [...prev];
-          newMessages[newMessages.length - 1].content += `\n[Error: ${(e as Error).message}]`;
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
+          if (assistantIdx >= 0) {
+            newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
+          }
           return newMessages;
         });
       }
@@ -613,31 +629,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
   // Welcome Screen
   if (messages.length === 0 && !activeSessionId) {
     const currentModelObj = models.find(m => m.id === currentModel) || models[0];
+    const historyOpen = isMobile && !sidebarCollapsed;
 
     return (
-      <div className="flex h-full overflow-hidden">
+      <div className={cn('relative flex h-full overflow-hidden', isMobile ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-background')}>
         {/* Mobile Backdrop */}
-        {!sidebarCollapsed && (
+        {isMobile && historyOpen && (
           <div
             className="fixed inset-0 z-[59] bg-black/40 md:hidden"
             onClick={() => setSidebarCollapsed(true)}
           />
         )}
         {/* Sidebar */}
-        <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
+        <div
+          className={cn(
+            'fixed inset-y-0 left-0 overflow-hidden transition-all duration-300 ease-in-out md:relative',
+            isMobile
+              ? `z-[5] h-[100dvh] w-[280px] transform-gpu ${historyOpen ? 'translate-x-0' : '-translate-x-full'}`
+              : `${!sidebarCollapsed ? 'z-[60] w-64 opacity-100' : 'z-[60] w-0 opacity-0'}`
+          )}
+        >
+          <div
+            className={cn(
+              'h-full flex flex-col overflow-hidden',
+              isMobile
+                ? 'w-[280px] border-r border-white/20 bg-white/10 px-5 pb-5 pt-20 text-white backdrop-blur-[30px]'
+                : 'w-64 flex-shrink-0 glass border-r border-border/40 pt-[env(safe-area-inset-top)] shadow-lg md:shadow-none'
+            )}
+          >
             {/* Header */}
-            <div className="h-[54px] flex items-center justify-between px-4 shrink-0 border-b border-border/50">
+            <div className={cn('h-14 flex items-center justify-between shrink-0', isMobile ? 'border-b border-white/15 px-0' : 'border-b border-border/50 px-4')}>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
-                  onClick={() => setSidebarCollapsed(true)}
-                >
-                  <ChevronLeft size={16} />
-                </Button>
-                <span className="text-sm font-semibold text-foreground">
+                {!isMobile && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => setSidebarCollapsed(true)}
+                  >
+                    <ChevronLeft size={16} />
+                  </Button>
+                )}
+                <span className={cn('text-sm font-semibold', isMobile ? 'text-white' : 'text-foreground')}>
                   {isDeleteMode ? t.batch_manage : t.chat_history}
                 </span>
               </div>
@@ -694,15 +727,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
 
         {/* Chat Area */}
-        <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <div
+          className={cn(
+            'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out',
+            historyOpen && 'translate-x-[280px]'
+          )}
+          onClick={(e) => {
+            if (!historyOpen) return;
+            const target = e.target as HTMLElement;
+            if (target.closest('[data-history-toggle="true"]')) return;
+            if (target.closest('[data-dock="true"]')) return;
+            setSidebarCollapsed(true);
+          }}
+        >
           {/* Header */}
-          <div className="h-[54px] flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
+          <div className={cn('h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 backdrop-blur-xl', isMobile ? 'bg-white/5 border-white/15 text-white' : 'bg-background/85')}>
             <div className="flex items-center gap-2 min-w-0">
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                className="md:hidden h-10 w-10 shrink-0"
+                className={cn('md:hidden h-10 w-10 shrink-0', isMobile && 'hidden')}
               >
                 <Menu size={18} />
               </Button>
@@ -780,7 +825,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Input Area */}
-          <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
+          <div className={cn('px-2 sm:px-3 pt-2 sm:pt-3 border-t backdrop-blur-xl pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-4', isMobile ? 'border-white/15 bg-white/5' : 'border-border/50 bg-background/70')}>
             <div className="max-w-3xl mx-auto">
               <ChatInput
                 value={input}
@@ -817,34 +862,65 @@ export const ChatView: React.FC<ChatViewProps> = ({
           confirmText={t.ok}
           cancelText={t.cancel}
         />
+        {isMobile && (
+          <button
+            onClick={() => setSidebarCollapsed((prev) => !prev)}
+            className={cn(
+              'fixed left-5 top-[calc(env(safe-area-inset-top)+24px)] z-[20] flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-white/15 text-white backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+              historyOpen && 'left-[216px] rotate-180 bg-white/25 shadow-[0_0_12px_rgba(255,255,255,0.2)]'
+            )}
+            aria-label="toggle-history"
+            data-history-toggle="true"
+          >
+            <Menu size={20} />
+          </button>
+        )}
       </div>
     );
   }
 
+  const historyOpen = isMobile && !sidebarCollapsed;
+
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className={cn('relative flex h-full overflow-hidden', isMobile ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-background')}>
       {/* Mobile Backdrop */}
-      {!sidebarCollapsed && (
+      {isMobile && historyOpen && (
         <div
           className="fixed inset-0 z-[59] bg-black/40 md:hidden"
           onClick={() => setSidebarCollapsed(true)}
         />
       )}
       {/* Sidebar */}
-      <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
+      <div
+        className={cn(
+          'fixed inset-y-0 left-0 overflow-hidden transition-all duration-300 ease-in-out md:relative',
+          isMobile
+            ? `z-[5] h-[100dvh] w-[280px] transform-gpu ${historyOpen ? 'translate-x-0' : '-translate-x-full'}`
+            : `${!sidebarCollapsed ? 'z-[60] w-64 opacity-100' : 'z-[60] w-0 opacity-0'}`
+        )}
+      >
+        <div
+          className={cn(
+            'h-full flex flex-col overflow-hidden',
+            isMobile
+              ? 'w-[280px] border-r border-white/20 bg-white/10 px-5 pb-5 pt-20 text-white backdrop-blur-[30px]'
+              : 'w-64 flex-shrink-0 glass border-r border-border/40 pt-[env(safe-area-inset-top)] shadow-lg md:shadow-none'
+          )}
+        >
           {/* Header */}
-          <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
+          <div className={cn('h-14 flex items-center justify-between shrink-0', isMobile ? 'border-b border-white/15 px-0' : 'border-b border-border/50 px-4')}>
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
-                onClick={() => setSidebarCollapsed(true)}
-              >
-                <ChevronLeft size={16} />
-              </Button>
-              <span className="text-sm font-semibold text-foreground">
+              {!isMobile && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
+                  onClick={() => setSidebarCollapsed(true)}
+                >
+                  <ChevronLeft size={16} />
+                </Button>
+              )}
+              <span className={cn('text-sm font-semibold', isMobile ? 'text-white' : 'text-foreground')}>
                 {isDeleteMode ? t.batch_manage : t.chat_history}
               </span>
             </div>
@@ -901,15 +977,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
 
       {/* Chat Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
+      <div
+        className={cn(
+          'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out',
+          historyOpen && 'translate-x-[280px]'
+        )}
+        onClick={(e) => {
+          if (!historyOpen) return;
+          const target = e.target as HTMLElement;
+          if (target.closest('[data-history-toggle="true"]')) return;
+          if (target.closest('[data-dock="true"]')) return;
+          setSidebarCollapsed(true);
+        }}
+      >
         {/* Header */}
-        <div className="h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
+        <div className={cn('h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 backdrop-blur-xl', isMobile ? 'bg-white/5 border-white/15 text-white' : 'bg-background/85')}>
           <div className="flex items-center gap-2 min-w-0">
             <Button
               variant="ghost"
               size="icon"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="md:hidden h-10 w-10 shrink-0"
+              className={cn('md:hidden h-10 w-10 shrink-0', isMobile && 'hidden')}
             >
               <Menu size={18} />
             </Button>
@@ -954,7 +1042,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onClick={handleDeleteSelectedMessages}
                     >
                       <Trash2 size={14} className="sm:mr-1.5" />
-                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
+                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
                     </Button>
                   )}
                 </>
@@ -1026,7 +1114,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Input Area */}
-        <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
+        <div className={cn('px-2 sm:px-3 pt-2 sm:pt-3 border-t backdrop-blur-xl pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-4', isMobile ? 'border-white/15 bg-white/5' : 'border-border/50 bg-background/70')}>
           <div className="max-w-3xl mx-auto">
             <ChatInput
               value={input}
@@ -1062,6 +1150,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
           confirmText={t.ok}
           cancelText={t.cancel}
         />
+
+        {isMobile && (
+          <button
+            onClick={() => setSidebarCollapsed((prev) => !prev)}
+            className={cn(
+              'fixed left-5 top-[calc(env(safe-area-inset-top)+24px)] z-[20] flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-white/15 text-white backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+              historyOpen && 'left-[216px] rotate-180 bg-white/25 shadow-[0_0_12px_rgba(255,255,255,0.2)]'
+            )}
+            aria-label="toggle-history"
+            data-history-toggle="true"
+          >
+            <Menu size={20} />
+          </button>
+        )}
 
       </div>
     </div>

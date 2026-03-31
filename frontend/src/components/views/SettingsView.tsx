@@ -572,8 +572,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     { id: 'about' as SettingsTab, label: t.settings_about, icon: AlertCircle }
   );
 
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
   return (
-    <div className="flex h-full relative">
+    <div className={cn('relative flex h-full overflow-hidden', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
       {/* Desktop Sidebar - Vertical Navigation */}
       <div className="hidden md:flex w-64 flex-shrink-0 border-r border-border/50 bg-background flex-col">
         {/* Sidebar Header */}
@@ -606,8 +608,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {/* Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Mobile Header */}
-        <div className="md:hidden border-b border-border/50 bg-background z-10 shrink-0">
-          <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 bg-background z-10">
+        <div className="md:hidden border-b border-border/50 shrink-0">
+          <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 z-10">
             {mobileTabSelected ? (
               <button
                 onClick={() => setMobileTabSelected(false)}
@@ -630,13 +632,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       setActiveTab(item.id);
                       setMobileTabSelected(true);
                     }}
-                    className="w-full flex items-center justify-between p-3 rounded-xl transition-all bg-secondary hover:bg-secondary/80"
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-2xl transition-all duration-200 bg-gradient-to-r from-secondary/90 to-secondary hover:from-secondary hover:to-secondary/90 hover:shadow-md active:scale-[0.98] min-h-[56px] box-border"
                   >
-                    <div className="flex items-center gap-3">
-                      <item.icon size={18} className="text-muted-foreground" />
-                      <span className="font-medium">{item.label}</span>
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <item.icon size={18} className="text-muted-foreground shrink-0" />
+                      <span className="font-medium truncate">{item.label}</span>
                     </div>
-                    <ChevronDown size={18} className="text-muted-foreground rotate-90" />
+                    <ChevronDown size={18} className="text-muted-foreground rotate-90 shrink-0" />
                   </button>
                 ))}
               </div>
@@ -1274,6 +1276,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       {isDark ? <Sun size={16} className="mr-2" /> : <Moon size={16} className="mr-2" />}
                       {isDark ? t.switch_light || '切换浅色' : t.switch_dark || '切换深色'}
                     </Button>
+                  </div>
+
+                  <div className="flex items-center justify-between py-3 border-b border-border/50">
+                    <div className="flex items-center gap-3">
+                      <MessageSquareText size={20} className="text-muted-foreground" />
+                      <div>
+                        <p className="font-medium">界面模式</p>
+                        <p className="text-xs text-muted-foreground">当前: {currentDevice === 'desktop' ? '桌面端' : '移动端'}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant={currentDevice === 'desktop' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => switchDevice?.('desktop')}
+                        disabled={!switchDevice}
+                      >
+                        桌面端
+                      </Button>
+                      <Button
+                        variant={currentDevice === 'mobile' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => switchDevice?.('mobile')}
+                        disabled={!switchDevice}
+                      >
+                        移动端
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between py-3">
