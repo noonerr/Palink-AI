@@ -102,7 +102,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       )}
 
       {/* Input Container - With rounded border matching navigation style */}
-      <div className="bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[24px] border border-white/50 dark:border-slate-700/40 shadow-xl p-3">
+      <div className="bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl rounded-[35px] border border-white/50 dark:border-slate-700/40 shadow-xl p-2">
         <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}
@@ -125,7 +125,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             <button
               onClick={onStop}
               className={cn(
-                "h-11 w-11 rounded-2xl flex items-center justify-center transition-all",
+                "h-10 w-10 rounded-2xl flex items-center justify-center transition-all",
                 "bg-destructive text-destructive-foreground hover:opacity-90 active:scale-[0.96]",
                 "ml-1"
               )}
@@ -137,7 +137,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               onClick={() => onSend()}
               disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
               className={cn(
-                "h-11 w-11 rounded-2xl flex items-center justify-center transition-all ml-1",
+                "h-10 w-10 rounded-2xl flex items-center justify-center transition-all ml-1",
                 "bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 active:scale-[0.96]",
                 "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
               )}

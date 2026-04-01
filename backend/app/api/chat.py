@@ -5,7 +5,6 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from openai import AsyncOpenAI
 
 from ..schemas.chat import ChatRequest
 from ..services.chat_service import ChatService
@@ -16,6 +15,7 @@ from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting
 from ..memory_module.service import MemoryService
 from ..services.provider_registry import find_model
+from ..services.llm_client import get_async_openai_client
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ async def chat_stream(
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
         .order_by(ChatMessage.created_at.desc())
-        .limit(30)
+        .limit(settings.CHAT_HISTORY_LIMIT)
         .all()[::-1]
     )
     # Exclude the user message we just saved (last one)
@@ -202,7 +202,11 @@ async def chat_stream(
             if is_new_session:
                 yield f"data: {json.dumps({'session_id': session_id})}\n\n"
 
-            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"], timeout=30.0)
+            client = get_async_openai_client(
+                api_key=provider["api_key"],
+                base_url=provider["base_url"],
+                timeout=30.0,
+            )
             stream_kwargs = dict(
                 model=req.model,
                 messages=messages,

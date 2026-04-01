@@ -6,6 +6,7 @@
 from typing import List, Dict, Tuple
 from datetime import datetime, timedelta
 import logging
+import hashlib
 import numpy as np
 
 from .storage import MemoryStorage
@@ -194,9 +195,8 @@ class MemoryRetriever:
     
     def _simple_hash(self, content: str) -> str:
         """生成简单的内容哈希"""
-        import hashlib
         content_normalized = content.strip().lower()
-        return hashlib.md5(content_normalized.encode()).hexdigest()
+        return hashlib.blake2b(content_normalized.encode("utf-8"), digest_size=16).hexdigest()
     
     def _select_by_tokens(
         self,

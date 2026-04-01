@@ -9,6 +9,9 @@ openai>=1.10.0
 edge-tts
 pydantic-settings
 python-jose[cryptography]
+cryptography>=46.0.6
+ecdsa>=0.19.2
+pyasn1>=0.6.3
 passlib[bcrypt]
 bcrypt==3.2.2
 llama-cpp-python

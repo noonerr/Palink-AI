@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import {
   MessageSquare,
   FolderOpen,
@@ -161,7 +161,8 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
 
 // Mobile Bottom Navigation Component
 export const MobileBottomNav: React.FC<SidebarProps> = ({
-  t
+  t,
+  isDark = false
 }) => {
   const location = useLocation();
   const dockRef = React.useRef<HTMLDivElement | null>(null);
@@ -222,13 +223,19 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
     <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pb-[calc(20px+env(safe-area-inset-bottom))] pointer-events-auto" data-dock="true">
       <div
         ref={dockRef}
-        className="relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border border-white/[0.18] bg-white/[0.09] backdrop-blur-[30px]"
+        className={cn(
+          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[30px]',
+          isDark 
+            ? 'border-white/[0.15] bg-white/[0.07]' 
+            : 'border-slate-700/[0.25] bg-slate-800/[0.65]'
+        )}
         data-dock="true"
       >
         <div
           className={cn(
-            'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] bg-white/[0.42] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
-            !slider.ready && 'opacity-0'
+            'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
+            !slider.ready && 'opacity-0',
+            isDark ? 'bg-white/[0.30]' : 'bg-slate-900/[0.55]'
           )}
           style={{ left: slider.left, width: slider.width }}
         />
@@ -244,7 +251,9 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
               }}
               className={cn(
                 'relative z-[2] flex h-full w-[22%] flex-col items-center justify-center gap-1 text-center transition-all duration-300 active:scale-[0.98]',
-                isActive ? 'text-white' : 'text-white/65'
+                isDark
+                  ? (isActive ? 'text-white' : 'text-white/65')
+                  : (isActive ? 'text-white' : 'text-white/75')
               )}
               data-dock="true"
             >

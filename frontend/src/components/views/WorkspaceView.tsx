@@ -40,7 +40,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   user: _user,
   models,
   systemDefaults,
-  t
+  t,
+  isDark = false
 }) => {
   const bottomPadding = useMobileBottomPadding();
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);
@@ -227,7 +228,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
   if (workspaceMode === 'chat') {
     return (
-      <div className={cn('flex h-full relative', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
+      <div className={cn('flex h-full relative', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
         {/* Placeholder for workspace chat - would need ChatInterface component */}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -242,7 +243,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   }
 
   return (
-    <div className={cn('flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
+    <div className={cn('flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
       {/* Desktop Sidebar with smooth fade animation */}
       <div 
         className={cn(

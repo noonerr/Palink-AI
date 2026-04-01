@@ -188,4 +188,154 @@ class SmartContextManager:
     
     def _build_world_book_context(self, entries: List[Dict], stats: Dict) -> str:
         """构建世界书上下文（智能裁剪）"""
-        if
+        if not entries:
+            return ""
+
+        budget = self.budget.world_book_tokens
+        used_tokens = 0
+        selected_parts: List[str] = []
+
+        # 优先保留高优先级词条，避免挤占全部预算
+        sorted_entries = sorted(entries, key=lambda x: int(x.get("priority", 0)), reverse=True)
+
+        for entry in sorted_entries:
+            title = str(entry.get("title") or entry.get("name") or "未命名词条").strip()
+            body = str(entry.get("content") or entry.get("text") or entry.get("raw_content") or "").strip()
+            if not body:
+                continue
+
+            chunk = f"[{title}]\n{body}"
+            chunk_tokens = self._estimate_tokens(chunk)
+
+            if used_tokens + chunk_tokens <= budget:
+                selected_parts.append(chunk)
+                used_tokens += chunk_tokens
+                continue
+
+            remaining = budget - used_tokens
+            if remaining <= 0:
+                break
+
+            truncated = self._truncate_to_tokens(chunk, remaining)
+            if truncated:
+                selected_parts.append(truncated)
+                used_tokens = budget
+            break
+
+        stats["world_book_tokens"] = used_tokens
+        return "\n\n".join(selected_parts)
+
+    def _build_long_term_context(self, memories: List[Dict], stats: Dict) -> str:
+        """构建长期记忆上下文（预算受限）"""
+        if not memories:
+            return ""
+
+        budget = self.budget.long_term_tokens
+        used_tokens = 0
+        selected_parts: List[str] = []
+
+        for idx, memory in enumerate(memories, start=1):
+            text = str(memory.get("content") or memory.get("summary") or memory.get("text") or "").strip()
+            if not text:
+                continue
+
+            chunk = f"{idx}. {text}"
+            chunk_tokens = self._estimate_tokens(chunk)
+
+            if used_tokens + chunk_tokens <= budget:
+                selected_parts.append(chunk)
+                used_tokens += chunk_tokens
+                continue
+
+            remaining = budget - used_tokens
+            if remaining <= 0:
+                break
+
+            truncated = self._truncate_to_tokens(chunk, remaining)
+            if truncated:
+                selected_parts.append(truncated)
+                used_tokens = budget
+            break
+
+        stats["long_term_tokens"] = used_tokens
+        return "\n".join(selected_parts)
+
+    def _select_history_messages(self) -> Tuple[List[Dict], Dict]:
+        """按预算选取历史消息：近期优先，其次补充高优先级旧消息。"""
+        if not self.messages:
+            return [], {
+                "short_term_tokens": 0,
+                "medium_term_tokens": 0,
+                "messages_summarized": 0,
+            }
+
+        selected: List[ContextMessage] = []
+        selected_ids = set()
+        short_used = 0
+        medium_used = 0
+
+        # 先按时间倒序保留近期消息
+        for msg in reversed(self.messages):
+            if short_used + msg.token_count > self.budget.short_term_tokens:
+                break
+            selected.append(msg)
+            selected_ids.add(msg.id)
+            short_used += msg.token_count
+
+        # 再从较旧消息补充高优先级内容
+        for msg in sorted(self.messages, key=lambda m: m.created_at):
+            if msg.id in selected_ids:
+                continue
+            if msg.priority not in (MessagePriority.CRITICAL, MessagePriority.HIGH):
+                continue
+            if medium_used + msg.token_count > self.budget.medium_term_tokens:
+                continue
+            selected.append(msg)
+            selected_ids.add(msg.id)
+            medium_used += msg.token_count
+
+        selected.sort(key=lambda m: m.created_at)
+        payload = [{"role": m.role, "content": m.content} for m in selected]
+
+        return payload, {
+            "short_term_tokens": short_used,
+            "medium_term_tokens": medium_used,
+            "messages_summarized": 0,
+        }
+
+    def _infer_priority(self, role: str, content: str) -> MessagePriority:
+        """根据角色和关键词做轻量优先级推断。"""
+        text = (content or "").lower()
+
+        if role == "system":
+            return MessagePriority.CRITICAL
+
+        critical_keywords = ["设定", "规则", "必须", "重要", "禁止", "worldbook", "plot"]
+        if any(k in text for k in critical_keywords):
+            return MessagePriority.HIGH
+
+        if len(text) < 40:
+            return MessagePriority.LOW
+
+        return MessagePriority.MEDIUM
+
+    def _estimate_tokens(self, text: str) -> int:
+        """粗略 token 估算：中英文混合场景按约 4 字符/Token。"""
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
+        """按估算 token 截断文本。"""
+        if max_tokens <= 0:
+            return ""
+
+        char_limit = max_tokens * 4
+        if len(text) <= char_limit:
+            return text
+
+        if char_limit <= 3:
+            return text[:char_limit]
+
+        return text[: char_limit - 3] + "..."
+

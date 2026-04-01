@@ -3,19 +3,19 @@ import uuid
 import shutil
 import base64
 import logging
-from typing import Optional, List
+from typing import Optional, List, Set
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from openai import AsyncOpenAI
 
 from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, UserFolder, UserFile
 from ..schemas import FolderCreate
 from ..services.provider_registry import find_model
+from ..services.llm_client import get_async_openai_client
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 logger = logging.getLogger(__name__)
@@ -27,6 +27,49 @@ def _clean_id(val: Optional[str]) -> Optional[str]:
     if not val or str(val).lower() in ("null", "undefined", "none", ""):
         return None
     return str(val)
+
+
+def _workspace_allowed_extensions() -> Set[str]:
+    raw = settings.WORKSPACE_ALLOWED_EXTENSIONS or ""
+    return {
+        f".{ext.strip().lower().lstrip('.')}"
+        for ext in raw.split(",")
+        if ext and ext.strip()
+    }
+
+
+def _normalize_upload_filename(filename: Optional[str]) -> str:
+    safe_name = os.path.basename(filename or "").strip()
+    if not safe_name:
+        safe_name = f"upload_{uuid.uuid4().hex}.bin"
+    return safe_name
+
+
+def _validate_workspace_upload(user: User, file_size: int, filename: str) -> None:
+    if file_size <= 0:
+        raise HTTPException(status_code=400, detail="Empty file is not allowed")
+
+    max_file_size_bytes = max(0, settings.WORKSPACE_MAX_FILE_SIZE_MB) * 1024 * 1024
+    if max_file_size_bytes and file_size > max_file_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {settings.WORKSPACE_MAX_FILE_SIZE_MB}MB",
+        )
+
+    extension = os.path.splitext(filename)[1].lower()
+    allowed_extensions = _workspace_allowed_extensions()
+    if allowed_extensions and extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not allowed: {extension or '[none]'}",
+        )
+
+    max_storage_bytes = max(0, settings.WORKSPACE_MAX_USER_STORAGE_MB) * 1024 * 1024
+    if max_storage_bytes and ((user.storage_used or 0) + file_size) > max_storage_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Storage quota exceeded. Max quota: {settings.WORKSPACE_MAX_USER_STORAGE_MB}MB",
+        )
 
 
 
@@ -120,10 +163,22 @@ async def upload_workspace_file(
     size = file.file.tell()
     file.file.seek(0)
 
+    original_name = _normalize_upload_filename(file.filename)
+    _validate_workspace_upload(user=user, file_size=size, filename=original_name)
+
+    fid = _clean_id(folder_id)
+    if fid:
+        folder = db.query(UserFolder).filter(
+            UserFolder.id == fid,
+            UserFolder.user_id == user.id,
+        ).first()
+        if not folder:
+            raise HTTPException(status_code=404, detail="Target folder not found")
+
     user_dir = os.path.join(settings.WORKSPACE_DIR, str(user.id))
     os.makedirs(user_dir, exist_ok=True)
 
-    safe_name = f"{uuid.uuid4()}_{file.filename}"
+    safe_name = f"{uuid.uuid4()}_{original_name}"
     file_path = os.path.join(user_dir, safe_name)
 
     try:
@@ -132,12 +187,11 @@ async def upload_workspace_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write file: {e}")
 
-    fid = _clean_id(folder_id)
     try:
         db_file = UserFile(
             user_id=user.id,
             folder_id=fid,
-            filename=file.filename,
+            filename=original_name,
             file_path=file_path,
             file_size=size,
             mime_type=file.content_type or "application/octet-stream",
@@ -239,7 +293,7 @@ async def analyze_workspace_file(
     if f.mime_type and f.mime_type.startswith("text/") or f.filename.endswith(text_exts):
         try:
             with open(f.file_path, "r", encoding="utf-8", errors="ignore") as fo:
-                content = fo.read(15000)
+                content = fo.read(settings.WORKSPACE_ANALYZE_MAX_CHARS)
         except Exception:
             content = "[Unreadable text content]"
     else:
@@ -252,7 +306,11 @@ async def analyze_workspace_file(
     )
 
     try:
-        client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+        client = get_async_openai_client(
+            api_key=provider["api_key"],
+            base_url=provider["base_url"],
+            timeout=30.0,
+        )
         resp = await client.chat.completions.create(
             model=req.model,
             messages=[{"role": "user", "content": prompt}],

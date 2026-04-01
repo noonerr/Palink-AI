@@ -10,6 +10,7 @@ import base64
 import mimetypes
 import socket
 import ipaddress
+import urllib.request
 from typing import Optional, List
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -18,7 +19,6 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from openai import AsyncOpenAI
 
 from ..core import get_db, settings
 from ..core.rate_limit import enforce_rate_limit
@@ -29,7 +29,8 @@ from ..character_card import extract_chara_card_from_png
 from ..memory_module.service import MemoryService
 from ..services.worldbook_service import build_worldbook_context
 from ..services.plotline_service import build_plotline_context
-from ..services.provider_registry import get_providers, find_model
+from ..services.provider_registry import get_runtime_providers, find_model
+from ..services.llm_client import get_async_openai_client
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
@@ -164,6 +165,13 @@ def _is_public_http_url(url: str) -> bool:
             return False
 
     return True
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Disallow redirects to avoid SSRF bypass through redirect chains."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _normalize_model_image_url(img_url: str) -> str:
@@ -493,15 +501,26 @@ async def parse_character_card(
 
     if req.image_url:
         try:
-            if req.image_url.startswith("data:image"):
-                img_data = base64.b64decode(req.image_url.split(",", 1)[1])
+            normalized_url = _normalize_model_image_url(req.image_url)
+
+            if normalized_url.startswith("data:image"):
+                img_data = base64.b64decode(normalized_url.split(",", 1)[1])
             else:
-                if not _is_public_http_url(req.image_url):
+                if not _is_public_http_url(normalized_url):
                     raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
 
-                import urllib.request
-                with urllib.request.urlopen(req.image_url, timeout=10) as r:
+                opener = urllib.request.build_opener(_NoRedirectHandler())
+                request = urllib.request.Request(
+                    normalized_url,
+                    headers={"User-Agent": "Palink-AI/1.0"}
+                )
+
+                with opener.open(request, timeout=10) as r:  # nosec B310
+                    content_type = (r.headers.get("Content-Type") or "").lower()
+                    if content_type and not content_type.startswith("image/"):
+                        raise HTTPException(status_code=415, detail="URL did not return an image")
                     img_data = r.read(10 * 1024 * 1024 + 1)
+
                 if len(img_data) > 10 * 1024 * 1024:
                     raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
         except HTTPException:
@@ -527,7 +546,7 @@ async def parse_character_card(
         char.processing_status = "Parsing..."
         db.commit()
 
-        providers = get_providers()
+        providers = get_runtime_providers()
         provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
         if not provider:
             char.is_processing = False
@@ -552,7 +571,11 @@ async def parse_character_card(
         }
 
         try:
-            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+            client = get_async_openai_client(
+                api_key=provider["api_key"],
+                base_url=provider["base_url"],
+                timeout=30.0,
+            )
             prompt = (
                 "Parse the following character card content, extract and organize the information. "
                 "Return a valid JSON object with the same keys, clean up any messy format, "
@@ -613,7 +636,7 @@ async def translate_character(
 
     lang_name = "Chinese (Simplified)" if req.target_language == "zh" else req.target_language
 
-    providers = get_providers()
+    providers = get_runtime_providers()
     provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
     if not provider:
         char.is_processing = False
@@ -641,7 +664,11 @@ async def translate_character(
     }
 
     try:
-        client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+        client = get_async_openai_client(
+            api_key=provider["api_key"],
+            base_url=provider["base_url"],
+            timeout=30.0,
+        )
         prompt = (
             f"Translate the following character card fields to {lang_name}. "
             f"Return a valid JSON object with the same keys. You MUST translate ALL 6 fields. "
@@ -1197,7 +1224,12 @@ async def character_chat(
 
     # Load history using ancestor-chain traversal for correct branch context
     if branch_id:
-        history = _get_full_branch_history(db, session_id, branch_id, limit=30)
+        history = _get_full_branch_history(
+            db,
+            session_id,
+            branch_id,
+            limit=settings.CHARACTER_CHAT_HISTORY_LIMIT,
+        )
     else:
         history = (
             db.query(CharacterChatMessage)
@@ -1206,7 +1238,7 @@ async def character_chat(
                 CharacterChatMessage.branch_id == None,
             )
             .order_by(CharacterChatMessage.created_at.desc())
-            .limit(30)
+            .limit(settings.CHARACTER_CHAT_HISTORY_LIMIT)
             .all()[::-1]
         )
     for m in history:
@@ -1271,7 +1303,11 @@ async def character_chat(
         prompt_tokens = 0
         completion_tokens = 0
         try:
-            client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+            client = get_async_openai_client(
+                api_key=provider["api_key"],
+                base_url=provider["base_url"],
+                timeout=30.0,
+            )
             stream_kwargs = dict(
                 model=req.model,
                 messages=messages,

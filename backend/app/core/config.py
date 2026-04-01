@@ -25,15 +25,27 @@ class Settings(BaseSettings):
     CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     CHARACTER_CHAT_RATE_LIMIT_REQUESTS: int = 20
     CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    CHAT_HISTORY_LIMIT: int = 24
+    CHARACTER_CHAT_HISTORY_LIMIT: int = 24
     TRUST_PROXY_HEADERS: bool = False
+    RUN_MIGRATIONS_ON_STARTUP: bool = False
+    MIGRATIONS_FAIL_FAST: bool = True
+    PROVIDER_SECRET_CHECK_STRICT: bool = False
     
     DATABASE_URL: str = "sqlite:///./data/palink.db"
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE_SECONDS: int = 1800
     
     CORS_ORIGINS: str = "*"
     
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"
     WORKSPACE_DIR: str = "./data/workspace"
+    WORKSPACE_MAX_FILE_SIZE_MB: int = 20
+    WORKSPACE_MAX_USER_STORAGE_MB: int = 1024
+    WORKSPACE_ALLOWED_EXTENSIONS: str = ".txt,.md,.py,.js,.ts,.tsx,.json,.csv,.html,.css,.yaml,.yml,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp"
+    WORKSPACE_ANALYZE_MAX_CHARS: int = 12000
     
     class Config:
         env_file = ".env"

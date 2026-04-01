@@ -670,7 +670,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   };
 
   return (
-    <div className={cn('relative flex h-full overflow-hidden mobile-theme-bg', isDark ? 'text-slate-100' : 'text-slate-900')}>
+    <div className={cn('relative flex h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
       {historyOpen && <div className={cn('fixed inset-0 z-[59]', isDark ? 'bg-black/45' : 'bg-black/25')} onClick={() => setSidebarCollapsed(true)} />}
 
       <aside

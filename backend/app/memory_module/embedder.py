@@ -16,6 +16,12 @@ from .config import memory_config
 logger = logging.getLogger("MemoryModule")
 
 
+def _stable_bucket_index(value: str, modulo: int) -> int:
+    """Generate a stable bucket index without using weak MD5."""
+    digest = hashlib.blake2b(value.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % modulo
+
+
 class BaseEmbedder(ABC):
     """嵌入模型基类"""
     
@@ -61,22 +67,23 @@ class SimpleHashEmbedder(BaseEmbedder):
         text = text.lower().strip()
         
         vec = np.zeros(self._dimension, dtype=np.float32)
+        bucket_size = max(self._dimension // 3, 1)
         
         if not text:
             return vec
         
         for i in range(len(text) - 2):
             ngram = text[i:i+3]
-            idx = int(hashlib.md5(ngram.encode()).hexdigest(), 16) % (self._dimension // 3)
+            idx = _stable_bucket_index(ngram, bucket_size)
             vec[idx] += 1.0
         
         words = text.split()
         for word in words:
-            idx = int(hashlib.md5(word.encode()).hexdigest(), 16) % (self._dimension // 3)
-            vec[idx + self._dimension // 3] += 1.0
+            idx = _stable_bucket_index(word, bucket_size)
+            vec[idx + bucket_size] += 1.0
             
             length_idx = min(len(word), 20)
-            vec[self._dimension // 3 * 2 + length_idx] += 0.5
+            vec[bucket_size * 2 + length_idx] += 0.5
         
         norm = np.linalg.norm(vec)
         if norm > 0:

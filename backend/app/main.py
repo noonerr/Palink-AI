@@ -8,6 +8,7 @@ import logging
 from .core import settings, engine, run_migrations
 from .api import api_router
 from .models import Base
+from .services.provider_registry import get_missing_provider_secret_refs
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PalinkAI")
@@ -18,8 +19,31 @@ async def lifespan(app: FastAPI):
     logger.info("应用启动中...")
     Base.metadata.create_all(bind=engine)
     logger.info("数据库表创建完成")
-    run_migrations(engine)
-    logger.info("数据库迁移完成")
+    if settings.RUN_MIGRATIONS_ON_STARTUP:
+        logger.info("RUN_MIGRATIONS_ON_STARTUP=true，开始执行数据库迁移")
+        try:
+            run_migrations(engine)
+            logger.info("数据库迁移完成")
+        except Exception:
+            logger.exception("数据库迁移失败")
+            if settings.MIGRATIONS_FAIL_FAST:
+                raise
+            logger.warning("MIGRATIONS_FAIL_FAST=false，继续启动应用（谨慎）")
+    else:
+        logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+
+    missing_secret_refs = get_missing_provider_secret_refs()
+    if missing_secret_refs:
+        refs = ", ".join(
+            f"{item['provider_name'] or item['provider_id']} -> {item['env']}"
+            for item in missing_secret_refs
+        )
+        msg = f"Provider env secrets missing: {refs}"
+        if settings.PROVIDER_SECRET_CHECK_STRICT:
+            logger.error(msg)
+            raise RuntimeError(msg)
+        logger.warning(msg)
+
     logger.info("应用启动完成")
     yield
     logger.info("应用关闭中...")

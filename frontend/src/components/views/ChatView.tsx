@@ -954,7 +954,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onClick={handleDeleteSelectedMessages}
                     >
                       <Trash2 size={14} className="sm:mr-1.5" />
-                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
+                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
                     </Button>
                   )}
                 </>

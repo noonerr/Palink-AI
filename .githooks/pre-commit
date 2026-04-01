@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+SCAN_SCRIPT="$ROOT_DIR/scripts/security/scan_staged_secrets.py"
+
+if command -v python >/dev/null 2>&1; then
+  python "$SCAN_SCRIPT"
+  exit $?
+fi
+
+if command -v py >/dev/null 2>&1; then
+  py -3 "$SCAN_SCRIPT"
+  exit $?
+fi
+
+echo "[secret-scan] python is required for pre-commit secret scan"
+exit 1

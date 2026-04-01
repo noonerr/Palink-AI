@@ -56,8 +56,72 @@ def get_providers() -> List[Dict[str, Any]]:
         return copy.deepcopy(_cached_providers)
 
 
-def find_model(model_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+def resolve_secret_reference(secret: Any) -> str:
+    if not isinstance(secret, str):
+        return ""
+
+    value = secret.strip()
+    if not value:
+        return ""
+
+    env_name = None
+    if value.startswith("env:"):
+        env_name = value[4:].strip()
+    elif value.startswith("${") and value.endswith("}"):
+        env_name = value[2:-1].strip()
+
+    if env_name:
+        return os.getenv(env_name, "")
+
+    return value
+
+
+def extract_secret_reference(secret: Any) -> Optional[str]:
+    if not isinstance(secret, str):
+        return None
+
+    value = secret.strip()
+    if not value:
+        return None
+
+    if value.startswith("env:"):
+        env_name = value[4:].strip()
+        return env_name or None
+
+    if value.startswith("${") and value.endswith("}"):
+        env_name = value[2:-1].strip()
+        return env_name or None
+
+    return None
+
+
+def _to_runtime_provider(provider: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_provider = copy.deepcopy(provider)
+    runtime_provider["api_key"] = resolve_secret_reference(provider.get("api_key"))
+    return runtime_provider
+
+
+def get_runtime_providers() -> List[Dict[str, Any]]:
+    return [_to_runtime_provider(provider) for provider in get_providers()]
+
+
+def get_missing_provider_secret_refs() -> List[Dict[str, str]]:
+    missing: List[Dict[str, str]] = []
     for provider in get_providers():
+        ref_name = extract_secret_reference(provider.get("api_key"))
+        if not ref_name:
+            continue
+        if not os.getenv(ref_name, "").strip():
+            missing.append({
+                "provider_id": str(provider.get("id", "")),
+                "provider_name": str(provider.get("name", "")),
+                "env": ref_name,
+            })
+    return missing
+
+
+def find_model(model_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    for provider in get_runtime_providers():
         if not provider.get("is_active"):
             continue
         for model in provider.get("models", []):

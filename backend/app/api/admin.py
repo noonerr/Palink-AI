@@ -8,14 +8,14 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from openai import AsyncOpenAI
+from ..services.llm_client import get_async_openai_client
 
 from ..core import get_db, settings, get_password_hash, validate_password_policy
 from ..api.dependencies import get_current_user, get_admin
 from ..models import User, ChatSession, ChatMessage, SystemSetting
 from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig, TestProviderRequest
 from ..models.system import ProviderTestResult
-from ..services.provider_registry import get_providers, invalidate_provider_cache
+from ..services.provider_registry import get_providers, invalidate_provider_cache, resolve_secret_reference
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -33,7 +33,41 @@ def _get_providers() -> list:
     return get_providers()
 
 
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_env_secret_ref(value: str) -> bool:
+    raw = (value or "").strip()
+    if raw.startswith("env:"):
+        return bool(_ENV_NAME_PATTERN.fullmatch(raw[4:].strip()))
+    if raw.startswith("${") and raw.endswith("}"):
+        return bool(_ENV_NAME_PATTERN.fullmatch(raw[2:-1].strip()))
+    return False
+
+
+def _validate_provider_secrets(data: list) -> None:
+    for provider in data:
+        if not isinstance(provider, dict):
+            raise HTTPException(status_code=400, detail="Invalid provider payload")
+
+        provider_id = provider.get("id") or provider.get("name") or "unknown"
+        api_key = str(provider.get("api_key") or "").strip()
+
+        if not api_key:
+            continue
+
+        if not _is_env_secret_ref(api_key):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Provider '{provider_id}' uses a plaintext api_key. "
+                    "Only env references are allowed (env:VAR_NAME or ${VAR_NAME})."
+                ),
+            )
+
+
 def _save_providers(data: list):
+    _validate_provider_secrets(data)
     os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(_providers_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -173,8 +207,12 @@ async def test_provider_connection(
 ):
     """Test connectivity to an AI provider by listing its models."""
     try:
-        client = AsyncOpenAI(
-            api_key=req.api_key,
+        resolved_api_key = resolve_secret_reference(req.api_key)
+        if not resolved_api_key:
+            raise ValueError("Provider API key is not configured. Use env:VAR_NAME and set the environment variable.")
+
+        client = get_async_openai_client(
+            api_key=resolved_api_key,
             base_url=req.base_url,
             timeout=15.0,
         )

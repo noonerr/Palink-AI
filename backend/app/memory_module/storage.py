@@ -301,19 +301,37 @@ class MemoryStorage:
         """获取最近记忆（时间倒序）"""
         try:
             if session_id:
-                branch_filter = "AND branch_id = :branch_id" if branch_id else ""
-                sql = text(f"""
-                    SELECT 
-                        id, user_id, session_id, role, content,
-                        importance_score, topics, tokens_count, created_at
-                    FROM conversation_memories
-                    WHERE user_id = :user_id AND session_id = :session_id {branch_filter}
-                    ORDER BY created_at DESC
-                    LIMIT :limit
-                """)
-                params = {"user_id": user_id, "session_id": session_id, "limit": limit}
                 if branch_id:
-                    params["branch_id"] = branch_id
+                    sql = text("""
+                        SELECT
+                            id, user_id, session_id, role, content,
+                            importance_score, topics, tokens_count, created_at
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id AND branch_id = :branch_id
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """)
+                    params = {
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "branch_id": branch_id,
+                        "limit": limit,
+                    }
+                else:
+                    sql = text("""
+                        SELECT
+                            id, user_id, session_id, role, content,
+                            importance_score, topics, tokens_count, created_at
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """)
+                    params = {
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "limit": limit,
+                    }
             else:
                 sql = text("""
                     SELECT 

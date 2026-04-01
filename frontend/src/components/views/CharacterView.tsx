@@ -837,7 +837,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   }, []);
 
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-  const mobilePageBgClass = isDark ? 'bg-[#1a1a2e]' : 'bg-[#f8f3e8]';
+  const mobilePageBgClass = isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]';
   const rootBgClass = isMobile ? mobilePageBgClass : 'bg-background';
 
   if (loading) {

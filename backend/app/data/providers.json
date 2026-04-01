@@ -3,7 +3,7 @@
     "id": "prov-1768763633039",
     "name": "OpenRouter",
     "base_url": "https://openrouter.ai/api/v1",
-    "api_key": "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",
+    "api_key": "env:PALINK_PROVIDER_PROV_1768763633039_API_KEY",
     "models": [
       {
         "id": "deepseek/deepseek-r1-0528:free",

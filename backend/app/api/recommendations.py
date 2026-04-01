@@ -6,11 +6,11 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from openai import AsyncOpenAI
 
 from ..core import get_db, settings
 from ..models import SystemSetting
 from ..services.provider_registry import find_model
+from ..services.llm_client import get_async_openai_client
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 logger = logging.getLogger(__name__)
@@ -49,7 +49,11 @@ async def get_starter_questions(db: Session = Depends(get_db)):
         provider, _ = find_model(model_id)
         if provider:
             try:
-                client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+                client = get_async_openai_client(
+                    api_key=provider["api_key"],
+                    base_url=provider["base_url"],
+                    timeout=30.0,
+                )
                 prompt = (
                     "Generate 4 short, interesting, and diverse conversation starter questions/topics "
                     "for an AI assistant. Output ONLY a JSON array of strings, e.g., ['Topic 1', 'Topic 2']."

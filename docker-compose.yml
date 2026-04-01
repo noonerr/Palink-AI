@@ -24,6 +24,15 @@ services:
       - HF_ENDPOINT=https://hf-mirror.com
       - MEMORY_EMBEDDING_PROVIDER=fastembed
       - MEMORY_VECTOR_DIMENSION=512
+      - RUN_MIGRATIONS_ON_STARTUP=true
+      - MIGRATIONS_FAIL_FAST=true
+      - PROVIDER_SECRET_CHECK_STRICT=false
+      - CHAT_HISTORY_LIMIT=24
+      - CHARACTER_CHAT_HISTORY_LIMIT=24
+      - WORKSPACE_ANALYZE_MAX_CHARS=12000
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=20
+      - DB_POOL_RECYCLE_SECONDS=1800
     ports:
       - "8000:8000"
     depends_on:

@@ -83,17 +83,24 @@ class MemoryCompressionService:
         """获取会话统计信息"""
         try:
             # 查询消息数量
-            branch_filter = "AND branch_id = :branch_id" if branch_id else ""
-            count_sql = text(f"""
-                SELECT COUNT(*) as count, 
-                       SUM(LENGTH(content) / 4) as estimated_tokens,
-                       MIN(created_at) as oldest_message
-                FROM conversation_memories
-                WHERE user_id = :user_id AND session_id = :session_id {branch_filter}
-            """)
-            params = {"user_id": user_id, "session_id": session_id}
             if branch_id:
-                params["branch_id"] = branch_id
+                count_sql = text("""
+                    SELECT COUNT(*) as count,
+                           SUM(LENGTH(content) / 4) as estimated_tokens,
+                           MIN(created_at) as oldest_message
+                    FROM conversation_memories
+                    WHERE user_id = :user_id AND session_id = :session_id AND branch_id = :branch_id
+                """)
+                params = {"user_id": user_id, "session_id": session_id, "branch_id": branch_id}
+            else:
+                count_sql = text("""
+                    SELECT COUNT(*) as count,
+                           SUM(LENGTH(content) / 4) as estimated_tokens,
+                           MIN(created_at) as oldest_message
+                    FROM conversation_memories
+                    WHERE user_id = :user_id AND session_id = :session_id
+                """)
+                params = {"user_id": user_id, "session_id": session_id}
             result = self.db.execute(count_sql, params).fetchone()
             
             message_count = result.count or 0

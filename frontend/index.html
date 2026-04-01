@@ -34,20 +34,42 @@
   <body>
     <div id="root"></div>
     <script>
+      function renderFatalError(message) {
+        const root = document.getElementById('root');
+        if (!root) {
+          return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.style.padding = '20px';
+        wrapper.style.textAlign = 'center';
+        wrapper.style.color = 'red';
+
+        const title = document.createElement('h1');
+        title.textContent = '发生错误';
+
+        const detail = document.createElement('p');
+        detail.textContent = String(message ?? '未知错误');
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.textContent = '刷新页面';
+        refreshBtn.addEventListener('click', () => location.reload());
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(detail);
+        wrapper.appendChild(refreshBtn);
+
+        root.replaceChildren(wrapper);
+      }
+
       window.onerror = function(msg, url, line, col, error) {
         console.error('Global error:', msg, url, line, col, error);
-        const root = document.getElementById('root');
-        if (root) {
-          root.innerHTML = '<div style="padding: 20px; text-align: center; color: red;"><h1>发生错误</h1><p>' + msg + '</p><button onclick="location.reload()">刷新页面</button></div>';
-        }
+        renderFatalError(msg);
         return false;
       };
       window.onunhandledrejection = function(event) {
         console.error('Unhandled promise rejection:', event.reason);
-        const root = document.getElementById('root');
-        if (root) {
-          root.innerHTML = '<div style="padding: 20px; text-align: center; color: red;"><h1>发生错误</h1><p>' + event.reason + '</p><button onclick="location.reload()">刷新页面</button></div>';
-        }
+        renderFatalError(event.reason);
       };
     </script>
     <script>
