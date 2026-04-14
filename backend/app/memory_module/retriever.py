@@ -77,7 +77,8 @@ class MemoryRetriever:
                     user_id=request.user_id,
                     query_embedding=query_embedding_list,
                     limit=50,
-                    min_similarity=memory_config.MIN_SIMILARITY
+                    min_similarity=memory_config.MIN_SIMILARITY,
+                    session_id=request.session_id
                 )
                 
                 if semantic_candidates:

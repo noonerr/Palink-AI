@@ -12,10 +12,10 @@ from ..core import get_db, settings
 from ..core.database import SessionLocal
 from ..core.rate_limit import enforce_rate_limit
 from ..api.dependencies import get_current_user
-from ..models import User, ChatMessage, UserSetting
+from ..models import User, ChatMessage, UserSetting, ChatSession
 from ..memory_module.service import MemoryService
-from ..services.provider_registry import find_model
-from ..services.llm_client import get_async_openai_client
+from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
+from ..services.compact_title_service import generate_compact_title
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -51,9 +51,10 @@ async def chat_stream(
         settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
     )
 
-    provider, model_cfg = find_model(req.model)
-    if not provider:
-        raise HTTPException(status_code=400, detail="Model not configured or not available")
+    try:
+        ensure_model_available(req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     chat_service = ChatService(db)
 
@@ -67,6 +68,23 @@ async def chat_stream(
         req.session_type
     )
 
+    # Replace default first-message truncation with compact title for new sessions.
+    if is_new_session and (req.message or "").strip():
+        try:
+            compact_title = await generate_compact_title(
+                db,
+                req.message,
+                fallback_model_id=req.model,
+                max_len=10,
+            )
+            if compact_title:
+                session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+                if session:
+                    session.title = compact_title
+                    db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to apply compact title for session {session_id}: {e}")
+
     chat_service.save_user_message(
         session_id,
         req.message,
@@ -76,7 +94,15 @@ async def chat_stream(
     )
 
     # ── Build system prompt with optional memory ────────────────────────
-    system_parts = ["You are a helpful assistant."]
+    system_parts = [
+        "You are a helpful assistant.",
+        (
+            "Return only the final answer for the user. "
+            "Do not reveal chain-of-thought or internal analysis. "
+            "Never output labels like 'Final Answer', 'Analysis', or 'Thinking'."
+        ),
+        "Reply in the same language as the user unless explicitly requested otherwise.",
+    ]
 
     if memory_mode != "disabled":
         try:
@@ -202,41 +228,26 @@ async def chat_stream(
             if is_new_session:
                 yield f"data: {json.dumps({'session_id': session_id})}\n\n"
 
-            client = get_async_openai_client(
-                api_key=provider["api_key"],
-                base_url=provider["base_url"],
-                timeout=30.0,
-            )
-            stream_kwargs = dict(
-                model=req.model,
+            async for delta in stream_text_completion(
+                model_id=req.model,
                 messages=messages,
                 temperature=req.temperature,
-                stream=True,
-            )
-            try:
-                stream_kwargs["stream_options"] = {"include_usage": True}
-                stream = await client.chat.completions.create(**stream_kwargs)
-            except Exception:
-                stream_kwargs.pop("stream_options", None)
-                stream = await client.chat.completions.create(**stream_kwargs)
-
-            async for chunk in stream:
-                usage = getattr(chunk, "usage", None)
+                timeout=30.0,
+            ):
+                usage = delta.get("usage")
                 if usage:
-                    total_tokens = getattr(usage, "total_tokens", 0) or 0
-                    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-
-                if not chunk.choices:
+                    total_tokens = int(usage.get("total_tokens", 0) or 0)
+                    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
                     continue
-                delta = chunk.choices[0].delta
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                content = delta.content
+
+                reasoning = delta.get("reasoning")
+                content = delta.get("content")
                 resp = {}
-                if reasoning:
+                if isinstance(reasoning, str) and reasoning:
                     full_reasoning += reasoning
                     resp["reasoning"] = reasoning
-                if content:
+                if isinstance(content, str) and content:
                     full_content += content
                     resp["content"] = content
                 if resp:
@@ -261,6 +272,7 @@ async def chat_stream(
             raise
         except Exception as e:
             logger.exception("Chat stream error")
+            print(f"[chat_stream_error] {type(e).__name__}: {e}", flush=True)
             if not full_content and not full_reasoning:
                 full_content = "Error: 服务暂时不可用，请稍后重试。"
                 yield f"data: {json.dumps({'content': full_content, 'error': True}, ensure_ascii=False)}\n\n"
@@ -271,14 +283,13 @@ async def chat_stream(
 
                 if memory_mode != "disabled" and full_content and not memory_stored:
                     try:
-                        if full_content.strip().startswith("Error:"):
-                            return
-                        mem_svc = MemoryService(save_db)
-                        if mem_svc.is_available():
-                            mem_svc.store_memory(user.id, session_id, "user", req.message)
-                            mem_svc.store_memory(user.id, session_id, "assistant", full_content)
-                            save_db.commit()
-                            memory_stored = True
+                        if not full_content.strip().startswith("Error:"):
+                            mem_svc = MemoryService(save_db)
+                            if mem_svc.is_available():
+                                mem_svc.store_memory(user.id, session_id, "user", req.message)
+                                mem_svc.store_memory(user.id, session_id, "assistant", full_content)
+                                save_db.commit()
+                                memory_stored = True
                     except Exception as e:
                         save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")
@@ -287,7 +298,7 @@ async def chat_stream(
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream",
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no"

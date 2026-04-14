@@ -55,11 +55,7 @@ export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
   const toggleStage = (stageId: string) => {
     setExpandedStages(prev => {
       const next = new Set(prev);
-      if (next.has(stageId)) {
-        next.delete(stageId);
-      } else {
-        next.add(stageId);
-      }
+      next.has(stageId) ? next.delete(stageId) : next.add(stageId);
       return next;
     });
   };

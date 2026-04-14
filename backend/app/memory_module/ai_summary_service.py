@@ -8,10 +8,11 @@ import logging
 from typing import Optional, List
 from datetime import datetime
 from sqlalchemy.orm import Session
-from openai import AsyncOpenAI
 
 from .storage import MemoryStorage
 from .models import MemoryEntry
+from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
+from ..services.model_queue_service import get_model_queue_service
 
 logger = logging.getLogger("AISummaryMemory")
 
@@ -24,12 +25,12 @@ class AISummaryMemoryService:
     1. 使用轻量级模型（如 GPT-3.5, DeepSeek-chat）生成摘要
     2. 异步处理，不阻塞主请求
     3. 智能提取关键信息和用户偏好
+    4. 支持模型排队机制
     """
     
     def __init__(self, db_session: Session, api_key: str, base_url: str, model: str):
         self.db = db_session
         self.storage = MemoryStorage(db_session)
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
     
     async def generate_summary(self, user_id: int, session_id: str) -> Optional[str]:
@@ -39,6 +40,13 @@ class AISummaryMemoryService:
         耗时: 500ms - 2s (异步，不阻塞主流程)
         """
         try:
+            # 检查模型是否可用
+            try:
+                ensure_model_available(self.model)
+            except ValueError as e:
+                logger.warning(f"摘要模型不可用: {e}")
+                return None
+            
             # 获取最近10条消息
             messages = await asyncio.to_thread(
                 self.storage.get_recent,
@@ -47,8 +55,8 @@ class AISummaryMemoryService:
                 limit=10
             )
             
-            if len(messages) < 3:
-                return None  # 消息太少，不生成摘要
+            if len(messages) < 1:
+                return None  # 没有消息，不生成摘要
             
             # 构建对话文本
             conversation_text = "\n".join([
@@ -57,7 +65,15 @@ class AISummaryMemoryService:
             ])
             
             # 调用 AI 生成摘要
-            prompt = f"""请总结以下对话的关键信息，提取：
+            if len(messages) == 1:
+                prompt = f"""请总结以下用户的第一句话，提取其核心内容和意图：
+
+用户: {messages[0].content[:300]}
+
+请用1-2句话简洁总结：
+"""
+            else:
+                prompt = f"""请总结以下对话的关键信息，提取：
 1. 用户的主要关注点/话题
 2. 用户的明确偏好（如"我喜欢Python"）
 3. 任何重要的上下文信息
@@ -67,14 +83,26 @@ class AISummaryMemoryService:
 {conversation_text}
 """
             
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=150
+            queue_service = get_model_queue_service()
+            
+            async def generate_summary_func():
+                return await complete_text_completion(
+                    model_id=self.model,
+                    messages=[
+                        {"role": "system", "content": "你是一个只输出简洁摘要的助手。"},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=150,
+                    timeout=30.0,
+                )
+            
+            completion = await queue_service.execute_with_queue_and_retry(
+                self.model,
+                generate_summary_func
             )
             
-            summary = response.choices[0].message.content.strip()
+            summary = completion.get("content", "").strip()
             logger.debug(f"生成摘要: {summary[:100]}...")
             
             return summary

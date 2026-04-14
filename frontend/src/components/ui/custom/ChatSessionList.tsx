@@ -2,6 +2,7 @@ import React from 'react';
 import { MessageSquare, Trash2, CheckSquare, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { LoadingDots } from './LoadingDots';
 
 interface Session {
   id: string;
@@ -25,6 +26,7 @@ interface ChatSessionListProps {
   showHeaderActions?: boolean;
   headerTitle?: string;
   t?: Record<string, string>;
+  loadingSessionIds?: Set<string>;
 }
 
 const morandiColors = [
@@ -50,6 +52,14 @@ const getMorandiColor = (id: string) => {
   return morandiColors[Math.abs(hash) % morandiColors.length];
 };
 
+const clampTitleToTenChars = (title: string) => {
+  const chars = Array.from((title || '').trim());
+  if (chars.length <= 10) {
+    return title;
+  }
+  return chars.slice(0, 10).join('');
+};
+
 /** 单个会话项 —— 自定义比较函数仅检查数据 props，跳过回调引用 */
 const ChatSessionItem = React.memo<{
   session: Session;
@@ -61,6 +71,7 @@ const ChatSessionItem = React.memo<{
   onDeleteSession?: (id: string) => void;
   showDeleteButton: boolean;
   label: string;
+  isLoading?: boolean;
 }>(({
   session,
   isActive,
@@ -71,6 +82,7 @@ const ChatSessionItem = React.memo<{
   onDeleteSession,
   showDeleteButton,
   label,
+  isLoading,
 }) => {
   return (
     <div
@@ -103,9 +115,18 @@ const ChatSessionItem = React.memo<{
       )}
       
       <div className="flex-1 min-w-0">
-        <div className="text-base truncate">
-          {label}
-        </div>
+        {isLoading ? (
+          <div className="flex items-center gap-2">
+            <LoadingDots color="text-slate-400" size={5} />
+            <span className="text-base truncate text-slate-400">
+              {label}
+            </span>
+          </div>
+        ) : (
+          <div className="text-base truncate">
+            {label}
+          </div>
+        )}
       </div>
       
       {!isDeleteMode && showDeleteButton && onDeleteSession && (
@@ -122,14 +143,6 @@ const ChatSessionItem = React.memo<{
       )}
     </div>
   );
-}, (prev, next) => {
-  return prev.session.id === next.session.id
-    && prev.session.title === next.session.title
-    && prev.isActive === next.isActive
-    && prev.isDeleteMode === next.isDeleteMode
-    && prev.isSelected === next.isSelected
-    && prev.showDeleteButton === next.showDeleteButton
-    && prev.label === next.label;
 });
 
 export const ChatSessionList = React.memo<ChatSessionListProps>(({
@@ -141,7 +154,8 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
   toggleSessionSelect,
   onDeleteSession,
   showDeleteButton = true,
-  t
+  t,
+  loadingSessionIds,
 }) => {
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -170,7 +184,8 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
               toggleSessionSelect={toggleSessionSelect}
               onDeleteSession={onDeleteSession}
               showDeleteButton={showDeleteButton}
-              label={session.title || t?.new_chat || '新对话'}
+              label={clampTitleToTenChars(session.title || t?.new_chat || '新对话')}
+              isLoading={loadingSessionIds?.has(session.id)}
             />
           ))}
         </div>
@@ -178,20 +193,5 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
     </div>
   );
 }, (prevProps, nextProps) => {
-  if (prevProps.activeSessionId !== nextProps.activeSessionId) return false;
-  if (prevProps.isDeleteMode !== nextProps.isDeleteMode) return false;
-  if (prevProps.showDeleteButton !== nextProps.showDeleteButton) return false;
-  if (prevProps.sessions.length !== nextProps.sessions.length) return false;
-  if (prevProps.selectedSessions.size !== nextProps.selectedSessions.size) return false;
-
-  for (let i = 0; i < prevProps.sessions.length; i++) {
-    const prev = prevProps.sessions[i];
-    const next = nextProps.sessions[i];
-    if (!next) return false;
-    if (prev.id !== next.id || prev.title !== next.title || prev.updated_at !== next.updated_at) {
-      return false;
-    }
-  }
-
-  return true;
+  return false;
 });

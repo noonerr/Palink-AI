@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, MessageSquarePlus, X, Edit3, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Sparkles, MessageSquarePlus, X, Edit3, Trash2, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -9,6 +9,7 @@ import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
+import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
 import type { Message as MessageType, Model, Session } from '@/types';
 
@@ -27,6 +28,7 @@ interface ChatViewProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (value: boolean) => void;
   isDark?: boolean;
+  showModelReasoning?: boolean;
 }
 
 interface Attachment {
@@ -46,8 +48,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   t,
   sidebarCollapsed,
   setSidebarCollapsed,
-  isDark
+  isDark,
+  showModelReasoning = true,
 }) => {
+  const bottomPadding = useMobileBottomPadding();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
@@ -728,8 +732,15 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
     return (
       <div className="flex h-full overflow-hidden">
+        {/* Mobile Backdrop */}
+        {!sidebarCollapsed && (
+          <div
+            className="fixed inset-0 z-[59] bg-black/40 md:hidden"
+            onClick={() => setSidebarCollapsed(true)}
+          />
+        )}
         {/* Sidebar */}
-        <div className={`transition-all duration-300 ease-in-out overflow-hidden ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
+        <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
           <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
             {/* Header */}
             <div className="h-[54px] flex items-center justify-between px-4 shrink-0 border-b border-border/50">
@@ -806,6 +817,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
               <Button
                 variant="ghost"
                 size="icon"
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                className="md:hidden h-10 w-10 shrink-0"
+              >
+                <Menu size={18} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
                 className="hidden md:flex h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all shrink-0"
                 onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               >
@@ -833,7 +852,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
           {/* Welcome Content */}
           <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-auto overscroll-y-contain">
-            <div className="w-full max-w-2xl flex flex-col items-center animate-fade-in-up">
+            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
               {/* Model Display */}
               <div className="mb-10 text-center">
                 <div className="w-24 h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
@@ -856,7 +875,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Input Area */}
-          <div className="p-2 border-t border-border/50 pb-4">
+          <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
             <div className="max-w-3xl mx-auto">
               <ChatInput
                 value={input}
@@ -899,8 +918,15 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
   return (
     <div className="flex h-full overflow-hidden">
+      {/* Mobile Backdrop */}
+      {!sidebarCollapsed && (
+        <div
+          className="fixed inset-0 z-[59] bg-black/40 md:hidden"
+          onClick={() => setSidebarCollapsed(true)}
+        />
+      )}
       {/* Sidebar */}
-      <div className={`transition-all duration-300 ease-in-out overflow-hidden ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
+      <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
         <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
           {/* Header */}
           <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
@@ -977,6 +1003,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className="md:hidden h-10 w-10 shrink-0"
+            >
+              <Menu size={18} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               className="hidden md:flex h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all shrink-0"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             >
@@ -1034,7 +1068,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         {/* Messages */}
         <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6">
-            <div className="max-w-3xl mx-auto space-y-6">
+            <div className={`max-w-3xl mx-auto space-y-6 ${bottomPadding}`}>
               {messages.map((msg, idx) => (
                 <div key={msg.id || idx} className="flex items-start gap-2">
                   <div className="flex-1">
@@ -1060,6 +1094,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
                       showSelect={showMessageSelect}
                       isCharacterChat={false}
                       memoryMode={memoryMode}
+                      showModelReasoning={showModelReasoning}
                     />
                   </div>
                 </div>
@@ -1087,7 +1122,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Input Area */}
-        <div className="p-2 border-t border-border/50 pb-4">
+        <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
           <div className="max-w-3xl mx-auto">
             <ChatInput
               value={input}

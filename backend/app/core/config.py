@@ -31,10 +31,16 @@ class Settings(BaseSettings):
     RUN_MIGRATIONS_ON_STARTUP: bool = False
     MIGRATIONS_FAIL_FAST: bool = True
     PROVIDER_SECRET_CHECK_STRICT: bool = False
+    API_THREADPOOL_TOKENS: int = 16
+    STARTUP_INIT_LOCK_FILE: str = "/tmp/palink_startup.lock"
+    STARTUP_INIT_DONE_FILE: str = "/tmp/palink_startup.done"
+    SUMMARY_MODEL: str = "gpt-3.5-turbo"
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     
     DATABASE_URL: str = "sqlite:///./data/palink.db"
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_SIZE: int = 4
+    DB_MAX_OVERFLOW: int = 8
     DB_POOL_RECYCLE_SECONDS: int = 1800
     
     CORS_ORIGINS: str = "*"

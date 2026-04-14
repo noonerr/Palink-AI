@@ -155,13 +155,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   // Load sessions
+  const sessionsRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const sessionTitlesRef = useRef<Map<string, string>>(new Map());
+  const loadingSessionIdsRef = useRef<Set<string>>(new Set());
+  const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(new Set());
+  
   const loadSessions = useCallback(async () => {
     try {
       const data = await api.get<Session[]>('/api/sessions?type=chat');
       setSessions(data);
+      
+      const newLoadingIds = new Set<string>();
+      const oldTitles = sessionTitlesRef.current;
+      const currentLoadingIds = loadingSessionIdsRef.current;
+      
+      data.forEach(session => {
+        const oldTitle = oldTitles.get(session.id);
+        if (oldTitle !== undefined && oldTitle === session.title) {
+          if (currentLoadingIds.has(session.id)) {
+            newLoadingIds.add(session.id);
+          }
+        }
+        oldTitles.set(session.id, session.title || '');
+      });
+      
+      loadingSessionIdsRef.current = newLoadingIds;
+      setLoadingSessionIds(new Set(newLoadingIds));
+      
+      if (sessionsRefreshTimerRef.current) {
+        clearTimeout(sessionsRefreshTimerRef.current);
+        sessionsRefreshTimerRef.current = null;
+      }
+      
+      if (newLoadingIds.size > 0) {
+        sessionsRefreshTimerRef.current = setTimeout(() => {
+          loadSessions();
+        }, 2000);
+      }
     } catch (e) {
       console.error('Failed to load sessions:', e);
     }
+  }, []);
+  
+  useEffect(() => {
+    return () => {
+      if (sessionsRefreshTimerRef.current) {
+        clearTimeout(sessionsRefreshTimerRef.current);
+      }
+    };
   }, []);
 
   // Load messages for active session
@@ -398,6 +439,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setRegeneratingMessageIndex(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
+      setTimeout(loadSessions, 3000);
     }
   };
 
@@ -460,6 +502,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
           sessionIdSetRef.current = true;
           setActiveSessionId(sessionId);
+          const newLoadingIds = new Set([...loadingSessionIdsRef.current, sessionId]);
+          loadingSessionIdsRef.current = newLoadingIds;
+          setLoadingSessionIds(new Set(newLoadingIds));
           loadSessions();
         }
 
@@ -500,6 +545,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setStreaming(false);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
+      setTimeout(loadSessions, 3000);
     }
   };
 
@@ -688,6 +734,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               showDeleteButton={false}
               showHeaderActions={false}
               t={t}
+              loadingSessionIds={loadingSessionIds}
             />
           </div>
         </div>

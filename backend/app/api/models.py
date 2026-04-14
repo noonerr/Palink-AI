@@ -2,7 +2,7 @@ import os
 import uuid
 import base64
 import logging
-from typing import Optional, List
+from typing import Set
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -12,6 +12,7 @@ from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..services.provider_registry import get_providers
+from ..services.local_model_registry import list_enabled_chat_models, list_local_models
 
 router = APIRouter(tags=["models"])
 logger = logging.getLogger(__name__)
@@ -26,13 +27,15 @@ class UploadRequest(BaseModel):
 async def get_models():
     """获取所有启用服务商的可用模型列表"""
     result = []
+    seen_ids: Set[str] = set()
+
     for p in get_providers():
         if not p.get("is_active"):
             continue
         for m in p.get("models", []):
             if isinstance(m, dict):
                 display_name = m.get("name") or m.get("alias") or m["id"]
-                result.append({
+                item = {
                     "id": m["id"],
                     "name": display_name,
                     "alias": display_name,
@@ -41,12 +44,24 @@ async def get_models():
                     "context_length": m.get("context_length", 4096),
                     "avatar": m.get("avatar", ""),
                     "provider": p["name"],
-                })
+                }
             else:
-                result.append({
+                item = {
                     "id": m, "name": m, "icon": "🤖", "description": "",
                     "context_length": 4096, "avatar": "", "provider": p["name"],
-                })
+                }
+
+            model_id = str(item.get("id") or "")
+            if model_id and model_id not in seen_ids:
+                seen_ids.add(model_id)
+                result.append(item)
+
+    for local_model in list_enabled_chat_models():
+        model_id = str(local_model.get("id") or "")
+        if model_id and model_id not in seen_ids:
+            seen_ids.add(model_id)
+            result.append(local_model)
+
     return result
 
 
@@ -70,17 +85,5 @@ async def upload_file_base64(req: UploadRequest, user: User = Depends(get_curren
 @router.get("/api/models/local")
 async def get_local_models(all: bool = False, user: User = Depends(get_current_user)):
     """获取本地上传的模型文件列表"""
-    models_dir = os.path.join(settings.DATA_DIR, "models")
-    if not os.path.exists(models_dir):
-        return []
-    result = []
-    for fname in os.listdir(models_dir):
-        fpath = os.path.join(models_dir, fname)
-        if os.path.isfile(fpath):
-            result.append({
-                "id": fname,
-                "name": fname,
-                "size": os.path.getsize(fpath),
-                "path": fpath,
-            })
-    return result
+    include_disabled = bool(all and user.role == "admin")
+    return list_local_models(include_disabled=include_disabled)

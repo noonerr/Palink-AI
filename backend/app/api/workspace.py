@@ -14,8 +14,7 @@ from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, UserFolder, UserFile
 from ..schemas import FolderCreate
-from ..services.provider_registry import find_model
-from ..services.llm_client import get_async_openai_client
+from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 logger = logging.getLogger(__name__)
@@ -283,9 +282,10 @@ async def analyze_workspace_file(
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
 
-    provider, _ = find_model(req.model)
-    if not provider:
-        raise HTTPException(status_code=400, detail="Model not configured")
+    try:
+        ensure_model_available(req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # Read text content
     text_exts = (".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".html", ".css", ".yaml", ".yml")
@@ -306,17 +306,14 @@ async def analyze_workspace_file(
     )
 
     try:
-        client = get_async_openai_client(
-            api_key=provider["api_key"],
-            base_url=provider["base_url"],
-            timeout=30.0,
-        )
-        resp = await client.chat.completions.create(
-            model=req.model,
+        completion = await complete_text_completion(
+            model_id=req.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
+            max_tokens=1200,
+            timeout=30.0,
         )
-        summary_text = resp.choices[0].message.content
+        summary_text = completion.get("content") or ""
         f.summary = summary_text
         db.commit()
         return {"status": "ok", "summary": summary_text}

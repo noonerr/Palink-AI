@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, X, Edit3, Trash2, Menu, ChevronLeft } from 'lucide-react';
+import { Sparkles, X, Edit3, Trash2, Menu } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -7,6 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
+import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
 import type { Message as MessageType, Model, Session } from '@/types';
@@ -14,6 +15,8 @@ import type { Message as MessageType, Model, Session } from '@/types';
 const generateMessageId = () => {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
+
+const WELCOME_DROP_DURATION_MS = 760;
 
 interface ChatViewProps {
   token: string;
@@ -25,6 +28,7 @@ interface ChatViewProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (value: boolean) => void;
   isDark?: boolean;
+  showModelReasoning?: boolean;
 }
 
 interface Attachment {
@@ -43,6 +47,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   sidebarCollapsed,
   setSidebarCollapsed,
   isDark = false,
+  showModelReasoning = true,
 }) => {
   const bottomPadding = useMobileBottomPadding();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -75,7 +80,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
   const [welcomeDropping, setWelcomeDropping] = useState(false);
-  const [welcomeDropOffset, setWelcomeDropOffset] = useState(0);
+  const [welcomeDropDistance, setWelcomeDropDistance] = useState(0);
+  const [welcomeDropSnapshot, setWelcomeDropSnapshot] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [welcomeDropInputValue, setWelcomeDropInputValue] = useState('');
+  const [needsTopSpacer, setNeedsTopSpacer] = useState(false);
+  const [messageFadeState, setMessageFadeState] = useState<'visible' | 'fading-out' | 'fading-in'>('visible');
+  const [hasSentFirstMessage, setHasSentFirstMessage] = useState(false);
+  const [overscrollY, setOverscrollY] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -83,8 +94,16 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const sessionIdSetRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const welcomeComposerRef = useRef<HTMLDivElement>(null);
+  const messagesScrollWrapRef = useRef<HTMLDivElement>(null);
+  const messageStackRef = useRef<HTMLDivElement>(null);
+  const mobileTopBarRef = useRef<HTMLDivElement>(null);
+  const touchStartY = useRef(0);
+  const isBouncing = useRef(false);
+  const suppressSmoothScrollRef = useRef(false);
+  const welcomeDropTimerRef = useRef<number | null>(null);
 
   const isWelcome = messages.length === 0 && !activeSessionId;
+  const displayWelcome = isWelcome || welcomeDropping;
   const historyOpen = !sidebarCollapsed;
 
   const loadMemoryStats = useCallback(async (sessionId: string) => {
@@ -136,6 +155,55 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     }
   }, []);
 
+  const buildAssistantContent = useCallback((content: string, reasoning: string) => {
+    if (!reasoning) {
+      return content;
+    }
+    return `<think>${reasoning}</think>\n${content}`;
+  }, []);
+
+  const normalizeAssistantAnswer = useCallback((rawContent: string) => {
+    if (!rawContent) {
+      return rawContent;
+    }
+
+    const finalAnswerParts = rawContent
+      .split(/Final\s*Answer\s*[:：]?/gi)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (finalAnswerParts.length > 1) {
+      return finalAnswerParts[finalAnswerParts.length - 1];
+    }
+
+    return rawContent;
+  }, []);
+
+  const setAssistantMessageSnapshot = useCallback(
+    (assistantMessageId: string, content: string, reasoning: string, _forceSync = false) => {
+      const nextContent = buildAssistantContent(normalizeAssistantAnswer(content), reasoning);
+      setMessages((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((msg) => msg.id === assistantMessageId);
+        if (idx === -1) {
+          next.push({
+            id: assistantMessageId,
+            role: 'assistant',
+            content: nextContent,
+            model: currentModel,
+          });
+          return next;
+        }
+        next[idx] = {
+          ...next[idx],
+          content: nextContent,
+        };
+        return next;
+      });
+    },
+    [buildAssistantContent, currentModel, normalizeAssistantAnswer]
+  );
+
   const ensureDeveloperSession = useCallback(async (seedText: string) => {
     if (activeSessionId) {
       return activeSessionId;
@@ -164,43 +232,74 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       seedText,
       (chunk) => {
         fullContent += chunk;
-        setMessages((prev) => {
-          const next = [...prev];
-          const idx = next.findIndex((msg) => msg.id === assistantMessageId);
-          if (idx === -1) return next;
-          next[idx] = {
-            ...next[idx],
-            content: fullContent,
-          };
-          return next;
-        });
+        setAssistantMessageSnapshot(assistantMessageId, fullContent, '');
       },
       { signal: abortControllerRef.current?.signal }
     );
     return fullContent;
+  }, [setAssistantMessageSnapshot]);
+
+  useEffect(() => {
+    return () => {
+      if (welcomeDropTimerRef.current !== null) {
+        window.clearTimeout(welcomeDropTimerRef.current);
+      }
+    };
   }, []);
 
-  const runWelcomeInputDropAnimation = useCallback(async () => {
+  const runWelcomeInputDropAnimation = useCallback((seedText: string) => {
     const composer = welcomeComposerRef.current;
     const dock = document.querySelector('nav[data-dock="true"]');
 
     let offset = 220;
+    const fallbackWidth = Math.min(Math.max(window.innerWidth - 40, 280), 448);
+    let snapshot: { top: number; left: number; width: number } = {
+      top: Math.max(140, Math.round(window.innerHeight * 0.4)),
+      left: Math.max(20, Math.round((window.innerWidth - fallbackWidth) / 2)),
+      width: fallbackWidth,
+    };
     if (composer && dock instanceof HTMLElement) {
       const composerRect = composer.getBoundingClientRect();
       const dockRect = dock.getBoundingClientRect();
       const targetTop = dockRect.top - composerRect.height - 14;
       offset = targetTop - composerRect.top;
+      snapshot = {
+        top: composerRect.top,
+        left: composerRect.left,
+        width: composerRect.width,
+      };
     }
 
-    setWelcomeDropOffset(offset);
+    if (welcomeDropTimerRef.current !== null) {
+      window.clearTimeout(welcomeDropTimerRef.current);
+    }
+
+    setWelcomeDropInputValue(seedText);
+    setWelcomeDropSnapshot(snapshot);
+    setWelcomeDropDistance(offset);
     setWelcomeDropping(true);
-    await new Promise((resolve) => setTimeout(resolve, 420));
+
+    welcomeDropTimerRef.current = window.setTimeout(() => {
+      setWelcomeDropping(false);
+      setWelcomeDropDistance(0);
+      setWelcomeDropSnapshot(null);
+      setWelcomeDropInputValue('');
+      welcomeDropTimerRef.current = null;
+    }, WELCOME_DROP_DURATION_MS);
   }, []);
 
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
-    setActiveSessionId(sessionId);
+    setMessageFadeState('fading-out');
     setSidebarCollapsed(true);
+    setHasSentFirstMessage(false); // 切换会话时重置状态
+    setTimeout(() => {
+      setActiveSessionId(sessionId);
+      setMessageFadeState('fading-in');
+      setTimeout(() => {
+        setMessageFadeState('visible');
+      }, 300);
+    }, 300);
   };
 
   const loadMessages = useCallback(async (sessionId: string) => {
@@ -265,15 +364,92 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streaming]);
+    const behavior: ScrollBehavior = streaming || welcomeDropping || suppressSmoothScrollRef.current ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  }, [messages, streaming, welcomeDropping]);
 
   useEffect(() => {
     if (isWelcome) {
       setWelcomeDropping(false);
-      setWelcomeDropOffset(0);
+      setWelcomeDropDistance(0);
+      setWelcomeDropSnapshot(null);
+      setWelcomeDropInputValue('');
     }
   }, [isWelcome]);
+
+  useEffect(() => {
+    if (displayWelcome) {
+      setNeedsTopSpacer(false);
+      return;
+    }
+
+    // 如果有历史消息（即使还没在这个会话发送新消息），也显示spacer
+    if (hasSentFirstMessage || messages.length > 0) {
+      setNeedsTopSpacer(true);
+      return;
+    }
+
+    const stack = messageStackRef.current;
+    const wrap = messagesScrollWrapRef.current;
+    const viewport = wrap?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLDivElement | null;
+
+    if (!stack || !viewport) return;
+
+    let rafId: number | null = null;
+    const checkOverflow = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        const isOverflown = stack.scrollHeight > viewport.clientHeight + 10;
+        setNeedsTopSpacer(isOverflown);
+        rafId = null;
+      });
+    };
+
+    checkOverflow();
+
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(stack);
+    observer.observe(viewport);
+
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [displayWelcome, messages.length, streaming, hasSentFirstMessage]);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartY.current = e.touches[0].clientY;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const el = messagesScrollWrapRef.current;
+    if (!el) return;
+    const touchY = e.touches[0].clientY;
+    const scrollTop = el.scrollTop;
+    const isAtTop = scrollTop <= 0;
+    const isAtBottom = scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if ((isAtTop && touchY > touchStartY.current) || (isAtBottom && touchY < touchStartY.current)) {
+      isBouncing.current = true;
+      const delta = touchY - touchStartY.current;
+      const maxOverscroll = 80;
+      let overscroll: number;
+      if (isAtTop && delta > 0) {
+        overscroll = Math.min(delta * 0.4, maxOverscroll);
+      } else if (isAtBottom && delta < 0) {
+        overscroll = Math.max(delta * 0.4, -maxOverscroll);
+      } else {
+        return;
+      }
+      setOverscrollY(overscroll);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (!isBouncing.current) return;
+    isBouncing.current = false;
+    setOverscrollY(0);
+    touchStartY.current = 0;
+  };
 
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
@@ -389,6 +565,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     }
 
     let fullContent = '';
+    let fullReasoning = '';
 
     try {
       const res = await api.stream(
@@ -406,21 +583,24 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
       await consumeSseStream(res, (json) => {
         const content = typeof json.content === 'string' ? json.content : '';
-        if (!content) return;
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const reasoningDelta = `${reasoning}${modelReasoning}`;
 
-        fullContent += content;
-        setMessages((prev) => {
-          const next = [...prev];
-          const idx = next.findIndex((msg) => msg.id === assistantMessageId);
-          if (idx >= 0) {
-            next[idx] = {
-              ...next[idx],
-              content: fullContent,
-            };
-          }
-          return next;
-        });
+        if (!content && !reasoningDelta) return;
+
+        if (reasoningDelta) {
+          fullReasoning += reasoningDelta;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
+
+        if (content) {
+          fullContent += content;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
       });
+
+      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
 
       if (fullContent.length > 20) {
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(setSuggestions).catch(() => {});
@@ -449,9 +629,11 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
 
     if (!activeSessionId && messages.length === 0 && !welcomeDropping) {
-      await runWelcomeInputDropAnimation();
+      suppressSmoothScrollRef.current = true;
+      runWelcomeInputDropAnimation(text);
     }
 
+    setHasSentFirstMessage(true);
     sessionIdSetRef.current = false;
     setInput('');
     setAttachments([]);
@@ -472,7 +654,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     setMessages((prev) => [
       ...prev,
       { id: userMessageId, role: 'user', content: displayContent },
-      { id: assistantMessageId, role: 'assistant', content: '', model: currentModel },
     ]);
 
     abortControllerRef.current = new AbortController();
@@ -510,6 +691,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             const idx = next.findIndex((msg) => msg.id === assistantMessageId);
             if (idx >= 0) {
               next[idx].content += `\n[Error: ${(e as Error).message}]`;
+            } else {
+              next.push({
+                id: assistantMessageId,
+                role: 'assistant',
+                content: `[Error: ${(e as Error).message}]`,
+                model: currentModel,
+              });
             }
             return next;
           });
@@ -523,6 +711,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     }
 
     let fullContent = '';
+    let fullReasoning = '';
 
     try {
       const res = await api.stream(
@@ -545,6 +734,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       await consumeSseStream(res, (json) => {
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
         const content = typeof json.content === 'string' ? json.content : '';
+        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const reasoningDelta = `${reasoning}${modelReasoning}`;
 
         if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
           sessionIdSetRef.current = true;
@@ -552,21 +744,22 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           loadSessions();
         }
 
-        if (!content) return;
+        if (!content && !reasoningDelta) return;
 
-        fullContent += content;
-        setMessages((prev) => {
-          const next = [...prev];
-          const idx = next.findIndex((msg) => msg.id === assistantMessageId);
-          if (idx >= 0) {
-            next[idx] = {
-              ...next[idx],
-              content: fullContent,
-            };
+        if (reasoningDelta) {
+          fullReasoning += reasoningDelta;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
+
+        if (content) {
+          for (const char of Array.from(content)) {
+            fullContent += char;
+            setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
           }
-          return next;
-        });
+        }
       });
+
+      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
 
       if (fullContent.length > 20) {
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(setSuggestions).catch(() => {});
@@ -578,6 +771,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           const idx = next.findIndex((msg) => msg.id === assistantMessageId);
           if (idx >= 0) {
             next[idx].content += `\n[Error: ${(e as Error).message}]`;
+          } else {
+            next.push({
+              id: assistantMessageId,
+              role: 'assistant',
+              content: `[Error: ${(e as Error).message}]`,
+              model: currentModel,
+            });
           }
           return next;
         });
@@ -586,6 +786,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       setStreaming(false);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
+      suppressSmoothScrollRef.current = false;
     }
   };
 
@@ -642,6 +843,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (activeSessionId && idsToDelete.includes(activeSessionId)) {
           setActiveSessionId(null);
+          setHasSentFirstMessage(false);
         }
 
         setSelectedSessions(new Set());
@@ -652,6 +854,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (activeSessionId === pendingDelete.id) {
           setActiveSessionId(null);
+          setHasSentFirstMessage(false);
         }
 
         loadSessions();
@@ -671,32 +874,20 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
   return (
     <div className={cn('relative flex h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
-      {historyOpen && <div className={cn('fixed inset-0 z-[59]', isDark ? 'bg-black/45' : 'bg-black/25')} onClick={() => setSidebarCollapsed(true)} />}
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-[60] w-[280px] transform-gpu px-4 pb-4 pt-20 transition-transform duration-300 ease-in-out',
+          'fixed inset-y-0 left-0 w-[280px] transform-gpu px-4 pb-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform duration-300 ease-in-out',
+          showDeleteConfirm ? 'z-[31]' : 'z-[60]',
           isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]',
           historyOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
         <div className="flex h-full flex-col overflow-hidden">
-          <div className={cn('mb-2 flex h-[54px] items-center justify-between', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setSidebarCollapsed(true)}
-                className={cn(
-                  'inline-flex h-8 w-8 items-center justify-center rounded-full border',
-                  isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700'
-                )}
-                aria-label="close-history"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>
-                {isDeleteMode ? t.batch_manage : t.chat_history}
-              </span>
-            </div>
+          <div className={cn('mb-2 flex h-[60px] items-center justify-between', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
+            <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>
+              {isDeleteMode ? t.batch_manage : t.chat_history}
+            </span>
             <button
               onClick={() => {
                 if (isDeleteMode) {
@@ -710,7 +901,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 }
               }}
               className={cn(
-                'inline-flex h-8 w-8 items-center justify-center rounded-full border transition-colors',
+                'inline-flex h-11 w-11 items-center justify-center rounded-full border transition-colors',
                 isDeleteMode && selectedSessions.size > 0
                   ? 'border-red-400/60 bg-red-500/20 text-red-100'
                   : isDark
@@ -719,7 +910,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
               )}
               aria-label="toggle-delete-mode"
             >
-              {isDeleteMode ? (selectedSessions.size > 0 ? <Trash2 size={14} /> : <X size={14} />) : <Edit3 size={14} />}
+              {isDeleteMode ? (selectedSessions.size > 0 ? <Trash2 size={18} /> : <X size={18} />) : <Edit3 size={18} />}
             </button>
           </div>
 
@@ -733,8 +924,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             toggleSessionSelect={toggleSessionSelect}
             onBatchDelete={handleBatchDelete}
             onNewSession={() => {
-              setActiveSessionId(null);
+              setMessageFadeState('fading-out');
               setSidebarCollapsed(true);
+              setTimeout(() => {
+                setActiveSessionId(null);
+                setMessageFadeState('fading-in');
+                setTimeout(() => {
+                  setMessageFadeState('visible');
+                }, 300);
+              }, 300);
             }}
             onDeleteSession={handleDeleteSession}
             showNewButton={true}
@@ -745,25 +943,62 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         </div>
       </aside>
 
-      <div className={cn('relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out', historyOpen && 'translate-x-[280px]')}>
-        <button
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+      <div
+        className={cn(
+          'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden',
+          'transition-transform duration-300 ease-in-out',
+          historyOpen && 'translate-x-[280px]'
+        )}
+      >
+        <div
+          id="mobile-chat-top-bar"
+          ref={mobileTopBarRef}
           className={cn(
-            'fixed left-5 top-[calc(env(safe-area-inset-top)+24px)] z-[70] flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
-            isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700',
-            historyOpen && (isDark
-              ? 'left-[216px] rotate-180 bg-[#3a4263] shadow-[0_0_12px_rgba(15,23,42,0.42)]'
-              : 'left-[216px] rotate-180 bg-[#f5eee2] shadow-[0_0_12px_rgba(120,106,79,0.2)]')
+            'absolute left-0 right-0 top-0 z-[18] px-5 pb-2 pt-[calc(env(safe-area-inset-top)+20px)]',
+            'bg-gradient-to-b',
+            isDark
+              ? 'from-slate-900/100 via-slate-900/80 to-slate-900/5'
+              : 'from-[#FFFAFA]/100 via-[#FFFAFA]/80 to-[#FFFAFA]/5'
           )}
-          data-history-toggle="true"
-          aria-label="toggle-history"
         >
-          <Menu size={20} />
-        </button>
+          <div className="mx-auto flex max-w-3xl items-center justify-between">
+            <button
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className={cn(
+                'flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700',
+                historyOpen && (isDark
+                  ? 'rotate-180 bg-[#3a4263] shadow-[0_0_12px_rgba(15,23,42,0.42)]'
+                  : 'rotate-180 bg-[#f5eee2] shadow-[0_0_12px_rgba(120,106,79,0.2)]')
+              )}
+              data-history-toggle="true"
+              aria-label="toggle-history"
+            >
+              <Menu size={20} />
+            </button>
 
-        {isWelcome ? (
-          <div className="flex flex-1 items-center justify-center px-5 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-14">
-            <div className="w-full max-w-md text-center">
+            <ModelSelector
+              models={models}
+              currentModel={currentModel}
+              onSelect={setCurrentModel}
+              size="sm"
+              triggerStyle="mobile-inline"
+              theme={isDark ? 'dark' : 'light'}
+            />
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            'flex flex-1 overflow-hidden transition-opacity duration-200',
+            messageFadeState === 'fading-out' && 'opacity-0',
+            messageFadeState === 'fading-in' && 'animate-fade-in',
+            messageFadeState === 'visible' && 'opacity-100'
+          )}
+        >
+          <div className={cn('flex flex-1 flex-col overflow-hidden', displayWelcome && 'items-center justify-center')}>
+            {displayWelcome ? (
+              <div className="w-full max-w-md -translate-y-[10vh] px-5 text-center">
               <h1 className={cn('text-3xl font-extrabold', isDark ? 'text-[#a8c8ff]' : 'text-slate-800')}>你好呀</h1>
               <p className={cn('mt-3 text-sm', isDark ? 'text-white/70' : 'text-slate-600')}>有什么问题，随时问 AI</p>
 
@@ -771,16 +1006,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 <p className={cn('mt-4 text-xs', isDark ? 'text-amber-200/90' : 'text-amber-700')}>开发者模式已开启：发送不会请求真实模型</p>
               )}
 
-              <div
-                ref={welcomeComposerRef}
-                className="mx-auto mt-8 w-full transition-[transform,opacity]"
-                style={{
-                  transform: welcomeDropping ? `translateY(${welcomeDropOffset}px)` : 'translateY(0)',
-                  opacity: welcomeDropping ? 0.86 : 1,
-                  transitionDuration: '420ms',
-                  transitionTimingFunction: 'cubic-bezier(0.22, 0.65, 0.22, 1)',
-                }}
-              >
+              <div ref={welcomeComposerRef} className={cn('mx-auto mt-8 w-full', welcomeDropping && 'invisible')}>
                 <ChatInput
                   value={input}
                   onChange={setInput}
@@ -802,13 +1028,29 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   modelSelectorTriggerStyle="icon"
                 />
               </div>
-            </div>
-          </div>
-        ) : (
+              </div>
+            ) : (
           <>
-            <div className="flex-1 overflow-hidden pt-14">
-              <ScrollArea className="h-full px-3 py-4">
-                <div className={`mx-auto max-w-3xl space-y-6 ${bottomPadding}`}>
+            <div
+              ref={messagesScrollWrapRef}
+              className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain"
+              style={{ transform: `translateY(${overscrollY}px)`, transition: overscrollY === 0 ? 'transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)' : 'none' }}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
+              <div className="px-3 pb-4">
+                <div
+                  ref={messageStackRef}
+                  className={cn(
+                    'mx-auto max-w-3xl space-y-6',
+                    bottomPadding
+                  )}
+                >
+                  {needsTopSpacer && (
+                    <div style={{ height: 'calc(env(safe-area-inset-top) + 4.5rem)', width: '100%' }} />
+                  )}
+                  {!needsTopSpacer && <div className="h-2" />}
                   {messages.map((msg, idx) => (
                     <div key={msg.id || idx} className="flex items-start gap-2">
                       <div className="flex-1">
@@ -832,6 +1074,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                           showSelect={false}
                           isCharacterChat={false}
                           memoryMode={memoryMode}
+                          showModelReasoning={showModelReasoning}
                         />
                       </div>
                     </div>
@@ -859,13 +1102,14 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
                   <div ref={messagesEndRef} />
                 </div>
-              </ScrollArea>
+              </div>
             </div>
 
-            <div className={cn(
-              'border-t px-3 pb-[calc(5.25rem+env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl',
-              isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
-            )}>
+            <div
+              className={cn(
+                'z-[20] px-3 pb-[calc(94px+min(env(safe-area-inset-bottom),8px))] pt-2 animate-chat-input-appear'
+              )}
+            >
               <div className="mx-auto max-w-3xl">
                 <ChatInput
                   value={input}
@@ -887,13 +1131,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   showModelSelector={true}
                   modelSelectorTriggerStyle="icon"
                 />
-                <p className={cn('mt-2 text-center text-[10px]', isDark ? 'text-white/60' : 'text-slate-500')}>
-                  {t.ai_disclaimer}
-                </p>
               </div>
             </div>
+            <p className={cn('z-[20] text-center text-[10px]', isDark ? 'text-white/60' : 'text-slate-500')}>
+              {t.ai_disclaimer}
+            </p>
           </>
         )}
+        </div>
+        </div>
 
         <ConfirmDialog
           open={showDeleteConfirm}
@@ -916,6 +1162,40 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           confirmText={t.ok}
           cancelText={t.cancel}
         />
+
+        {welcomeDropping && welcomeDropSnapshot && (
+          <div
+            className="pointer-events-none fixed z-[24] animate-welcome-drop"
+            style={{
+              top: `${welcomeDropSnapshot.top}px`,
+              left: `${welcomeDropSnapshot.left}px`,
+              width: `${welcomeDropSnapshot.width}px`,
+              ['--welcome-drop-distance' as string]: `${welcomeDropDistance}px`,
+              ['--welcome-drop-duration' as string]: `${WELCOME_DROP_DURATION_MS}ms`,
+            }}
+          >
+            <ChatInput
+              value={welcomeDropInputValue}
+              onChange={() => {}}
+              onSend={() => {}}
+              onUpload={() => Promise.resolve()}
+              attachments={[]}
+              onRemoveAttachment={() => {}}
+              models={models}
+              currentModel={currentModel}
+              onModelChange={() => {}}
+              disabled={true}
+              uploading={false}
+              placeholder={t.ask_anything}
+              streaming={false}
+              onStop={() => {}}
+              variant="mobile-demo"
+              theme={isDark ? 'dark' : 'light'}
+              showModelSelector={true}
+              modelSelectorTriggerStyle="icon"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

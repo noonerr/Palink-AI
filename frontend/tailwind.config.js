@@ -158,6 +158,14 @@ module.exports = {
           from: { opacity: "0", transform: "scale(0.9)" },
           to: { opacity: "1", transform: "scale(1)" },
         },
+        "welcome-drop": {
+          from: { transform: "translateY(0)", opacity: "1" },
+          to: { transform: "translateY(var(--welcome-drop-distance))", opacity: "0" },
+        },
+        "chat-input-appear": {
+          from: { opacity: "0", transform: "translateY(20px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -180,6 +188,8 @@ module.exports = {
         "slide-in-left": "slide-in-left 0.3s ease-out",
         "fade-up": "fade-up 0.3s ease-out",
         "modal-scale": "modal-scale 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        "welcome-drop": "welcome-drop var(--welcome-drop-duration) cubic-bezier(0.4, 0, 0.2, 1) forwards",
+        "chat-input-appear": "chat-input-appear 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards",
       },
       backdropBlur: {
         xs: '2px',

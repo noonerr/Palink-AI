@@ -57,7 +57,7 @@ export function useCharacterChat({
   // Timeout state
   const [timeoutWarning, setTimeoutWarning] = useState(false);
   const [requestStartTime, setRequestStartTime] = useState<number | null>(null);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const timeoutRef = useRef<number | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 

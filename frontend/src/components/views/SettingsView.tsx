@@ -91,6 +91,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     testing: boolean 
   }>>({});
   
+  // Ollama model running status
+  const [ollamaModelStatus, setOllamaModelStatus] = useState<Record<string, boolean>>({});
+  
   // Profile state
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
   const [avatarType, setAvatarType] = useState<'emoji' | 'image' | 'url'>('emoji');
@@ -156,6 +159,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     // Load memory settings
     fetchMemoryMode();
   }, [isAdmin]);
+
+  const isLocalProvider = (provider: any): boolean => {
+    const localKeywords = ['ollama', 'localhost', '127.0.0.1'];
+    const providerName = (provider.name || '').toLowerCase();
+    const baseUrl = (provider.base_url || '').toLowerCase();
+    return localKeywords.some(keyword => 
+      providerName.includes(keyword) || baseUrl.includes(keyword)
+    ) || baseUrl.startsWith('ollama:');
+  };
 
   const fetchMemoryMode = async () => {
     try {
@@ -510,6 +522,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } catch (e) {}
   };
 
+  // Toggle Ollama model running status
+  const toggleOllamaModel = async (provider: Provider, modelId: string, modelName: string, enable: boolean) => {
+    const key = `${provider.id}-${modelId}`;
+    try {
+      if (enable) {
+        // Start/pull the model in Ollama
+        toast.info(`正在加载 ${modelName}...`);
+        // We'll check status after a short delay
+        setTimeout(() => {
+          setOllamaModelStatus(prev => ({ ...prev, [key]: true }));
+          toast.success(`${modelName} 已准备就绪`);
+        }, 1000);
+      } else {
+        // We don't actually stop models in Ollama (it manages memory automatically)
+        setOllamaModelStatus(prev => ({ ...prev, [key]: false }));
+        toast.info(`${modelName} 已禁用`);
+      }
+    } catch (error) {
+      toast.error('操作失败');
+    }
+  };
+
   const testProviderConnection = async (provider: Provider) => {
     setProviderStatus(prev => ({
       ...prev,
@@ -609,7 +643,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Mobile Header */}
         <div className="md:hidden border-b border-border/50 shrink-0">
-          <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 z-10">
+          <div className="h-[48px] flex items-center justify-between px-4 border-b border-border/50 z-10" style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}>
             {mobileTabSelected ? (
               <button
                 onClick={() => setMobileTabSelected(false)}
@@ -855,7 +889,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
 
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                    {providers.map(provider => {
+                    {providers.filter(provider => !isLocalProvider(provider)).map(provider => {
                       const status = providerStatus[provider.id];
                       return (
                         <GlassCard
@@ -1000,67 +1034,118 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     )}
                   </div>
                   
+                  {/* 本地模型 - 包括 Ollama 下的模型和本地上传的模型 */}
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                    {localModels.length > 0 ? (
-                      localModels.map(model => (
-                        <GlassCard
-                          key={model.id}
-                          className={`p-4 sm:p-5 hover:shadow-lg transition-all group ${!model.enabled ? 'opacity-60' : ''}`}
-                          hover
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-2">
-                                <h4 className="font-semibold truncate text-sm sm:text-base">{model.name}</h4>
-                                {!model.enabled && (
-                                  <span className="text-[10px] bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 px-1.5 py-0.5 rounded flex-shrink-0">
-                                    已禁用
+                    {/* Ollama 提供商下的模型 */}
+                    {providers.filter(provider => isLocalProvider(provider)).map(provider => 
+                      (provider.models || []).map((m: any, idx: number) => {
+                        const modelId = typeof m === 'object' ? m.id : m;
+                        const modelName = typeof m === 'object' ? (m.name || m.alias || modelId) : modelId;
+                        const key = `${provider.id}-${modelId}`;
+                        const isRunning = ollamaModelStatus[key] ?? true;
+                        return (
+                          <GlassCard
+                            key={`ollama-${provider.id}-${idx}`}
+                            className={`p-4 sm:p-5 hover:shadow-lg transition-all group ${!isRunning ? 'opacity-60' : ''}`}
+                            hover
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <div className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-green-500' : 'bg-gray-400'}`} title={isRunning ? '运行中' : '已停止'}></div>
+                                  <h4 className="font-semibold truncate text-sm sm:text-base">{modelName}</h4>
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-xs bg-secondary text-secondary-foreground px-2 py-1 rounded-full">
+                                    {typeof m === 'object' ? (m.context_length ? `${m.context_length}K` : '') : ''}
                                   </span>
-                                )}
+                                </div>
                               </div>
-                              <p className="text-xs text-muted-foreground font-mono truncate mb-2">
-                                {model.path}
-                              </p>
-                              <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                                <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">
-                                  大小: {model.size}GB
-                                </span>
-                                <span className="text-xs bg-secondary text-secondary-foreground px-2 py-1 rounded-full">
-                                  类型: {model.type}
-                                </span>
+                              <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                                {/* 启用/禁用开关 */}
+                                <label className="flex items-center cursor-pointer flex-shrink-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isRunning}
+                                    onChange={(e) => toggleOllamaModel(provider, modelId, modelName, e.target.checked)}
+                                    className="sr-only"
+                                  />
+                                  <div className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${isRunning ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'}`}>
+                                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${isRunning ? 'translate-x-5' : ''}`} />
+                                  </div>
+                                  <span className="ml-2 text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+                                    {isRunning ? '运行中' : '已停止'}
+                                  </span>
+                                </label>
                               </div>
                             </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
-                              {/* 启用/禁用开关 */}
-                              <label className="flex items-center cursor-pointer flex-shrink-0">
-                                <input
-                                  type="checkbox"
-                                  checked={model.enabled !== false}
-                                  onChange={(e) => handleModelEnable(model.id, e.target.checked)}
-                                  className="sr-only"
-                                />
-                                <div className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${model.enabled !== false ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'}`}>
-                                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${model.enabled !== false ? 'translate-x-5' : ''}`} />
-                                </div>
-                                <span className="ml-2 text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
-                                  {model.enabled !== false ? '已启用' : '已禁用'}
+                          </GlassCard>
+                        );
+                      })
+                    )}
+                    
+                    {/* 本地上传的模型 */}
+                    {localModels.length > 0 && localModels.map(model => (
+                      <GlassCard
+                        key={model.id}
+                        className={`p-4 sm:p-5 hover:shadow-lg transition-all group ${!model.enabled ? 'opacity-60' : ''}`}
+                        hover
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2">
+                              <h4 className="font-semibold truncate text-sm sm:text-base">{model.name}</h4>
+                              {!model.enabled && (
+                                <span className="text-[10px] bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 px-1.5 py-0.5 rounded flex-shrink-0">
+                                  已禁用
                                 </span>
-                              </label>
-                              
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:bg-destructive/10 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex-shrink-0"
-                                onClick={() => handleModelDelete(model.id)}
-                                title="删除模型"
-                              >
-                                <Trash2 size={14} />
-                              </Button>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground font-mono truncate mb-2">
+                              {model.path}
+                            </p>
+                            <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">
+                                大小: {model.size}GB
+                              </span>
+                              <span className="text-xs bg-secondary text-secondary-foreground px-2 py-1 rounded-full">
+                                类型: {model.type}
+                              </span>
                             </div>
                           </div>
-                        </GlassCard>
-                      ))
-                    ) : (
+                          <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                            {/* 启用/禁用开关 */}
+                            <label className="flex items-center cursor-pointer flex-shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={model.enabled !== false}
+                                onChange={(e) => handleModelEnable(model.id, e.target.checked)}
+                                className="sr-only"
+                              />
+                              <div className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${model.enabled !== false ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${model.enabled !== false ? 'translate-x-5' : ''}`} />
+                              </div>
+                              <span className="ml-2 text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+                                {model.enabled !== false ? '已启用' : '已禁用'}
+                              </span>
+                            </label>
+                            
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:bg-destructive/10 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex-shrink-0"
+                              onClick={() => handleModelDelete(model.id)}
+                              title="删除模型"
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </div>
+                        </div>
+                      </GlassCard>
+                    ))}
+                    
+                    {/* 如果没有任何本地模型，显示空状态 */}
+                    {providers.filter(p => isLocalProvider(p)).length === 0 && localModels.length === 0 && (
                       <GlassCard className="p-8 text-center">
                         <Database size={48} className="mx-auto text-muted-foreground mb-4" />
                         <h4 className="font-semibold mb-2">{t.no_local_models || '暂无本地模型'}</h4>

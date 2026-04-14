@@ -25,6 +25,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play } from 'lucide-react';
+import { LoadingDots } from './LoadingDots';
 
 // ──────────────────────────────────────────────
 // Types
@@ -34,6 +35,7 @@ export interface StoryNode {
   pair_id: string;
   user_msg_id: number | null;
   ai_msg_id: number | null;
+  node_title?: string | null;
   user_summary: string | null;
   ai_summary: string | null;
   created_at: string | null;
@@ -141,6 +143,8 @@ function StoryNodeComponent({ data }: NodeProps) {
     ? '0 0 14px 2px rgba(99,102,241,0.35)'
     : '0 2px 8px rgba(0,0,0,0.12)';
 
+  const primaryTitle = node.node_title || node.user_summary || node.ai_summary || '未命名节点';
+
   return (
     <div
       className={`rounded-xl border-2 cursor-pointer select-none transition-all duration-200 hover:scale-[1.03] hover:shadow-xl ${cardBg}`}
@@ -174,6 +178,10 @@ function StoryNodeComponent({ data }: NodeProps) {
       )}
 
       <div className="px-3 py-2.5 space-y-2">
+        <p className={`text-xs font-semibold leading-relaxed line-clamp-1 ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>
+          {primaryTitle}
+        </p>
+
         {/* Turn indicator */}
         <div className="flex items-center gap-1.5">
           <span

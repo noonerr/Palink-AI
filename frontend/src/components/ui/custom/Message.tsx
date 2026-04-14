@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Copy, Check, Zap, Database, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
 import { CodeBlock } from './CodeBlock';
+import { ThinkingProcess } from './ThinkingProcess';
 // import { SmoothOutput } from './SmoothOutput';
 // import { RpSegmentRenderer } from './RpSegmentRenderer';
 // import { TagSegmentRenderer } from './TagSegmentRenderer';
@@ -49,6 +50,7 @@ interface MessageProps {
   characterAvatar?: string;
   characterName?: string;
   memoryMode?: string;
+  summary?: string;
 }
 
 const MessageInner: React.FC<MessageProps> = ({
@@ -86,19 +88,62 @@ const MessageInner: React.FC<MessageProps> = ({
   characterAvatar,
   characterName,
   memoryMode,
+  summary,
 }) => {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
   
   const messageModel = models.find(m => m.id === message.model);
 
-  // const segments = useMemo(() => {
-  //   return MessageParserService.parseMessage(message.content, {
-  //     isCharacterChat,
-  //     isUser,
-  //     showModelReasoning
-  //   });
-  // }, [message.content, isCharacterChat, isUser, showModelReasoning]);
+  const { thinkingContent, displayContent } = useMemo(() => {
+    const content = message.content || '';
+    const extractTaggedThinking = (source: string, tag: 'think' | 'model_reasoning') => {
+      const openTag = `<${tag}>`;
+      const closeTag = `</${tag}>`;
+      let cursor = 0;
+      let cleaned = '';
+      const parts: string[] = [];
+
+      while (cursor < source.length) {
+        const start = source.indexOf(openTag, cursor);
+        if (start === -1) {
+          cleaned += source.slice(cursor);
+          break;
+        }
+
+        cleaned += source.slice(cursor, start);
+        const contentStart = start + openTag.length;
+        const end = source.indexOf(closeTag, contentStart);
+
+        if (end === -1) {
+          const tail = source.slice(contentStart);
+          if (tail.trim()) {
+            parts.push(tail.trim());
+          }
+          break;
+        }
+
+        const section = source.slice(contentStart, end);
+        if (section.trim()) {
+          parts.push(section.trim());
+        }
+        cursor = end + closeTag.length;
+      }
+
+      return { parts, cleaned };
+    };
+
+    const thinkResult = extractTaggedThinking(content, 'think');
+    const modelReasoningResult = extractTaggedThinking(thinkResult.cleaned, 'model_reasoning');
+
+    const thinkingParts = [...thinkResult.parts, ...modelReasoningResult.parts];
+    const cleanedContent = modelReasoningResult.cleaned.trim();
+
+    return {
+      thinkingContent: thinkingParts.join('\n\n').trim(),
+      displayContent: cleanedContent
+    };
+  }, [message.content]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -139,7 +184,8 @@ const MessageInner: React.FC<MessageProps> = ({
   return (
     <div 
       className={cn(
-        "flex gap-3 items-start group animate-fade-in-up",
+        "flex gap-3 items-start group",
+        (streaming && isLast) && "animate-fade-in-up",
         isUser && "justify-end",
         isItemSelected && "bg-primary/5 rounded-lg p-1 -m-1",
         isInDeleteMode && "cursor-pointer"
@@ -196,20 +242,41 @@ const MessageInner: React.FC<MessageProps> = ({
           "flex flex-col",
           isUser && "items-end"
         )}>
-          <div className={cn(
-            "px-5 py-3.5 text-[15px] leading-relaxed",
-            isUser 
-              ? 'bg-slate-900 text-white dark:bg-[#2f3654] dark:text-slate-100 rounded-3xl rounded-br-lg' 
-              : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
-            isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
-          )}>
-            {isUser ? (
-              <div className="whitespace-pre-wrap">{message.content}</div>
-            ) : (
-              <div className="markdown-content">
-                <ReactMarkdown components={{ code: CodeBlock }}>
-                  {message.content || " "}
-                </ReactMarkdown>
+          <div className="flex flex-col">
+            {!isUser && thinkingContent && showModelReasoning && (
+              <ThinkingProcess 
+                content={thinkingContent} 
+                streaming={streaming && isLast} 
+                t={_t} 
+              />
+            )}
+            {(!isUser && displayContent) || isUser ? (
+            <div className={cn(
+              "px-5 py-3.5 text-[15px] leading-relaxed",
+              isUser 
+                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
+              isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
+            )}>
+              {isUser ? (
+                <div className="whitespace-pre-wrap">{message.content}</div>
+              ) : (
+                <div className="markdown-content">
+                  <ReactMarkdown components={{ code: CodeBlock }}>
+                    {displayContent}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </div>
+            ) : null}
+            
+            {!isUser && summary && (
+              <div className={cn(
+                "mt-2 px-5 py-2 text-xs leading-relaxed",
+                'bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 rounded-2xl'
+              )}>
+                <span className="font-medium">摘要: </span>
+                {summary}
               </div>
             )}
           </div>

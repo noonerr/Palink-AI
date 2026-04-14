@@ -9,7 +9,7 @@ interface ModelSelectorProps {
   currentModel: string;
   onSelect: (modelId: string) => void;
   size?: 'sm' | 'md';
-  triggerStyle?: 'default' | 'icon';
+  triggerStyle?: 'default' | 'icon' | 'mobile-bar' | 'mobile-inline';
   theme?: 'dark' | 'light';
 }
 
@@ -38,6 +38,137 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       : <Bot size={14} className="sm:w-3 sm:h-3" />;
 
   if (size === 'sm') {
+    if (triggerStyle === 'mobile-bar') {
+      return (
+        <div ref={containerRef} className="relative">
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className={cn(
+              'fixed right-5 top-[calc(env(safe-area-inset-top)+24px)] z-[70] flex h-11 items-center gap-2 px-4 rounded-[35px] border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+              isDarkTheme
+                ? 'border border-[rgba(255,255,255,0.18)] bg-[rgba(15,23,42,0.5)] text-white'
+                : 'border-[#ddd4c5] bg-[rgba(255,250,250,0.7)] text-slate-700',
+              isOpen && (isDarkTheme ? 'ring-2 ring-slate-500/70' : 'ring-2 ring-[#d7cab2]')
+            )}
+            aria-label="select-model"
+            data-model-selector="true"
+            id="model-selector-button"
+          >
+            {currentModelIcon}
+            <span className="text-sm font-medium max-w-[120px] truncate">{displayName}</span>
+            <ChevronDown 
+              size={16} 
+              className={cn("transition-transform", isOpen && "rotate-180")} 
+            />
+          </button>
+
+          {isOpen && (
+            <div className="absolute top-full right-0 mt-2 w-64 glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up origin-top-right">
+              <div className="max-h-64 overflow-y-auto p-1.5">
+                {models.map(model => (
+                  <button
+                    key={model.id}
+                    onClick={() => {
+                      onSelect(model.id);
+                      setIsOpen(false);
+                    }}
+                    className={cn(
+                      'w-full flex items-start gap-2 sm:gap-3 px-2 sm:px-3 py-2.5 rounded-lg text-sm transition-all touch-target',
+                      currentModel === model.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'text-foreground hover:bg-muted'
+                    )}
+                  >
+                    <span className="text-lg shrink-0">
+                      {model.icon?.startsWith('/') || model.icon?.startsWith('http') ? (
+                        <img src={model.icon} alt="" className="w-5 h-5 object-contain" />
+                      ) : (
+                        model.icon || '🤖'
+                      )}
+                    </span>
+                    <div className="flex-1 text-left min-w-0">
+                      <div className="break-words leading-tight text-sm">{getModelDisplayName(model)}</div>
+                      <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <span className="truncate">{model.provider}</span>
+                        <span>•</span>
+                        <span>{(model.context_length / 1024).toFixed(0)}k</span>
+                      </div>
+                    </div>
+                    {currentModel === model.id && <Check size={14} className="shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (triggerStyle === 'mobile-inline') {
+      return (
+        <div ref={containerRef} className="relative">
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className={cn(
+              'flex h-11 items-center gap-2 px-4 rounded-[35px] border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+              isDarkTheme
+                ? 'border border-[rgba(255,255,255,0.18)] bg-[rgba(15,23,42,0.5)] text-white'
+                : 'border-[#ddd4c5] bg-[rgba(255,250,250,0.7)] text-slate-700',
+              isOpen && (isDarkTheme ? 'ring-2 ring-slate-500/70' : 'ring-2 ring-[#d7cab2]')
+            )}
+            aria-label="select-model"
+            data-model-selector="true"
+          >
+            {currentModelIcon}
+            <span className="text-sm font-medium max-w-[120px] truncate">{displayName}</span>
+            <ChevronDown
+              size={16}
+              className={cn('transition-transform', isOpen && 'rotate-180')}
+            />
+          </button>
+
+          {isOpen && (
+            <div className="absolute top-full right-0 mt-2 w-64 glass-strong rounded-xl shadow-xl border border-border z-[70] overflow-hidden animate-fade-in-up origin-top-right">
+              <div className="max-h-64 overflow-y-auto p-1.5">
+                {models.map(model => (
+                  <button
+                    key={model.id}
+                    onClick={() => {
+                      onSelect(model.id);
+                      setIsOpen(false);
+                    }}
+                    className={cn(
+                      'w-full flex items-start gap-2 sm:gap-3 px-2 sm:px-3 py-2.5 rounded-lg text-sm transition-all touch-target',
+                      currentModel === model.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'text-foreground hover:bg-muted'
+                    )}
+                  >
+                    <span className="text-lg shrink-0">
+                      {model.icon?.startsWith('/') || model.icon?.startsWith('http') ? (
+                        <img src={model.icon} alt="" className="w-5 h-5 object-contain" />
+                      ) : (
+                        model.icon || '🤖'
+                      )}
+                    </span>
+                    <div className="flex-1 text-left min-w-0">
+                      <div className="break-words leading-tight text-sm">{getModelDisplayName(model)}</div>
+                      <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <span className="truncate">{model.provider}</span>
+                        <span>•</span>
+                        <span>{(model.context_length / 1024).toFixed(0)}k</span>
+                      </div>
+                    </div>
+                    {currentModel === model.id && <Check size={14} className="shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     if (triggerStyle === 'icon') {
       return (
         <div ref={containerRef} className="relative">

@@ -220,7 +220,8 @@ class MemoryStorage:
         user_id: int,
         query_embedding: List[float],
         limit: int = None,
-        min_similarity: float = None
+        min_similarity: float = None,
+        session_id: Optional[str] = None
     ) -> List[Tuple[MemoryEntry, float]]:
         """
         语义相似度搜索（SQLite版本，在Python中计算相似度）
@@ -232,17 +233,30 @@ class MemoryStorage:
         min_similarity = min_similarity or memory_config.MIN_SIMILARITY
         
         try:
-            sql = text("""
-                SELECT 
-                    id, user_id, session_id, role, content,
-                    importance_score, topics, tokens_count, created_at, embedding
-                FROM conversation_memories
-                WHERE user_id = :user_id
-                ORDER BY created_at DESC
-                LIMIT 500
-            """)
+            if session_id:
+                sql = text("""
+                    SELECT 
+                        id, user_id, session_id, role, content,
+                        importance_score, topics, tokens_count, created_at, embedding
+                    FROM conversation_memories
+                    WHERE user_id = :user_id AND session_id = :session_id
+                    ORDER BY created_at DESC
+                    LIMIT 500
+                """)
+                params = {"user_id": user_id, "session_id": session_id}
+            else:
+                sql = text("""
+                    SELECT 
+                        id, user_id, session_id, role, content,
+                        importance_score, topics, tokens_count, created_at, embedding
+                    FROM conversation_memories
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                    LIMIT 500
+                """)
+                params = {"user_id": user_id}
             
-            result = self.db.execute(sql, {"user_id": user_id})
+            result = self.db.execute(sql, params)
             
             memories_with_similarity = []
             query_vec = np.array(query_embedding, dtype=np.float32)

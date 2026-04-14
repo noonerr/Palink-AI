@@ -1,7 +1,7 @@
 import React from 'react';
-import {
-  MessageSquare,
-  FolderOpen,
+import { 
+  MessageSquare, 
+  FolderOpen, 
   Settings,
   Sun,
   Moon,
@@ -38,18 +38,18 @@ interface NavItemProps {
 const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMobile }) => {
   const location = useLocation();
   const isActive = location.pathname === to;
-
+  
   return (
     <Link
       to={to}
       className={cn(
         'sidebar-item rounded-xl flex items-center justify-center transition-all duration-200',
         'hover:bg-sidebar-accent',
-        isMobile
+        isMobile 
           ? 'flex-col gap-1 py-2 px-3 flex-1 min-w-0'
           : 'w-12 h-12',
-        isActive
-          ? 'active bg-sidebar-primary text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/25'
+        isActive 
+          ? 'active bg-sidebar-primary text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/25' 
           : 'text-sidebar-foreground hover:text-sidebar-foreground'
       )}
       title={tooltip}
@@ -111,9 +111,9 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
           to="/settings"
           tooltip={t.nav_config || 'Settings'}
         />
-
+        
         <div className="w-8 h-px bg-sidebar-border my-1" />
-
+        
         <button
           onClick={onThemeToggle}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
@@ -121,7 +121,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           {isDark ? <Sun size={18} /> : <Moon size={18} />}
         </button>
-
+        
         <button
           onClick={onLangToggle}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-semibold text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
@@ -137,7 +137,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
         </button>
-
+        
         <button
           onClick={onLogout}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
@@ -145,7 +145,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         >
           <LogOut size={18} />
         </button>
-
+        
         <div className="mt-2">
           <Avatar className="w-9 h-9 ring-2 ring-transparent hover:ring-primary/50 transition-all cursor-pointer">
             <AvatarImage src={user?.avatar} />
@@ -220,22 +220,22 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
   }, [updateSlider]);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pb-[calc(20px+env(safe-area-inset-bottom))] pointer-events-auto" data-dock="true">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pb-[calc(16px+min(env(safe-area-inset-bottom),8px))] pointer-events-auto" data-dock="true">
       <div
         ref={dockRef}
         className={cn(
-          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[30px]',
-          isDark 
-            ? 'border-white/[0.15] bg-white/[0.07]' 
-            : 'border-slate-700/[0.25] bg-slate-800/[0.65]'
+          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] backdrop-blur-[30px]',
+          isDark
+            ? 'border border-slate-700/70 bg-[#1f2233] shadow-[0_18px_40px_rgba(2,6,23,0.48)]'
+            : 'border border-[#d9cfbf] bg-[#FFFAFA] shadow-[0_16px_34px_rgba(95,81,58,0.16)]'
         )}
         data-dock="true"
       >
         <div
           className={cn(
             'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
-            !slider.ready && 'opacity-0',
-            isDark ? 'bg-white/[0.30]' : 'bg-slate-900/[0.55]'
+            isDark ? 'bg-[#343a56]' : 'bg-[#ece2d3]',
+            !slider.ready && 'opacity-0'
           )}
           style={{ left: slider.left, width: slider.width }}
         />
@@ -251,9 +251,9 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
               }}
               className={cn(
                 'relative z-[2] flex h-full w-[22%] flex-col items-center justify-center gap-1 text-center transition-all duration-300 active:scale-[0.98]',
-                isDark
-                  ? (isActive ? 'text-white' : 'text-white/65')
-                  : (isActive ? 'text-white' : 'text-white/75')
+                isActive
+                  ? (isDark ? 'text-slate-100' : 'text-slate-900')
+                  : (isDark ? 'text-slate-300/80' : 'text-slate-700/85')
               )}
               data-dock="true"
             >

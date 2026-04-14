@@ -1,13 +1,12 @@
-/**
- * CharacterChat — 聊天视图
- * 从 CharacterView 提取的子组件
+﻿/**
+ * CharacterChat 鈥?鑱婂ぉ瑙嗗浘
+ * 浠?CharacterView 鎻愬彇鐨勫瓙缁勪欢
  */
 import React, { useState, useRef } from 'react';
 import {
   Bot, Plus, X, Play, Sparkles, Trash2, BookOpen, GitBranch,
   Check, ChevronDown, Clock, MoreVertical,
   User as UserIcon,
-  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -40,7 +39,7 @@ import type {
   CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch,
 } from '@/types';
 
-/* ─── Inline sub-components ─────────────────────────── */
+/* 鈹€鈹€鈹€ Inline sub-components 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 interface BranchSelectorProps {
   branches: CharacterChatSessionBranch[];
@@ -98,7 +97,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
           </div>
           <div className="max-h-64 overflow-y-auto">
             {branches.length === 0 ? (
-              <div className="p-4 text-center text-sm text-muted-foreground">暂无分支</div>
+              <div className="p-4 text-center text-sm text-muted-foreground">鏆傛棤鍒嗘敮</div>
             ) : (
               branches.map((branch) => (
                 <div
@@ -117,7 +116,7 @@ const BranchSelector: React.FC<BranchSelectorProps> = ({
                     <GitBranch size={14} />
                     <div className="flex-1">
                       <div className="font-medium">{branch.branch_name}</div>
-                      {branch.is_active && <div className="text-xs opacity-70">当前</div>}
+                      {branch.is_active && <div className="text-xs opacity-70">褰撳墠</div>}
                     </div>
                     {selectedBranch?.id === branch.id && <Check size={14} />}
                   </button>
@@ -154,8 +153,8 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
   useClickOutside(containerRef, () => setIsOpen(false));
 
   const modes = [
-    { id: 'first_person', name: lang === 'zh' ? '第一人称' : '1st Person' },
-    { id: 'third_person', name: lang === 'zh' ? '故事模式' : 'Story' },
+    { id: 'first_person', name: lang === 'zh' ? '绗竴浜虹О' : '1st Person' },
+    { id: 'third_person', name: lang === 'zh' ? '鏁呬簨妯″紡' : 'Story' },
   ];
 
   const getIcon = (modeId: string) =>
@@ -206,7 +205,7 @@ const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
   );
 };
 
-/* ─── Props ──────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Props 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 export interface CharacterChatProps {
   // identity
@@ -258,7 +257,7 @@ export interface CharacterChatProps {
   handleRegenerate: (idx: number) => Promise<void>;
   handleRetry: () => void;
   handleCloseError: () => void;
-  handleUpload: (files: FileList) => Promise<void>;
+  handleUpload: (file: File, type: 'image' | 'file') => Promise<void>;
   handleEditMessage: (msgId: number, idx: number, content: string) => Promise<void>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
   showModelReasoning: boolean;
@@ -280,11 +279,11 @@ export interface CharacterChatProps {
   isMixedDeleteMode: boolean;
   setIsMixedDeleteMode: (v: boolean) => void;
   selectedWholeMessages: Set<number>;
-  selectedMessageParts: Set<string>;
+  selectedMessageParts: Map<number, Set<string>>;
   toggleWholeMessageSelect: (idx: number) => void;
-  toggleMessagePartSelect: (key: string) => void;
+  toggleMessagePartSelect: (messageIndex: number, partId: string) => void;
   selectAllPartsInMessage: (idx: number) => void;
-  handleMixedDelete: () => Promise<void>;
+  handleMixedDelete: () => void;
   showDeleteMixedConfirm: boolean;
   setShowDeleteMixedConfirm: (v: boolean) => void;
   confirmDeleteMixed: () => Promise<void>;
@@ -329,7 +328,7 @@ export interface CharacterChatProps {
   setViewState: (v: 'list' | 'edit' | 'chat') => void;
 }
 
-/* ─── Component ──────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Component 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   const bottomPadding = useMobileBottomPadding();
@@ -371,7 +370,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
   return (
     <div className="flex w-full h-full overflow-hidden">
-      {/* ── Mobile Sidebar Overlay ── */}
+      {/* 鈹€鈹€ Mobile Sidebar Overlay 鈹€鈹€ */}
       {mobileSidebarOpen && (
         <div
           className="fixed inset-0 z-[59] md:hidden animate-fade-in"
@@ -390,7 +389,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                 </button>
-                <span className="text-sm font-semibold">{t.chat_history || '聊天记录'}</span>
+                <span className="text-sm font-semibold">{t.chat_history || '鑱婂ぉ璁板綍'}</span>
               </div>
             </div>
             <ChatSessionList
@@ -411,13 +410,13 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               onDeleteSession={handleDeleteSession}
               showDeleteButton={false}
               showHeaderActions={false}
-              headerTitle="历史对话"
+              headerTitle="鍘嗗彶瀵硅瘽"
             />
           </div>
         </div>
       )}
 
-      {/* ── Desktop Sidebar ── */}
+      {/* 鈹€鈹€ Desktop Sidebar 鈹€鈹€ */}
       <div className={`transition-all duration-300 ease-in-out hidden md:flex ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
         <div className="w-64 h-full flex-shrink-0 border-r border-border/50 glass flex flex-col">
           <div className="h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
@@ -442,7 +441,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 } else if (selectedSession) {
                   handleDeleteSession(selectedSession.id);
                 }
-              }} title="删除对话">
+              }} title="鍒犻櫎瀵硅瘽">
                 <Trash2 size={16} />
               </Button>
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewState('list')}>
@@ -465,39 +464,35 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
             showNewButton={true}
             showDeleteButton={false}
             showHeaderActions={false}
-            headerTitle="历史对话"
+            headerTitle="鍘嗗彶瀵硅瘽"
           />
         </div>
       </div>
 
-      {/* ── Main chat area ── */}
+      {/* 鈹€鈹€ Main chat area 鈹€鈹€ */}
       <div className="flex-1 flex flex-col h-full overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0 bg-slate-50 dark:bg-slate-950">
-        {/* ── Header toolbar ── */}
+        {/* 鈹€鈹€ Header toolbar 鈹€鈹€ */}
         <header className="h-16 px-4 flex items-center justify-between z-40 pt-safe">
           <div className="flex items-center space-x-3">
-            {/* Back button */}
+            {/* Mobile hamburger / Back button */}
             <Button
               variant="ghost" size="icon"
               className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0"
-              onClick={() => setViewState('list')}
+              onClick={() => setMobileSidebarOpen(true)}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </Button>
-            {/* History button */}
+            {/* Desktop sidebar toggle */}
             <Button
               variant="ghost" size="icon"
-              className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0 md:hidden"
-              onClick={() => setMobileSidebarOpen(true)}
-            >
-              <History size={24} strokeWidth={1.5} />
-            </Button>
-            {/* Desktop History button */}
-            <Button
-              variant="ghost" size="icon"
-              className="h-12 w-12 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0 hidden md:flex"
+              className="h-12 w-12 rounded-2xl bg-primary/10 hover:bg-primary/20 text-primary transition-all hidden md:flex flex-shrink-0"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             >
-              <History size={24} strokeWidth={1.5} />
+              {!sidebarCollapsed ? (
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+              )}
             </Button>
             {/* Character avatar and name */}
             <div className="w-10 h-10 rounded-2xl overflow-hidden flex-shrink-0">
@@ -558,8 +553,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 <DropdownMenuItem onClick={() => setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person')}>
                   <UserIcon size={14} className="mr-2" />
                   {dialogueMode === 'first_person'
-                    ? (lang === 'zh' ? '切换故事模式' : 'Switch to Story')
-                    : (lang === 'zh' ? '切换第一人称' : 'Switch to 1st Person')}
+                    ? (lang === 'zh' ? '鍒囨崲鏁呬簨妯″紡' : 'Switch to Story')
+                    : (lang === 'zh' ? '鍒囨崲绗竴浜虹О' : 'Switch to 1st Person')}
                 </DropdownMenuItem>
                 
                 {/* Model selector */}
@@ -580,19 +575,19 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                       disabled={pl.sessionStatus.current_stage_index <= 0}
                       onClick={async () => { await pl.prevStage(selectedSession.id); await pl.loadSessionStatus(selectedSession.id); }}
                     >
-                      上一阶段
+                      涓婁竴闃舵
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       disabled={pl.sessionStatus.current_stage_index >= (pl.sessionStatus.total_stages ?? 1) - 1}
                       onClick={async () => { await pl.nextStage(selectedSession.id); await pl.loadSessionStatus(selectedSession.id); }}
                     >
-                      下一阶段
+                      涓嬩竴闃舵
                     </DropdownMenuItem>
                   </>
                 )}
                 <DropdownMenuItem onClick={() => setShowPlotLineManager(true)}>
                   <BookOpen size={14} className="mr-2" />
-                  管理剧情线
+                  绠＄悊鍓ф儏绾?
                 </DropdownMenuItem>
 
                 {/* Memory */}
@@ -600,11 +595,11 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem disabled className="text-xs text-muted-foreground opacity-100">
-                      记忆: {memoryStats.message_count} 条 / {memoryStats.token_count} tokens
+                      璁板繂: {memoryStats.message_count} 鏉?/ {memoryStats.token_count} tokens
                     </DropdownMenuItem>
                     {memoryStats.compression_needed && (
                       <DropdownMenuItem onClick={manualCompressMemory} disabled={compressing}>
-                        {compressing ? '压缩中...' : '压缩记忆'}
+                        {compressing ? '鍘嬬缉涓?..' : '鍘嬬缉璁板繂'}
                       </DropdownMenuItem>
                     )}
                   </>
@@ -625,7 +620,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                       }}
                     >
                       <Trash2 size={14} className="mr-2" />
-                      {(selectedWholeMessages.size > 0 || selectedMessageParts.size > 0) ? "删除选中" : (isMixedDeleteMode ? "取消选择模式" : "选择删除")}
+                      {(selectedWholeMessages.size > 0 || selectedMessageParts.size > 0) ? "鍒犻櫎閫変腑" : (isMixedDeleteMode ? "鍙栨秷閫夋嫨妯″紡" : "閫夋嫨鍒犻櫎")}
                     </DropdownMenuItem>
                   </>
                 )}
@@ -634,7 +629,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           </div>
         </header>
 
-        {/* ── Empty state / new chat ── */}
+        {/* 鈹€鈹€ Empty state / new chat 鈹€鈹€ */}
         {messages.length === 0 && !selectedSession && !initializingChat && (
           <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-y-auto">
             <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
@@ -649,13 +644,13 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   )}
                 </div>
                 <h1 className="text-2xl sm:text-3xl font-semibold mb-2">{selectedCharacter.name}</h1>
-                <p className="text-muted-foreground text-sm sm:text-base">开始与这个角色对话吧！</p>
+                <p className="text-muted-foreground text-sm sm:text-base">寮€濮嬩笌杩欎釜瑙掕壊瀵硅瘽鍚э紒</p>
               </div>
 
               <div className="flex items-center gap-3">
                 <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowWorldBookManager(true)}>
                   <BookOpen size={14} />
-                  管理世界书
+                  绠＄悊涓栫晫涔?
                 </Button>
               </div>
               <div className="mt-4">
@@ -670,24 +665,24 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   ) : (
                     <Play size={20} className="mr-2" />
                   )}
-                  开始对话
+                  寮€濮嬪璇?
                 </Button>
               </div>
             </div>
           </div>
         )}
 
-        {/* ── Initializing spinner ── */}
+        {/* 鈹€鈹€ Initializing spinner 鈹€鈹€ */}
         {initializingChat && (
           <div className="flex-1 flex items-center justify-center p-8 w-full overflow-y-auto">
             <div className={`w-full flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
               <div className="animate-spin text-primary mb-4"><Bot size={32} /></div>
-              <p className="text-muted-foreground">正在加载对话...</p>
+              <p className="text-muted-foreground">姝ｅ湪鍔犺浇瀵硅瘽...</p>
             </div>
           </div>
         )}
 
-        {/* ── Messages area ── */}
+        {/* 鈹€鈹€ Messages area 鈹€鈹€ */}
         {(messages.length > 0 || selectedSession) && (
           <div className="flex-1 overflow-y-auto px-4 space-y-4 pt-4 pb-4">
             {wb.sessionStatus?.active && (
@@ -747,9 +742,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           </div>
         )}
 
-        {/* ── Chat input ── */}
-        <div className="px-4 pt-2 pb-20 sm:pb-0 bg-gradient-to-t from-slate-50 dark:from-slate-950 via-slate-50/95 dark:via-slate-950/95 to-transparent">
-          <div className="bg-slate-100 dark:bg-slate-800/50 rounded-3xl p-2 flex items-end">
+        {/* 鈹€鈹€ Chat input 鈹€鈹€ */}
+        <div className="px-4 pt-0 pb-0 bg-gradient-to-t from-slate-50 dark:from-slate-950 via-slate-50/95 dark:via-slate-950/95 to-transparent">
+          <div className="bg-slate-100 dark:bg-slate-800/50 rounded-3xl p-0 flex items-end">
             <Button
               variant="ghost" size="icon"
               className="h-11 w-11 rounded-2xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
@@ -772,7 +767,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 onModelChange={setSelectedModel}
                 disabled={isGenerating}
                 uploading={uploading}
-                placeholder={`与 ${selectedCharacter.name} 对话...`}
+                placeholder={`涓?${selectedCharacter.name} 瀵硅瘽...`}
                 streaming={isGenerating}
                 onStop={() => abortControllerRef.current?.abort()}
               />
@@ -781,14 +776,14 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         </div>
       </div>
 
-      {/* ── Confirm dialogs ── */}
+      {/* 鈹€鈹€ Confirm dialogs 鈹€鈹€ */}
       <ConfirmDialog
         open={showDeleteConfirm}
         onOpenChange={setShowDeleteConfirm}
-        title={pendingDelete?.type === 'batch' ? '删除选中的对话？' : '删除这个对话？'}
+        title={pendingDelete?.type === 'batch' ? 'Delete selected sessions?' : 'Delete this session?'}
         description={pendingDelete?.type === 'batch'
-          ? `确定要删除选中的 ${selectedSessions.size} 个对话吗？此操作无法撤销。`
-          : "确定要删除这个对话吗？此操作无法撤销。"}
+          ? `Delete ${selectedSessions.size} selected sessions? This cannot be undone.`
+          : 'Delete this session? This cannot be undone.'}
         onConfirm={confirmDelete}
         confirmText="确定"
         cancelText="取消"
@@ -796,23 +791,23 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       <ConfirmDialog
         open={showDeleteBranchConfirm}
         onOpenChange={setShowDeleteBranchConfirm}
-        title="删除这个分支？"
-        description="确定要删除这个分支吗？此操作无法撤销。"
+        title="Delete this branch?"
+        description="Delete this branch? This cannot be undone."
         onConfirm={confirmDeleteBranch}
-        confirmText="确定"
-        cancelText="取消"
+        confirmText="Confirm"
+        cancelText="Cancel"
       />
       <ConfirmDialog
         open={showDeleteMixedConfirm}
         onOpenChange={setShowDeleteMixedConfirm}
-        title="删除选中的内容？"
-        description="确定要删除选中的内容吗？此操作无法撤销。"
+        title="Delete selected content?"
+        description="Delete selected content? This cannot be undone."
         onConfirm={confirmDeleteMixed}
-        confirmText="确定"
-        cancelText="取消"
+        confirmText="Confirm"
+        cancelText="Cancel"
       />
 
-      {/* ── Error Toast ── */}
+      {/* 鈹€鈹€ Error Toast 鈹€鈹€ */}
       {currentError && (
         <ErrorToast
           errorInfo={currentError}
@@ -822,16 +817,16 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         />
       )}
 
-      {/* ── Timeout Warning ── */}
+      {/* 鈹€鈹€ Timeout Warning 鈹€鈹€ */}
       {timeoutWarning && isGenerating && (
-        <div className="fixed bottom-24 sm:bottom-4 right-4 z-50 max-w-sm w-full">
+        <div className="fixed bottom-4 right-4 z-50 max-w-sm w-full">
           <div className="bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 shadow-lg">
             <div className="flex items-start gap-3">
               <Clock className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <h4 className="font-semibold text-yellow-800 dark:text-yellow-200">请求时间较长</h4>
+                <h4 className="font-semibold text-yellow-800 dark:text-yellow-200">璇锋眰鏃堕棿杈冮暱</h4>
                 <p className="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
-                  AI模型正在处理您的请求，这可能需要一些时间。请耐心等待，或尝试切换到其他模型。
+                  AI妯″瀷姝ｅ湪澶勭悊鎮ㄧ殑璇锋眰锛岃繖鍙兘闇€瑕佷竴浜涙椂闂淬€傝鑰愬績绛夊緟锛屾垨灏濊瘯鍒囨崲鍒板叾浠栨ā鍨嬨€?
                 </p>
               </div>
             </div>
@@ -839,7 +834,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         </div>
       )}
 
-      {/* ── Storyline Panel ── */}
+      {/* 鈹€鈹€ Storyline Panel 鈹€鈹€ */}
       {showStoryline && branchTree && (
         <StorylinePanel
           branchTree={branchTree}
@@ -851,14 +846,14 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         />
       )}
 
-      {/* ── World Book Overview Panel ── */}
+      {/* 鈹€鈹€ World Book Overview Panel 鈹€鈹€ */}
       <WorldBookOverview
         status={wb.sessionStatus || { active: false }}
         isOpen={showWorldBookOverview}
         onClose={() => setShowWorldBookOverview(false)}
       />
 
-      {/* ── Plot Line Manager Dialog ── */}
+      {/* 鈹€鈹€ Plot Line Manager Dialog 鈹€鈹€ */}
       {showPlotLineManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowPlotLineManager(false)}>
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
@@ -886,7 +881,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         </div>
       )}
 
-      {/* ── World Book Manager Dialog ── */}
+      {/* 鈹€鈹€ World Book Manager Dialog 鈹€鈹€ */}
       {showWorldBookManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowWorldBookManager(false)}>
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
@@ -913,3 +908,5 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     </div>
   );
 };
+
+

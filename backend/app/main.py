@@ -4,6 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import logging
+import os
+import anyio.to_thread
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from .core import settings, engine, run_migrations
 from .api import api_router
@@ -13,24 +20,61 @@ from .services.provider_registry import get_missing_provider_secret_refs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PalinkAI")
 
+
+def _initialize_database_once() -> None:
+    lock_file = settings.STARTUP_INIT_LOCK_FILE
+    done_file = settings.STARTUP_INIT_DONE_FILE
+
+    if fcntl is None:
+        logger.warning("fcntl 不可用，按单进程模式执行数据库初始化")
+        Base.metadata.create_all(bind=engine)
+        logger.info("数据库表创建完成")
+        if settings.RUN_MIGRATIONS_ON_STARTUP:
+            logger.info("RUN_MIGRATIONS_ON_STARTUP=true，开始执行数据库迁移")
+            run_migrations(engine)
+            logger.info("数据库迁移完成")
+        else:
+            logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+        return
+
+    os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+    os.makedirs(os.path.dirname(done_file), exist_ok=True)
+
+    with open(lock_file, "w", encoding="utf-8") as lock_fp:
+        fcntl.flock(lock_fp, fcntl.LOCK_EX)
+
+        if os.path.exists(done_file):
+            logger.info("数据库初始化已由其他 worker 完成，当前 worker 跳过")
+            return
+
+        Base.metadata.create_all(bind=engine)
+        logger.info("数据库表创建完成")
+
+        if settings.RUN_MIGRATIONS_ON_STARTUP:
+            logger.info("RUN_MIGRATIONS_ON_STARTUP=true，开始执行数据库迁移")
+            run_migrations(engine)
+            logger.info("数据库迁移完成")
+        else:
+            logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+
+        with open(done_file, "w", encoding="utf-8") as done_fp:
+            done_fp.write(str(os.getpid()))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info("应用启动中...")
-    Base.metadata.create_all(bind=engine)
-    logger.info("数据库表创建完成")
-    if settings.RUN_MIGRATIONS_ON_STARTUP:
-        logger.info("RUN_MIGRATIONS_ON_STARTUP=true，开始执行数据库迁移")
-        try:
-            run_migrations(engine)
-            logger.info("数据库迁移完成")
-        except Exception:
-            logger.exception("数据库迁移失败")
-            if settings.MIGRATIONS_FAIL_FAST:
-                raise
-            logger.warning("MIGRATIONS_FAIL_FAST=false，继续启动应用（谨慎）")
-    else:
-        logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    limiter.total_tokens = max(settings.API_THREADPOOL_TOKENS, 1)
+    logger.info("AnyIO 线程池并发令牌设置为: %s", limiter.total_tokens)
+
+    try:
+        _initialize_database_once()
+    except Exception:
+        logger.exception("数据库迁移失败")
+        if settings.MIGRATIONS_FAIL_FAST:
+            raise
+        logger.warning("MIGRATIONS_FAIL_FAST=false，继续启动应用（谨慎）")
 
     missing_secret_refs = get_missing_provider_secret_refs()
     if missing_secret_refs:

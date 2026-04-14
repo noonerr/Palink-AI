@@ -63,6 +63,7 @@ class CharacterChatMessage(Base):
     branch_id = Column(String, ForeignKey("character_chat_session_branches.id"), nullable=True)
     role = Column(String)
     content = Column(Text)
+    short_title = Column(String, nullable=True)
     model = Column(String, nullable=True)
     tokens = Column(Integer, default=0)
     prompt_tokens = Column(Integer, default=0)

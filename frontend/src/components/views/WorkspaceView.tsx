@@ -518,7 +518,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
-        <div className="h-[54px] flex items-center justify-between px-4 sm:px-6 border-b border-border/50 bg-background z-10">
+        <div className="h-[48px] flex items-center justify-between px-4 sm:px-6 border-b border-border/50 bg-background z-10 sm:pt-3" style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
           {/* Breadcrumb */}
           <div className="flex items-center gap-1 text-sm text-muted-foreground min-w-0 flex-1">
             {/* Mobile Sidebar Toggle */}

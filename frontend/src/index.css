@@ -222,6 +222,7 @@ h6,
 [data-slot="scroll-area-viewport"] {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  scroll-padding-top: calc(env(safe-area-inset-top) + 4.2rem);
 }
 
 /* ========================================
@@ -406,6 +407,24 @@ h6,
 @keyframes fade-out-delayed {
   0% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+@keyframes welcome-drop {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(var(--welcome-drop-distance)); opacity: 0; }
+}
+
+.animate-welcome-drop {
+  animation: welcome-drop var(--welcome-drop-duration) cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes chat-input-appear {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-chat-input-appear {
+  animation: chat-input-appear 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
 .animate-fade-out-delayed {
@@ -809,12 +828,17 @@ button,
   button {
     -webkit-appearance: none;
   }
-  
+
   /* Prevent form elements from being styled by iOS */
   input, select, textarea {
     -webkit-appearance: none;
   }
-  
+
+  /* Improve scrolling performance on iOS */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+
   /* iOS safe area padding for mobile nav */
   .mobile-nav {
     padding-bottom: max(env(safe-area-inset-bottom), 8px);
@@ -902,7 +926,9 @@ button,
   .animate-fade-in-up,
   .animate-slide-in-right,
   .animate-slide-in-left,
-  .animate-pulse-soft {
+  .animate-pulse-soft,
+  .animate-welcome-drop,
+  .animate-chat-input-appear {
     animation: none !important;
     opacity: 1;
   }

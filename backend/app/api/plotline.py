@@ -10,6 +10,7 @@ from ..core import get_db
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.plotline import PlotLine, PlotStage, SessionPlotLine
+from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
 from ..schemas.plotline import (
     PlotLineCreate, PlotLineUpdate, PlotLineResponse,
     PlotLineDetail, PlotStageResponse, PlotStageUpdate,
@@ -145,7 +146,6 @@ async def parse_plot_line(
 ):
     """Use LLM to parse raw_content into structured stages."""
     from ..services.plotline_service import PARSE_SYSTEM_PROMPT
-    from ..api.character_ext import call_openai_compat
 
     pl = db.query(PlotLine).filter(PlotLine.id == plot_line_id, PlotLine.user_id == current_user.id).first()
     if not pl:
@@ -157,27 +157,23 @@ async def parse_plot_line(
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
 
-    from ..services.provider_registry import find_model
-
-    provider, _ = find_model(model)
-    if not provider:
-        raise HTTPException(status_code=400, detail="Model not configured")
-
-    api_base = provider.get("base_url")
-    api_key = provider.get("api_key")
-    if not api_base or not api_key:
-        raise HTTPException(status_code=400, detail="Provider config incomplete")
+    try:
+        ensure_model_available(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        result_text = await call_openai_compat(
-            api_base=api_base,
-            api_key=api_key,
-            model=model,
+        completion = await complete_text_completion(
+            model_id=model,
             messages=[
                 {"role": "system", "content": PARSE_SYSTEM_PROMPT},
                 {"role": "user", "content": pl.raw_content},
             ],
+            temperature=0.2,
+            max_tokens=2400,
+            timeout=60.0,
         )
+        result_text = completion.get("content") or ""
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 

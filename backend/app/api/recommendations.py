@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db, settings
 from ..models import SystemSetting
-from ..services.provider_registry import find_model
-from ..services.llm_client import get_async_openai_client
+from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 logger = logging.getLogger(__name__)
@@ -46,41 +45,37 @@ async def get_starter_questions(db: Session = Depends(get_db)):
             pass
 
     if should_regenerate and model_id:
-        provider, _ = find_model(model_id)
-        if provider:
-            try:
-                client = get_async_openai_client(
-                    api_key=provider["api_key"],
-                    base_url=provider["base_url"],
-                    timeout=30.0,
-                )
-                prompt = (
-                    "Generate 4 short, interesting, and diverse conversation starter questions/topics "
-                    "for an AI assistant. Output ONLY a JSON array of strings, e.g., ['Topic 1', 'Topic 2']."
-                )
-                resp = await client.chat.completions.create(
-                    model=model_id,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                )
-                content = resp.choices[0].message.content
-                match = re.search(r"\[.*\]", content, re.DOTALL)
-                if match:
-                    new_questions = json.loads(match.group(0))
-                    if isinstance(new_questions, list) and len(new_questions) > 0:
-                        questions = new_questions[:4]
-                        val = json.dumps(questions, ensure_ascii=False)
-                        if setting:
-                            setting.value = val
-                        else:
-                            db.add(SystemSetting(key="starter_questions", value=val))
-                        now_iso = datetime.now(timezone.utc).isoformat()
-                        if last_update_setting:
-                            last_update_setting.value = now_iso
-                        else:
-                            db.add(SystemSetting(key="last_starters_update", value=now_iso))
-                        db.commit()
-            except Exception as e:
-                logger.error(f"Auto-generate starters failed: {e}")
+        try:
+            ensure_model_available(model_id)
+            prompt = (
+                "Generate 4 short, interesting, and diverse conversation starter questions/topics "
+                "for an AI assistant. Output ONLY a JSON array of strings, e.g., ['Topic 1', 'Topic 2']."
+            )
+            completion = await complete_text_completion(
+                model_id=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=200,
+                timeout=30.0,
+            )
+            content = completion.get("content") or ""
+            match = re.search(r"\[.*\]", content, re.DOTALL)
+            if match:
+                new_questions = json.loads(match.group(0))
+                if isinstance(new_questions, list) and len(new_questions) > 0:
+                    questions = new_questions[:4]
+                    val = json.dumps(questions, ensure_ascii=False)
+                    if setting:
+                        setting.value = val
+                    else:
+                        db.add(SystemSetting(key="starter_questions", value=val))
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    if last_update_setting:
+                        last_update_setting.value = now_iso
+                    else:
+                        db.add(SystemSetting(key="last_starters_update", value=now_iso))
+                    db.commit()
+        except Exception as e:
+            logger.error(f"Auto-generate starters failed: {e}")
 
     return questions

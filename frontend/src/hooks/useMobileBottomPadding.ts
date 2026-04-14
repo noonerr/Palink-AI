@@ -38,16 +38,13 @@ export const useMobileBottomPadding = () => {
       rafId = requestAnimationFrame(updatePadding);
     };
 
-    const timeoutId = setTimeout(scheduleUpdate, 100);
+    scheduleUpdate();
     window.addEventListener('resize', scheduleUpdate);
     window.addEventListener('orientationchange', scheduleUpdate);
-    window.addEventListener('load', scheduleUpdate);
 
     return () => {
-      clearTimeout(timeoutId);
       window.removeEventListener('resize', scheduleUpdate);
       window.removeEventListener('orientationchange', scheduleUpdate);
-      window.removeEventListener('load', scheduleUpdate);
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
       }

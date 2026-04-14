@@ -282,7 +282,7 @@ const SettingsViewDesktop = lazy(() =>
   import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
 const CharacterViewDesktop = lazy(() =>
-  import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
+  import('@/components/views/CharacterViewDesktop').then((module) => ({ default: module.CharacterViewDesktop }))
 );
 
 const ChatViewMobile = lazy(() =>
@@ -295,7 +295,7 @@ const SettingsViewMobile = lazy(() =>
   import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
 const CharacterViewMobile = lazy(() =>
-  import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
+  import('@/components/views/CharacterViewMobile').then((module) => ({ default: module.CharacterViewMobile }))
 );
 
 const USER_FETCH_TIMEOUT_MS = 12000;
@@ -331,6 +331,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [currentModel, setCurrentModel] = useState<string>('');
+  const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
 
   const t = TRANSLATIONS[lang];
 
@@ -418,10 +419,57 @@ function App() {
   }, [loadConfig]);
 
   useEffect(() => {
-    if (models.length > 0 && !currentModel) {
-      setCurrentModel(systemDefaults.default_chat_model || models[0].id);
+    const handleModelsUpdated = () => {
+      loadConfig();
+    };
+
+    const handleUserSettingsUpdated = (e: CustomEvent) => {
+      if (e.detail?.showModelReasoning !== undefined) {
+        setShowModelReasoning(e.detail.showModelReasoning);
+      }
+    };
+
+    const fetchUserSettings = async () => {
+      if (token) {
+        try {
+          const settings = await api.get('/api/users/me/settings');
+          setShowModelReasoning(settings.show_model_reasoning !== false);
+        } catch (e) {
+          console.error('Failed to fetch user settings:', e);
+        }
+      }
+    };
+
+    window.addEventListener('modelsUpdated', handleModelsUpdated);
+    window.addEventListener('userSettingsUpdated', handleUserSettingsUpdated as EventListener);
+    
+    fetchUserSettings();
+    
+    return () => {
+      window.removeEventListener('modelsUpdated', handleModelsUpdated);
+      window.removeEventListener('userSettingsUpdated', handleUserSettingsUpdated as EventListener);
+    };
+  }, [loadConfig, token]);
+
+  useEffect(() => {
+    if (models.length === 0) {
+      return;
     }
-  }, [models, systemDefaults.default_chat_model]);
+
+    const hasCurrentModel = models.some((model) => model.id === currentModel);
+    if (currentModel && hasCurrentModel) {
+      return;
+    }
+
+    const preferredDefault = systemDefaults.default_chat_model;
+    const hasPreferredDefault = preferredDefault && models.some((model) => model.id === preferredDefault);
+    if (hasPreferredDefault) {
+      setCurrentModel(preferredDefault);
+      return;
+    }
+
+    setCurrentModel(models[0].id);
+  }, [models, currentModel, systemDefaults.default_chat_model]);
 
   const handleLogin = (data: { access_token: string }) => {
     setToken(data.access_token);
@@ -493,6 +541,7 @@ function App() {
               sidebarCollapsed={sidebarCollapsed}
               setSidebarCollapsed={setSidebarCollapsed}
               isDark={isDark === 'dark'}
+              showModelReasoning={showModelReasoning}
             />
           ) : (
             <ChatViewMobile
@@ -505,6 +554,7 @@ function App() {
               sidebarCollapsed={sidebarCollapsed}
               setSidebarCollapsed={setSidebarCollapsed}
               isDark={isDark === 'dark'}
+              showModelReasoning={showModelReasoning}
             />
           )}
         </Suspense>
@@ -578,7 +628,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              isDark={isDark === 'dark'}
+              lang={lang}
             />
           ) : (
             <CharacterViewMobile
@@ -587,7 +637,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              isDark={isDark === 'dark'}
+              lang={lang}
             />
           )}
         </Suspense>
@@ -601,7 +651,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              isDark={isDark === 'dark'}
+              lang={lang}
             />
           ) : (
             <CharacterViewMobile
@@ -610,7 +660,7 @@ function App() {
               models={models}
               t={t}
               systemDefaults={systemDefaults}
-              isDark={isDark === 'dark'}
+              lang={lang}
             />
           )}
         </Suspense>
@@ -635,7 +685,7 @@ function App() {
         {device === 'mobile' && (
           <div className={cn(
             'transition-transform duration-300 ease-in-out',
-            historyOpen && 'translate-x-[280px]'
+            historyOpen && 'translate-x-[270px]'
           )}>
             <MobileBottomNav {...sidebarProps} />
           </div>

@@ -29,8 +29,14 @@ from ..character_card import extract_chara_card_from_png
 from ..memory_module.service import MemoryService
 from ..services.worldbook_service import build_worldbook_context
 from ..services.plotline_service import build_plotline_context
-from ..services.provider_registry import get_runtime_providers, find_model
-from ..services.llm_client import get_async_openai_client
+from ..services.provider_registry import get_runtime_providers
+from ..services.inference_dispatcher import (
+    complete_text_completion,
+    ensure_model_available,
+    stream_text_completion,
+)
+from ..services.local_model_registry import list_enabled_chat_models
+from ..services.compact_title_service import generate_compact_title
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
@@ -240,6 +246,7 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户") ->
         '- Wrap spoken dialogue in double quotes: "Hello!"\n'
         '- Wrap actions, narration, and internal thoughts in asterisks: *she smiled softly*\n'
         '- Do NOT use XML tags like <action> or <thinking>.\n'
+        '- Never output chain-of-thought, analysis text, or labels like "Final Answer".\n'
         '- Write naturally, mixing dialogue and actions in the same response.'
     )
     return "\n\n".join(parts)
@@ -546,22 +553,26 @@ async def parse_character_card(
         char.processing_status = "Parsing..."
         db.commit()
 
-        providers = get_runtime_providers()
-        provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
-        if not provider:
-            char.is_processing = False
-            db.commit()
-            raise HTTPException(status_code=400, detail="No AI model configured")
-
         model_id = req.model
         if not model_id:
-            model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
-        else:
-            p, _ = find_model(model_id)
-            if not p:
-                char.is_processing = False
-                db.commit()
-                raise HTTPException(status_code=400, detail="Model not found")
+            providers = get_runtime_providers()
+            provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
+            if provider:
+                model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
+            else:
+                local_models = list_enabled_chat_models()
+                if not local_models:
+                    char.is_processing = False
+                    db.commit()
+                    raise HTTPException(status_code=400, detail="No AI model configured")
+                model_id = local_models[0]["id"]
+
+        try:
+            ensure_model_available(model_id)
+        except ValueError as exc:
+            char.is_processing = False
+            db.commit()
+            raise HTTPException(status_code=400, detail=str(exc))
 
         fields_to_parse = {
             "description": char.description or "",
@@ -571,23 +582,20 @@ async def parse_character_card(
         }
 
         try:
-            client = get_async_openai_client(
-                api_key=provider["api_key"],
-                base_url=provider["base_url"],
-                timeout=30.0,
-            )
             prompt = (
                 "Parse the following character card content, extract and organize the information. "
                 "Return a valid JSON object with the same keys, clean up any messy format, "
                 "and improve the content to be more coherent and structured.\n\n"
                 + json.dumps(fields_to_parse, ensure_ascii=False)
             )
-            resp = await client.chat.completions.create(
-                model=model_id,
+            completion = await complete_text_completion(
+                model_id=model_id,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
+                max_tokens=1200,
+                timeout=30.0,
             )
-            content = resp.choices[0].message.content
+            content = completion.get("content") or ""
             import re
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
@@ -636,23 +644,26 @@ async def translate_character(
 
     lang_name = "Chinese (Simplified)" if req.target_language == "zh" else req.target_language
 
-    providers = get_runtime_providers()
-    provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
-    if not provider:
-        char.is_processing = False
-        db.commit()
-        raise HTTPException(status_code=400, detail="No AI model configured")
-
     model_id = req.model
     if not model_id:
-        model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
-    else:
-        p, _ = find_model(model_id)
-        if not p:
-            char.is_processing = False
-            db.commit()
-            raise HTTPException(status_code=400, detail="Model not found")
-        provider = p
+        providers = get_runtime_providers()
+        provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
+        if provider:
+            model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
+        else:
+            local_models = list_enabled_chat_models()
+            if not local_models:
+                char.is_processing = False
+                db.commit()
+                raise HTTPException(status_code=400, detail="No AI model configured")
+            model_id = local_models[0]["id"]
+
+    try:
+        ensure_model_available(model_id)
+    except ValueError as exc:
+        char.is_processing = False
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(exc))
 
     fields_to_translate = {
         "description": char.description or "",
@@ -664,23 +675,20 @@ async def translate_character(
     }
 
     try:
-        client = get_async_openai_client(
-            api_key=provider["api_key"],
-            base_url=provider["base_url"],
-            timeout=30.0,
-        )
         prompt = (
             f"Translate the following character card fields to {lang_name}. "
             f"Return a valid JSON object with the same keys. You MUST translate ALL 6 fields. "
             f"Keep proper nouns (character names) unchanged. Do not omit any field.\n\n"
             + json.dumps(fields_to_translate, ensure_ascii=False)
         )
-        resp = await client.chat.completions.create(
-            model=model_id,
+        completion = await complete_text_completion(
+            model_id=model_id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
+            max_tokens=1500,
+            timeout=30.0,
         )
-        content = resp.choices[0].message.content
+        content = completion.get("content") or ""
         # Extract JSON
         import re
         match = re.search(r"\{.*\}", content, re.DOTALL)
@@ -1005,6 +1013,7 @@ async def get_branch_tree(
                         "pair_id": f"pair_{pending_user.id}",
                         "user_msg_id": pending_user.id,
                         "ai_msg_id": msg.id,
+                        "node_title": msg.short_title or ai_display[:20],
                         "user_summary": pending_user.content[:80],
                         "ai_summary": ai_display[:80],
                         "created_at": msg.created_at.isoformat() if msg.created_at else None,
@@ -1018,6 +1027,7 @@ async def get_branch_tree(
                         "pair_id": f"ai_{msg.id}",
                         "user_msg_id": None,
                         "ai_msg_id": msg.id,
+                        "node_title": msg.short_title or ai_display[:20],
                         "user_summary": None,
                         "ai_summary": ai_display[:80],
                         "created_at": msg.created_at.isoformat() if msg.created_at else None,
@@ -1100,9 +1110,10 @@ async def character_chat(
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
 
-    provider, model_cfg = find_model(req.model)
-    if not provider:
-        raise HTTPException(status_code=400, detail="Model not configured")
+    try:
+        ensure_model_available(req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     user_nickname = req.user_nickname or user.username or "用户"
     is_init = req.message.strip() == "__INIT__"
@@ -1113,11 +1124,22 @@ async def character_chat(
     if not session_id or session_id == "":
         session_id = str(uuid.uuid4())
         is_new_session = True
+        initial_title = char.name
+        if not is_init and (req.message or "").strip():
+            try:
+                initial_title = await generate_compact_title(
+                    db,
+                    req.message,
+                    fallback_model_id=req.model,
+                    max_len=10,
+                )
+            except Exception as e:
+                logger.warning(f"Character session compact title fallback used: {e}")
         new_session = CharacterChatSession(
             id=session_id,
             character_id=char.id,
             user_id=user.id,
-            title=char.name,
+            title=initial_title,
             dialogue_mode=req.dialogue_mode,
         )
         db.add(new_session)
@@ -1249,12 +1271,23 @@ async def character_chat(
         first_mes = (char.first_mes or "").strip()
         if not first_mes:
             return {"session_id": session_id, "message": ""}
+        init_short_title = None
+        try:
+            init_short_title = await generate_compact_title(
+                db,
+                first_mes,
+                fallback_model_id=req.model,
+                max_len=10,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate init short_title: {e}")
         # Save the character's first message directly
         db.add(CharacterChatMessage(
             session_id=session_id,
             branch_id=branch_id,
             role="assistant",
             content=first_mes,
+            short_title=init_short_title,
             model=req.model,
         ))
         db.commit()
@@ -1269,7 +1302,7 @@ async def character_chat(
 
         return StreamingResponse(
             init_stream(),
-            media_type="text/event-stream",
+            media_type="text/event-stream; charset=utf-8",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
@@ -1303,48 +1336,30 @@ async def character_chat(
         prompt_tokens = 0
         completion_tokens = 0
         try:
-            client = get_async_openai_client(
-                api_key=provider["api_key"],
-                base_url=provider["base_url"],
-                timeout=30.0,
-            )
-            stream_kwargs = dict(
-                model=req.model,
-                messages=messages,
-                temperature=req.temperature,
-                stream=True,
-            )
-            # Request usage info in stream if supported
-            try:
-                stream_kwargs["stream_options"] = {"include_usage": True}
-                stream = await client.chat.completions.create(**stream_kwargs)
-            except Exception:
-                # Fallback: some providers don't support stream_options
-                stream_kwargs.pop("stream_options", None)
-                stream = await client.chat.completions.create(**stream_kwargs)
-
             # Send session_id on first chunk if new session
             if is_new_session:
                 yield f"data: {json.dumps({'session_id': session_id, 'branch_id': branch_id})}\n\n"
 
-            async for chunk in stream:
-                # Extract usage from the final chunk if available
-                usage = getattr(chunk, "usage", None)
+            async for delta in stream_text_completion(
+                model_id=req.model,
+                messages=messages,
+                temperature=req.temperature,
+                timeout=30.0,
+            ):
+                usage = delta.get("usage")
                 if usage:
-                    total_tokens = getattr(usage, "total_tokens", 0) or 0
-                    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-
-                if not chunk.choices:
+                    total_tokens = int(usage.get("total_tokens", 0) or 0)
+                    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
                     continue
-                delta = chunk.choices[0].delta
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                content = delta.content
+
+                reasoning = delta.get("reasoning")
+                content = delta.get("content")
                 resp = {}
-                if reasoning:
+                if isinstance(reasoning, str) and reasoning:
                     full_reasoning += reasoning
                     resp["reasoning"] = reasoning
-                if content:
+                if isinstance(content, str) and content:
                     full_content += content
                     resp["content"] = content
                 if resp:
@@ -1363,11 +1378,18 @@ async def character_chat(
                 final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
                 # Use API-reported tokens if available, otherwise estimate
                 token_count = completion_tokens if completion_tokens > 0 else len(full_content) // 2
+                short_title = await generate_compact_title(
+                    new_db,
+                    f"{req.message}\n{full_content}",
+                    fallback_model_id=req.model,
+                    max_len=10,
+                )
                 new_db.add(CharacterChatMessage(
                     session_id=session_id,
                     branch_id=branch_id,
                     role="assistant",
                     content=final,
+                    short_title=short_title,
                     model=req.model,
                     tokens=token_count,
                     prompt_tokens=prompt_tokens,
@@ -1401,10 +1423,11 @@ async def character_chat(
 
         except Exception as e:
             logger.exception("Character chat stream error")
+            print(f"[character_chat_stream_error] {type(e).__name__}: {e}", flush=True)
             yield f"data: {json.dumps({'content': 'Error: 服务暂时不可用，请稍后重试。', 'error': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream",
+        media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

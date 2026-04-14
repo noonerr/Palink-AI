@@ -52,6 +52,7 @@ export interface Message {
   model?: string;
   created_at?: string;
   tokens?: number;
+  summary?: string;
 }
 
 export interface FileItem {

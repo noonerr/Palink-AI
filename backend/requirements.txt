@@ -18,10 +18,4 @@ llama-cpp-python
 psutil
 numpy
 Pillow
-# 轻量级嵌入模型 - 纯CPU，无PyTorch依赖
-# 使用 ONNX Runtime 替代 PyTorch
 fastembed>=0.3.0
-# BGE-Large-zh-v1.5 中文嵌入模型 - 使用sentence-transformers
-torch>=2.0.0
-transformers>=4.30.0
-sentence-transformers>=2.2.0

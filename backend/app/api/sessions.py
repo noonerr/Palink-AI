@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
@@ -85,6 +86,28 @@ async def get_session_messages(
     ]
 
 
+def delete_session_memories(db: Session, session_ids: List[str], user_id: int):
+    """删除指定会话的所有记忆数据"""
+    try:
+        # 使用 SQL 直接删除 conversation_memories 表中的相关记录
+        # 使用 IN 子句兼容 SQLite 和 PostgreSQL
+        placeholders = ", ".join([f":session_id_{i}" for i in range(len(session_ids))])
+        params = {"user_id": user_id}
+        for i, session_id in enumerate(session_ids):
+            params[f"session_id_{i}"] = session_id
+            
+        sql = text(f"""
+            DELETE FROM conversation_memories 
+            WHERE session_id IN ({placeholders}) AND user_id = :user_id
+        """)
+        db.execute(sql, params)
+        db.commit()
+    except Exception as e:
+        # 如果表不存在或出错，回滚并继续（不影响会话删除）
+        db.rollback()
+        print(f"删除记忆数据时出错: {e}")
+
+
 @router.delete("/batch")
 async def batch_delete_sessions(
     req: BatchDeleteRequest,
@@ -96,6 +119,11 @@ async def batch_delete_sessions(
         .filter(ChatSession.id.in_(req.session_ids), ChatSession.user_id == user.id)
         .all()
     )
+    
+    # 先删除相关的记忆数据
+    session_ids_to_delete = [s.id for s in sessions]
+    delete_session_memories(db, session_ids_to_delete, user.id)
+    
     for s in sessions:
         db.delete(s)
     db.commit()
@@ -111,6 +139,10 @@ async def delete_session(
     session = db.query(ChatSession).filter(ChatSession.id == sid, ChatSession.user_id == user.id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    
+    # 先删除相关的记忆数据
+    delete_session_memories(db, [sid], user.id)
+    
     db.delete(session)
     db.commit()
     return {"status": "ok"}

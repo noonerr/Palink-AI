@@ -5,7 +5,8 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from ..services.llm_client import get_async_openai_client
@@ -16,6 +17,11 @@ from ..models import User, ChatSession, ChatMessage, SystemSetting
 from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig, TestProviderRequest
 from ..models.system import ProviderTestResult
 from ..services.provider_registry import get_providers, invalidate_provider_cache, resolve_secret_reference
+from ..services.local_model_registry import (
+    delete_local_model,
+    set_local_model_enabled,
+    upload_local_model,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -113,19 +119,32 @@ async def set_system_defaults(config: DefaultModelConfig, user: User = Depends(g
 
 @router.get("/users")
 async def list_users(user: User = Depends(get_admin), db: Session = Depends(get_db)):
-    users = db.query(User).all()
-    result = []
-    for u in users:
-        chat_count = db.query(ChatSession).filter(ChatSession.user_id == u.id).count()
-        result.append({
-            "id": u.id,
-            "username": u.username,
-            "role": u.role,
-            "is_active": u.is_active,
-            "storage_used": u.storage_used or 0,
-            "chat_count": chat_count,
-        })
-    return result
+    rows = (
+        db.query(
+            User.id,
+            User.username,
+            User.role,
+            User.is_active,
+            User.storage_used,
+            func.count(ChatSession.id).label("chat_count"),
+        )
+        .outerjoin(ChatSession, ChatSession.user_id == User.id)
+        .group_by(User.id, User.username, User.role, User.is_active, User.storage_used)
+        .order_by(User.id.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": row.id,
+            "username": row.username,
+            "role": row.role,
+            "is_active": row.is_active,
+            "storage_used": row.storage_used or 0,
+            "chat_count": int(row.chat_count or 0),
+        }
+        for row in rows
+    ]
 
 
 @router.delete("/users/{user_id}")
@@ -195,6 +214,49 @@ async def update_starter_questions(questions: List[str], user: User = Depends(ge
         db.add(SystemSetting(key="last_starters_update", value=now_iso))
     db.commit()
     return {"status": "ok"}
+
+
+# --- Local model management (llama.cpp) ---
+
+@router.post("/models/local/upload")
+async def upload_local_model_api(
+    file: UploadFile = File(...),
+    user: User = Depends(get_admin),
+):
+    result = upload_local_model(file)
+    return {
+        "status": "ok",
+        "message": result.get("message", "模型上传成功"),
+        "model": result.get("model"),
+    }
+
+
+@router.put("/models/local/{model_ref}/enable")
+async def set_local_model_enabled_api(
+    model_ref: str,
+    enabled: bool = Query(...),
+    user: User = Depends(get_admin),
+):
+    model = set_local_model_enabled(model_ref, enabled)
+    state = "启用" if enabled else "禁用"
+    return {
+        "status": "ok",
+        "message": f"模型已{state}",
+        "model": model,
+    }
+
+
+@router.delete("/models/local/{model_ref}")
+async def delete_local_model_api(
+    model_ref: str,
+    user: User = Depends(get_admin),
+):
+    removed = delete_local_model(model_ref)
+    return {
+        "status": "ok",
+        "message": "模型已删除",
+        "model": removed,
+    }
 
 
 # --- Provider connection test ---
