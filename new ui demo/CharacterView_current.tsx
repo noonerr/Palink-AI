@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
 import { api } from '@/services/api';
@@ -23,6 +24,7 @@ interface CharacterViewProps {
   t: Record<string, string>;
   systemDefaults?: Record<string, string>;
   lang?: 'zh' | 'en';
+  isDark?: boolean;
 }
 
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
@@ -33,7 +35,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   models,
   t,
   systemDefaults,
-  lang
+  lang,
+  isDark = false
 }) => {
   const { characterId } = useParams<{ characterId?: string }>();
   const navigate = useNavigate();
@@ -48,7 +51,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     const ocData = getOCData();
     if (ocData?.name) return ocData.name;
     if (character?.user_nickname) return character.user_nickname;
-    return user.username || (t.user_label || '用户');
+    return user.username || '用户';
   };
   
   const [sessions, setSessions] = useState<CharacterChatSession[]>([]);
@@ -108,7 +111,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const pl = usePlotLine();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const routeCharacterSyncRef = useRef<string | null>(null);
 
   const loadingSessionRef = useRef<string | null>(null);
 
@@ -154,7 +156,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   }, []);
 
-  // Chat hook
+  // 鈹€鈹€ Chat hook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const {
     isGenerating,
     inputValue,
@@ -190,9 +192,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setSelectedSession,
     loadSessions,
     loadMemoryStats,
+    uiLanguage: lang,
   });
 
-  // Message selection hook
+  // 鈹€鈹€ Message selection hook 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const {
     isMixedDeleteMode,
     setIsMixedDeleteMode,
@@ -255,7 +258,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const data = await api.get('/api/characters');
       setCharacters(data);
       
-      // 如果有characterId参数，自动打开对应的角色介绍页面
+      // 如果有 characterId 参数，自动打开对应的角色介绍页面
       // if (characterId) {
       //   const targetCharacter = data.find((c: Character) => c.id === characterId);
       //   if (targetCharacter) {
@@ -394,11 +397,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         branch_id: selectedBranch?.id,
         compression_ratio: 0.5
       });
-      alert(`记忆压缩完成！\n处理: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(selectedSession.id, selectedBranch?.id);
     } catch (e: any) {
       console.error('Manual compress failed:', e);
-      alert((t.compress_failed || '压缩失败') + ': ' + (e.message || ''));
+      alert('压缩失败: ' + (e.message || ''));
     } finally {
       setCompressing(false);
     }
@@ -463,7 +466,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadCharacters();
     } catch (e: any) {
       console.error('Failed to delete character:', e);
-      alert((t.delete_failed || '删除失败') + ': ' + (e.message || ''));
+      alert('删除失败: ' + (e.message || ''));
     } finally {
       setShowDeleteCharacterConfirm(false);
       setPendingDeleteCharacter(null);
@@ -480,7 +483,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setShowImportOptions(result.character.id);
     } catch (e: any) {
       console.error('Failed to import character:', e);
-      alert((t.import_failed || '导入失败') + ': ' + (e.message || ''));
+      alert('导入失败: ' + (e.message || ''));
     }
   };
 
@@ -491,7 +494,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setForceShowOverlay(characterId);
       setShowImportOptions(null);
       
-      setShowProcessingMessage({ show: true, message: 'Processing stopped' });
+      setShowProcessingMessage({ show: true, message: '已经开始解析，请稍候...' });
       
       console.log('[handleParseAndTranslateCharacter] Calling parse API...');
       await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
@@ -500,7 +503,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       pollCharacterStatus(characterId, true);
     } catch (e: any) {
       console.error('[handleParseAndTranslateCharacter] Failed:', e);
-      setShowProcessingMessage({ show: true, message: (t.processing_failed || '处理失败') + ': ' + (e.message || '') });
+      setShowProcessingMessage({ show: true, message: '处理失败: ' + (e.message || '') });
       setProcessingCharacter(null);
       setForceShowOverlay(null);
       setTimeout(() => {
@@ -523,7 +526,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await api.post(`/api/characters/${characterId}/reset-status`);
       stopPolling();
       await loadCharacters();
-      setShowProcessingMessage({ show: true, message: 'Processing stopped' });
+      setShowProcessingMessage({ show: true, message: '已停止处理' });
       setTimeout(() => {
         setShowProcessingMessage({ show: false, message: '' });
       }, 3000);
@@ -552,7 +555,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           if (autoTranslate && !translationStarted && !status.processing_status?.includes('失败')) {
             console.log('[pollCharacterStatus] Starting translation...');
             translationStarted = true;
-            setShowProcessingMessage({ show: true, message: t.translation_started || '已经开始翻译，请稍候...' });
+            setShowProcessingMessage({ show: true, message: '已经开始翻译，请稍候...' });
             
             try {
               await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
@@ -560,7 +563,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
               pollCharacterStatus(characterId, false);
             } catch (translateError: any) {
               console.error('[pollCharacterStatus] Translation failed:', translateError);
-              setShowProcessingMessage({ show: true, message: (t.translation_failed || '翻译失败') + ': ' + (translateError.message || '') });
+              setShowProcessingMessage({ show: true, message: '翻译失败: ' + (translateError.message || '') });
               clearInterval(interval);
               if (pollingInterval === interval) {
                 setPollingInterval(null);
@@ -591,12 +594,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           }
             
           if (status.processing_status?.includes('完成')) {
-            setShowProcessingMessage({ show: true, message: t.character_card_processing_complete || '角色卡处理完成！' });
+            setShowProcessingMessage({ show: true, message: '角色卡处理完成！' });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
           } else if (status.processing_status?.includes('失败')) {
-            setShowProcessingMessage({ show: true, message: `${t.character_card_processing_failed || '角色卡处理失败'}：${status.processing_status}` });
+            setShowProcessingMessage({ show: true, message: `角色卡处理失败：${status.processing_status}` });
             setTimeout(() => {
               setShowProcessingMessage({ show: false, message: '' });
             }, 3000);
@@ -635,15 +638,15 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         }
       } else {
         const error = await res.text();
-        alert((t.export_failed || '导出失败') + ': ' + error);
+        alert('导出失败: ' + error);
       }
     } catch (e) {
       console.error('Failed to export character:', e);
-      alert(t.export_failed || '导出失败');
+      alert('导出失败');
     }
   };
 
-  const handleStartChat = useCallback(async (character: Character) => {
+  const handleStartChat = async (character: Character) => {
     setSelectedCharacter(character);
     setSelectedSession(null);
     setMessages([]);
@@ -651,34 +654,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setSuggestions([]);
     await loadSessions(character.id);
     setViewState('chat');
-  }, [loadSessions]);
-
-  useEffect(() => {
-    if (!characterId) {
-      routeCharacterSyncRef.current = null;
-      return;
-    }
-
-    if (routeCharacterSyncRef.current === characterId) {
-      return;
-    }
-
-    const targetCharacter = characters.find((character) => character.id === characterId);
-    if (!targetCharacter) {
-      return;
-    }
-
-    routeCharacterSyncRef.current = characterId;
-    void handleStartChat(targetCharacter);
-  }, [characterId, characters, handleStartChat]);
+  };
 
   const handleViewProfile = (character: Character) => {
-    setViewingCharacter(character);
-    setSelectedWorldBookId(null);
-    setSelectedPlotLineId(null);
-    setViewState('profile');
-    // 更新 URL 为包含角色 ID 的路径
-    navigate(`/characters/${character.id}`, { replace: true });
+    handleStartChat(character);
   };
 
   const handleStartChatFromProfile = async () => {
@@ -700,7 +679,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setInitializingChat(true);
     
     try {
-      // 如果没有会话且角色有开场白，创建新会话并发送初始消息
+      // 濡傛灉娌℃湁鐜版湁浼氳瘽锛屽苟涓旇鑹叉湁绗竴鏉℃秷鎭紝鍒涘缓涓€涓柊浼氳瘽鏉ュ垵濮嬪寲
       if (sessions.length === 0 && selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
         const data = await api.post('/api/character-chat', {
           character_id: selectedCharacter.id,
@@ -857,9 +836,13 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     };
   }, []);
 
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  const mobilePageBgClass = isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]';
+  const rootBgClass = isMobile ? mobilePageBgClass : 'bg-background';
+
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className={cn('relative flex h-full overflow-hidden items-center justify-center', rootBgClass, isDark && 'dark')}>
         <div className="animate-spin text-primary">
           <Bot size={32} />
         </div>
@@ -868,7 +851,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   }
 
   return (
-    <div className="flex w-full h-full">
+    <div className={cn('relative flex h-full overflow-hidden', rootBgClass, isDark && 'dark')}>
       {viewState === 'list' && (
         <CharacterList
           characters={characters}
@@ -879,7 +862,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           showDeleteCharacterConfirm={showDeleteCharacterConfirm}
           t={t}
           onStartChat={handleStartChat}
-          onViewProfile={handleStartChat}
+          onViewProfile={handleViewProfile}
           onCreateCharacter={handleCreateCharacter}
           onEditCharacter={handleEditCharacter}
           onDeleteCharacter={handleDeleteCharacter}
@@ -1084,5 +1067,3 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     </div>
   );
 };
-
-

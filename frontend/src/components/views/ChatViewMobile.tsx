@@ -28,6 +28,7 @@ interface ChatViewProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (value: boolean) => void;
   isDark?: boolean;
+  isKeyboardOpen?: boolean;
   showModelReasoning?: boolean;
 }
 
@@ -47,6 +48,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   sidebarCollapsed,
   setSidebarCollapsed,
   isDark = false,
+  isKeyboardOpen = false,
   showModelReasoning = true,
 }) => {
   const bottomPadding = useMobileBottomPadding();
@@ -1062,7 +1064,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   ref={messageStackRef}
                   className={cn(
                     'mx-auto max-w-3xl space-y-6',
-                    bottomPadding
+                    isKeyboardOpen ? 'pb-4' : bottomPadding
                   )}
                 >
                   {needsTopSpacer && (
@@ -1125,8 +1127,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
             <div
               className={cn(
-                'fixed bottom-0 left-0 right-0 z-[20] px-3 pb-[calc(90px+min(env(safe-area-inset-bottom),8px))] pt-2 animate-chat-input-appear',
-                'bg-gradient-to-t from-transparent via-transparent to-transparent'
+                'fixed bottom-0 left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear transition-padding-bottom duration-200',
+                'bg-gradient-to-t from-transparent via-transparent to-transparent',
+                isKeyboardOpen ? 'pb-2' : 'pb-[calc(90px+min(env(safe-area-inset-bottom),8px))]'
               )}
             >
               <div className="mx-auto max-w-3xl">

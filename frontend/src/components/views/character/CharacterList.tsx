@@ -561,7 +561,7 @@ const MobileView = ({
             <Button 
               variant={isSelectMode ? 'default' : 'ghost'} 
               onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds([]); }}
-              className="text-xs sm:text-sm rounded-2xl transition-all duration-400 ease-in-out"
+              className={`text-xs sm:text-sm rounded-2xl transition-all duration-400 ease-in-out backdrop-blur-[20px] ${!isSelectMode ? 'bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80' : ''}`}
               style={{ 
                 height: `${getButtonHeight()}px`,
                 paddingLeft: `${14 - scrollProgress * 3}px`,
@@ -594,7 +594,7 @@ const MobileView = ({
                 }}
               />
             </div>
-            <Button onClick={onCreateCharacter} className="rounded-2xl transition-all duration-400 ease-in-out text-xs sm:text-sm" style={{ 
+            <Button onClick={onCreateCharacter} className="rounded-2xl transition-all duration-400 ease-in-out text-xs sm:text-sm backdrop-blur-[20px] bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80" style={{ 
                 height: `${getButtonHeight()}px`,
                 paddingLeft: `${14 - scrollProgress * 3}px`,
                 paddingRight: `${14 - scrollProgress * 3}px`

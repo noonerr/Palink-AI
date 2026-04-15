@@ -1,0 +1,33 @@
+﻿{
+    "backup_id":  "20260403-153854",
+    "created_at_utc":  "2026-04-03T07:39:04Z",
+    "retention_days":  7,
+    "include_runtime_data":  false,
+    "artifacts":  [
+                      {
+                          "name":  "code-config.zip",
+                          "path":  "C:\\Users\\Pall\\OneDrive\\桌面\\Palink-AI\\backups\\20260403-153854\\code-config.zip",
+                          "size_bytes":  5546389,
+                          "sha256":  "178ef351e9a6596d52a27b2d31e8654751aca1cc634c9715e83af873a1b2166f"
+                      },
+                      {
+                          "name":  "code-config.manifest.txt",
+                          "path":  "C:\\Users\\Pall\\OneDrive\\桌面\\Palink-AI\\backups\\20260403-153854\\code-config.manifest.txt",
+                          "size_bytes":  541,
+                          "sha256":  "4001f9f760408e2e23e867c3ce09069f1f531ae560a5cf99fbc29c8212cc80b5"
+                      },
+                      {
+                          "name":  "postgres.dump",
+                          "path":  "C:\\Users\\Pall\\OneDrive\\桌面\\Palink-AI\\backups\\20260403-153854\\postgres.dump",
+                          "size_bytes":  2470387,
+                          "sha256":  "8014f29b5312f92f1d5ecc803fe33fdf9b55b11d3c1cd157860fcf08fbe437cf"
+                      },
+                      {
+                          "name":  "palink.db.sqlite3",
+                          "path":  "C:\\Users\\Pall\\OneDrive\\桌面\\Palink-AI\\backups\\20260403-153854\\palink.db.sqlite3",
+                          "size_bytes":  159744,
+                          "sha256":  "8a33100b1edb8ac20656b1895da8e10528be4830d0ddd0f4f0e5a8088a3b7b55"
+                      }
+                  ],
+    "restore_hint":  "scripts/backup-restore-suite.ps1 -Action restore -BackupId 20260403-153854"
+}

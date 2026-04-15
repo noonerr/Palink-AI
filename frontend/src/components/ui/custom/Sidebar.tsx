@@ -26,6 +26,7 @@ interface SidebarProps {
   switchDevice?: (newDevice: 'desktop' | 'mobile') => void;
   currentDevice?: 'desktop' | 'mobile';
   sidebarCollapsed?: boolean;
+  isKeyboardOpen?: boolean;
 }
 
 interface NavItemProps {
@@ -164,7 +165,8 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
 export const MobileBottomNav: React.FC<SidebarProps> = ({
   t,
   isDark = false,
-  sidebarCollapsed = true
+  sidebarCollapsed = true,
+  isKeyboardOpen = false
 }) => {
   const location = useLocation();
   const dockRef = React.useRef<HTMLDivElement | null>(null);
@@ -223,16 +225,17 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
 
   return (
     <nav className={cn(
-      'fixed bottom-0 left-0 right-0 z-50 flex flex-col items-center pointer-events-auto transition-transform duration-300 ease-in-out',
-      !sidebarCollapsed && 'translate-x-[280px]'
+      'fixed bottom-0 left-4 z-50 flex flex-col items-center pointer-events-auto transition-all duration-300 ease-in-out w-[92%] max-w-[560px]',
+      !sidebarCollapsed && 'translate-x-[280px]',
+      isKeyboardOpen && 'translate-y-full opacity-0 pointer-events-none'
     )} data-dock="true">
       <div
         ref={dockRef}
         className={cn(
-          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[30px]',
+          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[20px]',
           isDark 
             ? 'border-white/[0.15] bg-white/[0.07]' 
-            : 'border-slate-700/[0.25] bg-slate-800/[0.65]'
+            : 'border-[#d9cfbf]/50 bg-[#FFFAFA]/40'
         )}
         data-dock="true"
       >
@@ -240,7 +243,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
           className={cn(
             'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
             !slider.ready && 'opacity-0',
-            isDark ? 'bg-white/[0.30]' : 'bg-slate-900/[0.55]'
+            isDark ? 'bg-white/[0.30]' : 'bg-[#ece2d3]/50'
           )}
           style={{ left: slider.left, width: slider.width }}
         />
@@ -258,7 +261,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
                 'relative z-[2] flex h-full w-[22%] flex-col items-center justify-center gap-1 text-center transition-all duration-300 active:scale-[0.98]',
                 isDark
                   ? (isActive ? 'text-white' : 'text-white/65')
-                  : (isActive ? 'text-white' : 'text-white/75')
+                  : (isActive ? 'text-slate-900' : 'text-slate-700/85')
               )}
               data-dock="true"
             >

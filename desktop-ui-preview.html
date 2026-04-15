@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Palink 桌面端 UI 预览（精简版）</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 50%, #2d2d44 0%, #1a1a2e 100%);
+      color: #fff;
+    }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 72px 320px 1fr;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.09);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(30px);
+      border-radius: 24px;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 8px;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 20px;
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      margin-bottom: 6px;
+    }
+
+    .side-btn {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      color: rgba(255, 255, 255, 0.68);
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.3s cubic-bezier(0.22, 0.65, 0.22, 1);
+    }
+
+    .side-btn.active {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .side-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .side-bottom {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .session-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-title {
+      height: 60px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .new-btn {
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 17px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .session-list {
+      padding: 12px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+
+    .session-item {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.8);
+      cursor: pointer;
+    }
+
+    .session-item.active {
+      background: rgba(255, 255, 255, 0.16);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .header {
+      height: 64px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #a8c8ff;
+    }
+
+    .header p {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.66);
+      margin-top: 2px;
+    }
+
+    .header-tools {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tool {
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.12);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      color: #fff;
+    }
+
+    .view {
+      display: none;
+      height: calc(100% - 64px);
+      min-height: 0;
+    }
+
+    .view.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-body {
+      flex: 1;
+      overflow: auto;
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 72%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.45;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .msg.user {
+      margin-left: auto;
+      background: rgba(168, 200, 255, 0.35);
+    }
+
+    .composer {
+      height: 84px;
+      border-top: 1px solid rgba(255, 255, 255, 0.14);
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .input {
+      flex: 1;
+      height: 46px;
+      border-radius: 23px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.1);
+      padding: 0 16px;
+      color: rgba(255, 255, 255, 0.9);
+      display: flex;
+      align-items: center;
+      font-size: 14px;
+    }
+
+    .send {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      background: rgba(255, 255, 255, 0.18);
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+    }
+
+    .workspace-body,
+    .characters-body,
+    .settings-body {
+      flex: 1;
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 12px;
+      height: 100%;
+    }
+
+    .box {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 12px;
+      min-height: 120px;
+    }
+
+    .box h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+      color: #fff;
+    }
+
+    .list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .chars-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .char-card {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .thumb {
+      height: 160px;
+      background: linear-gradient(140deg, rgba(168, 200, 255, 0.35), rgba(255, 255, 255, 0.12));
+    }
+
+    .char-meta {
+      padding: 10px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 12px;
+      height: 100%;
+    }
+
+    .tab {
+      height: 40px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.82);
+    }
+
+    .tab.active {
+      background: rgba(255, 255, 255, 0.16);
+      color: #fff;
+    }
+
+    @media (max-width: 1200px) {
+      .app {
+        grid-template-columns: 72px 260px 1fr;
+      }
+
+      .chars-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 980px) {
+      .app {
+        grid-template-columns: 72px 1fr;
+      }
+
+      .session-panel {
+        display: none;
+      }
+
+      .workspace-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .settings-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chars-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="panel sidebar" id="sidebar">
+      <div class="logo">P</div>
+      <div class="side-btn active" data-view="chat" title="对话">💬</div>
+      <div class="side-btn" data-view="workspace" title="工作区">📁</div>
+      <div class="side-btn" data-view="characters" title="角色扮演">🤖</div>
+      <div class="side-btn" data-view="settings" title="设置">⚙️</div>
+
+      <div class="side-bottom">
+        <div class="side-btn" title="主题">🌙</div>
+        <div class="side-btn" title="语言">中</div>
+        <div class="avatar">PA</div>
+      </div>
+    </aside>
+
+    <aside class="panel session-panel">
+      <div class="panel-title">
+        <span>会话列表</span>
+        <div class="new-btn">＋ 新建</div>
+      </div>
+      <div class="session-list">
+        <div class="session-item active">你好，初次咨询</div>
+        <div class="session-item">帮我写一段代码</div>
+        <div class="session-item">Dock 栏样式调整</div>
+        <div class="session-item">AI 问答记录</div>
+        <div class="session-item">角色对话分支 03</div>
+      </div>
+    </aside>
+
+    <main class="panel main">
+      <header class="header">
+        <div>
+          <h1 id="title">对话</h1>
+          <p id="subtitle">ChatView 对齐桌面工作区布局</p>
+        </div>
+        <div class="header-tools">
+          <div class="tool">模型选择</div>
+          <div class="tool">记忆模式</div>
+          <div class="tool">导出</div>
+        </div>
+      </header>
+
+      <section class="view active" id="view-chat">
+        <div class="chat-body">
+          <div class="msg">你好，我可以帮你生成文案、分析文件、整理工作流。</div>
+          <div class="msg user">帮我把移动端样式迁移成桌面版。</div>
+          <div class="msg">已收到，我会保留同一套视觉语言，并按桌面信息密度重排。</div>
+        </div>
+        <div class="composer">
+          <div class="input">在这里输入你的问题...</div>
+          <div class="send">➤</div>
+        </div>
+      </section>
+
+      <section class="view" id="view-workspace">
+        <div class="workspace-body">
+          <div class="workspace-grid">
+            <div class="box">
+              <h3>文件树（WorkspaceView）</h3>
+              <div class="list">
+                <div class="row">📁 项目文档</div>
+                <div class="row">📄 前端加载优化计划.md</div>
+                <div class="row">📄 项目优化分析计划.md</div>
+                <div class="row">📄 IMPLEMENTATION_PLAN.md</div>
+              </div>
+            </div>
+            <div class="box">
+              <h3>内容面板（预览/编辑）</h3>
+              <div class="list">
+                <div class="row">标题：Palink-AI 项目优化计划</div>
+                <div class="row">状态：自动保存已开启</div>
+                <div class="row">摘要：当前版本 v0.3.0，执行策略低风险可回滚</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-characters">
+        <div class="characters-body">
+          <div class="chars-grid">
+            <article class="char-card"><div class="thumb"></div><div class="char-meta">角色 A · 对话中</div></article>
+            <article class="char-card"><div class="thumb"></div><div class="char-meta">角色 B · 待解析</div></article>
+            <article class="char-card"><div class="thumb"></div><div class="char-meta">角色 C · 已翻译</div></article>
+            <article class="char-card"><div class="thumb"></div><div class="char-meta">角色 D · 草稿</div></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="settings-body">
+          <div class="settings-grid">
+            <div class="box">
+              <h3>设置分栏</h3>
+              <div class="list">
+                <div class="tab active">个人资料</div>
+                <div class="tab">模型设置</div>
+                <div class="tab">记忆设置</div>
+                <div class="tab">管理员默认值</div>
+                <div class="tab">关于</div>
+              </div>
+            </div>
+            <div class="box">
+              <h3>设置内容区域</h3>
+              <div class="list">
+                <div class="row">用户名：Palink User</div>
+                <div class="row">头像：emoji / 上传 / URL</div>
+                <div class="row">默认聊天模型：x-ai/grok-4.1-fast</div>
+                <div class="row">显示推理过程：关闭</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const sideButtons = Array.from(document.querySelectorAll('.side-btn[data-view]'));
+    const views = {
+      chat: document.getElementById('view-chat'),
+      workspace: document.getElementById('view-workspace'),
+      characters: document.getElementById('view-characters'),
+      settings: document.getElementById('view-settings'),
+    };
+
+    const titles = {
+      chat: ['对话', 'ChatView 对齐桌面工作区布局'],
+      workspace: ['工作区', 'WorkspaceView 文件与内容双栏'],
+      characters: ['角色扮演', 'CharacterView 卡片与会话结构'],
+      settings: ['设置', 'SettingsView 分栏与配置面板'],
+    };
+
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+
+    function switchView(name) {
+      sideButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.view === name));
+      Object.entries(views).forEach(([key, el]) => {
+        if (!el) return;
+        el.classList.toggle('active', key === name);
+      });
+      titleEl.textContent = titles[name][0];
+      subtitleEl.textContent = titles[name][1];
+    }
+
+    sideButtons.forEach((btn) => {
+      btn.addEventListener('click', () => switchView(btn.dataset.view));
+    });
+  </script>
+</body>
+</html>

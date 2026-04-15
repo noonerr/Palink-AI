@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%" style="background: radial-gradient(circle at 50% 50%, #2d2d44 0%, #1a1a2e 100%);">
+  <defs>
+    <linearGradient id="palinkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a8c8ff"/>
+      <stop offset="100%" stop-color="#4b6cb7"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#a8c8ff"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- 左侧：代表 P 的主干与神经元节点 -->
+  <rect x="130" y="110" width="26" height="120" rx="13" fill="url(#palinkGrad)" filter="url(#glow)"/>
+  
+  <!-- 右侧：代表 Link 的环形，与 P 组成无穷大/互联意象 -->
+  <path d="M 143 140 H 220 A 45 45 0 0 1 265 185 A 45 45 0 0 1 220 230 H 170" 
+        fill="none" stroke="url(#palinkGrad)" stroke-width="26" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- AI 标志：右上角的闪耀星芒 -->
+  <path d="M260 100 Q 280 100 280 80 Q 280 100 300 100 Q 280 100 280 120 Q 280 100 260 100" fill="url(#accentGrad)" filter="url(#glow)"/>
+
+  <!-- Logo 文字 -->
+  <text x="200" y="310" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="28" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="4">PALINK AI</text>
+  <text x="200" y="340" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="400" fill="#a8c8ff" text-anchor="middle" letter-spacing="8" opacity="0.6">COMPANION & LINK</text>
+</svg>
