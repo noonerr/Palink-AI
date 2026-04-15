@@ -100,6 +100,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const touchStartY = useRef(0);
   const isBouncing = useRef(false);
   const suppressSmoothScrollRef = useRef(false);
+  const lastLoadedSessionIdRef = useRef<string | null>(null);
   const welcomeDropTimerRef = useRef<number | null>(null);
 
   const isWelcome = messages.length === 0 && !activeSessionId;
@@ -292,8 +293,11 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     const sessionId = typeof session === 'string' ? session : session.id;
     setMessageFadeState('fading-out');
     setSidebarCollapsed(true);
-    setHasSentFirstMessage(false); // 切换会话时重置状态
+    setHasSentFirstMessage(false);
+
     setTimeout(() => {
+      // 在淡出动画完成后再加载和切换会话内容
+      loadMessages(sessionId);
       setActiveSessionId(sessionId);
       setMessageFadeState('fading-in');
       setTimeout(() => {
@@ -303,6 +307,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   };
 
   const loadMessages = useCallback(async (sessionId: string) => {
+    if (lastLoadedSessionIdRef.current === sessionId) {
+      return;
+    }
+    lastLoadedSessionIdRef.current = sessionId;
     try {
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
       setMessages(data);
@@ -339,11 +347,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   useEffect(() => {
     if (activeSessionId && !isSendingMessage) {
       setMemoryStats(null);
-      loadMessages(activeSessionId);
+      // 只在没有预先加载过的情况下才加载
+      if (lastLoadedSessionIdRef.current !== activeSessionId) {
+        loadMessages(activeSessionId);
+      }
     } else if (!activeSessionId) {
       setMessages([]);
       setSuggestions([]);
       setMemoryStats(null);
+      lastLoadedSessionIdRef.current = null;
     }
   }, [activeSessionId, loadMessages, isSendingMessage]);
 
@@ -873,7 +885,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   };
 
   return (
-    <div className={cn('relative flex h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
+    <>
+      <div className={cn('relative flex h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
 
       <aside
         className={cn(
@@ -945,10 +958,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
       <div
         className={cn(
-          'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden',
-          'transition-transform duration-300 ease-in-out',
-          historyOpen && 'translate-x-[280px]'
+          'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out',
+          historyOpen && 'translate-x-[280px]',
+          isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]'
         )}
+        onClick={() => {
+          if (historyOpen) {
+            setSidebarCollapsed(true);
+          }
+        }}
       >
         <div
           id="mobile-chat-top-bar"
@@ -1107,7 +1125,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
             <div
               className={cn(
-                'z-[20] px-3 pb-[calc(94px+min(env(safe-area-inset-bottom),8px))] pt-2 animate-chat-input-appear'
+                'fixed bottom-0 left-0 right-0 z-[20] px-3 pb-[calc(90px+min(env(safe-area-inset-bottom),8px))] pt-2 animate-chat-input-appear',
+                'bg-gradient-to-t from-transparent via-transparent to-transparent'
               )}
             >
               <div className="mx-auto max-w-3xl">
@@ -1133,15 +1152,12 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 />
               </div>
             </div>
-            <p className={cn('z-[20] text-center text-[10px]', isDark ? 'text-white/60' : 'text-slate-500')}>
-              {t.ai_disclaimer}
-            </p>
           </>
         )}
         </div>
-        </div>
+      </div>
 
-        <ConfirmDialog
+      <ConfirmDialog
           open={showDeleteConfirm}
           onOpenChange={setShowDeleteConfirm}
           title={
@@ -1197,6 +1213,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 };
