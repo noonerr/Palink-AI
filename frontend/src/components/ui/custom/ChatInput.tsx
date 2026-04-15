@@ -102,7 +102,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       )}
 
       {/* Input Container - Simplified style matching demo */}
-      <div className="flex items-center gap-2 bg-white dark:bg-slate-900 rounded-[35px] border border-slate-200 dark:border-slate-700 px-3 py-2">
+      <div className="flex items-center gap-2 bg-white dark:bg-slate-900 rounded-[35px] border border-slate-200 dark:border-slate-700 px-3 py-2 mb-2.5">
         <textarea
           ref={textareaRef}
           value={value}
