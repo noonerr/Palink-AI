@@ -8,7 +8,6 @@ import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
-import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
 import type { Message as MessageType, Model, Session } from '@/types';
 
@@ -51,7 +50,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   isKeyboardOpen = false,
   showModelReasoning = true,
 }) => {
-  const bottomPadding = useMobileBottomPadding();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
@@ -89,6 +87,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [messageFadeState, setMessageFadeState] = useState<'visible' | 'fading-out' | 'fading-in'>('visible');
   const [hasSentFirstMessage, setHasSentFirstMessage] = useState(false);
   const [overscrollY, setOverscrollY] = useState(0);
+  const [mobileBottomSpacerHeight, setMobileBottomSpacerHeight] = useState(220);
+  const [composerBottomOffset, setComposerBottomOffset] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -99,6 +99,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const messagesScrollWrapRef = useRef<HTMLDivElement>(null);
   const messageStackRef = useRef<HTMLDivElement>(null);
   const mobileTopBarRef = useRef<HTMLDivElement>(null);
+  const mobileComposerRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef(0);
   const isBouncing = useRef(false);
   const suppressSmoothScrollRef = useRef(false);
@@ -252,7 +253,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
   const runWelcomeInputDropAnimation = useCallback((seedText: string) => {
     const composer = welcomeComposerRef.current;
-    const dock = document.querySelector('nav[data-dock="true"]');
+    const dock = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]');
 
     let offset = 220;
     const fallbackWidth = Math.min(Math.max(window.innerWidth - 40, 280), 448);
@@ -264,7 +265,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     if (composer && dock instanceof HTMLElement) {
       const composerRect = composer.getBoundingClientRect();
       const dockRect = dock.getBoundingClientRect();
-      const targetTop = dockRect.top - composerRect.height - 14;
+      const targetTop = dockRect.top - composerRect.height - 7;
       offset = targetTop - composerRect.top;
       snapshot = {
         top: composerRect.top,
@@ -430,6 +431,71 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, [displayWelcome, messages.length, streaming, hasSentFirstMessage]);
+
+  useEffect(() => {
+    let rafId: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(updateLayoutSpacing);
+    });
+
+    const updateLayoutSpacing = () => {
+      if (displayWelcome) {
+        return;
+      }
+
+      const dockSurface = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]') as HTMLElement | null;
+
+      if (isKeyboardOpen || !dockSurface) {
+        setComposerBottomOffset((prev) => (prev === 0 ? prev : 0));
+        setMobileBottomSpacerHeight((prev) => (prev === 16 ? prev : 16));
+        return;
+      }
+
+      // 输入框底部与 dock 顶部固定 7px 装饰间隙
+      const dockRect = dockSurface.getBoundingClientRect();
+      const nextComposerBottomOffset = Math.max(0, Math.ceil(window.innerHeight - dockRect.top + 7));
+      setComposerBottomOffset((prev) => (prev === nextComposerBottomOffset ? prev : nextComposerBottomOffset));
+
+      // 消息区底部与输入框顶部固定 40px 间距（在原基础上再次增加 15px）
+      const composerTop = mobileComposerRef.current?.getBoundingClientRect().top;
+      const nextSpacer = typeof composerTop === 'number'
+        ? Math.max(20, Math.ceil(window.innerHeight - composerTop + 40))
+        : Math.max(160, nextComposerBottomOffset + 74 + 40);
+
+      setMobileBottomSpacerHeight((prev) => (prev === nextSpacer ? prev : nextSpacer));
+    };
+
+    updateLayoutSpacing();
+
+    if (mobileComposerRef.current) {
+      observer.observe(mobileComposerRef.current);
+    }
+
+    const bottomDockNav = document.querySelector('nav[data-dock="true"]') as HTMLElement | null;
+    if (bottomDockNav) {
+      observer.observe(bottomDockNav);
+    }
+
+    const dockSurface = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]') as HTMLElement | null;
+    if (dockSurface) {
+      observer.observe(dockSurface);
+    }
+
+    window.addEventListener('resize', updateLayoutSpacing);
+    window.addEventListener('orientationchange', updateLayoutSpacing);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateLayoutSpacing);
+      window.removeEventListener('orientationchange', updateLayoutSpacing);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [displayWelcome, isKeyboardOpen]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartY.current = e.touches[0].clientY;
@@ -961,9 +1027,11 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       <div
         className={cn(
           'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out',
-          historyOpen && 'translate-x-[280px]',
           isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]'
         )}
+        style={{
+          transform: historyOpen ? 'translateX(280px)' : 'translateX(0)'
+        }}
         onClick={() => {
           if (historyOpen) {
             setSidebarCollapsed(true);
@@ -1063,8 +1131,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 <div
                   ref={messageStackRef}
                   className={cn(
-                    'mx-auto max-w-3xl space-y-6',
-                    isKeyboardOpen ? 'pb-4' : bottomPadding
+                    'mx-auto max-w-3xl space-y-6 pb-4'
                   )}
                 >
                   {needsTopSpacer && (
@@ -1120,6 +1187,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                     </div>
                   )}
 
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      height: mobileBottomSpacerHeight,
+                      width: '100%',
+                      transition: 'height 0.2s ease',
+                    }}
+                  />
+
                   <div ref={messagesEndRef} />
                 </div>
               </div>
@@ -1127,12 +1203,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
             <div
               className={cn(
-                'fixed bottom-0 left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear transition-padding-bottom duration-200',
-                'bg-gradient-to-t from-transparent via-transparent to-transparent',
-                isKeyboardOpen ? 'pb-2' : 'pb-[calc(90px+min(env(safe-area-inset-bottom),8px))]'
+                'fixed left-0 right-0 z-[20] px-3 py-0 animate-chat-input-appear',
+                'bg-gradient-to-t from-transparent via-transparent to-transparent'
               )}
+              style={{
+                bottom: isKeyboardOpen ? 0 : `${composerBottomOffset}px`,
+                transition: 'bottom 0.2s ease',
+              }}
             >
-              <div className="mx-auto max-w-3xl">
+              <div ref={mobileComposerRef} className="mx-auto max-w-3xl">
                 <ChatInput
                   value={input}
                   onChange={setInput}
