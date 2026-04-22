@@ -232,10 +232,10 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
       <div
         ref={dockRef}
         className={cn(
-          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[20px]',
+          'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[30px] shadow-[0_10px_28px_rgba(120,106,79,0.14)]',
           isDark 
-            ? 'border-white/[0.15] bg-white/[0.07]' 
-            : 'border-[#d9cfbf]/50 bg-[#FFFAFA]/40'
+            ? 'border-slate-600/80 bg-[#2d3350]' 
+            : 'border-[#ddd4c5] bg-[#FFFAFA]'
         )}
         data-dock="true"
       >
@@ -243,7 +243,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
           className={cn(
             'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
             !slider.ready && 'opacity-0',
-            isDark ? 'bg-white/[0.30]' : 'bg-[#ece2d3]/50'
+            isDark ? 'bg-white/[0.15]' : 'bg-[#ece2d3]/50'
           )}
           style={{ left: slider.left, width: slider.width }}
         />
