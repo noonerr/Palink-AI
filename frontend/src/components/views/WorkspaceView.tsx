@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  Folder, 
-  UploadCloud, 
-  FolderPlus, 
-  Grid, 
-  List, 
-  Trash2, 
+import {
+  Folder,
+  UploadCloud,
+  FolderPlus,
+  Grid,
+  List,
+  Trash2,
   RefreshCw,
   ChevronRight,
   ChevronLeft,
@@ -15,7 +15,8 @@ import {
   X,
   Check,
   Loader2,
-  Sparkles
+  Sparkles,
+  Menu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -266,14 +267,14 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
         </div>
         <div className="flex-1 p-4">
           {/* Tabs */}
-          <div className="bg-secondary/50 p-1 rounded-lg flex text-xs font-medium mb-4">
+          <div className={cn('p-1 rounded-lg flex text-xs font-medium mb-4', isDark ? 'bg-slate-700/30' : 'bg-[#f5eee2]/50')}>
             <button
               onClick={() => setSidebarTab('files')}
               className={cn(
                 "flex-1 py-1.5 rounded-md transition-all",
                 sidebarTab === 'files'
-                  ? "bg-background shadow-sm text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
+                  ? isDark ? "bg-slate-600/80 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                  : isDark ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-700"
               )}
             >
               {t.tab_files}
@@ -283,8 +284,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               className={cn(
                 "flex-1 py-1.5 rounded-md transition-all",
                 sidebarTab === 'projects'
-                  ? "bg-background shadow-sm text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
+                  ? isDark ? "bg-slate-600/80 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                  : isDark ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-700"
               )}
             >
               {t.tab_projects}
@@ -375,14 +376,19 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
               {/* Start Project Button */}
               <div className="mt-4 pt-4 border-t border-border/50">
-                <Button
+                <button
                   onClick={() => setWorkspaceMode('chat')}
                   disabled={selectedFiles.size === 0}
-                  className="w-full"
+                  className={cn(
+                    'flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-[28px] border backdrop-blur-[30px] px-4 py-2.5 text-sm font-medium transition-all duration-300 ease-in-out',
+                    isDark
+                      ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50'
+                      : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
+                  )}
                 >
-                  <MessageSquarePlus size={16} className="mr-2" />
+                  <MessageSquarePlus size={16} />
                   {t.create_project}
-                </Button>
+                </button>
               </div>
             </>
           ) : (
@@ -413,9 +419,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setMobileSidebarOpen(false)}
-                  className="p-2 rounded-lg hover:bg-secondary/80 transition-all"
+                  className={cn(
+                    'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+                    isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+                  )}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                  <ChevronLeft size={20} />
                 </button>
                 <span className="text-sm font-semibold">{t.workspace_title || '工作空间'}</span>
               </div>
@@ -423,14 +432,14 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             {/* Mobile Sidebar Content */}
             <div className="flex-1 p-4 overflow-y-auto overscroll-y-contain">
               {/* Tabs */}
-              <div className="bg-secondary/50 p-1 rounded-lg flex text-xs font-medium mb-4">
+              <div className={cn('p-1 rounded-lg flex text-xs font-medium mb-4', isDark ? 'bg-slate-700/30' : 'bg-[#f5eee2]/50')}>
                 <button
                   onClick={() => setSidebarTab('files')}
                   className={cn(
                     "flex-1 py-2 rounded-md transition-all touch-target",
                     sidebarTab === 'files'
-                      ? "bg-background shadow-sm text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? isDark ? "bg-slate-600/80 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                      : isDark ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-700"
                   )}
                 >
                   {t.tab_files}
@@ -440,8 +449,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   className={cn(
                     "flex-1 py-2 rounded-md transition-all touch-target",
                     sidebarTab === 'projects'
-                      ? "bg-background shadow-sm text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? isDark ? "bg-slate-600/80 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                      : isDark ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-700"
                   )}
                 >
                   {t.tab_projects}
@@ -490,17 +499,22 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
                   {/* Create Project Button */}
                   <div className="mt-4 pt-4 border-t border-border/50">
-                    <Button
+                    <button
                       onClick={() => {
                         setWorkspaceMode('chat');
                         setMobileSidebarOpen(false);
                       }}
                       disabled={selectedFiles.size === 0}
-                      className="w-full"
+                      className={cn(
+                        'flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-[28px] border backdrop-blur-[30px] px-4 py-2.5 text-sm font-medium transition-all duration-300 ease-in-out',
+                        isDark
+                          ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50'
+                          : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
+                      )}
                     >
-                      <MessageSquarePlus size={16} className="mr-2" />
+                      <MessageSquarePlus size={16} />
                       {t.create_project}
-                    </Button>
+                    </button>
                   </div>
                 </>
               ) : (
@@ -522,31 +536,34 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
           {/* Breadcrumb */}
           <div className="flex items-center gap-1 text-sm text-muted-foreground min-w-0 flex-1">
             {/* Mobile Sidebar Toggle */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9 md:hidden rounded-lg hover:bg-secondary/80 transition-all shrink-0"
+            <button
               onClick={() => setMobileSidebarOpen(true)}
+              className={cn(
+                'md:hidden flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+              )}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>
-            </Button>
+              <Menu size={18} />
+            </button>
             {/* Desktop Sidebar Toggle */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hidden md:flex h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all shrink-0"
+            <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className={cn(
+                'hidden md:flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+              )}
             >
               {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0"
+            </button>
+            <button
               onClick={() => setPath([])}
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+              )}
             >
               <Home size={16} />
-            </Button>
+            </button>
             <div className="hidden sm:flex items-center gap-1 min-w-0">
               {path.map((p, idx) => (
                 <React.Fragment key={p.id}>
@@ -576,51 +593,51 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
             <div className="hidden sm:block w-px h-4 bg-border" />
 
-            <Button
-              variant="secondary"
-              size="sm"
+            <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="hidden sm:flex"
-            >
-              {uploading ? (
-                <Loader2 size={16} className="animate-spin mr-2" />
-              ) : (
-                <UploadCloud size={16} className="mr-2" />
+              className={cn(
+                'hidden sm:flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[28px] border backdrop-blur-[30px] px-4 py-2 text-sm font-medium transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
               )}
-              {t.upload}
-            </Button>
-            <Button
-              variant="secondary"
-              size="icon"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="sm:hidden shrink-0"
             >
               {uploading ? (
                 <Loader2 size={16} className="animate-spin" />
               ) : (
                 <UploadCloud size={16} />
               )}
-            </Button>
-
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => setIsCreateFolder(true)}
-              className="hidden sm:flex"
+              {t.upload}
+            </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className={cn(
+                'sm:hidden flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
+              )}
             >
-              <FolderPlus size={16} className="mr-2" />
-              {t.new_folder}
-            </Button>
-            <Button
-              variant="default"
-              size="icon"
+              {uploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+            </button>
+
+            <button
               onClick={() => setIsCreateFolder(true)}
-              className="sm:hidden shrink-0"
+              className={cn(
+                'hidden sm:flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[28px] border backdrop-blur-[30px] px-4 py-2 text-sm font-medium transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+              )}
             >
               <FolderPlus size={16} />
-            </Button>
+              {t.new_folder}
+            </button>
+            <button
+              onClick={() => setIsCreateFolder(true)}
+              className={cn(
+                'sm:hidden flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
+              )}
+            >
+              <FolderPlus size={16} />
+            </button>
 
             <div className="hidden sm:block w-px h-4 bg-border" />
 
