@@ -260,7 +260,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
           sidebarCollapsed ? 'opacity-0' : 'opacity-100'
         )}>
         {/* Header */}
-        <div className="h-[54px] flex items-center justify-between px-4 border-b border-border/50 shrink-0">
+        <div className={cn(
+          "h-[54px] flex items-center justify-between px-4 border-b shrink-0 backdrop-blur-[20px]",
+          isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
+        )}>
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-foreground">{t.workspace_title || '工作空间'}</span>
           </div>
@@ -415,7 +418,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Mobile Sidebar Header */}
-            <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 shrink-0">
+            <div className={cn(
+              "h-14 flex items-center justify-between px-4 border-b shrink-0 backdrop-blur-[20px]",
+              isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
+            )}>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setMobileSidebarOpen(false)}
@@ -532,7 +538,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
-        <div className="h-[48px] flex items-center justify-between px-4 sm:px-6 border-b border-border/50 bg-background z-10 sm:pt-3" style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
+        <div className={cn(
+          'h-[48px] flex items-center justify-between px-4 sm:px-6 border-b z-10 sm:pt-3 backdrop-blur-[30px]',
+          isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
+        )} style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
           {/* Breadcrumb */}
           <div className="flex items-center gap-1 text-sm text-muted-foreground min-w-0 flex-1">
             {/* Mobile Sidebar Toggle */}
@@ -581,15 +590,16 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
           {/* Actions */}
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            <Button
-              variant="ghost"
-              size="icon"
+            <button
               onClick={fetchItems}
               disabled={loading}
-              className="shrink-0"
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
+                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
+              )}
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            </Button>
+            </button>
 
             <div className="hidden sm:block w-px h-4 bg-border" />
 
@@ -641,14 +651,14 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
             <div className="hidden sm:block w-px h-4 bg-border" />
 
-            <div className="hidden sm:flex bg-secondary/50 p-1 rounded-lg">
+            <div className="hidden sm:flex p-1 rounded-lg backdrop-blur-[20px] border" style={isDark ? { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(45,51,80,0.5)' } : { borderColor: '#ddd4c5', backgroundColor: '#f5eee2' }}>
               <button
                 onClick={() => setViewMode('list')}
                 className={cn(
                   "p-1.5 rounded-md transition-all",
-                  viewMode === 'list' 
-                    ? "bg-background shadow-sm" 
-                    : "text-muted-foreground hover:text-foreground"
+                  viewMode === 'list'
+                    ? isDark ? "bg-white/20 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                    : isDark ? "text-white/60 hover:text-white/90" : "text-slate-500 hover:text-slate-700"
                 )}
               >
                 <List size={16} />
@@ -657,9 +667,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 onClick={() => setViewMode('grid')}
                 className={cn(
                   "p-1.5 rounded-md transition-all",
-                  viewMode === 'grid' 
-                    ? "bg-background shadow-sm" 
-                    : "text-muted-foreground hover:text-foreground"
+                  viewMode === 'grid'
+                    ? isDark ? "bg-white/20 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
+                    : isDark ? "text-white/60 hover:text-white/90" : "text-slate-500 hover:text-slate-700"
                 )}
               >
                 <Grid size={16} />
