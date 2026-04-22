@@ -463,15 +463,15 @@ function App() {
   }, [token]);
 
   const loadConfig = useCallback(() => {
-    if (token) {
-      api.get('/api/models', { skipAuth: true }).then(data => {
-        setModels(data);
-      }).catch(() => {});
-      api.get('/api/admin/system/defaults').then(data => {
-        setSystemDefaults(data);
-      }).catch(() => {});
-    }
-  }, [token]);
+        if (token) {
+            api.get('/api/models').then(data => {
+                setModels(data);
+            }).catch(() => {});
+            api.get('/api/admin/system/defaults').then(data => {
+                setSystemDefaults(data);
+            }).catch(() => {});
+        }
+    }, [token]);
 
   useEffect(() => {
     loadConfig();
