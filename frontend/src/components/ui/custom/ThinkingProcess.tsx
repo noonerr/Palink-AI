@@ -1,29 +1,59 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, ChevronDown, ChevronUp } from 'lucide-react';
+import { Brain, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import ReactMarkdown from 'react-markdown';
-import { CodeBlock } from './CodeBlock';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface ThinkingProcessProps {
   content: string;
   streaming?: boolean;
   t: Record<string, string>;
+  messageKey?: string;
 }
+
+const thinkingExpandedState = new Map<string, boolean>();
 
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ 
   content, 
   streaming = false,
-  t 
+  t,
+  messageKey,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(() => !!streaming);
+  const [isExpanded, setIsExpanded] = useState(() => {
+    if (messageKey && thinkingExpandedState.has(messageKey)) {
+      return thinkingExpandedState.get(messageKey) ?? true;
+    }
+    return !!streaming;
+  });
   const [measuredHeight, setMeasuredHeight] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
+  const streamAutoExpandedRef = useRef(false);
 
   useEffect(() => {
-    if (streaming && content && !isExpanded) {
-      setIsExpanded(true);
+    if (!messageKey) {
+      return;
     }
-  }, [streaming, content, isExpanded]);
+    if (thinkingExpandedState.has(messageKey)) {
+      setIsExpanded(thinkingExpandedState.get(messageKey) ?? true);
+      return;
+    }
+    const initial = !!streaming;
+    thinkingExpandedState.set(messageKey, initial);
+    setIsExpanded(initial);
+  }, [messageKey, streaming]);
+
+  useEffect(() => {
+    if (streaming && !streamAutoExpandedRef.current) {
+      streamAutoExpandedRef.current = true;
+      setIsExpanded(true);
+      if (messageKey) {
+        thinkingExpandedState.set(messageKey, true);
+      }
+    }
+
+    if (!streaming) {
+      streamAutoExpandedRef.current = false;
+    }
+  }, [streaming, messageKey]);
 
   useEffect(() => {
     const node = contentRef.current;
@@ -51,17 +81,23 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   }, [content]);
 
   const toggleExpand = useCallback(() => {
-    setIsExpanded(prev => !prev);
-  }, []);
+    setIsExpanded((prev) => {
+      const next = !prev;
+      if (messageKey) {
+        thinkingExpandedState.set(messageKey, next);
+      }
+      return next;
+    });
+  }, [messageKey]);
 
-  const showContent = (streaming && !content) || !!content;
+  const showContent = !!content || streaming;
 
   if (!showContent) return null;
 
   const effectiveHeight = isExpanded ? measuredHeight : 0;
   const transitionStyle = isExpanded && streaming
-    ? 'opacity 180ms ease-in-out'
-    : 'max-height 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms ease-in-out';
+    ? 'opacity 350ms ease, transform 400ms cubic-bezier(0.22, 0.85, 0.24, 1)'
+    : 'max-height 450ms cubic-bezier(0.22, 0.85, 0.24, 1), opacity 350ms ease, transform 450ms cubic-bezier(0.22, 0.85, 0.24, 1)';
 
   return (
     <div className="mb-3 rounded-xl border border-border/50 bg-muted/50 overflow-hidden animate-fade-in-up">
@@ -77,12 +113,14 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
         />
         <span>{t.thinking || 'Thinking'}</span>
         {(content || !streaming) && (
-          <span className="ml-auto transition-transform duration-300 ease-in-out">
-            {isExpanded ? (
-              <ChevronUp size={14} />
-            ) : (
-              <ChevronDown size={14} />
-            )}
+          <span className="ml-auto">
+            <ChevronDown
+              size={14}
+              className={cn(
+                'transition-transform duration-300 ease-in-out',
+                isExpanded && 'rotate-180'
+              )}
+            />
           </span>
         )}
         {streaming && !content && (
@@ -104,10 +142,12 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
         style={{
           maxHeight: isExpanded ? `${effectiveHeight}px` : '0px',
           transition: transitionStyle,
+          transform: isExpanded ? 'translateY(0) scale(1)' : 'translateY(-6px) scale(0.985)',
+          transformOrigin: 'top center',
           WebkitBackfaceVisibility: 'hidden',
           backfaceVisibility: 'hidden',
           WebkitTransform: 'translateZ(0)',
-          transform: 'translateZ(0)'
+          perspective: '1000px'
         }}
       >
         <div 
@@ -115,9 +155,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
           className="px-4 py-3 text-xs text-muted-foreground font-mono border-t border-border/50 bg-background/50"
         >
           {content ? (
-            <ReactMarkdown components={{ code: CodeBlock }}>
-              {content}
-            </ReactMarkdown>
+            <MarkdownRenderer content={content} />
           ) : (
             <div className="flex items-center gap-2 text-muted-foreground/60">
               <div className="flex gap-1">

@@ -3,9 +3,12 @@ import { Copy, Check, Zap, Database, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { CodeBlock } from './CodeBlock';
 import { ThinkingProcess } from './ThinkingProcess';
-// import { SmoothOutput } from './SmoothOutput';
+import { SmoothOutput } from './SmoothOutput';
 // import { RpSegmentRenderer } from './RpSegmentRenderer';
 // import { TagSegmentRenderer } from './TagSegmentRenderer';
 // import { MessageParserService } from '@/services/messageParserService';
@@ -97,7 +100,7 @@ const MessageInner: React.FC<MessageProps> = ({
 
   const { thinkingContent, displayContent } = useMemo(() => {
     const content = message.content || '';
-    const extractTaggedThinking = (source: string, tag: 'think' | 'model_reasoning') => {
+    const extractTaggedThinking = (source: string, tag: string) => {
       const openTag = `<${tag}>`;
       const closeTag = `</${tag}>`;
       let cursor = 0;
@@ -137,7 +140,19 @@ const MessageInner: React.FC<MessageProps> = ({
     const modelReasoningResult = extractTaggedThinking(thinkResult.cleaned, 'model_reasoning');
 
     const thinkingParts = [...thinkResult.parts, ...modelReasoningResult.parts];
-    const cleanedContent = modelReasoningResult.cleaned.trim();
+    let cleanedContent = modelReasoningResult.cleaned.trim();
+
+    if (!thinkingParts.length) {
+      const thinkingMatch = content.match(/^([\s\S]*?)\n\n([\s\S]*)$/);
+      if (thinkingMatch && thinkingMatch[1].trim().length > 0) {
+        const potentialThinking = thinkingMatch[1].trim();
+        const potentialContent = thinkingMatch[2].trim();
+        if (potentialThinking.length > 20 && potentialContent.length > 0) {
+          thinkingParts.push(potentialThinking);
+          cleanedContent = potentialContent;
+        }
+      }
+    }
 
     return {
       thinkingContent: thinkingParts.join('\n\n').trim(),
@@ -246,23 +261,42 @@ const MessageInner: React.FC<MessageProps> = ({
             {!isUser && thinkingContent && showModelReasoning && (
               <ThinkingProcess 
                 content={thinkingContent} 
+                displayContent={displayContent}
                 streaming={streaming && isLast} 
-                t={_t} 
+                t={_t}
+                messageKey={message.id ? String(message.id) : (messageIndex !== undefined ? `msg-${messageIndex}` : undefined)} 
               />
             )}
             {(!isUser && displayContent) || isUser ? (
             <div className={cn(
               "px-5 py-3.5 text-[15px] leading-relaxed",
-              isUser 
-                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg' 
+              isUser
+                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-3xl rounded-br-lg'
                 : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-3xl rounded-bl-lg',
               isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
             )}>
               {isUser ? (
-                <div className="whitespace-pre-wrap">{message.content}</div>
+                <div className="markdown-content">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{ code: CodeBlock }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              ) : streaming && isLast ? (
+                <SmoothOutput
+                  content={displayContent}
+                  streaming={streaming}
+                />
               ) : (
                 <div className="markdown-content">
-                  <ReactMarkdown components={{ code: CodeBlock }}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{ code: CodeBlock }}
+                  >
                     {displayContent}
                   </ReactMarkdown>
                 </div>

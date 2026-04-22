@@ -761,9 +761,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 onUpload={handleUpload}
                 attachments={attachments}
                 onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-                models={models}
-                currentModel={selectedModel}
-                onModelChange={setSelectedModel}
                 disabled={isGenerating}
                 uploading={uploading}
                 placeholder={t.chat_with_character ? t.chat_with_character.replace('{name}', selectedCharacter.name) : `与${selectedCharacter.name}对话...`}

@@ -409,15 +409,6 @@ h6,
   100% { opacity: 0; }
 }
 
-@keyframes welcome-drop {
-  from { transform: translateY(0); opacity: 1; }
-  to { transform: translateY(var(--welcome-drop-distance)); opacity: 0; }
-}
-
-.animate-welcome-drop {
-  animation: welcome-drop var(--welcome-drop-duration) cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
-
 @keyframes chat-input-appear {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
@@ -931,5 +922,441 @@ button,
   .animate-chat-input-appear {
     animation: none !important;
     opacity: 1;
+  }
+}
+
+/* ========================================
+   KaTeX Math Formula Styles
+   ======================================== */
+
+.math-block {
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid hsl(var(--border));
+}
+
+.dark .math-block {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.katex-render {
+  font-size: 1em;
+  line-height: 1.6;
+}
+
+.katex-render .katex-display {
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.katex-render .katex {
+  font-size: 1.1em;
+}
+
+/* ========================================
+   Mermaid Diagram Styles
+   ======================================== */
+.mermaid-container {
+  padding: 0.75rem;
+  background: rgba(248, 249, 250, 0.5);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid hsl(var(--border));
+}
+
+.dark .mermaid-container {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mermaid-svg-wrapper {
+  background: transparent;
+}
+
+.mermaid-svg-wrapper svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Mermaid diagram styling */
+.mermaid-svg-wrapper .nodeLabel,
+.mermaid-svg-wrapper .edgeLabel,
+.mermaid-svg-wrapper .label {
+  font-family: var(--font-sans) !important;
+}
+
+/* ========================================
+   Enhanced Code Block Styles
+   ======================================== */
+.code-block {
+  background: hsl(220 13% 8%);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid hsl(220 13% 15%);
+  margin: 1rem 0;
+}
+
+.code-block-header {
+  background: hsl(220 13% 12%);
+  padding: 0.5rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid hsl(220 13% 15%);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.dark .code-block-header {
+  background: hsl(220 13% 15%);
+}
+
+.code-block pre {
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: hsl(220 10% 85%);
+  background: transparent;
+}
+
+.code-block pre code {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+/* ========================================
+   Image Lightbox Styles
+   ======================================== */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: lightbox-fade-in 0.2s ease-out;
+}
+
+@keyframes lightbox-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.lightbox-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.lightbox-image {
+  max-width: 90vw;
+  max-height: 85vh;
+  object-fit: contain;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  cursor: zoom-in;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.lightbox-image.zoomed {
+  cursor: zoom-out;
+  transform: scale(2);
+}
+
+.lightbox-toolbar {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  z-index: 10;
+}
+
+.lightbox-toolbar button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(4px);
+}
+
+.lightbox-toolbar button:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 20;
+  backdrop-filter: blur(4px);
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: rotate(90deg);
+}
+
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-50%) scale(1.05);
+}
+
+.lightbox-nav.prev {
+  left: 1rem;
+}
+
+.lightbox-nav.next {
+  right: 1rem;
+}
+
+.lightbox-counter {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 500;
+  backdrop-filter: blur(4px);
+}
+
+/* ========================================
+   File Attachment Preview Styles
+   ======================================== */
+.attachment-preview {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  transition: all 0.2s ease;
+}
+
+.attachment-preview:hover {
+  border-color: hsl(var(--primary) / 0.3);
+  background: hsl(var(--accent));
+}
+
+.attachment-thumbnail {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  overflow: hidden;
+  background: hsl(var(--muted));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attachment-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: hsl(var(--destructive));
+  border: 2px solid white;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  opacity: 0;
+  z-index: 10;
+}
+
+.attachment-preview:hover .attachment-remove {
+  opacity: 1;
+}
+
+.attachment-remove:hover {
+  transform: scale(1.1);
+  background: hsl(0 84.2% 50.2%);
+}
+
+/* File type icons with colors */
+.file-icon-pdf { color: #ef4444; }
+.file-icon-word { color: #3b82f6; }
+.file-icon-excel { color: #22c55e; }
+.file-icon-archive { color: #f59e0b; }
+.file-icon-default { color: hsl(var(--muted-foreground)); }
+
+/* ========================================
+   Drag and Drop Upload Zone
+   ======================================== */
+.upload-zone {
+  border: 2px dashed hsl(var(--border));
+  border-radius: var(--radius-xl);
+  padding: 2rem;
+  text-align: center;
+  transition: all 0.3s ease;
+  background: hsl(var(--muted) / 0.3);
+  cursor: pointer;
+}
+
+.upload-zone:hover {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.05);
+}
+
+.upload-zone.drag-over {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+  transform: scale(1.01);
+}
+
+.upload-zone-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: hsl(var(--primary) / 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--primary));
+}
+
+.upload-zone-text {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  margin-bottom: 0.5rem;
+}
+
+.upload-zone-hint {
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+}
+
+/* ========================================
+   Streaming Cursor Animation
+   ======================================== */
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.2em;
+  background: hsl(var(--primary));
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: streaming-blink 1s ease-in-out infinite;
+}
+
+@keyframes streaming-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ========================================
+   Smooth Output Transitions
+   ======================================== */
+.smooth-output {
+  animation: smooth-fade-in 0.15s ease-out;
+}
+
+@keyframes smooth-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

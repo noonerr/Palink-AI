@@ -6,15 +6,17 @@ from fastapi.staticfiles import StaticFiles
 import logging
 import os
 import anyio.to_thread
+import json
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
 
-from .core import settings, engine, run_migrations
+from sqlalchemy.orm import Session
+from .core import settings, engine, run_migrations, get_password_hash
 from .api import api_router
-from .models import Base
+from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +37,8 @@ def _initialize_database_once() -> None:
             logger.info("数据库迁移完成")
         else:
             logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+        # 初始化默认数据
+        _init_default_data()
         return
 
     os.makedirs(os.path.dirname(lock_file), exist_ok=True)
@@ -56,9 +60,45 @@ def _initialize_database_once() -> None:
             logger.info("数据库迁移完成")
         else:
             logger.info("跳过启动时数据库迁移（RUN_MIGRATIONS_ON_STARTUP=false）")
+        
+        # 初始化默认数据
+        _init_default_data()
 
         with open(done_file, "w", encoding="utf-8") as done_fp:
             done_fp.write(str(os.getpid()))
+
+
+def _init_default_data() -> None:
+    """初始化默认数据：admin 用户和系统设置"""
+    from .core import SessionLocal
+    
+    db = SessionLocal()
+    try:
+        # 创建默认 admin 用户
+        if not db.query(User).filter(User.username == "admin").first():
+            admin = User(
+                username="admin",
+                hashed_password=get_password_hash(settings.ADMIN_PASSWORD),
+                role="admin"
+            )
+            db.add(admin)
+            logger.info(f"已创建默认 admin 用户，密码: {settings.ADMIN_PASSWORD}")
+        
+        # 创建默认 starter questions
+        if not db.query(SystemSetting).filter(SystemSetting.key == "starter_questions").first():
+            defaults = ["写一篇关于人工智能发展的报告", "解释量子纠缠", "帮我制定一个Python学习计划", "分析一下当前的经济形势"]
+            db.add(SystemSetting(key="starter_questions", value=json.dumps(defaults)))
+        
+        # 初始化默认 model config
+        if not db.query(SystemSetting).filter(SystemSetting.key == "default_model_config").first():
+             db.add(SystemSetting(key="default_model_config", value=json.dumps({})))
+        
+        db.commit()
+    except Exception as e:
+        logger.error(f"初始化默认数据失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -98,6 +138,7 @@ app = FastAPI(
 )
 
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+app.mount("/api/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="api-uploads")
 
 app.add_middleware(
     CORSMiddleware,

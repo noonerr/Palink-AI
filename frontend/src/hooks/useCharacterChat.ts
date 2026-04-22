@@ -11,6 +11,8 @@ export interface Attachment {
   type: 'image' | 'file';
   name: string;
   url: string;
+  thumbnail?: string;
+  size?: number;
 }
 
 interface UseCharacterChatOptions {
@@ -386,7 +388,13 @@ export function useCharacterChat({
       });
 
       const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
-      setAttachments(prev => [...prev, { type, name: file.name, url: data.url }]);
+      setAttachments(prev => [...prev, {
+        type,
+        name: file.name,
+        url: data.url,
+        thumbnail: type === 'image' ? dataUrl : undefined,
+        size: file.size,
+      }]);
     } catch (e) {
       console.error('Upload failed:', e);
     } finally {

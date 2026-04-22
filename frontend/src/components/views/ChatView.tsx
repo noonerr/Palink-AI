@@ -79,12 +79,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [compressing, setCompressing] = useState(false);
   const [memoryMode, setMemoryMode] = useState<string>("rule");
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [showModelReasoning, setShowModelReasoning] = useState(true);
 
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const suggestionsAbortRef = useRef<AbortController | null>(null);
   const sessionIdSetRef = useRef(false);
+  const pendingInitialBottomLockRef = useRef(false);
+  const initialBottomLockUntilRef = useRef(0);
+  const INITIAL_BOTTOM_LOCK_MS = 1500;
   
   // Load memory stats with session ID tracking to prevent race conditions
   const loadingSessionRef = useRef<string | null>(null);
@@ -213,9 +217,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
+      setMessages([]);
+      setSuggestions([]);
+      setMemoryStats(null);
+      
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
       setMessages(data);
-      setSuggestions([]);
+      
+      pendingInitialBottomLockRef.current = data.length > 0;
+      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
       
       await loadMemoryStats(sessionId);
       
@@ -249,10 +259,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     if (activeSessionId && !isSendingMessage) {
-      // Reset memory stats when switching sessions
       setMemoryStats(null);
       loadMessages(activeSessionId);
-    } else if (!activeSessionId) {
+    } else if (!activeSessionId && !isSendingMessage) {
       setMessages([]);
       setSuggestions([]);
       setMemoryStats(null);
@@ -264,6 +273,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
       try {
         const settings = await api.get('/api/users/me/settings');
         setMemoryMode(settings.memory_mode || 'rule');
+        if (settings.show_model_reasoning !== undefined) {
+          setShowModelReasoning(settings.show_model_reasoning !== false);
+        }
       } catch (e) {
         console.error('Failed to fetch user settings:', e);
       }
@@ -271,13 +283,53 @@ export const ChatView: React.FC<ChatViewProps> = ({
     
     fetchUserSettings();
     
-    window.addEventListener('userSettingsUpdated', fetchUserSettings);
-    return () => window.removeEventListener('userSettingsUpdated', fetchUserSettings);
+    const handleSettingsUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.showModelReasoning !== undefined) {
+        setShowModelReasoning(detail.showModelReasoning);
+      }
+    };
+    
+    window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
+    return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdate);
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!pendingInitialBottomLockRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!activeSessionId || messages.length === 0) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    if (!pendingInitialBottomLockRef.current) {
+      return;
+    }
+
+    if (performance.now() >= initialBottomLockUntilRef.current) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    let rafA: number | null = null;
+    let rafB: number | null = null;
+
+    rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        pendingInitialBottomLockRef.current = false;
+      });
+    });
+
+    return () => {
+      if (rafA !== null) cancelAnimationFrame(rafA);
+      if (rafB !== null) cancelAnimationFrame(rafB);
+    };
+  }, [activeSessionId, messages.length]);
 
   useEffect(() => {
     setCurrentModel(defaultModel);
@@ -413,9 +465,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         setMessages(prev => {
           const newMessages = [...prev];
+          let combinedContent = fullContent;
+          if (fullReasoning) {
+            combinedContent = `<think\>\n${fullReasoning}\n</think\>\n${fullContent}`;
+          }
           newMessages[assistantMessageIndex] = {
             ...newMessages[assistantMessageIndex],
-            content: fullContent
+            content: combinedContent
           };
           return newMessages;
         });
@@ -498,7 +554,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
 
-        // 处理会话 ID（新会话）- 只设置一次
         if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
           sessionIdSetRef.current = true;
           setActiveSessionId(sessionId);
@@ -519,9 +574,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setMessages(prev => {
           const newMessages = [...prev];
           const lastMessage = newMessages[newMessages.length - 1];
+          let combinedContent = fullContent;
+          if (fullReasoning) {
+            combinedContent = `<think\>\n${fullReasoning}\n</think\>\n${fullContent}`;
+          }
           newMessages[newMessages.length - 1] = {
             ...lastMessage,
-            content: fullContent
+            content: combinedContent
           };
           return newMessages;
         });
@@ -836,9 +895,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onUpload={handleUpload}
                 attachments={attachments}
                 onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-                models={models}
-                currentModel={currentModel}
-                onModelChange={setCurrentModel}
                 disabled={streaming}
                 uploading={uploading}
                 placeholder={t.ask_anything}
@@ -1046,6 +1102,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       showSelect={showMessageSelect}
                       isCharacterChat={false}
                       memoryMode={memoryMode}
+                      showModelReasoning={showModelReasoning}
                     />
                   </div>
                 </div>
@@ -1082,9 +1139,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onUpload={handleUpload}
               attachments={attachments}
               onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-              models={models}
-              currentModel={currentModel}
-              onModelChange={setCurrentModel}
               disabled={streaming}
               uploading={uploading}
               placeholder={t.ask_anything}

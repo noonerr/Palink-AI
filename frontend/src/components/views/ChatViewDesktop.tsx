@@ -18,6 +18,8 @@ const generateMessageId = () => {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
+type StreamStatus = 'idle' | 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
+
 interface ChatViewProps {
   token: string;
   user: { avatar?: string; username: string };
@@ -35,6 +37,8 @@ interface Attachment {
   type: 'image' | 'file';
   name: string;
   url: string;
+  thumbnail?: string;
+  size?: number;
 }
 
 
@@ -48,7 +52,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   t,
   sidebarCollapsed,
   setSidebarCollapsed,
-  isDark,
+  isDark: _isDark,
   showModelReasoning = true,
 }) => {
   const bottomPadding = useMobileBottomPadding();
@@ -56,7 +60,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
-  const [streaming, setStreaming] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
@@ -84,11 +88,26 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const [developerMode, setDeveloperMode] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
+  const streaming = streamStatus === 'pending' || streamStatus === 'streaming';
+
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const suggestionsAbortRef = useRef<AbortController | null>(null);
   const sessionIdSetRef = useRef(false);
+  const pendingInitialBottomLockRef = useRef(false);
+  const initialBottomLockUntilRef = useRef(0);
+  const INITIAL_BOTTOM_LOCK_MS = 1500;
+
+  const markStreamActive = useCallback(() => {
+    setStreamStatus((prev) => (prev === 'pending' ? 'streaming' : prev));
+  }, []);
+
+  const handleStopStreaming = useCallback(() => {
+    if (!abortControllerRef.current) return;
+    setStreamStatus('cancelled');
+    abortControllerRef.current.abort();
+  }, []);
   
   // Load memory stats with session ID tracking to prevent race conditions
   const loadingSessionRef = useRef<string | null>(null);
@@ -168,6 +187,55 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     }
   }, []);
 
+  const buildAssistantContent = useCallback((content: string, reasoning: string) => {
+    if (!reasoning) {
+      return content;
+    }
+    return `<think>${reasoning}</think>\n${content}`;
+  }, []);
+
+  const normalizeAssistantAnswer = useCallback((rawContent: string) => {
+    if (!rawContent) {
+      return rawContent;
+    }
+
+    const finalAnswerParts = rawContent
+      .split(/Final\s*Answer\s*[:：]?/gi)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (finalAnswerParts.length > 1) {
+      return finalAnswerParts[finalAnswerParts.length - 1];
+    }
+
+    return rawContent;
+  }, []);
+
+  const setAssistantMessageSnapshot = useCallback(
+    (assistantMessageId: string, content: string, reasoning: string, _forceSync = false) => {
+      const nextContent = buildAssistantContent(normalizeAssistantAnswer(content), reasoning);
+      setMessages((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((msg) => msg.id === assistantMessageId);
+        if (idx === -1) {
+          next.push({
+            id: assistantMessageId,
+            role: 'assistant',
+            content: nextContent,
+            model: currentModel,
+          });
+          return next;
+        }
+        next[idx] = {
+          ...next[idx],
+          content: nextContent,
+        };
+        return next;
+      });
+    },
+    [buildAssistantContent, currentModel, normalizeAssistantAnswer]
+  );
+
   const ensureDeveloperSession = useCallback(async (seedText: string) => {
     if (activeSessionId) {
       return activeSessionId;
@@ -195,24 +263,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     await streamMockAssistantReply(
       seedText,
       (chunk) => {
+        markStreamActive();
         fullContent += chunk;
-        setMessages(prev => {
-          const newMessages = [...prev];
-          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
-          if (assistantIdx === -1) {
-            return newMessages;
-          }
-          newMessages[assistantIdx] = {
-            ...newMessages[assistantIdx],
-            content: fullContent,
-          };
-          return newMessages;
-        });
+        setAssistantMessageSnapshot(assistantMessageId, fullContent, '');
       },
       { signal: abortControllerRef.current?.signal }
     );
     return fullContent;
-  }, []);
+  }, [markStreamActive, setAssistantMessageSnapshot]);
 
   // Load messages for active session
   const handleSelectSession = (session: any) => {
@@ -222,9 +280,15 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
+      setMessages([]);
+      setSuggestions([]);
+      setMemoryStats(null);
+      
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
       setMessages(data);
-      setSuggestions([]);
+      
+      pendingInitialBottomLockRef.current = data.length > 0;
+      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
       
       await loadMemoryStats(sessionId);
       
@@ -286,8 +350,41 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!pendingInitialBottomLockRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!activeSessionId || messages.length === 0) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    if (!pendingInitialBottomLockRef.current) {
+      return;
+    }
+
+    if (performance.now() >= initialBottomLockUntilRef.current) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    let rafA: number | null = null;
+    let rafB: number | null = null;
+
+    rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        pendingInitialBottomLockRef.current = false;
+      });
+    });
+
+    return () => {
+      if (rafA !== null) cancelAnimationFrame(rafA);
+      if (rafB !== null) cancelAnimationFrame(rafB);
+    };
+  }, [activeSessionId, messages.length]);
 
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
@@ -299,7 +396,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
       });
 
       const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
-      setAttachments(prev => [...prev, { type, name: file.name, url: data.url }]);
+      setAttachments(prev => [...prev, {
+        type,
+        name: file.name,
+        url: data.url,
+        thumbnail: type === 'image' ? dataUrl : undefined,
+        size: file.size,
+      }]);
     } catch (e) {
       console.error('Upload failed:', e);
     } finally {
@@ -361,7 +464,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     if (userMessage.role !== 'user') return;
     
     setRegeneratingMessageIndex(assistantMessageIndex);
-    setStreaming(true);
+    setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
     
@@ -381,13 +484,18 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    let streamHasError = false;
+    let streamWasCancelled = false;
 
     if (developerMode) {
       try {
         fullContent = await streamMockIntoMessage(userMessage.content, assistantMessageId);
         setSuggestions(buildMockSuggestions());
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') {
+        if ((e as Error).name === 'AbortError') {
+          streamWasCancelled = true;
+        } else {
+          streamHasError = true;
           setMessages(prev => {
             const newMessages = [...prev];
             const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
@@ -398,7 +506,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           });
         }
       } finally {
-        setStreaming(false);
+        if (streamWasCancelled) {
+          setStreamStatus('cancelled');
+        } else if (streamHasError) {
+          setStreamStatus('error');
+        } else {
+          setStreamStatus('done');
+        }
         setRegeneratingMessageIndex(null);
         setIsSendingMessage(false);
         abortControllerRef.current = null;
@@ -420,8 +534,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const reasoningDelta = `${reasoning}${modelReasoning}`;
 
         if (content.startsWith('Error:')) {
+          streamHasError = true;
           const errorMsg = content.replace('Error: ', '');
           setMessages(prev => {
             const newMessages = [...prev];
@@ -433,23 +549,24 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           return;
         }
 
-        if (!content && !reasoning && !modelReasoning) {
+        if (!content && !reasoningDelta) {
           return;
         }
 
-        if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
-        if (content) fullContent += content;
+        markStreamActive();
 
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = {
-            ...newMessages[assistantMessageIndex],
-            content: fullContent
-          };
-          return newMessages;
-        });
+        if (reasoningDelta) {
+          fullReasoning += reasoningDelta;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
+
+        if (content) {
+          fullContent += content;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
       });
+
+      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
       
       if (fullContent.length > 20) {
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
@@ -457,7 +574,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           .catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if ((e as Error).name === 'AbortError') {
+        streamWasCancelled = true;
+      } else {
+        streamHasError = true;
         setMessages(prev => {
           const newMessages = [...prev];
           newMessages[assistantMessageIndex].content += `\n[Error: ${(e as Error).message}]`;
@@ -465,7 +585,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         });
       }
     } finally {
-      setStreaming(false);
+      if (streamWasCancelled) {
+        setStreamStatus('cancelled');
+      } else if (streamHasError) {
+        setStreamStatus('error');
+      } else {
+        setStreamStatus('done');
+      }
       setRegeneratingMessageIndex(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
@@ -479,7 +605,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     sessionIdSetRef.current = false; // 重置会话ID设置标记
     setInput('');
     setAttachments([]);
-    setStreaming(true);
+    setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
 
@@ -506,6 +632,8 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    let streamHasError = false;
+    let streamWasCancelled = false;
 
     if (developerMode) {
       try {
@@ -534,7 +662,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
         setSuggestions(buildMockSuggestions());
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') {
+        if ((e as Error).name === 'AbortError') {
+          streamWasCancelled = true;
+        } else {
+          streamHasError = true;
           setMessages(prev => {
             const newMessages = [...prev];
             const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
@@ -545,7 +676,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           });
         }
       } finally {
-        setStreaming(false);
+        if (streamWasCancelled) {
+          setStreamStatus('cancelled');
+        } else if (streamHasError) {
+          setStreamStatus('error');
+        } else {
+          setStreamStatus('done');
+        }
         setIsSendingMessage(false);
         abortControllerRef.current = null;
       }
@@ -571,6 +708,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+        const reasoningDelta = `${reasoning}${modelReasoning}`;
 
         // 处理会话 ID（新会话）- 只设置一次
         if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
@@ -579,24 +717,24 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           loadSessions();
         }
 
-        if (!content && !reasoning && !modelReasoning) {
+        if (!content && !reasoningDelta) {
           return;
         }
 
-        if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
-        if (content) fullContent += content;
+        markStreamActive();
 
-        setMessages(prev => {
-          const newMessages = [...prev];
-          const lastMessage = newMessages[newMessages.length - 1];
-          newMessages[newMessages.length - 1] = {
-            ...lastMessage,
-            content: fullContent
-          };
-          return newMessages;
-        });
+        if (reasoningDelta) {
+          fullReasoning += reasoningDelta;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
+
+        if (content) {
+          fullContent += content;
+          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+        }
       });
+
+      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
 
       // Get suggestions after message completes
       if (fullContent.length > 20) {
@@ -605,7 +743,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           .catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if ((e as Error).name === 'AbortError') {
+        streamWasCancelled = true;
+      } else {
+        streamHasError = true;
         setMessages(prev => {
           const newMessages = [...prev];
           newMessages[newMessages.length - 1].content += `\n[Error: ${(e as Error).message}]`;
@@ -613,7 +754,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         });
       }
     } finally {
-      setStreaming(false);
+      if (streamWasCancelled) {
+        setStreamStatus('cancelled');
+      } else if (streamHasError) {
+        setStreamStatus('error');
+      } else {
+        setStreamStatus('done');
+      }
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
@@ -884,14 +1031,11 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
                 onUpload={handleUpload}
                 attachments={attachments}
                 onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-                models={models}
-                currentModel={currentModel}
-                onModelChange={setCurrentModel}
                 disabled={streaming}
                 uploading={uploading}
                 placeholder={t.ask_anything}
                 streaming={streaming}
-                onStop={() => abortControllerRef.current?.abort()}
+                onStop={handleStopStreaming}
               />
               <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
                 {t.ai_disclaimer}
@@ -1131,14 +1275,11 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
               onUpload={handleUpload}
               attachments={attachments}
               onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-              models={models}
-              currentModel={currentModel}
-              onModelChange={setCurrentModel}
               disabled={streaming}
               uploading={uploading}
               placeholder={t.ask_anything}
               streaming={streaming}
-              onStop={() => abortControllerRef.current?.abort()}
+              onStop={handleStopStreaming}
             />
             <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
               {t.ai_disclaimer}

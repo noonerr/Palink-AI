@@ -1,4 +1,7 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { MessageSquare, Trash2, CheckSquare, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -60,6 +63,47 @@ const clampTitleToTenChars = (title: string) => {
   return chars.slice(0, 10).join('');
 };
 
+const mayContainMath = (title: string) => {
+  return title.includes('$') || title.includes('\\(') || title.includes('\\[');
+};
+
+const normalizeMathDelimiters = (title: string) => {
+  return title
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_match, expr: string) => `\\(${expr.trim()}\\)`)
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_match, expr: string) => `$${expr.trim()}$`);
+};
+
+const formatSessionTitle = (title: string) => {
+  const normalized = (title || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  if (mayContainMath(normalized)) {
+    return normalizeMathDelimiters(normalized);
+  }
+  return clampTitleToTenChars(normalized);
+};
+
+const SessionTitleText: React.FC<{ title: string }> = ({ title }) => {
+  if (!mayContainMath(title)) {
+    return <>{title}</>;
+  }
+
+  return (
+    <span className="session-title-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={{
+          p: ({ node: _node, children }) => <span>{children}</span>,
+        }}
+      >
+        {title}
+      </ReactMarkdown>
+    </span>
+  );
+};
+
 /** 单个会话项 —— 自定义比较函数仅检查数据 props，跳过回调引用 */
 const ChatSessionItem = React.memo<{
   session: Session;
@@ -86,6 +130,7 @@ const ChatSessionItem = React.memo<{
 }) => {
   return (
     <div
+      title={(session.title || '').trim() || label}
       onClick={() => {
         if (isDeleteMode) {
           toggleSessionSelect(session.id);
@@ -118,13 +163,13 @@ const ChatSessionItem = React.memo<{
         {isLoading ? (
           <div className="flex items-center gap-2">
             <LoadingDots color="text-slate-400" size={5} />
-            <span className="text-base truncate text-slate-400">
-              {label}
-            </span>
+            <div className="text-base truncate text-slate-400">
+              <SessionTitleText title={label} />
+            </div>
           </div>
         ) : (
           <div className="text-base truncate">
-            {label}
+            <SessionTitleText title={label} />
           </div>
         )}
       </div>
@@ -159,7 +204,7 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
 }) => {
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <ScrollArea className="flex-1 px-0 min-h-0">
+      <ScrollArea className="flex-1 px-0 min-h-0" style={{ scrollbarGutter: 'stable both-edges' }}>
         <style>{`
           [data-radix-scroll-area-viewport] > div {
             display: block !important;
@@ -184,7 +229,7 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
               toggleSessionSelect={toggleSessionSelect}
               onDeleteSession={onDeleteSession}
               showDeleteButton={showDeleteButton}
-              label={clampTitleToTenChars(session.title || t?.new_chat || '新对话')}
+              label={formatSessionTitle(session.title || t?.new_chat || '新对话')}
               isLoading={loadingSessionIds?.has(session.id)}
             />
           ))}
@@ -192,6 +237,13 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
       </ScrollArea>
     </div>
   );
-}, (prevProps, nextProps) => {
-  return false;
+}, (_prevProps, _nextProps) => {
+  if (_prevProps.sessions !== _nextProps.sessions) return false;
+  if (_prevProps.activeSessionId !== _nextProps.activeSessionId) return false;
+  if (_prevProps.isDeleteMode !== _nextProps.isDeleteMode) return false;
+  if (_prevProps.showDeleteButton !== _nextProps.showDeleteButton) return false;
+  if (_prevProps.selectedSessions !== _nextProps.selectedSessions) return false;
+  if (_prevProps.loadingSessionIds !== _nextProps.loadingSessionIds) return false;
+  if (_prevProps.t !== _nextProps.t) return false;
+  return true;
 });

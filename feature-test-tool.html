@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palink-AI 功能测试工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .test-section {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .test-section h2 {
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .test-item {
+            padding: 12px;
+            margin: 10px 0;
+            border-left: 4px solid #ddd;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+
+        .test-item.success {
+            border-left-color: #4caf50;
+            background: #f1f8f4;
+        }
+
+        .test-item.error {
+            border-left-color: #f44336;
+            background: #fdf1f0;
+        }
+
+        .test-item.warning {
+            border-left-color: #ff9800;
+            background: #fef4f0;
+        }
+
+        .test-item.pending {
+            border-left-color: #2196f3;
+            background: #f0f7ff;
+        }
+
+        .test-item-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .test-item-detail {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .status-icon {
+            font-size: 16px;
+        }
+
+        .test-code {
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            margin: 10px 0;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+            border: 1px solid #ddd;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .summary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .summary h3 {
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            line-height: 1.2;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        .test-description {
+            font-size: 13px;
+            color: #666;
+            margin: 10px 0;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧪 Palink-AI 功能测试工具</h1>
+            <p>检查前端功能实现状态</p>
+        </div>
+
+        <div class="summary" id="summary">
+            <h3>测试摘要</h3>
+            <div class="summary-stats">
+                <div class="stat">
+                    <div class="stat-value" id="passCount">0</div>
+                    <div class="stat-label">通过</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="failCount">0</div>
+                    <div class="stat-label">失败</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="warnCount">0</div>
+                    <div class="stat-label">警告</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="totalCount">0</div>
+                    <div class="stat-label">总计</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 环境检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">🔍</span> 环境检查</h2>
+            <div id="environmentTests"></div>
+        </div>
+
+        <!-- 依赖检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">📦</span> 依赖库检查</h2>
+            <div id="dependencyTests"></div>
+        </div>
+
+        <!-- DOM 和组件检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">🏗️</span> DOM 结构检查</h2>
+            <div id="domTests"></div>
+        </div>
+
+        <!-- CSS 检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">🎨</span> CSS 样式检查</h2>
+            <div id="cssTests"></div>
+        </div>
+
+        <!-- 功能检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">⚙️</span> 功能检查</h2>
+            <div id="featureTests"></div>
+        </div>
+
+        <!-- 性能检查 -->
+        <div class="test-section">
+            <h2><span class="status-icon">⚡</span> 性能检查</h2>
+            <div id="performanceTests"></div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="test-section">
+            <h2><span class="status-icon">🎯</span> 快速操作</h2>
+            <div class="button-group">
+                <button class="btn-primary" onclick="runAllTests()">运行所有测试</button>
+                <button class="btn-secondary" onclick="copyResults()">复制结果</button>
+                <button class="btn-secondary" onclick="clearResults()">清除结果</button>
+                <button class="btn-secondary" onclick="openDevTools()">打开开发者工具</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tests = {
+            environment: [
+                {
+                    name: '浏览器环境',
+                    check: () => typeof window !== 'undefined',
+                    expected: true
+                },
+                {
+                    name: 'React 应用加载',
+                    check: () => document.querySelector('#root') !== null,
+                    expected: true
+                },
+                {
+                    name: '网络连接',
+                    check: () => navigator.onLine,
+                    expected: true
+                },
+                {
+                    name: '应用响应性',
+                    check: async () => {
+                        try {
+                            const response = await fetch('/api/health', { 
+                                method: 'GET',
+                                timeout: 5000
+                            });
+                            return response.ok || response.status === 404; // 404 也表示服务在运行
+                        } catch (e) {
+                            return false;
+                        }
+                    },
+                    expected: true,
+                    async: true
+                }
+            ],
+            dependencies: [
+                {
+                    name: 'KaTeX 库',
+                    check: () => {
+                        const link = Array.from(document.querySelectorAll('link')).find(l => l.href.includes('katex'));
+                        return link !== undefined || window.katex !== undefined;
+                    },
+                    detail: '数学公式渲染库'
+                },
+                {
+                    name: 'Mermaid 库',
+                    check: () => typeof mermaid !== 'undefined',
+                    detail: '图表渲染库'
+                },
+                {
+                    name: 'react-markdown',
+                    check: () => {
+                        // 检查是否有 markdown 内容在 DOM 中
+                        return document.querySelector('[class*="markdown"]') !== null || 
+                               document.querySelector('[class*="prose"]') !== null;
+                    },
+                    detail: 'Markdown 解析库'
+                },
+                {
+                    name: 'remark-math',
+                    check: () => {
+                        // 检查是否有数学相关的样式
+                        const style = document.querySelector('style') || document.head;
+                        return style.textContent.includes('math') || document.querySelector('.math-block') !== null;
+                    },
+                    detail: '数学公式解析插件'
+                },
+                {
+                    name: 'rehype-katex',
+                    check: () => {
+                        const katexLink = Array.from(document.querySelectorAll('link')).find(l => l.href.includes('katex'));
+                        return katexLink !== undefined;
+                    },
+                    detail: 'KaTeX 渲染插件'
+                }
+            ],
+            dom: [
+                {
+                    name: '聊天消息容器',
+                    check: () => {
+                        return document.querySelector('[class*="message"]') !== null ||
+                               document.querySelector('[class*="chat"]') !== null;
+                    },
+                    detail: '检查是否存在聊天消息元素'
+                },
+                {
+                    name: '输入框组件',
+                    check: () => {
+                        return document.querySelector('textarea') !== null ||
+                               document.querySelector('[contenteditable="true"]') !== null;
+                    },
+                    detail: '检查是否存在输入框'
+                },
+                {
+                    name: 'Markdown 内容容器',
+                    check: () => {
+                        return document.querySelector('.markdown-content') !== null ||
+                               document.querySelector('[class*="prose"]') !== null;
+                    },
+                    detail: '检查是否存在 Markdown 容器'
+                },
+                {
+                    name: 'ImageLightbox 组件',
+                    check: () => {
+                        // 检查 lightbox 相关的 CSS 类或元素
+                        const cssText = getCSSText();
+                        return cssText.includes('lightbox') || document.querySelector('[class*="lightbox"]') !== null;
+                    },
+                    detail: '检查图像预览组件'
+                }
+            ],
+            css: [
+                {
+                    name: '.math-block 样式',
+                    check: () => {
+                        const cssText = getCSSText();
+                        return cssText.includes('.math-block');
+                    },
+                    detail: '数学公式块样式'
+                },
+                {
+                    name: '.mermaid-container 样式',
+                    check: () => {
+                        const cssText = getCSSText();
+                        return cssText.includes('.mermaid-container') || cssText.includes('mermaid');
+                    },
+                    detail: '图表容器样式'
+                },
+                {
+                    name: '.lightbox-overlay 样式',
+                    check: () => {
+                        const cssText = getCSSText();
+                        return cssText.includes('.lightbox-overlay') || cssText.includes('lightbox');
+                    },
+                    detail: '图像预览背景层样式'
+                },
+                {
+                    name: '.attachment 样式',
+                    check: () => {
+                        const cssText = getCSSText();
+                        return cssText.includes('.attachment');
+                    },
+                    detail: '文件附件样式'
+                },
+                {
+                    name: '.streaming-cursor 样式',
+                    check: () => {
+                        const cssText = getCSSText();
+                        return cssText.includes('.streaming-cursor') || cssText.includes('streaming');
+                    },
+                    detail: '流式输出光标样式'
+                },
+                {
+                    name: 'KaTeX CSS 导入',
+                    check: () => {
+                        const links = Array.from(document.querySelectorAll('link'));
+                        const katexLink = links.find(l => l.href.includes('katex') && l.href.includes('.css'));
+                        return katexLink !== undefined;
+                    },
+                    detail: 'KaTeX 样式表是否正确加载'
+                }
+            ],
+            features: [
+                {
+                    name: 'Markdown 渲染',
+                    check: () => {
+                        const markdownContainer = document.querySelector('.markdown-content');
+                        return markdownContainer !== null;
+                    },
+                    detail: '检查 Markdown 内容是否能正确渲染'
+                },
+                {
+                    name: 'KaTeX 公式渲染',
+                    check: () => {
+                        const katexElement = document.querySelector('.katex-render') || 
+                                           document.querySelector('.math-block');
+                        return katexElement !== null || 
+                               typeof window.katex !== 'undefined';
+                    },
+                    detail: '检查数学公式渲染功能'
+                },
+                {
+                    name: 'Mermaid 图表渲染',
+                    check: () => {
+                        const mermaidElement = document.querySelector('.mermaid') ||
+                                             document.querySelector('.mermaid-container');
+                        return mermaidElement !== null || 
+                               typeof mermaid !== 'undefined';
+                    },
+                    detail: '检查图表渲染功能'
+                },
+                {
+                    name: '图像预览功能',
+                    check: () => {
+                        const lightboxOverlay = document.querySelector('.lightbox-overlay');
+                        const imageElement = document.querySelector('img[class*="markdown"]') ||
+                                           document.querySelector('.markdown-content img');
+                        return lightboxOverlay !== null || imageElement !== null;
+                    },
+                    detail: '检查图像预览/Lightbox 功能'
+                },
+                {
+                    name: '文件上传UI',
+                    check: () => {
+                        const uploadZone = document.querySelector('[class*="upload"]') ||
+                                         document.querySelector('input[type="file"]');
+                        const attachmentPreview = document.querySelector('[class*="attachment"]');
+                        return uploadZone !== null || attachmentPreview !== null;
+                    },
+                    detail: '检查文件上传界面元素'
+                },
+                {
+                    name: '流式输出',
+                    check: () => {
+                        const streamingCursor = document.querySelector('.streaming-cursor');
+                        const smoothOutput = document.querySelector('[class*="smooth-output"]');
+                        return streamingCursor !== null || smoothOutput !== null;
+                    },
+                    detail: '检查流式输出光标和动画'
+                }
+            ],
+            performance: [
+                {
+                    name: 'CSS 加载时间',
+                    check: () => {
+                        const perfEntries = performance.getEntriesByType('resource')
+                            .filter(e => e.name.includes('.css'));
+                        const hasStylesheets = perfEntries.length > 0;
+                        const avgTime = hasStylesheets ? 
+                            (perfEntries.reduce((sum, e) => sum + e.duration, 0) / perfEntries.length).toFixed(2) : 
+                            'N/A';
+                        return {
+                            pass: hasStylesheets,
+                            detail: `加载了 ${perfEntries.length} 个样式表，平均时间: ${avgTime}ms`
+                        };
+                    },
+                    detail: '检查样式表加载性能'
+                },
+                {
+                    name: 'JavaScript 加载时间',
+                    check: () => {
+                        const perfEntries = performance.getEntriesByType('resource')
+                            .filter(e => e.name.includes('.js'));
+                        const totalSize = perfEntries.reduce((sum, e) => sum + (e.transferSize || 0), 0);
+                        const totalTime = perfEntries.reduce((sum, e) => sum + e.duration, 0);
+                        return {
+                            pass: perfEntries.length > 0,
+                            detail: `加载了 ${perfEntries.length} 个脚本，总大小: ${(totalSize/1024).toFixed(2)}KB，总时间: ${totalTime.toFixed(2)}ms`
+                        };
+                    },
+                    detail: '检查脚本加载性能'
+                },
+                {
+                    name: '页面加载完成时间',
+                    check: () => {
+                        const perfData = performance.timing;
+                        const loadTime = perfData.loadEventEnd - perfData.navigationStart;
+                        return {
+                            pass: loadTime < 5000,
+                            detail: `页面加载时间: ${loadTime}ms`
+                        };
+                    },
+                    detail: '检查总体页面加载性能'
+                }
+            ]
+        };
+
+        // 辅助函数
+        function getCSSText() {
+            const styles = document.querySelectorAll('style');
+            let cssText = '';
+            styles.forEach(style => {
+                cssText += style.textContent;
+            });
+            return cssText;
+        }
+
+        function createTestElement(test, result, category) {
+            const div = document.createElement('div');
+            const classList = ['test-item'];
+            let statusIcon = '⏳';
+
+            if (result === true) {
+                classList.push('success');
+                statusIcon = '✅';
+            } else if (result === false) {
+                classList.push('error');
+                statusIcon = '❌';
+            } else if (typeof result === 'object' && result.pass === false) {
+                classList.push('warning');
+                statusIcon = '⚠️';
+            } else if (result === false || (typeof result === 'object' && result.pass === false)) {
+                classList.push('error');
+                statusIcon = '❌';
+            } else {
+                classList.push('success');
+                statusIcon = '✅';
+            }
+
+            let detail = '';
+            if (test.detail) {
+                detail = `<div class="test-item-detail">${test.detail}</div>`;
+            }
+            if (typeof result === 'object' && result.detail) {
+                detail += `<div class="test-item-detail">${result.detail}</div>`;
+            }
+
+            div.className = classList.join(' ');
+            div.innerHTML = `
+                <div class="test-item-title">${statusIcon} ${test.name}</div>
+                ${detail}
+            `;
+            return div;
+        }
+
+        async function runTests(category) {
+            const container = document.querySelector(`#${category}Tests`);
+            if (!container) return [];
+
+            container.innerHTML = '';
+            const results = [];
+
+            for (const test of tests[category]) {
+                try {
+                    let result = test.check();
+                    
+                    if (test.async && result instanceof Promise) {
+                        result = await result;
+                    }
+
+                    const testResult = typeof result === 'object' ? result.pass : result;
+                    results.push(testResult);
+                    container.appendChild(createTestElement(test, result, category));
+                } catch (e) {
+                    results.push(false);
+                    const errorTest = { ...test, detail: `错误: ${e.message}` };
+                    container.appendChild(createTestElement(errorTest, false, category));
+                }
+            }
+
+            return results;
+        }
+
+        async function runAllTests() {
+            const allResults = [];
+
+            for (const category in tests) {
+                const results = await runTests(category);
+                allResults.push(...results);
+            }
+
+            updateSummary(allResults);
+        }
+
+        function updateSummary(results) {
+            const passed = results.filter(r => r === true).length;
+            const failed = results.filter(r => r === false).length;
+            const warned = results.filter(r => typeof r === 'object').length;
+            const total = results.length;
+
+            document.querySelector('#passCount').textContent = passed;
+            document.querySelector('#failCount').textContent = failed;
+            document.querySelector('#warnCount').textContent = warned;
+            document.querySelector('#totalCount').textContent = total;
+        }
+
+        function copyResults() {
+            const summaryDiv = document.querySelector('#summary');
+            const testSections = document.querySelectorAll('.test-section');
+            let text = 'Palink-AI 测试结果\n' + '='.repeat(50) + '\n\n';
+
+            text += 'Summary:\n';
+            text += 'Passed: ' + document.querySelector('#passCount').textContent + '\n';
+            text += 'Failed: ' + document.querySelector('#failCount').textContent + '\n';
+            text += 'Warnings: ' + document.querySelector('#warnCount').textContent + '\n';
+            text += 'Total: ' + document.querySelector('#totalCount').textContent + '\n\n';
+
+            testSections.forEach((section, idx) => {
+                const title = section.querySelector('h2').textContent;
+                text += title + '\n' + '-'.repeat(50) + '\n';
+                
+                section.querySelectorAll('.test-item').forEach(item => {
+                    const itemTitle = item.querySelector('.test-item-title').textContent;
+                    const itemDetail = item.querySelector('.test-item-detail');
+                    text += itemTitle + '\n';
+                    if (itemDetail) {
+                        text += '  ' + itemDetail.textContent + '\n';
+                    }
+                });
+                text += '\n';
+            });
+
+            navigator.clipboard.writeText(text).then(() => {
+                alert('✅ 测试结果已复制到剪贴板');
+            }).catch(() => {
+                alert('❌ 复制失败，请手动复制');
+            });
+        }
+
+        function clearResults() {
+            document.querySelectorAll('[id$="Tests"]').forEach(el => el.innerHTML = '');
+            document.querySelector('#passCount').textContent = '0';
+            document.querySelector('#failCount').textContent = '0';
+            document.querySelector('#warnCount').textContent = '0';
+            document.querySelector('#totalCount').textContent = '0';
+        }
+
+        function openDevTools() {
+            alert('按下 F12 或 Ctrl+Shift+I (Windows) / Cmd+Option+I (Mac) 打开开发者工具');
+        }
+
+        // 页面加载完成后自动运行测试
+        window.addEventListener('load', () => {
+            runAllTests();
+        });
+    </script>
+</body>
+</html>

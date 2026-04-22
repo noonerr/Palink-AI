@@ -200,11 +200,15 @@ def _normalize_model_image_url(img_url: str) -> str:
     if upload_prefix:
         relative_path = normalized.split(upload_prefix, 1)[1]
         relative_path = relative_path.split("?", 1)[0].split("#", 1)[0]
-        filename = os.path.basename(relative_path)
-        if not filename:
+        normalized_relative = os.path.normpath(relative_path).replace("\\", "/").lstrip("/")
+        if not normalized_relative or normalized_relative.startswith("../"):
             raise HTTPException(status_code=400, detail="Invalid uploaded image path")
 
-        file_path = os.path.join(settings.UPLOAD_DIR, filename)
+        upload_root = os.path.abspath(settings.UPLOAD_DIR)
+        file_path = os.path.abspath(os.path.join(upload_root, normalized_relative))
+        if os.path.commonpath([upload_root, file_path]) != upload_root:
+            raise HTTPException(status_code=400, detail="Invalid uploaded image path")
+
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="Uploaded image not found")
 

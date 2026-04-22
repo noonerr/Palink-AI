@@ -3,7 +3,6 @@ import { Sparkles, X, Edit3, Trash2, Menu } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
@@ -15,7 +14,16 @@ const generateMessageId = () => {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
+type StreamStatus = 'idle' | 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
+
 const WELCOME_DROP_DURATION_MS = 760;
+const HISTORY_PANEL_WIDTH_PX = 280;
+const HISTORY_SLIDE_DURATION_MS = 300;
+const NEW_SESSION_FADE_DURATION_MS = 200;
+const MESSAGE_TO_COMPOSER_GAP_PX = 40;
+const COMPOSER_CONTAINER_TOP_PADDING_PX = 8; // pt-2
+const MESSAGES_OUTER_BOTTOM_PADDING_PX = 16; // pb-4
+const INITIAL_BOTTOM_LOCK_MS = 1500;
 
 interface ChatViewProps {
   token: string;
@@ -35,6 +43,13 @@ interface Attachment {
   type: 'image' | 'file';
   name: string;
   url: string;
+  thumbnail?: string;
+  size?: number;
+}
+
+interface SessionVisualSnapshot {
+  activeSessionId: string | null;
+  messages: MessageType[];
 }
 
 export const ChatViewMobile: React.FC<ChatViewProps> = ({
@@ -54,7 +69,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
-  const [streaming, setStreaming] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
@@ -79,16 +94,18 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [developerMode, setDeveloperMode] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
+  const streaming = streamStatus === 'pending' || streamStatus === 'streaming';
+
   const [welcomeDropping, setWelcomeDropping] = useState(false);
   const [welcomeDropDistance, setWelcomeDropDistance] = useState(0);
   const [welcomeDropSnapshot, setWelcomeDropSnapshot] = useState<{ top: number; left: number; width: number } | null>(null);
   const [welcomeDropInputValue, setWelcomeDropInputValue] = useState('');
   const [needsTopSpacer, setNeedsTopSpacer] = useState(false);
-  const [messageFadeState, setMessageFadeState] = useState<'visible' | 'fading-out' | 'fading-in'>('visible');
   const [hasSentFirstMessage, setHasSentFirstMessage] = useState(false);
-  const [overscrollY, setOverscrollY] = useState(0);
-  const [mobileBottomSpacerHeight, setMobileBottomSpacerHeight] = useState(220);
-  const [composerBottomOffset, setComposerBottomOffset] = useState(0);
+  const [composerBottomOffset, setComposerBottomOffset] = useState(90);
+  const [sessionVisualSnapshot, setSessionVisualSnapshot] = useState<SessionVisualSnapshot | null>(null);
+  const [newSessionFadeState, setNewSessionFadeState] = useState<'idle' | 'fading-out' | 'fading-in'>('idle');
+  const [showNewContentView, setShowNewContentView] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -96,19 +113,49 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const sessionIdSetRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const welcomeComposerRef = useRef<HTMLDivElement>(null);
+  const mobileComposerRef = useRef<HTMLDivElement>(null);
   const messagesScrollWrapRef = useRef<HTMLDivElement>(null);
   const messageStackRef = useRef<HTMLDivElement>(null);
   const mobileTopBarRef = useRef<HTMLDivElement>(null);
-  const mobileComposerRef = useRef<HTMLDivElement>(null);
-  const touchStartY = useRef(0);
-  const isBouncing = useRef(false);
   const suppressSmoothScrollRef = useRef(false);
   const lastLoadedSessionIdRef = useRef<string | null>(null);
+  const sessionSwitchTargetRef = useRef<string | null>(null);
+  const sessionSwitchTokenRef = useRef(0);
+  const messagesRequestSeqRef = useRef(0);
+  const sessionSwitchTimerRef = useRef<number | null>(null);
   const welcomeDropTimerRef = useRef<number | null>(null);
+  const newSessionFadeTimerRef = useRef<number | null>(null);
+  const keyboardWasOpenRef = useRef(isKeyboardOpen);
+  const keyboardCloseGuardUntilRef = useRef(0);
+  const stableComposerOffsetRef = useRef(90);
+  const pendingInitialBottomLockRef = useRef(false);
+  const initialBottomLockUntilRef = useRef(0);
 
-  const isWelcome = messages.length === 0 && !activeSessionId;
+  const markStreamActive = useCallback(() => {
+    setStreamStatus((prev) => (prev === 'pending' ? 'streaming' : prev));
+  }, []);
+
+  const handleStopStreaming = useCallback(() => {
+    if (!abortControllerRef.current) return;
+    setStreamStatus('cancelled');
+    abortControllerRef.current.abort();
+  }, []);
+
+  const displayedActiveSessionId = sessionVisualSnapshot ? sessionVisualSnapshot.activeSessionId : activeSessionId;
+  const displayedMessages = sessionVisualSnapshot ? sessionVisualSnapshot.messages : messages;
+  const displayedSuggestions = sessionVisualSnapshot ? [] : suggestions;
+  const isWelcome = displayedMessages.length === 0 && !displayedActiveSessionId;
   const displayWelcome = isWelcome || welcomeDropping;
   const historyOpen = !sidebarCollapsed;
+  const messageBottomPaddingPx = isKeyboardOpen
+    ? 16
+    : Math.max(
+        16,
+        (composerBottomOffset > 0 ? composerBottomOffset : 90)
+          + COMPOSER_CONTAINER_TOP_PADDING_PX
+          + MESSAGE_TO_COMPOSER_GAP_PX
+          - MESSAGES_OUTER_BOTTOM_PADDING_PX
+      );
 
   const loadMemoryStats = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
@@ -235,25 +282,32 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     await streamMockAssistantReply(
       seedText,
       (chunk) => {
+        markStreamActive();
         fullContent += chunk;
         setAssistantMessageSnapshot(assistantMessageId, fullContent, '');
       },
       { signal: abortControllerRef.current?.signal }
     );
     return fullContent;
-  }, [setAssistantMessageSnapshot]);
+  }, [markStreamActive, setAssistantMessageSnapshot]);
 
   useEffect(() => {
     return () => {
+      if (sessionSwitchTimerRef.current !== null) {
+        window.clearTimeout(sessionSwitchTimerRef.current);
+      }
       if (welcomeDropTimerRef.current !== null) {
         window.clearTimeout(welcomeDropTimerRef.current);
+      }
+      if (newSessionFadeTimerRef.current !== null) {
+        window.clearTimeout(newSessionFadeTimerRef.current);
       }
     };
   }, []);
 
   const runWelcomeInputDropAnimation = useCallback((seedText: string) => {
     const composer = welcomeComposerRef.current;
-    const dock = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]');
+    const dock = document.querySelector('nav[data-dock="true"]');
 
     let offset = 220;
     const fallbackWidth = Math.min(Math.max(window.innerWidth - 40, 280), 448);
@@ -265,7 +319,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     if (composer && dock instanceof HTMLElement) {
       const composerRect = composer.getBoundingClientRect();
       const dockRect = dock.getBoundingClientRect();
-      const targetTop = dockRect.top - composerRect.height - 7;
+      const targetTop = dockRect.top - composerRect.height - 14;
       offset = targetTop - composerRect.top;
       snapshot = {
         top: composerRect.top,
@@ -294,32 +348,103 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
-    setMessageFadeState('fading-out');
+    const switchToken = sessionSwitchTokenRef.current + 1;
+    sessionSwitchTokenRef.current = switchToken;
+    sessionSwitchTargetRef.current = sessionId;
+
+    setNewSessionFadeState('fading-out');
+
+    setSessionVisualSnapshot({
+      activeSessionId,
+      messages: [...messages],
+    });
+
+    if (sessionSwitchTimerRef.current !== null) {
+      window.clearTimeout(sessionSwitchTimerRef.current);
+      sessionSwitchTimerRef.current = null;
+    }
+    if (newSessionFadeTimerRef.current !== null) {
+      window.clearTimeout(newSessionFadeTimerRef.current);
+      newSessionFadeTimerRef.current = null;
+    }
+
+    // 先完成侧栏收起动画，再替换会话内容，避免中途出现错位补位。
     setSidebarCollapsed(true);
     setHasSentFirstMessage(false);
+    setMemoryStats(null);
 
-    setTimeout(() => {
-      // 在淡出动画完成后再加载和切换会话内容
-      loadMessages(sessionId);
+    const applySessionSwitch = async () => {
+      if (sessionSwitchTokenRef.current !== switchToken || sessionSwitchTargetRef.current !== sessionId) {
+        return;
+      }
       setActiveSessionId(sessionId);
-      setMessageFadeState('fading-in');
-      setTimeout(() => {
-        setMessageFadeState('visible');
-      }, 300);
-    }, 300);
-  };
+      await loadMessages(sessionId, { bypassCache: true });
+      if (sessionSwitchTokenRef.current === switchToken && sessionSwitchTargetRef.current === sessionId) {
+        sessionSwitchTargetRef.current = null;
+        setSessionVisualSnapshot(null);
+        setNewSessionFadeState('fading-in');
+        newSessionFadeTimerRef.current = window.setTimeout(() => {
+          if (sessionSwitchTokenRef.current !== switchToken) {
+            return;
+          }
+          setNewSessionFadeState('idle');
+          newSessionFadeTimerRef.current = null;
+        }, NEW_SESSION_FADE_DURATION_MS);
+      }
+    };
 
-  const loadMessages = useCallback(async (sessionId: string) => {
-    if (lastLoadedSessionIdRef.current === sessionId) {
+    if (historyOpen) {
+      sessionSwitchTimerRef.current = window.setTimeout(() => {
+        sessionSwitchTimerRef.current = null;
+        void applySessionSwitch();
+      }, HISTORY_SLIDE_DURATION_MS);
       return;
     }
+
+    sessionSwitchTimerRef.current = window.setTimeout(() => {
+      sessionSwitchTimerRef.current = null;
+      void applySessionSwitch();
+    }, NEW_SESSION_FADE_DURATION_MS);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (sessionSwitchTimerRef.current !== null) {
+        window.clearTimeout(sessionSwitchTimerRef.current);
+        sessionSwitchTimerRef.current = null;
+      }
+      if (newSessionFadeTimerRef.current !== null) {
+        window.clearTimeout(newSessionFadeTimerRef.current);
+        newSessionFadeTimerRef.current = null;
+      }
+      sessionSwitchTargetRef.current = null;
+    };
+  }, []);
+
+  const loadMessages = useCallback(async (sessionId: string, options?: { bypassCache?: boolean }) => {
+    if (!options?.bypassCache && lastLoadedSessionIdRef.current === sessionId) {
+      return false;
+    }
+
     lastLoadedSessionIdRef.current = sessionId;
+    const requestSeq = ++messagesRequestSeqRef.current;
+
     try {
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
+      const isLatestRequest = requestSeq === messagesRequestSeqRef.current;
+      const isExpectedSession =
+        activeSessionId === sessionId || sessionSwitchTargetRef.current === sessionId;
+
+      if (!isLatestRequest || !isExpectedSession) {
+        return false;
+      }
+
       setMessages(data);
       setSuggestions([]);
+      pendingInitialBottomLockRef.current = data.length > 0;
+      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
 
-      await loadMemoryStats(sessionId);
+      loadMemoryStats(sessionId);
 
       const lastMsg = data[data.length - 1];
       if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
@@ -338,10 +463,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           })
           .catch(() => {});
       }
+
+      return true;
     } catch (e) {
       console.error('Failed to load messages:', e);
+      return false;
     }
-  }, [currentModel, loadMemoryStats]);
+  }, [activeSessionId, currentModel, loadMemoryStats]);
 
   useEffect(() => {
     loadSessions();
@@ -382,6 +510,36 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     const behavior: ScrollBehavior = streaming || welcomeDropping || suppressSmoothScrollRef.current ? 'auto' : 'smooth';
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, [messages, streaming, welcomeDropping]);
+
+  useEffect(() => {
+    if (displayWelcome || messages.length === 0) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    if (!pendingInitialBottomLockRef.current) {
+      return;
+    }
+
+    if (performance.now() >= initialBottomLockUntilRef.current) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    let rafA: number | null = null;
+    let rafB: number | null = null;
+
+    rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      });
+    });
+
+    return () => {
+      if (rafA !== null) cancelAnimationFrame(rafA);
+      if (rafB !== null) cancelAnimationFrame(rafB);
+    };
+  }, [displayWelcome, messages.length, messageBottomPaddingPx]);
 
   useEffect(() => {
     if (isWelcome) {
@@ -433,50 +591,75 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   }, [displayWelcome, messages.length, streaming, hasSentFirstMessage]);
 
   useEffect(() => {
-    let rafId: number | null = null;
-    const observer = new ResizeObserver(() => {
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-      rafId = requestAnimationFrame(updateLayoutSpacing);
-    });
+    if (keyboardWasOpenRef.current && !isKeyboardOpen) {
+      // iOS 键盘收起到 viewport/dock 稳定有延迟，短窗口内禁止偏移变小。
+      keyboardCloseGuardUntilRef.current = performance.now() + 700;
+    }
+    keyboardWasOpenRef.current = isKeyboardOpen;
+  }, [isKeyboardOpen]);
 
-    const updateLayoutSpacing = () => {
-      if (displayWelcome) {
+  useEffect(() => {
+    let rafId: number | null = null;
+    const timeoutIds: number[] = [];
+
+    const updateComposerOffset = () => {
+      if (displayWelcome) return;
+
+      if (isKeyboardOpen) {
+        // 保留上一次有效偏移，避免键盘收起首帧因状态仍为 0 而与 dock 重叠。
         return;
       }
 
       const dockSurface = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]') as HTMLElement | null;
-
-      if (isKeyboardOpen || !dockSurface) {
-        setComposerBottomOffset((prev) => (prev === 0 ? prev : 0));
-        setMobileBottomSpacerHeight((prev) => (prev === 16 ? prev : 16));
+      const dockTarget = dockSurface ?? (document.querySelector('nav[data-dock="true"]') as HTMLElement | null);
+      if (!dockTarget) {
+        // 回退到稳定默认值，避免偶发查询不到 dock 时输入框掉到最底部
+        setComposerBottomOffset((prev) => (prev > 0 ? prev : 90));
         return;
       }
 
-      // 输入框底部与 dock 顶部固定 7px 装饰间隙
-      const dockRect = dockSurface.getBoundingClientRect();
-      const nextComposerBottomOffset = Math.max(0, Math.ceil(window.innerHeight - dockRect.top + 7));
-      setComposerBottomOffset((prev) => (prev === nextComposerBottomOffset ? prev : nextComposerBottomOffset));
+      const dockRect = dockTarget.getBoundingClientRect();
+      const measuredOffset = Math.max(0, Math.ceil(window.innerHeight - dockRect.top + 7));
 
-      // 消息区底部与输入框顶部固定 40px 间距（在原基础上再次增加 15px）
-      const composerTop = mobileComposerRef.current?.getBoundingClientRect().top;
-      const nextSpacer = typeof composerTop === 'number'
-        ? Math.max(20, Math.ceil(window.innerHeight - composerTop + 40))
-        : Math.max(160, nextComposerBottomOffset + 74 + 40);
+      setComposerBottomOffset((prev) => {
+        const prevStableOffset = prev > 0 ? prev : stableComposerOffsetRef.current;
 
-      setMobileBottomSpacerHeight((prev) => (prev === nextSpacer ? prev : nextSpacer));
+        // 键盘收起动画过程中可能短暂测到极小值（如 7px），会导致输入框掉到底部
+        // 这类值直接用上一次有效值或默认值兜底，等待后续复测覆盖。
+        if (measuredOffset < 40) {
+          return prevStableOffset > 0 ? prevStableOffset : 90;
+        }
+
+        // 键盘刚收起的一小段时间内，忽略偏小的瞬时值，避免先与 dock 重叠。
+        if (performance.now() < keyboardCloseGuardUntilRef.current && measuredOffset < prevStableOffset) {
+          return prevStableOffset;
+        }
+
+        stableComposerOffsetRef.current = measuredOffset;
+        return prev === measuredOffset ? prev : measuredOffset;
+      });
     };
 
-    updateLayoutSpacing();
+    const scheduleUpdate = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        updateComposerOffset();
+      });
+    };
+
+    const observer = new ResizeObserver(scheduleUpdate);
+
+    scheduleUpdate();
 
     if (mobileComposerRef.current) {
       observer.observe(mobileComposerRef.current);
     }
-
-    const bottomDockNav = document.querySelector('nav[data-dock="true"]') as HTMLElement | null;
-    if (bottomDockNav) {
-      observer.observe(bottomDockNav);
+    const dockNav = document.querySelector('nav[data-dock="true"]') as HTMLElement | null;
+    if (dockNav) {
+      observer.observe(dockNav);
     }
 
     const dockSurface = document.querySelector('nav[data-dock="true"] > div[data-dock="true"]') as HTMLElement | null;
@@ -484,52 +667,35 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       observer.observe(dockSurface);
     }
 
-    window.addEventListener('resize', updateLayoutSpacing);
-    window.addEventListener('orientationchange', updateLayoutSpacing);
+    const onDockTransitionEnd = () => scheduleUpdate();
+    dockNav?.addEventListener('transitionend', onDockTransitionEnd);
+    dockSurface?.addEventListener('transitionend', onDockTransitionEnd);
+
+    if (!isKeyboardOpen) {
+      // 键盘收起后做多次延迟复测，覆盖 iOS/Android 视口与 transform 动画不同步。
+      [80, 180, 320, 480].forEach((delay) => {
+        const id = window.setTimeout(scheduleUpdate, delay);
+        timeoutIds.push(id);
+      });
+    }
+
+    window.addEventListener('resize', scheduleUpdate);
+    window.addEventListener('orientationchange', scheduleUpdate);
 
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', updateLayoutSpacing);
-      window.removeEventListener('orientationchange', updateLayoutSpacing);
+      dockNav?.removeEventListener('transitionend', onDockTransitionEnd);
+      dockSurface?.removeEventListener('transitionend', onDockTransitionEnd);
+      window.removeEventListener('resize', scheduleUpdate);
+      window.removeEventListener('orientationchange', scheduleUpdate);
+      timeoutIds.forEach((id) => window.clearTimeout(id));
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
       }
     };
   }, [displayWelcome, isKeyboardOpen]);
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartY.current = e.touches[0].clientY;
-  };
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    const el = messagesScrollWrapRef.current;
-    if (!el) return;
-    const touchY = e.touches[0].clientY;
-    const scrollTop = el.scrollTop;
-    const isAtTop = scrollTop <= 0;
-    const isAtBottom = scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    if ((isAtTop && touchY > touchStartY.current) || (isAtBottom && touchY < touchStartY.current)) {
-      isBouncing.current = true;
-      const delta = touchY - touchStartY.current;
-      const maxOverscroll = 80;
-      let overscroll: number;
-      if (isAtTop && delta > 0) {
-        overscroll = Math.min(delta * 0.4, maxOverscroll);
-      } else if (isAtBottom && delta < 0) {
-        overscroll = Math.max(delta * 0.4, -maxOverscroll);
-      } else {
-        return;
-      }
-      setOverscrollY(overscroll);
-    }
-  };
-
-  const handleTouchEnd = () => {
-    if (!isBouncing.current) return;
-    isBouncing.current = false;
-    setOverscrollY(0);
-    touchStartY.current = 0;
-  };
 
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
@@ -541,7 +707,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       });
 
       const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
-      setAttachments((prev) => [...prev, { type, name: file.name, url: data.url }]);
+      setAttachments((prev) => [...prev, {
+        type,
+        name: file.name,
+        url: data.url,
+        thumbnail: type === 'image' ? dataUrl : undefined,
+        size: file.size,
+      }]);
     } catch (e) {
       console.error('Upload failed:', e);
     } finally {
@@ -602,7 +774,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     if (userMessage.role !== 'user') return;
 
     setRegeneratingMessageIndex(assistantMessageIndex);
-    setStreaming(true);
+    setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
 
@@ -619,13 +791,18 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     });
 
     abortControllerRef.current = new AbortController();
+    let streamHasError = false;
+    let streamWasCancelled = false;
 
     if (developerMode) {
       try {
         await streamMockIntoMessage(userMessage.content, assistantMessageId);
         setSuggestions(buildMockSuggestions());
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') {
+        if ((e as Error).name === 'AbortError') {
+          streamWasCancelled = true;
+        } else {
+          streamHasError = true;
           setMessages((prev) => {
             const next = [...prev];
             const idx = next.findIndex((msg) => msg.id === assistantMessageId);
@@ -636,7 +813,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           });
         }
       } finally {
-        setStreaming(false);
+        if (streamWasCancelled) {
+          setStreamStatus('cancelled');
+        } else if (streamHasError) {
+          setStreamStatus('error');
+        } else {
+          setStreamStatus('done');
+        }
         setRegeneratingMessageIndex(null);
         setIsSendingMessage(false);
         abortControllerRef.current = null;
@@ -669,6 +852,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (!content && !reasoningDelta) return;
 
+        markStreamActive();
+
         if (reasoningDelta) {
           fullReasoning += reasoningDelta;
           setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
@@ -686,7 +871,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(setSuggestions).catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if ((e as Error).name === 'AbortError') {
+        streamWasCancelled = true;
+      } else {
+        streamHasError = true;
         setMessages((prev) => {
           const next = [...prev];
           const idx = next.findIndex((msg) => msg.id === assistantMessageId);
@@ -697,7 +885,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         });
       }
     } finally {
-      setStreaming(false);
+      if (streamWasCancelled) {
+        setStreamStatus('cancelled');
+      } else if (streamHasError) {
+        setStreamStatus('error');
+      } else {
+        setStreamStatus('done');
+      }
       setRegeneratingMessageIndex(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
@@ -708,16 +902,225 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     const text = typeof overrideText === 'string' ? overrideText : input;
     if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
 
-    if (!activeSessionId && messages.length === 0 && !welcomeDropping) {
+    // 如果从欢迎页面进入，需要先淡出欢迎页面
+    const isFromWelcome = !activeSessionId && messages.length === 0 && !welcomeDropping;
+    const switchToken = sessionSwitchTokenRef.current + 1;
+    
+    if (isFromWelcome) {
+      sessionSwitchTokenRef.current = switchToken;
       suppressSmoothScrollRef.current = true;
+      
+      // 先准备好新内容（在淡出的同时就添加好）
+      setHasSentFirstMessage(true);
+      sessionIdSetRef.current = false;
+      setInput('');
+      setAttachments([]);
+      setStreamStatus('pending');
+      setSuggestions([]);
+      setIsSendingMessage(true);
+
+      let displayContent = text;
+      if (attachments.length > 0) {
+        displayContent += '\n\n';
+        attachments.forEach((att) => {
+          displayContent += att.type === 'image' ? `![${att.name}](${att.url})\n` : `[📎 ${att.name}](${att.url})\n`;
+        });
+      }
+
+      const userMessageId = generateMessageId();
+      const assistantMessageId = generateMessageId();
+      setMessages((prev) => [
+        ...prev,
+        { id: userMessageId, role: 'user', content: displayContent },
+      ]);
+      
+      // 保存当前状态（显示欢迎页面），但新内容已经在 state 里了
+      setSessionVisualSnapshot({
+        activeSessionId: null,
+        messages: [], // 保持欢迎页面状态
+      });
+      
+      // 同时显示新内容容器（但 opacity=0）
+      setShowNewContentView(true);
+      
+      // 开始淡出旧内容
+      setNewSessionFadeState('fading-out');
+      
+      // 播放欢迎动画
       runWelcomeInputDropAnimation(text);
+      
+      // 等淡出完全完成
+      await new Promise(resolve => setTimeout(resolve, NEW_SESSION_FADE_DURATION_MS));
+      
+      if (sessionSwitchTokenRef.current !== switchToken) return;
+      
+      // 移除 snapshot（此时新内容容器已经存在且 opacity=0，不会闪烁）
+      setSessionVisualSnapshot(null);
+      
+      // 立即开始淡入新内容（同一帧内完成 DOM 切换 + opacity 变化）
+      setNewSessionFadeState('fading-in');
+      setTimeout(() => {
+        if (sessionSwitchTokenRef.current === switchToken) {
+          setNewSessionFadeState('idle');
+          setShowNewContentView(false);
+        }
+      }, NEW_SESSION_FADE_DURATION_MS);
+
+      // 剩下的逻辑继续执行（流式请求等）
+      abortControllerRef.current = new AbortController();
+      let streamHasError = false;
+      let streamWasCancelled = false;
+      
+      if (developerMode) {
+        try {
+          const sessionId = await ensureDeveloperSession(text);
+          if (sessionId) {
+            await api.post(`/api/sessions/${sessionId}/messages`, {
+              role: 'user',
+              content: displayContent,
+              model: currentModel,
+            });
+            if (!activeSessionId) {
+              setActiveSessionId(sessionId);
+            }
+          }
+
+          const mockContent = await streamMockIntoMessage(text, assistantMessageId);
+
+          if (sessionId) {
+            await api.post(`/api/sessions/${sessionId}/messages`, {
+              role: 'assistant',
+              content: mockContent,
+              model: currentModel,
+            });
+            await loadSessions();
+          }
+
+          setSuggestions(buildMockSuggestions());
+        } catch (e) {
+          if ((e as Error).name === 'AbortError') {
+            streamWasCancelled = true;
+          } else {
+            streamHasError = true;
+            setMessages((prev) => {
+              const next = [...prev];
+              const idx = next.findIndex((msg) => msg.id === assistantMessageId);
+              if (idx >= 0) {
+                next[idx].content += `\n[Error: ${(e as Error).message}]`;
+              } else {
+                next.push({
+                  id: assistantMessageId,
+                  role: 'assistant',
+                  content: `[Error: ${(e as Error).message}]`,
+                  model: currentModel,
+                });
+              }
+              return next;
+            });
+          }
+        } finally {
+          if (streamWasCancelled) {
+            setStreamStatus('cancelled');
+          } else if (streamHasError) {
+            setStreamStatus('error');
+          } else {
+            setStreamStatus('done');
+          }
+          setIsSendingMessage(false);
+          abortControllerRef.current = null;
+        }
+        return;
+      }
+
+      let fullContent = '';
+      let fullReasoning = '';
+
+      try {
+        const res = await api.stream(
+          '/api/chat',
+          {
+            session_id: activeSessionId,
+            session_type: 'chat',
+            message: text,
+            model: currentModel,
+            images: attachments.filter((a) => a.type === 'image').map((a) => a.url),
+            files: attachments.filter((a) => a.type === 'file').map((a) => a.url),
+          },
+          { signal: abortControllerRef.current.signal }
+        );
+
+        if (!activeSessionId) {
+          setTimeout(loadSessions, 1000);
+        }
+
+        await consumeSseStream(res, (json) => {
+          const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
+          const content = typeof json.content === 'string' ? json.content : '';
+          const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
+          const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
+          const reasoningDelta = `${reasoning}${modelReasoning}`;
+
+          if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
+            sessionIdSetRef.current = true;
+            setActiveSessionId(sessionId);
+            loadSessions();
+          }
+
+          if (!content && !reasoningDelta) return;
+
+          markStreamActive();
+
+          if (reasoningDelta) {
+            fullReasoning += reasoningDelta;
+            setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+          }
+
+          if (content) {
+            for (const char of Array.from(content)) {
+              fullContent += char;
+              setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
+            }
+          }
+        });
+
+        setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
+
+        if (fullContent.length > 20) {
+          api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(setSuggestions).catch(() => {});
+        }
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') {
+          streamWasCancelled = true;
+        } else {
+          streamHasError = true;
+          setMessages((prev) => {
+            const next = [...prev];
+            const idx = next.findIndex((msg) => msg.id === assistantMessageId);
+            if (idx >= 0) {
+              next[idx].content += `\n[Error: ${(e as Error).message}]`;
+            }
+          });
+        }
+      } finally {
+        if (streamWasCancelled) {
+          setStreamStatus('cancelled');
+        } else if (streamHasError) {
+          setStreamStatus('error');
+        } else {
+          setStreamStatus('done');
+        }
+        setRegeneratingMessageIndex(null);
+        setIsSendingMessage(false);
+        abortControllerRef.current = null;
+      }
+      return;
     }
 
     setHasSentFirstMessage(true);
     sessionIdSetRef.current = false;
     setInput('');
     setAttachments([]);
-    setStreaming(true);
+    setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
 
@@ -737,6 +1140,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     ]);
 
     abortControllerRef.current = new AbortController();
+    let streamHasError = false;
+    let streamWasCancelled = false;
 
     if (developerMode) {
       try {
@@ -765,7 +1170,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         setSuggestions(buildMockSuggestions());
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') {
+        if ((e as Error).name === 'AbortError') {
+          streamWasCancelled = true;
+        } else {
+          streamHasError = true;
           setMessages((prev) => {
             const next = [...prev];
             const idx = next.findIndex((msg) => msg.id === assistantMessageId);
@@ -783,7 +1191,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           });
         }
       } finally {
-        setStreaming(false);
+        if (streamWasCancelled) {
+          setStreamStatus('cancelled');
+        } else if (streamHasError) {
+          setStreamStatus('error');
+        } else {
+          setStreamStatus('done');
+        }
         setIsSendingMessage(false);
         abortControllerRef.current = null;
       }
@@ -826,6 +1240,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (!content && !reasoningDelta) return;
 
+        markStreamActive();
+
         if (reasoningDelta) {
           fullReasoning += reasoningDelta;
           setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
@@ -845,7 +1261,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(setSuggestions).catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if ((e as Error).name === 'AbortError') {
+        streamWasCancelled = true;
+      } else {
+        streamHasError = true;
         setMessages((prev) => {
           const next = [...prev];
           const idx = next.findIndex((msg) => msg.id === assistantMessageId);
@@ -863,7 +1282,13 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         });
       }
     } finally {
-      setStreaming(false);
+      if (streamWasCancelled) {
+        setStreamStatus('cancelled');
+      } else if (streamHasError) {
+        setStreamStatus('error');
+      } else {
+        setStreamStatus('done');
+      }
       setIsSendingMessage(false);
       abortControllerRef.current = null;
       suppressSmoothScrollRef.current = false;
@@ -954,15 +1379,18 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
   return (
     <>
-      <div className={cn('relative flex h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
+      <div className={cn('relative h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 w-[280px] transform-gpu px-4 pb-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform duration-300 ease-in-out',
+          'mobile-history-sidebar fixed inset-y-0 left-0 w-[280px] transform-gpu px-4 pb-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform ease-in-out',
           showDeleteConfirm ? 'z-[31]' : 'z-[60]',
-          isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]',
-          historyOpen ? 'translate-x-0' : '-translate-x-full'
+          isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
         )}
+        style={{
+          transform: `translate3d(${historyOpen ? 0 : -HISTORY_PANEL_WIDTH_PX}px, 0, 0)`,
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+        }}
       >
         <div className="flex h-full flex-col overflow-hidden">
           <div className={cn('mb-2 flex h-[60px] items-center justify-between', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
@@ -1005,15 +1433,61 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             toggleSessionSelect={toggleSessionSelect}
             onBatchDelete={handleBatchDelete}
             onNewSession={() => {
-              setMessageFadeState('fading-out');
+              const switchToken = sessionSwitchTokenRef.current + 1;
+              sessionSwitchTokenRef.current = switchToken;
+              sessionSwitchTargetRef.current = null;
+
+              setNewSessionFadeState('fading-out');
+
+              setSessionVisualSnapshot({
+                activeSessionId,
+                messages: [...messages],
+              });
+
+              if (sessionSwitchTimerRef.current !== null) {
+                window.clearTimeout(sessionSwitchTimerRef.current);
+                sessionSwitchTimerRef.current = null;
+              }
+              if (newSessionFadeTimerRef.current !== null) {
+                window.clearTimeout(newSessionFadeTimerRef.current);
+                newSessionFadeTimerRef.current = null;
+              }
+
               setSidebarCollapsed(true);
-              setTimeout(() => {
+              setHasSentFirstMessage(false);
+              setMemoryStats(null);
+
+              const resetToNewSession = () => {
+                if (sessionSwitchTokenRef.current !== switchToken) {
+                  return;
+                }
                 setActiveSessionId(null);
-                setMessageFadeState('fading-in');
-                setTimeout(() => {
-                  setMessageFadeState('visible');
-                }, 300);
-              }, 300);
+                setMessages([]);
+                setSuggestions([]);
+                setSessionVisualSnapshot(null);
+                setNewSessionFadeState('fading-in');
+
+                newSessionFadeTimerRef.current = window.setTimeout(() => {
+                  if (sessionSwitchTokenRef.current !== switchToken) {
+                    return;
+                  }
+                  setNewSessionFadeState('idle');
+                  newSessionFadeTimerRef.current = null;
+                }, NEW_SESSION_FADE_DURATION_MS);
+              };
+
+              if (historyOpen) {
+                sessionSwitchTimerRef.current = window.setTimeout(() => {
+                  sessionSwitchTimerRef.current = null;
+                  resetToNewSession();
+                }, HISTORY_SLIDE_DURATION_MS);
+                return;
+              }
+
+              sessionSwitchTimerRef.current = window.setTimeout(() => {
+                sessionSwitchTimerRef.current = null;
+                resetToNewSession();
+              }, NEW_SESSION_FADE_DURATION_MS);
             }}
             onDeleteSession={handleDeleteSession}
             showNewButton={true}
@@ -1026,11 +1500,12 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
       <div
         className={cn(
-          'relative z-10 flex h-full min-w-0 flex-1 flex-col overflow-hidden transition-transform duration-300 ease-in-out',
+          'mobile-history-main absolute inset-0 z-10 flex h-full w-full flex-col overflow-hidden transition-transform ease-in-out will-change-transform',
           isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]'
         )}
         style={{
-          transform: historyOpen ? 'translateX(280px)' : 'translateX(0)'
+          transform: `translate3d(${historyOpen ? HISTORY_PANEL_WIDTH_PX : 0}px, 0, 0)`,
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
         }}
         onClick={() => {
           if (historyOpen) {
@@ -1076,69 +1551,69 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           </div>
         </div>
 
-        <div
-          className={cn(
-            'flex flex-1 overflow-hidden transition-opacity duration-200',
-            messageFadeState === 'fading-out' && 'opacity-0',
-            messageFadeState === 'fading-in' && 'animate-fade-in',
-            messageFadeState === 'visible' && 'opacity-100'
-          )}
-        >
-          <div className={cn('flex flex-1 flex-col overflow-hidden', displayWelcome && 'items-center justify-center')}>
-            {displayWelcome ? (
-              <div className="w-full max-w-md -translate-y-[10vh] px-5 text-center">
-              <h1 className={cn('text-3xl font-extrabold', isDark ? 'text-[#a8c8ff]' : 'text-slate-800')}>你好呀</h1>
-              <p className={cn('mt-3 text-sm', isDark ? 'text-white/70' : 'text-slate-600')}>有什么问题，随时问 AI</p>
+        {/* 双容器交叉淡入淡出：解决 iOS Safari DOM 切换闪烁问题 */}
+        <div className="relative flex flex-1 overflow-hidden">
+          {/* 容器A：旧内容（欢迎页）- 淡出 */}
+          <div
+            className={cn(
+              'flex flex-col overflow-hidden transition-opacity ease-in-out',
+              newSessionFadeState === 'fading-out' || newSessionFadeState === 'fading-in' ? 'opacity-0 absolute inset-0 w-full h-full' : 'opacity-100 w-full h-full'
+            )}
+            style={{ 
+              transitionDuration: `${NEW_SESSION_FADE_DURATION_MS}ms`,
+              pointerEvents: (newSessionFadeState === 'fading-out' || newSessionFadeState === 'fading-in') ? 'none' : 'auto'
+            }}
+          >
+            <div className={cn('flex flex-1 flex-col overflow-hidden', displayWelcome && 'items-center justify-center')}>
+              {displayWelcome ? (
+                <div className="w-full max-w-md -translate-y-[10vh] px-5 text-center mx-auto">
+                <h1 className={cn('text-3xl font-extrabold', isDark ? 'text-[#a8c8ff]' : 'text-slate-800')}>你好呀</h1>
+                <p className={cn('mt-3 text-sm', isDark ? 'text-white/70' : 'text-slate-600')}>有什么问题，随时问 AI</p>
 
-              {developerMode && (
-                <p className={cn('mt-4 text-xs', isDark ? 'text-amber-200/90' : 'text-amber-700')}>开发者模式已开启：发送不会请求真实模型</p>
-              )}
+                {developerMode && (
+                  <p className={cn('mt-4 text-xs', isDark ? 'text-amber-200/90' : 'text-amber-700')}>开发者模式已开启：发送不会请求真实模型</p>
+                )}
 
-              <div ref={welcomeComposerRef} className={cn('mx-auto mt-8 w-full', welcomeDropping && 'invisible')}>
-                <ChatInput
-                  value={input}
-                  onChange={setInput}
-                  onSend={handleSend}
-                  onUpload={handleUpload}
-                  attachments={attachments}
-                  onRemoveAttachment={(idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
-                  models={models}
-                  currentModel={currentModel}
-                  onModelChange={setCurrentModel}
-                  disabled={streaming}
-                  uploading={uploading}
-                  placeholder={t.ask_anything}
-                  streaming={streaming}
-                  onStop={() => abortControllerRef.current?.abort()}
-                  variant="mobile-demo"
-                  theme={isDark ? 'dark' : 'light'}
-                  showModelSelector={true}
-                  modelSelectorTriggerStyle="icon"
-                />
-              </div>
-              </div>
-            ) : (
+                <div ref={welcomeComposerRef} className={cn('mx-auto mt-8 w-full', welcomeDropping && 'invisible')}>
+                  <ChatInput
+                    value={input}
+                    onChange={setInput}
+                    onSend={handleSend}
+                    onUpload={handleUpload}
+                    attachments={attachments}
+                    onRemoveAttachment={(idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                    models={models}
+                    currentModel={currentModel}
+                    onModelChange={setCurrentModel}
+                    disabled={streaming}
+                    uploading={uploading}
+                    placeholder={t.ask_anything}
+                    streaming={streaming}
+                    onStop={handleStopStreaming}
+                    variant="mobile-demo"
+                    theme={isDark ? 'dark' : 'light'}
+                    showModelSelector={true}
+                    modelSelectorTriggerStyle="icon"
+                  />
+                </div>
+                </div>
+              ) : (
           <>
             <div
               ref={messagesScrollWrapRef}
-              className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain"
-              style={{ transform: `translateY(${overscrollY}px)`, transition: overscrollY === 0 ? 'transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)' : 'none' }}
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
+              className="flex-1 min-h-0 overflow-y-auto"
             >
               <div className="px-3 pb-4">
                 <div
                   ref={messageStackRef}
-                  className={cn(
-                    'mx-auto max-w-3xl space-y-6 pb-4'
-                  )}
+                  className="mx-auto max-w-3xl space-y-6"
+                  style={{ paddingBottom: `${messageBottomPaddingPx}px` }}
                 >
                   {needsTopSpacer && (
                     <div style={{ height: 'calc(env(safe-area-inset-top) + 4.5rem)', width: '100%' }} />
                   )}
                   {!needsTopSpacer && <div className="h-2" />}
-                  {messages.map((msg, idx) => (
+                  {displayedMessages.map((msg, idx) => (
                     <div key={msg.id || idx} className="flex items-start gap-2">
                       <div className="flex-1">
                         <Message
@@ -1146,15 +1621,15 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                           userAvatar={user.avatar}
                           userName={user.username}
                           models={models}
-                          streaming={(streaming && idx === messages.length - 1) || regeneratingMessageIndex === idx}
-                          isLast={idx === messages.length - 1}
+                          streaming={(streaming && idx === displayedMessages.length - 1) || regeneratingMessageIndex === idx}
+                          isLast={idx === displayedMessages.length - 1}
                           t={t}
                           tokens={msg.tokens}
-                          memoryStats={memoryMode === 'rule' && idx === messages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
-                          onCompress={memoryMode === 'rule' && idx === messages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
+                          memoryStats={memoryMode === 'rule' && idx === displayedMessages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
+                          onCompress={memoryMode === 'rule' && idx === displayedMessages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
                           compressing={compressing}
                           onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
-                          canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && messages[idx - 1]?.role === 'user'}
+                          canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
                           onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
                           onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
                           canEdit={msg.role === 'assistant' && !streaming}
@@ -1167,9 +1642,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                     </div>
                   ))}
 
-                  {suggestions.length > 0 && !streaming && (
+                  {displayedSuggestions.length > 0 && !streaming && (
                     <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
-                      {suggestions.map((s, idx) => (
+                      {displayedSuggestions.map((s, idx) => (
                         <button
                           key={idx}
                           onClick={() => handleSend(s)}
@@ -1187,15 +1662,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                     </div>
                   )}
 
-                  <div
-                    aria-hidden="true"
-                    style={{
-                      height: mobileBottomSpacerHeight,
-                      width: '100%',
-                      transition: 'height 0.2s ease',
-                    }}
-                  />
-
                   <div ref={messagesEndRef} />
                 </div>
               </div>
@@ -1203,12 +1669,11 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
             <div
               className={cn(
-                'fixed left-0 right-0 z-[20] px-3 py-0 animate-chat-input-appear',
+                'fixed left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear',
                 'bg-gradient-to-t from-transparent via-transparent to-transparent'
               )}
               style={{
-                bottom: isKeyboardOpen ? 0 : `${composerBottomOffset}px`,
-                transition: 'bottom 0.2s ease',
+                bottom: isKeyboardOpen ? 0 : `${composerBottomOffset > 0 ? composerBottomOffset : 90}px`,
               }}
             >
               <div ref={mobileComposerRef} className="mx-auto max-w-3xl">
@@ -1226,7 +1691,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   uploading={uploading}
                   placeholder={t.ask_anything}
                   streaming={streaming}
-                  onStop={() => abortControllerRef.current?.abort()}
+                  onStop={handleStopStreaming}
                   variant="mobile-demo"
                   theme={isDark ? 'dark' : 'light'}
                   showModelSelector={true}
@@ -1236,8 +1701,123 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             </div>
           </>
         )}
+            </div>
+          </div>
+          
+          {/* 容器B：新内容（对话页）- 淡入 */}
+          {showNewContentView && (
+            <div
+              className={cn(
+                'absolute inset-0 flex flex-col overflow-hidden transition-opacity ease-in-out',
+                newSessionFadeState === 'fading-in' || newSessionFadeState === 'idle' ? 'opacity-100' : 'opacity-0'
+              )}
+              style={{ transitionDuration: `${NEW_SESSION_FADE_DURATION_MS}ms` }}
+            >
+              <div className="flex flex-1 flex-col overflow-hidden">
+            <div
+              ref={messagesScrollWrapRef}
+              className="flex-1 min-h-0 overflow-y-auto"
+            >
+              <div className="px-3 pb-4">
+                <div
+                  ref={messageStackRef}
+                  className="mx-auto max-w-3xl space-y-6"
+                  style={{ paddingBottom: `${messageBottomPaddingPx}px` }}
+                >
+                  {needsTopSpacer && (
+                    <div style={{ height: 'calc(env(safe-area-inset-top) + 4.5rem)', width: '100%' }} />
+                  )}
+                  {!needsTopSpacer && <div className="h-2" />}
+                  {displayedMessages.map((msg, idx) => (
+                    <div key={msg.id || idx} className="flex items-start gap-2">
+                      <div className="flex-1">
+                        <Message
+                          message={msg}
+                          userAvatar={user.avatar}
+                          userName={user.username}
+                          models={models}
+                          streaming={(streaming && idx === displayedMessages.length - 1) || regeneratingMessageIndex === idx}
+                          isLast={idx === displayedMessages.length - 1}
+                          t={t}
+                          tokens={msg.tokens}
+                          memoryStats={memoryMode === 'rule' && idx === displayedMessages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
+                          onCompress={memoryMode === 'rule' && idx === displayedMessages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
+                          compressing={compressing}
+                          onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
+                          canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
+                          onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
+                          onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                          canEdit={msg.role === 'assistant' && !streaming}
+                          showSelect={false}
+                          isCharacterChat={false}
+                          memoryMode={memoryMode}
+                          showModelReasoning={showModelReasoning}
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  {displayedSuggestions.length > 0 && !streaming && (
+                    <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
+                      {displayedSuggestions.map((s, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => handleSend(s)}
+                          className={cn(
+                            'rounded-full border px-3 py-1.5 text-xs font-medium transition',
+                            isDark
+                              ? 'border-slate-600/80 bg-[#2b314c] text-slate-100 hover:bg-[#363d5c]'
+                              : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f8f2e8]'
+                          )}
+                        >
+                          <Sparkles size={10} className="mr-1 inline" />
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={cn(
+                'fixed left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear',
+                'bg-gradient-to-t from-transparent via-transparent to-transparent'
+              )}
+              style={{
+                bottom: isKeyboardOpen ? 0 : `${composerBottomOffset > 0 ? composerBottomOffset : 90}px`,
+              }}
+            >
+              <div ref={mobileComposerRef} className="mx-auto max-w-3xl">
+                <ChatInput
+                  value={input}
+                  onChange={setInput}
+                  onSend={handleSend}
+                  onUpload={handleUpload}
+                  attachments={attachments}
+                  onRemoveAttachment={(idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                  models={models}
+                  currentModel={currentModel}
+                  onModelChange={setCurrentModel}
+                  disabled={streaming}
+                  uploading={uploading}
+                  placeholder={t.ask_anything}
+                  streaming={streaming}
+                  onStop={handleStopStreaming}
+                  variant="mobile-demo"
+                  theme={isDark ? 'dark' : 'light'}
+                  showModelSelector={true}
+                  modelSelectorTriggerStyle="icon"
+                />
+              </div>
+            </div>
+              </div>
+            </div>
+          )}
         </div>
-      </div>
 
       <ConfirmDialog
           open={showDeleteConfirm}

@@ -1,9 +1,11 @@
 import os
 import logging
 from typing import List
+from urllib.parse import unquote
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from ..core import settings
 from ..models import ChatSession, ChatMessage, UserSetting, UserFile
 
 logger = logging.getLogger(__name__)
@@ -89,8 +91,63 @@ class ChatService:
     
     def _process_file_references(self, files: List[str], user_id: int) -> str:
         """处理文件引用"""
+        text_exts = ('.txt', '.md', '.py', '.js', '.ts', '.json', '.csv', '.html', '.css', '.yaml', '.yml')
+
+        def _append_text_or_binary(path: str, display_name: str) -> str:
+            ext = os.path.splitext(display_name)[1].lower()
+            try:
+                if ext in text_exts:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as fo:
+                        return fo.read(30000)
+            except Exception:
+                return '[Unreadable text content]'
+
+            return f"[Binary File: {display_name}]"
+
+        def _resolve_upload_path(file_ref: str) -> str | None:
+            upload_prefix = '/api/uploads/' if '/api/uploads/' in file_ref else '/uploads/' if '/uploads/' in file_ref else None
+            if not upload_prefix:
+                return None
+
+            relative = file_ref.split(upload_prefix, 1)[1]
+            relative = relative.split('?', 1)[0].split('#', 1)[0]
+            relative = unquote(relative).replace('\\', '/').lstrip('/')
+            if not relative:
+                return None
+
+            normalized = os.path.normpath(relative).replace('\\', '/')
+            if normalized.startswith('../'):
+                return None
+
+            parts = [p for p in normalized.split('/') if p]
+            if not parts:
+                return None
+
+            # Strict user isolation for new upload layout: /api/uploads/{user_id}/{filename}
+            if len(parts) >= 2 and parts[0].isdigit() and int(parts[0]) != int(user_id):
+                return None
+
+            upload_root = os.path.abspath(settings.UPLOAD_DIR)
+            abs_path = os.path.abspath(os.path.join(upload_root, normalized))
+            if os.path.commonpath([upload_root, abs_path]) != upload_root:
+                return None
+
+            if not os.path.exists(abs_path):
+                return None
+
+            return abs_path
+
         context_chunks: List[str] = []
         for file_ref in files:
+            upload_path = _resolve_upload_path(file_ref)
+            if upload_path:
+                display_name = os.path.basename(upload_path)
+                content = _append_text_or_binary(upload_path, display_name)
+                context_chunks.append(
+                    f"\nFile Reference: {file_ref}\nExtracted Content:\n{content}\n---\n"
+                )
+                continue
+
             if "/api/workspace/file/" in file_ref:
                 fid = file_ref.split("/api/workspace/file/", 1)[1]
                 fid = fid.split("?", 1)[0].split("#", 1)[0].strip("/")
@@ -106,7 +163,7 @@ class ChatService:
 
                 content = ""
                 mime_type = f.mime_type or ""
-                if mime_type.startswith('text/') or f.filename.endswith(('.txt', '.md', '.py', '.js', '.ts', '.json', '.csv')):
+                if mime_type.startswith('text/') or f.filename.endswith(text_exts):
                     try:
                         with open(f.file_path, 'r', encoding='utf-8', errors='ignore') as fo:
                             content = fo.read(30000)

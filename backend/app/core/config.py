@@ -34,9 +34,6 @@ class Settings(BaseSettings):
     API_THREADPOOL_TOKENS: int = 16
     STARTUP_INIT_LOCK_FILE: str = "/tmp/palink_startup.lock"
     STARTUP_INIT_DONE_FILE: str = "/tmp/palink_startup.done"
-    SUMMARY_MODEL: str = "gpt-3.5-turbo"
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     
     DATABASE_URL: str = "sqlite:///./data/palink.db"
     DB_POOL_SIZE: int = 4
@@ -47,6 +44,10 @@ class Settings(BaseSettings):
     
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"
+    CHAT_UPLOAD_MAX_FILE_SIZE_MB: int = 20
+    CHAT_UPLOAD_MAX_USER_STORAGE_MB: int = 1024
+    CHAT_UPLOAD_ALLOWED_EXTENSIONS: str = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.html,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
+    CHAT_UPLOAD_BLOCKED_EXTENSIONS: str = ".exe,.dll,.bat,.cmd,.com,.msi,.scr,.ps1,.psm1,.vbs,.vbe,.jse,.wsf,.wsh,.hta,.jar,.apk"
     WORKSPACE_DIR: str = "./data/workspace"
     WORKSPACE_MAX_FILE_SIZE_MB: int = 20
     WORKSPACE_MAX_USER_STORAGE_MB: int = 1024
@@ -76,7 +77,7 @@ class Settings(BaseSettings):
 
         if not self.ADMIN_PASSWORD:
             if self.APP_ENV == "development":
-                self.ADMIN_PASSWORD = "admin"
+                self.ADMIN_PASSWORD = "admin123"
                 logger.warning(
                     "[SECURITY] Using default ADMIN_PASSWORD in development mode. "
                     "Set ADMIN_PASSWORD environment variable for production."

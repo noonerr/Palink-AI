@@ -111,6 +111,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const routeCharacterSyncRef = useRef<string | null>(null);
 
   const loadingSessionRef = useRef<string | null>(null);
+  const pendingInitialBottomLockRef = useRef(false);
+  const initialBottomLockUntilRef = useRef(0);
+  const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   // Forward-declare loadSessions and loadMemoryStats for hooks
   const loadSessions = useCallback(async (characterId: string) => {
@@ -372,9 +375,17 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
 
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
+      setMessages([]);
+      setSuggestions([]);
+      setMemoryStats(null);
+      setBranches([]);
+      setSelectedBranch(null);
+      
       const data = await api.get(`/api/character-sessions/${sessionId}/messages`);
       setMessages(data);
-      setSuggestions([]);
+      
+      pendingInitialBottomLockRef.current = data.length > 0;
+      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
       
       await loadMemoryStats(sessionId);
       await loadBranches(sessionId);
@@ -848,8 +859,41 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   };
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!pendingInitialBottomLockRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, isGenerating]);
+
+  useEffect(() => {
+    if (!selectedSession || messages.length === 0) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    if (!pendingInitialBottomLockRef.current) {
+      return;
+    }
+
+    if (performance.now() >= initialBottomLockUntilRef.current) {
+      pendingInitialBottomLockRef.current = false;
+      return;
+    }
+
+    let rafA: number | null = null;
+    let rafB: number | null = null;
+
+    rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        pendingInitialBottomLockRef.current = false;
+      });
+    });
+
+    return () => {
+      if (rafA !== null) cancelAnimationFrame(rafA);
+      if (rafB !== null) cancelAnimationFrame(rafB);
+    };
+  }, [selectedSession, messages.length]);
 
   useEffect(() => {
     return () => {

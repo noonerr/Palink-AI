@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { CodeBlock } from './CodeBlock';
+import React, { useEffect, useState, useRef } from 'react';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface SmoothOutputProps {
   content: string;
@@ -12,26 +11,59 @@ export const SmoothOutput: React.FC<SmoothOutputProps> = ({
   streaming = false
 }) => {
   const [displayContent, setDisplayContent] = useState('');
+  const [isAnimating, setIsAnimating] = useState(false);
+  const rafRef = useRef<number | null>(null);
+  const prevContentRef = useRef('');
 
   useEffect(() => {
     if (!streaming) {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
       setDisplayContent(content);
+      setIsAnimating(false);
+      prevContentRef.current = content;
       return;
     }
-    setDisplayContent(content);
+
+    if (content === prevContentRef.current) return;
+
+    setIsAnimating(true);
+
+    const updateContent = () => {
+      setDisplayContent(content);
+      prevContentRef.current = content;
+      rafRef.current = null;
+    };
+
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+    }
+
+    rafRef.current = requestAnimationFrame(updateContent);
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
   }, [content, streaming]);
 
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
+
   return (
-    <div className="markdown-content">
-      {streaming ? (
-        <div className="whitespace-pre-wrap">
-          {displayContent}
-          <span className="inline-block w-0.5 h-4 bg-primary/60 ml-0.5 animate-pulse align-middle" />
-        </div>
-      ) : (
-        <ReactMarkdown components={{ code: CodeBlock }}>
-          {displayContent}
-        </ReactMarkdown>
+    <div className={isAnimating ? 'smooth-output' : 'smooth-output'}>
+      <MarkdownRenderer content={displayContent || (streaming ? '' : content)} />
+      {streaming && (
+        <span className="streaming-cursor" aria-hidden="true" />
       )}
     </div>
   );

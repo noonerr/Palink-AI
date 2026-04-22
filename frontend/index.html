@@ -2,9 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <title>Palink AI</title>
+    <title>Palink AI v0.21.2</title>
     
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#3b82f6" />
@@ -30,6 +30,7 @@
     <meta name="msapplication-tap-highlight" content="no" />
     <!-- 禁止iOS自动识别电话号码、邮箱，避免样式错乱 -->
     <meta name="format-detection" content="telephone=no, email=no" />
+    <link rel="stylesheet" href="/katex.min.css" />
   </head>
   <body>
     <div id="root"></div>
@@ -90,7 +91,7 @@
     </script>
     <script>
       if ('serviceWorker' in navigator) {
-        const cleanupFlag = 'palink_sw_cleanup_done_v3';
+        const cleanupFlag = 'palink_sw_cleanup_done_v4';
         const hasCleaned = sessionStorage.getItem(cleanupFlag) === '1';
 
         if (!hasCleaned) {
@@ -112,5 +113,13 @@
       }
     </script>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      function updateVh() {
+        const vh = window.innerHeight * 0.01;
+        document.documentElement.style.setProperty('--vh', `${vh}px`);
+      }
+      window.addEventListener('resize', updateVh);
+      updateVh();
+    </script>
   </body>
 </html>
