@@ -2,7 +2,7 @@
  * CharacterChat — 聊天视图
  * 从CharacterView提取的子组件
  */
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import {
   Bot, Plus, X, Play, Sparkles, Trash2, BookOpen, GitBranch,
   Check, ChevronDown, Clock, MoreVertical, Sliders,
@@ -481,47 +481,20 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   }, [handleStorylineNavigate]);
 
   const prevBranchIdRef = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (sidebarCollapsed && isNavigatingRef.current && isMobile) {
+      setSidebarCollapsed(false);
+    }
+  }, [sidebarCollapsed, isMobile]);
+
   useEffect(() => {
     const branchId = selectedBranch?.id || null;
     if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
       isNavigatingRef.current = true;
-      setSessionVisualSnapshot({
-        activeSessionId: selectedSession?.id || null,
-        messages: [...prevMessagesRef.current],
-      });
-      setNewSessionFadeState('fading-out');
-      if (sessionSwitchTimerRef.current !== null) {
-        window.clearTimeout(sessionSwitchTimerRef.current);
-        sessionSwitchTimerRef.current = null;
-      }
-      if (newSessionFadeTimerRef.current !== null) {
-        window.clearTimeout(newSessionFadeTimerRef.current);
-        newSessionFadeTimerRef.current = null;
-      }
-      const switchToken = sessionSwitchTokenRef.current + 1;
-      sessionSwitchTokenRef.current = switchToken;
-      sessionSwitchTimerRef.current = window.setTimeout(() => {
-        if (sessionSwitchTokenRef.current !== switchToken) return;
-        setSessionVisualSnapshot(null);
-        setNewSessionFadeState('fading-in');
-        newSessionFadeTimerRef.current = window.setTimeout(() => {
-          if (sessionSwitchTokenRef.current !== switchToken) return;
-          setNewSessionFadeState('idle');
-          isNavigatingRef.current = false;
-          newSessionFadeTimerRef.current = null;
-        }, NEW_SESSION_FADE_DURATION_MS);
-        sessionSwitchTimerRef.current = null;
-      }, NEW_SESSION_FADE_DURATION_MS);
-      return () => {
-        if (sessionSwitchTimerRef.current !== null) {
-          window.clearTimeout(sessionSwitchTimerRef.current);
-          sessionSwitchTimerRef.current = null;
-        }
-        if (newSessionFadeTimerRef.current !== null) {
-          window.clearTimeout(newSessionFadeTimerRef.current);
-          newSessionFadeTimerRef.current = null;
-        }
-      };
+      setTimeout(() => {
+        isNavigatingRef.current = false;
+      }, 600);
     }
     prevBranchIdRef.current = branchId;
   }, [selectedBranch, selectedSession?.id]);
@@ -755,13 +728,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
       {/* ──── Desktop Sidebar + Main Content (移动端跟随侧边栏右移) ──── */}
       <div
-        className="flex-1 flex h-full min-w-0 transition-transform ease-in-out will-change-transform"
-        style={isMobile ? {
-          transform: `translate3d(${!sidebarCollapsed ? 320 : 0}px, 0, 0)`,
-          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
-        } : undefined}
-        data-sidebar-collapsed={String(sidebarCollapsed)}
-        data-transform-x={!sidebarCollapsed ? 320 : 0}
+        className="flex-1 flex h-full min-w-0"
       >
       {/* ──── Desktop Sidebar ──── */}
       {!isMobile && (
@@ -811,7 +778,17 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       )}
 
       {/* ──── Main chat area ──── */}
-      <div className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}>
+      <div
+        className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}
+        style={isMobile ? {
+          marginLeft: !sidebarCollapsed ? 320 : 0,
+          width: '100vw',
+          transitionProperty: 'margin-left',
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+          transitionTimingFunction: 'ease-in-out',
+          willChange: 'margin-left',
+        } : undefined}
+      >
         <header className={cn(
           'flex items-center justify-between z-40',
           isMobile

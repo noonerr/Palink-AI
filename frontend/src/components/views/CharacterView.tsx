@@ -73,10 +73,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
-    console.log('[DEBUG] storylineCollapsed changed:', storylineCollapsed, new Error().stack?.split('\n')[2]?.trim());
-  }, [storylineCollapsed]);
-
-  useEffect(() => {
     if (window.innerWidth >= 768) return;
     const nav = document.querySelector('nav[data-dock="true"]');
     if (!nav) return;
