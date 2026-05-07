@@ -62,7 +62,7 @@ def extract_chara_card_from_png(png_data):
                     try:
                         decompressed = zlib.decompress(raw_data)
                         extracted_data = decompressed.decode('utf-8', errors='replace')
-                    except:
+                    except Exception:
                         pass
                 elif chunk['type'] == 'iTXt':
                     try:
@@ -76,33 +76,33 @@ def extract_chara_card_from_png(png_data):
                                 extracted_data = decompressed.decode('utf-8', errors='replace')
                             else:
                                 extracted_data = text_data.decode('utf-8', errors='replace')
-                    except:
+                    except Exception:
                         pass
                 else:
                     try:
                         try:
                             decompressed = zlib.decompress(raw_data)
                             extracted_data = decompressed.decode('utf-8', errors='replace')
-                        except:
+                        except Exception:
                             extracted_data = raw_data.decode('utf-8', errors='replace')
-                    except:
+                    except Exception:
                         pass
                 
                 if extracted_data:
                     try:
                         result = json.loads(extracted_data)
                         return result
-                    except:
+                    except Exception:
                         try:
                             decoded = base64.b64decode(extracted_data)
                             try:
                                 decompressed = zlib.decompress(decoded)
                                 return json.loads(decompressed.decode('utf-8', errors='replace'))
-                            except:
+                            except Exception:
                                 return json.loads(decoded.decode('utf-8', errors='replace'))
-                        except:
+                        except Exception:
                             pass
-            except:
+            except Exception:
                 continue
     
     return None

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..models.system import SystemSetting
 from ..core.config import settings
 from .inference_dispatcher import complete_text_completion, ensure_model_available
-from .model_queue_service import get_model_queue_service
+from .inference_queue import inference_queue
 
 
 logger = logging.getLogger(__name__)
@@ -83,27 +83,27 @@ async def generate_compact_title(
     max_len: Optional[int] = None,
 ) -> str:
     cleaned_source = _clean_source_text(source_text)
-    logger.info(f"[DEBUG] generate_compact_title - cleaned_source: {cleaned_source}")
+    logger.debug("generate_compact_title - cleaned_source: %s", cleaned_source)
     if not cleaned_source:
-        logger.info(f"[DEBUG] generate_compact_title - cleaned_source is empty, returning default_title: {default_title}")
+        logger.debug("generate_compact_title - cleaned_source is empty, returning default_title: %s", default_title)
         return default_title
 
     target_model = _get_default_summarization_model(db) or (fallback_model_id or "").strip()
-    logger.info(f"[DEBUG] generate_compact_title - target_model: {target_model}")
+    logger.debug("generate_compact_title - target_model: %s", target_model)
     if not target_model:
-        logger.info(f"[DEBUG] generate_compact_title - target_model is None, using rule_based")
+        logger.debug("generate_compact_title - target_model is None, using rule_based")
         return rule_based_compact_title(cleaned_source, default_title=default_title, max_len=max_len)
 
     try:
         ensure_model_available(target_model)
-        logger.info(f"[DEBUG] generate_compact_title - model {target_model} is available")
+        logger.debug("generate_compact_title - model %s is available", target_model)
     except ValueError as e:
-        logger.info(f"[DEBUG] generate_compact_title - model {target_model} not available: {e}")
+        logger.debug("generate_compact_title - model %s not available: %s", target_model, e)
         return rule_based_compact_title(cleaned_source, default_title=default_title, max_len=max_len)
 
     is_local = _is_local_model(target_model)
     effective_timeout = max(timeout_seconds, 15.0) if is_local else timeout_seconds
-    logger.info(f"[DEBUG] generate_compact_title - is_local: {is_local}, effective_timeout: {effective_timeout}")
+    logger.debug("generate_compact_title - is_local: %s, effective_timeout: %s", is_local, effective_timeout)
 
     prompt = (
         "请把下面的对话内容压缩成会话导航标题。\n"
@@ -116,11 +116,10 @@ async def generate_compact_title(
     )
 
     try:
-        queue_service = get_model_queue_service()
-        logger.info(f"[DEBUG] generate_compact_title - using queue_service")
+        logger.debug("generate_compact_title - using inference_queue")
 
         async def generate_title():
-            logger.info(f"[DEBUG] generate_compact_title - calling complete_text_completion")
+            logger.debug("generate_compact_title - calling complete_text_completion")
             return await asyncio.wait_for(
                 complete_text_completion(
                     model_id=target_model,
@@ -135,18 +134,20 @@ async def generate_compact_title(
                 timeout=effective_timeout,
             )
 
-        completion = await queue_service.execute_with_queue_and_retry(
+        completion = await inference_queue.submit_and_wait(
             target_model,
-            generate_title
+            generate_title,
+            max_retries=3,
+            retry_delay=2.0,
         )
-        logger.info(f"[DEBUG] generate_compact_title - completion: {completion}")
+        logger.debug("generate_compact_title - completion: %s", completion)
         content = completion.get("content") or ""
-        logger.info(f"[DEBUG] generate_compact_title - content: {content}")
+        logger.debug("generate_compact_title - content: %s", content)
 
         normalized = _normalize_title_text(content)
-        logger.info(f"[DEBUG] generate_compact_title - normalized: {normalized}")
+        logger.debug("generate_compact_title - normalized: %s", normalized)
         normalized = _truncate_title(normalized, max_len=max_len)
-        logger.info(f"[DEBUG] generate_compact_title - truncated: {normalized}")
+        logger.debug("generate_compact_title - truncated: %s", normalized)
         if normalized:
             return normalized
     except Exception as exc:

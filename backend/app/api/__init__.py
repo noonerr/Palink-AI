@@ -14,6 +14,8 @@ from .character_ext import router_characters, router_sessions as char_sessions_r
 from .worldbook import router as worldbook_router, router_session_wb as worldbook_session_router
 from .plotline import router as plotline_router, router_session_pl as plotline_session_router
 from .stats import router as stats_router
+from .mcp import router as mcp_router
+from .presets import router as presets_router
 
 api_router = APIRouter()
 
@@ -35,3 +37,5 @@ api_router.include_router(worldbook_session_router)
 api_router.include_router(plotline_router)
 api_router.include_router(plotline_session_router)
 api_router.include_router(stats_router)
+api_router.include_router(mcp_router)
+api_router.include_router(presets_router)

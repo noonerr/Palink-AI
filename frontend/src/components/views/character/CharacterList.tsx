@@ -305,12 +305,14 @@ const DesktopSidebar = ({
               <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-1">欢迎回来</p>
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900 dark:text-white text-lg">角色扮演</h2>
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setSidebarCollapsed(true)}
-                  className="p-2 rounded-xl hover:bg-muted transition-all duration-300 ease-in-out hover:scale-110 active:scale-95"
+                  className="h-8 w-8"
                 >
                   <ChevronRight size={20} className="transition-transform duration-300" />
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -386,13 +388,15 @@ const DesktopSidebar = ({
       </motion.div>
       
       {sidebarCollapsed && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={() => setSidebarCollapsed(false)}
-          className="absolute top-1/2 right-0 -translate-y-1/2 z-20 bg-background border border-r-0 border-border rounded-l-lg shadow-lg hover:bg-muted transition-all duration-400 ease-out p-2 pr-1.5 hover:scale-105 active:scale-95"
+          className="absolute top-1/2 right-0 -translate-y-1/2 z-20 h-8 w-8 rounded-l-lg shadow-lg"
           title="展开侧边栏"
         >
           <ChevronLeft size={18} className="sm:w-5 sm:h-5 transition-transform duration-300" />
-        </button>
+        </Button>
       )}
     </>
   );
@@ -711,7 +715,7 @@ const MobileView = ({
       </div>
       
       {isSelectMode && selectedIds.length > 0 && (
-        <div className="fixed bottom-3.5 sm:bottom-4 left-3.5 sm:left-4 right-3.5 sm:right-4 z-40">
+        <div className="fixed bottom-[max(0.875rem,env(safe-area-inset-bottom))] sm:bottom-4 left-3.5 sm:left-4 right-3.5 sm:right-4 z-40">
           <div className="bg-white/80 dark:bg-slate-950/80 backdrop-blur-2xl p-3.5 sm:p-4 rounded-2xl border border-slate-200/50 dark:border-slate-800 shadow-2xl flex items-center justify-between">
             <div className="flex items-center space-x-2.5 sm:space-x-3">
               <div className="flex -space-x-1.5 sm:-space-x-2">
@@ -748,7 +752,7 @@ const MobileView = ({
       />
       
       {showProcessingMessage.show && (
-        <div className="fixed top-3.5 sm:top-4 right-3.5 sm:right-4 bg-background border border-border rounded-xl p-3.5 sm:p-4 shadow-xl z-[80] flex items-center gap-2.5 sm:gap-3">
+        <div className="fixed top-[max(0.875rem,env(safe-area-inset-top))] sm:top-4 right-3.5 sm:right-4 bg-background border border-border rounded-xl p-3.5 sm:p-4 shadow-xl z-[80] flex items-center gap-2.5 sm:gap-3">
           <div className="w-5 h-5 sm:w-6 sm:h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
           <p className="text-xs sm:text-sm font-medium">{showProcessingMessage.message}</p>
         </div>

@@ -9,7 +9,7 @@ interface AboutTabProps {
 export const AboutTab: React.FC<AboutTabProps> = ({ t }) => {
   return (
     <ScrollArea className="h-full">
-      <div className="text-center py-12 animate-fade-in pr-2">
+      <div className="text-center py-12 animate-fade-in pr-2 pb-28">
         <div className="w-24 h-24 bg-gradient-to-br from-primary to-primary/60 rounded-3xl mx-auto flex items-center justify-center mb-6 shadow-xl shadow-primary/20">
           <span className="text-primary-foreground text-4xl font-bold">P</span>
         </div>

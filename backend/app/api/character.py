@@ -48,7 +48,7 @@ async def get_characters(
                 char_data["extensions"] = json.loads(c.extensions)
             else:
                 char_data["extensions"] = {}
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError):
             char_data["tags"] = []
             char_data["extensions"] = {}
         result.append(char_data)
@@ -96,7 +96,7 @@ async def get_character(
             char_data["extensions"] = json.loads(character.extensions)
         else:
             char_data["extensions"] = {}
-    except:
+    except (json.JSONDecodeError, TypeError, ValueError):
         char_data["tags"] = []
         char_data["extensions"] = {}
     return char_data

@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState } from 'react';
-import { ArrowUp, Paperclip, X, Square } from 'lucide-react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { ArrowUp, Paperclip, X, Square, Loader2, AlertCircle, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { Model } from '@/types';
 
 interface Attachment {
   type: 'image' | 'file';
@@ -24,7 +25,22 @@ interface ChatInputProps {
   onStop?: () => void;
   variant?: 'default' | 'mobile-demo';
   theme?: 'dark' | 'light';
+  models?: Model[];
+  currentModel?: string;
+  onModelChange?: (model: string) => void;
+  showModelSelector?: boolean;
+  modelSelectorTriggerStyle?: string;
+  webSearchEnabled?: boolean;
+  onToggleWebSearch?: () => void;
+  showWebSearch?: boolean;
+  noContainerStyle?: boolean;
+  hideAttachmentButton?: boolean;
+  leadingAction?: ReactNode;
 }
+
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   value,
@@ -39,13 +55,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   streaming = false,
   onStop,
   variant = 'default',
-  theme = 'dark'
+  theme = 'dark',
+  webSearchEnabled = false,
+  onToggleWebSearch,
+  showWebSearch = false,
+  noContainerStyle = false,
+  hideAttachmentButton = false,
+  leadingAction
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
   const isDarkTheme = theme === 'dark';
+
+  const validateFile = (file: File): string | null => {
+    const isImage = file.type.startsWith('image/');
+    if (isImage) {
+      if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+        return `不支持的图片格式: ${file.type.split('/')[1] || 'unknown'}，仅支持 JPG、PNG、WEBP、GIF`;
+      }
+      if (file.size > MAX_IMAGE_SIZE) {
+        return `图片大小不能超过 10MB，当前: ${(file.size / (1024 * 1024)).toFixed(1)}MB`;
+      }
+    } else {
+      if (file.size > MAX_FILE_SIZE) {
+        return `文件大小不能超过 20MB，当前: ${(file.size / (1024 * 1024)).toFixed(1)}MB`;
+      }
+    }
+    return null;
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.nativeEvent as KeyboardEvent).isComposing) {
@@ -65,9 +105,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    setUploadError(null);
     for (const file of Array.from(files)) {
+      const error = validateFile(file);
+      if (error) {
+        setUploadError(error);
+        continue;
+      }
       const type = file.type.startsWith('image/') ? 'image' : 'file';
-      await onUpload(file, type);
+      try {
+        await onUpload(file, type);
+      } catch (err) {
+        setUploadError(`上传失败: ${file.name}`);
+      }
     }
     if (e.target.value) e.target.value = '';
   };
@@ -100,18 +150,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     dragDepthRef.current = 0;
     setIsDragging(false);
 
+    setUploadError(null);
     const files = Array.from(e.dataTransfer.files);
     for (const file of files) {
+      const error = validateFile(file);
+      if (error) {
+        setUploadError(error);
+        continue;
+      }
       const type = file.type.startsWith('image/') ? 'image' : 'file';
-      await onUpload(file, type);
+      try {
+        await onUpload(file, type);
+      } catch (err) {
+        setUploadError(`上传失败: ${file.name}`);
+      }
     }
   }, [onUpload]);
+
+  const MAX_TEXTAREA_HEIGHT = 72;
 
   const autoResize = () => {
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+      textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
     }
   };
 
@@ -123,6 +185,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {uploadError && (
+        <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg bg-destructive/10 text-destructive text-xs">
+          <AlertCircle size={14} className="shrink-0" />
+          <span className="flex-1">{uploadError}</span>
+          <button onClick={() => setUploadError(null)} className="shrink-0 hover:opacity-70">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3 overflow-x-auto overflow-y-visible pb-1 scroll-mobile">
           {attachments.map((att, idx) => (
@@ -163,19 +235,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       )}
 
+      {uploading && (
+        <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg bg-primary/10 text-primary text-xs">
+          <Loader2 size={14} className="animate-spin shrink-0" />
+          <span>正在上传...</span>
+        </div>
+      )}
+
       <div
         className={cn(
-          'flex items-end gap-2 overflow-visible',
-          variant === 'mobile-demo' &&
-            cn(
-              'min-h-[58px] items-center rounded-[28px] px-3 py-2.5 backdrop-blur-2xl',
-              isDarkTheme
-                ? 'border border-slate-700/80 bg-[#23283c] shadow-[0_12px_30px_rgba(2,6,23,0.45)]'
-                : 'border border-[#ddd4c5] bg-[#FFFAFA] shadow-[0_10px_28px_rgba(120,106,79,0.14)]'
-            ),
+          'flex gap-2 overflow-visible',
+          variant === 'mobile-demo' ? 'items-center' : 'items-end',
+          variant === 'mobile-demo' && !noContainerStyle && cn(
+            'min-h-[58px] rounded-[28px] px-3 py-2.5 backdrop-blur-2xl',
+            isDarkTheme
+              ? 'border border-slate-700/80 bg-[#23283c] shadow-[0_12px_30px_rgba(2,6,23,0.45)]'
+              : 'border border-[#ddd4c5] bg-[#FFFAFA] shadow-[0_10px_28px_rgba(120,106,79,0.14)]'
+          ),
           isDragging && 'border-primary bg-primary/5'
         )}
       >
+        {leadingAction}
+
+        {!hideAttachmentButton && (
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -185,6 +267,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         >
           <Paperclip size={18} />
         </button>
+        )}
 
         <textarea
           ref={textareaRef}
@@ -198,15 +281,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           disabled={disabled || uploading}
           rows={1}
           className={cn(
-            'flex-1 bg-transparent border-none focus:ring-0 resize-none outline-none disabled:opacity-50',
+            'flex-1 bg-transparent border-none focus:ring-0 resize-none outline-none disabled:opacity-50 overflow-y-auto',
             variant === 'mobile-demo'
               ? cn(
-                  'px-1 py-1.5 text-sm max-h-28',
+                  'px-1 py-1.5 text-sm max-h-[72px]',
                   isDarkTheme
                     ? 'text-slate-100 placeholder:text-slate-400'
                     : 'text-slate-700 placeholder:text-slate-400'
                 )
-              : 'px-2 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 max-h-28'
+              : 'px-2 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 max-h-[72px]'
           )}
         />
 
@@ -238,23 +321,61 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 : 'h-11 w-11 rounded-2xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 active:scale-[0.96] ml-1'
             )}
           >
-            <ArrowUp size={18} />
+            {uploading ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
           </button>
         )}
       </div>
+
+      {showWebSearch && (
+        <div
+          className={cn(
+            "flex items-center justify-between mt-2 px-3 py-1.5 rounded-full cursor-pointer select-none transition-all duration-200",
+            webSearchEnabled
+              ? cn(
+                  isDarkTheme
+                    ? "bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30"
+                    : "bg-emerald-50 hover:bg-emerald-100 border border-emerald-200"
+                )
+              : cn(
+                  isDarkTheme
+                    ? "bg-slate-700/30 hover:bg-slate-700/50 border border-slate-600/30"
+                    : "bg-gray-100/80 hover:bg-gray-200/80 border border-gray-200/50"
+                )
+          )}
+          onClick={() => onToggleWebSearch?.()}
+        >
+          <div className="flex items-center gap-1.5">
+            <Globe size={12} className={cn("transition-colors duration-200", webSearchEnabled ? "text-emerald-500" : "text-muted-foreground")} />
+            <span className={cn("text-[11px] font-medium transition-colors duration-200", webSearchEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+              {webSearchEnabled ? '已开启搜索' : '网络搜索'}
+            </span>
+          </div>
+          <div className={cn(
+            "relative w-7 h-4 rounded-full transition-all duration-200",
+            webSearchEnabled
+              ? "bg-emerald-500"
+              : isDarkTheme ? "bg-slate-600" : "bg-gray-300"
+          )}>
+            <div className={cn(
+              "absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-all duration-200 shadow-sm",
+              webSearchEnabled && "translate-x-3"
+            )} />
+          </div>
+        </div>
+      )}
 
       <input
         type="file"
         ref={fileInputRef}
         className="hidden"
-        accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.html,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
+        accept="image/jpeg,image/png,image/webp,image/gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.html,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
         multiple
         onChange={handleFileChange}
       />
 
       {isDragging && (
         <div className="mt-2 rounded-2xl border border-dashed border-primary/60 bg-primary/5 px-4 py-3 text-center text-xs text-muted-foreground">
-          松开以上传图片、PDF、Office 文档、压缩包或代码文件
+          松开以上传图片（JPG/PNG/WEBP，≤10MB）、PDF、Office 文档或代码文件
         </div>
       )}
     </div>

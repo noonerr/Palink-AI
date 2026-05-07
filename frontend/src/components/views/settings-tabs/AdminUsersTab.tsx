@@ -16,7 +16,7 @@ interface AdminUsersTabProps {
 export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ t, usersList, handleDeleteUser }) => {
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-6 animate-fade-in pr-2">
+      <div className="space-y-6 animate-fade-in pr-2 pb-28">
         <h3 className="text-2xl font-semibold">{t.admin_users}</h3>
 
         <div className="space-y-2">

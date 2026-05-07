@@ -17,6 +17,7 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import katex from 'katex';
 import mermaid from 'mermaid';
+import DOMPurify from 'dompurify';
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -75,7 +76,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
       return node.map(extractPlainText).join('');
     }
     if (React.isValidElement(node)) {
-      return extractPlainText(node.props.children as React.ReactNode);
+      return extractPlainText((node.props as { children?: React.ReactNode }).children as React.ReactNode);
     }
     return '';
   };
@@ -111,7 +112,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
       fontFamily: 'inherit',
     });
   }, []);
@@ -127,7 +128,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
         try {
           const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
           const { svg } = await mermaid.render(id, codeString);
-          setMermaidSvg(svg);
+          setMermaidSvg(DOMPurify.sanitize(svg));
         } catch (error) {
           console.error('Mermaid render error:', error);
           setMermaidError(error instanceof Error ? error.message : 'Failed to render diagram');
@@ -162,6 +163,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
         displayMode: true,
         strict: false,
       });
+      const sanitizedHtml = DOMPurify.sanitize(html);
 
       return (
         <div className="math-block my-4 overflow-x-auto">
@@ -188,7 +190,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
           </div>
           <div
             className="katex-render px-4 py-3"
-            dangerouslySetInnerHTML={{ __html: html }}
+            dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
           />
         </div>
       );

@@ -6,12 +6,11 @@ import io
 import json
 import uuid
 import logging
+import re
 import base64
-import mimetypes
-import socket
-import ipaddress
 import urllib.request
-from typing import Optional, List
+import urllib.error
+from typing import Optional, List, AsyncGenerator
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -22,27 +21,46 @@ from pydantic import BaseModel
 
 from ..core import get_db, settings
 from ..core.rate_limit import enforce_rate_limit
+from ..core.exceptions import ServiceError
 from ..api.dependencies import get_current_user
 from ..models import User, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch
 from ..models.system import UserSetting
-from ..character_card import extract_chara_card_from_png
+from ..character_card import create_png_with_chara_card
+from ..services.character_import_service import CharacterImportService, PngCharacterCardParser
 from ..memory_module.service import MemoryService
+from ..schemas.character import character_to_dict
+from ..utils import normalize_image_url, build_memory_context, get_default_ai_model, _is_public_http_url
 from ..services.worldbook_service import build_worldbook_context
 from ..services.plotline_service import build_plotline_context
-from ..services.provider_registry import get_runtime_providers
 from ..services.inference_dispatcher import (
     complete_text_completion,
     ensure_model_available,
     stream_text_completion,
 )
-from ..services.local_model_registry import list_enabled_chat_models
-from ..services.compact_title_service import generate_compact_title
+from ..services.compact_title_service import generate_compact_title, rule_based_compact_title
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
 router_sessions = APIRouter(prefix="/api/character-sessions", tags=["character-sessions"])
 router_chat = APIRouter(tags=["character-chat"])
 
 logger = logging.getLogger(__name__)
+
+_MAX_IMAGE_SIZE = 50 * 1024 * 1024
+_CHUNK_SIZE = 8192
+
+
+def _read_with_size_limit(resp, max_size: int = _MAX_IMAGE_SIZE) -> bytes:
+    chunks = []
+    total_read = 0
+    while True:
+        chunk = resp.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        total_read += len(chunk)
+        if total_read > max_size:
+            raise ValueError(f"Response body exceeds {max_size // (1024 * 1024)}MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ───────────────────────────────────────────────
@@ -70,12 +88,16 @@ def _get_branch_messages_up_to(db: Session, session_id: str, branch_id: str, up_
     return result
 
 
-def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit: int = 60) -> list:
+def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit: int = 60, up_to_message_id: Optional[int] = None) -> list:
     """Return ordered messages by traversing the ancestor branch chain.
 
     For the target branch itself all messages are loaded.  For each ancestor
     branch only messages up to (and including) the fork-point message are
     loaded so that messages after the fork on a parent branch are excluded.
+
+    If up_to_message_id is provided, the target branch's messages are
+    truncated at (and including) that message id — used for "fork from
+    here" navigation.
     """
     branch = db.query(CharacterChatSessionBranch).filter(
         CharacterChatSessionBranch.id == branch_id,
@@ -85,16 +107,13 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
         return []
 
     # Build chain from target branch back to root.
-    # Each entry: (branch_obj, up_to_message_id | None)
-    #   up_to_message_id=None  → load ALL messages on that branch
-    #   up_to_message_id=<id>  → load messages up to (inclusive) that id
     chain: list = []
     cur = branch
-    up_to: int | None = None  # target branch: load everything
+    up_to: int | None = None
     while cur:
         chain.append((cur, up_to))
         if cur.parent_branch_id:
-            up_to = cur.parent_message_id  # limit parent to fork point
+            up_to = cur.parent_message_id
             parent = db.query(CharacterChatSessionBranch).filter(
                 CharacterChatSessionBranch.id == cur.parent_branch_id,
                 CharacterChatSessionBranch.session_id == session_id,
@@ -103,14 +122,45 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
         else:
             break
 
-    chain.reverse()  # root-first order
+    chain.reverse()
+
+    all_branch_ids = [b.id for b, _ in chain]
+    all_up_to_ids = [up_to_id for _, up_to_id in chain if up_to_id is not None]
+
+    all_msgs_raw = (
+        db.query(CharacterChatMessage)
+        .filter(
+            CharacterChatMessage.session_id == session_id,
+            CharacterChatMessage.branch_id.in_(all_branch_ids),
+        )
+        .order_by(CharacterChatMessage.created_at)
+        .all()
+    )
+
+    msgs_by_branch: dict = {}
+    for m in all_msgs_raw:
+        msgs_by_branch.setdefault(m.branch_id, []).append(m)
 
     all_msgs: list = []
-    for b, up_to_id in chain:
-        msgs = _get_branch_messages_up_to(db, session_id, b.id, up_to_id)
-        all_msgs.extend(msgs)
+    for idx, (b, up_to_id) in enumerate(chain):
+        branch_msgs = msgs_by_branch.get(b.id, [])
+        if up_to_id is not None:
+            filtered = []
+            for m in branch_msgs:
+                filtered.append(m)
+                if m.id == up_to_id:
+                    break
+            all_msgs.extend(filtered)
+        elif idx == len(chain) - 1 and up_to_message_id is not None:
+            filtered = []
+            for m in branch_msgs:
+                filtered.append(m)
+                if m.id == up_to_message_id:
+                    break
+            all_msgs.extend(filtered)
+        else:
+            all_msgs.extend(branch_msgs)
 
-    # Deduplicate by id while preserving order
     seen: set = set()
     deduped: list = []
     for m in all_msgs:
@@ -119,170 +169,86 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
             deduped.append(m)
     return deduped[-limit:]
 
+def _get_ancestor_branch_ids(db: Session, session_id: str, branch_id: str) -> list:
+    """Return all branch IDs in the ancestry chain from root to the given branch."""
+    from sqlalchemy import text
+    cte_sql = text("""
+        WITH RECURSIVE ancestor_tree AS (
+            SELECT id, parent_branch_id FROM character_chat_session_branches WHERE id = :bid
+            UNION ALL
+            SELECT b.id, b.parent_branch_id
+            FROM character_chat_session_branches b
+            INNER JOIN ancestor_tree a ON b.id = a.parent_branch_id
+        )
+        SELECT id FROM ancestor_tree
+    """)
+    result = db.execute(cte_sql, {"bid": branch_id}).fetchall()
+    if not result:
+        return []
+    return [row[0] for row in reversed(result)]
+
 
 # ───────────────────────────────────────────────
 # Helpers
 # ───────────────────────────────────────────────
 
-def _is_public_http_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-
-    if parsed.scheme not in ("http", "https"):
-        return False
-
-    host = parsed.hostname
-    if not host:
-        return False
-
-    lowered_host = host.lower()
-    if lowered_host in {"localhost", "127.0.0.1", "::1"} or lowered_host.endswith(".local"):
-        return False
-
-    def _is_private_or_local_ip(ip_str: str) -> bool:
-        try:
-            ip_obj = ipaddress.ip_address(ip_str)
-            return (
-                ip_obj.is_private
-                or ip_obj.is_loopback
-                or ip_obj.is_link_local
-                or ip_obj.is_multicast
-                or ip_obj.is_reserved
-                or ip_obj.is_unspecified
-            )
-        except ValueError:
-            return False
-
-    # Host can be a literal IP.
-    if _is_private_or_local_ip(host):
-        return False
-
-    try:
-        target_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        addr_info = socket.getaddrinfo(host, target_port, proto=socket.IPPROTO_TCP)
-    except Exception:
-        return False
-
-    for info in addr_info:
-        ip_addr = info[4][0]
-        if _is_private_or_local_ip(ip_addr):
-            return False
-
-    return True
-
-
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Disallow redirects to avoid SSRF bypass through redirect chains."""
-
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+        raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
 
 
-def _normalize_model_image_url(img_url: str) -> str:
-    if not isinstance(img_url, str):
-        raise HTTPException(status_code=400, detail="Invalid image URL")
-
-    normalized = img_url.strip()
-    if not normalized:
-        raise HTTPException(status_code=400, detail="Invalid image URL")
-
-    if normalized.startswith("data:image"):
-        return normalized
-
-    upload_prefix = None
-    if normalized.startswith("/api/uploads/"):
-        upload_prefix = "/api/uploads/"
-    elif normalized.startswith("/uploads/"):
-        upload_prefix = "/uploads/"
-
-    if upload_prefix:
-        relative_path = normalized.split(upload_prefix, 1)[1]
-        relative_path = relative_path.split("?", 1)[0].split("#", 1)[0]
-        normalized_relative = os.path.normpath(relative_path).replace("\\", "/").lstrip("/")
-        if not normalized_relative or normalized_relative.startswith("../"):
-            raise HTTPException(status_code=400, detail="Invalid uploaded image path")
-
-        upload_root = os.path.abspath(settings.UPLOAD_DIR)
-        file_path = os.path.abspath(os.path.join(upload_root, normalized_relative))
-        if os.path.commonpath([upload_root, file_path]) != upload_root:
-            raise HTTPException(status_code=400, detail="Invalid uploaded image path")
-
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="Uploaded image not found")
-
-        file_size = os.path.getsize(file_path)
-        if file_size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
-
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type or not mime_type.startswith("image/"):
-            mime_type = "image/png"
-
-        with open(file_path, "rb") as image_file:
-            encoded = base64.b64encode(image_file.read()).decode("ascii")
-
-        return f"data:{mime_type};base64,{encoded}"
-
-    if not _is_public_http_url(normalized):
-        raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
-
-    return normalized
+def _replace_placeholders(text: str, user_nickname: str = "用户", char_name: str = "") -> str:
+    if not text:
+        return text
+    result = text
+    user_patterns = [
+        r'\{\{user\}\}', r'\{user\}',
+        r'\{\{用户\}\}', r'\{用户\}',
+        r'\{\{你\}\}', r'\{你\}',
+        r'\{\{您\}\}', r'\{您\}',
+    ]
+    for pat in user_patterns:
+        result = re.sub(pat, user_nickname, result, flags=re.IGNORECASE if 'user' in pat.lower() else 0)
+    if char_name:
+        char_patterns = [
+            r'\{\{char\}\}', r'\{char\}',
+            r'\{\{character\}\}', r'\{character\}',
+            r'\{\{角色\}\}', r'\{角色\}',
+        ]
+        for pat in char_patterns:
+            result = re.sub(pat, char_name, result, flags=re.IGNORECASE)
+    return result
 
 
-def _build_char_system_prompt(char: Character, user_nickname: str = "用户") -> str:
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户", dialogue_mode: str = "first_person") -> str:
     parts = []
     if char.system_prompt:
-        parts.append(char.system_prompt)
+        parts.append(_replace_placeholders(char.system_prompt, user_nickname, char.name))
     parts.append(f"You are {char.name}. Stay in character at all times.")
+    if dialogue_mode == 'third_person':
+        parts.append("Narrate in third person, describing the character's actions, dialogue, and inner thoughts from an outside perspective. Use the character's name instead of 'I'.")
+    else:
+        parts.append("Respond in first person as if you are the character. Speak and act as the character would.")
     if char.personality:
-        parts.append(f"Personality: {char.personality}")
+        parts.append(f"Personality: {_replace_placeholders(char.personality, user_nickname, char.name)}")
     if char.background:
-        parts.append(f"Background: {char.background}")
+        parts.append(f"Background: {_replace_placeholders(char.background, user_nickname, char.name)}")
     if char.scenario:
-        parts.append(f"Scenario: {char.scenario}")
+        parts.append(f"Scenario: {_replace_placeholders(char.scenario, user_nickname, char.name)}")
     if char.description:
-        parts.append(f"Description: {char.description}")
+        parts.append(f"Description: {_replace_placeholders(char.description, user_nickname, char.name)}")
     parts.append(f'The user\'s name is "{user_nickname}".')
     parts.append(
         'Response format rules:\n'
         '- Wrap spoken dialogue in double quotes: "Hello!"\n'
-        '- Wrap actions, narration, and internal thoughts in asterisks: *she smiled softly*\n'
+        '- Wrap inner thoughts and internal monologue in parentheses: (What should I do...)\n'
+        '- Write actions, narration, and descriptions as plain text without special markers.\n'
         '- Do NOT use XML tags like <action> or <thinking>.\n'
         '- Never output chain-of-thought, analysis text, or labels like "Final Answer".\n'
-        '- Write naturally, mixing dialogue and actions in the same response.'
+        '- Stay immersive: respond as the character would, with emotions, gestures, and sensory details.\n'
+        '- Vary response length based on the situation: short for quick exchanges, longer for emotional or dramatic moments.'
     )
     return "\n\n".join(parts)
-
-
-def _char_to_dict(c: Character) -> dict:
-    result = {
-        "id": c.id,
-        "name": c.name,
-        "description": c.description,
-        "background": c.background,
-        "personality": c.personality,
-        "avatar": c.avatar,
-        "scenario": c.scenario,
-        "first_mes": c.first_mes,
-        "mes_example": c.mes_example,
-        "system_prompt": c.system_prompt,
-        "creator": c.creator,
-        "character_version": c.character_version,
-        "user_nickname": c.user_nickname,
-        "is_processing": c.is_processing or False,
-        "processing_status": c.processing_status or "",
-        "created_at": c.created_at,
-        "updated_at": c.updated_at,
-    }
-    try:
-        result["tags"] = json.loads(c.tags) if c.tags else []
-        result["extensions"] = json.loads(c.extensions) if c.extensions else {}
-    except Exception:
-        result["tags"] = []
-        result["extensions"] = {}
-    return result
 
 
 # ───────────────────────────────────────────────
@@ -364,13 +330,7 @@ async def export_character(
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
 
-    try:
-        tags = json.loads(char.tags) if char.tags else []
-        extensions = json.loads(char.extensions) if char.extensions else {}
-    except Exception:
-        tags = []
-        extensions = {}
-
+    char_dict = character_to_dict(char)
     data = {
         "name": char.name,
         "description": char.description or "",
@@ -382,8 +342,8 @@ async def export_character(
         "background": char.background or "",
         "creator": char.creator or "",
         "character_version": char.character_version or "",
-        "tags": tags,
-        "extensions": extensions,
+        "tags": char_dict["tags"],
+        "extensions": char_dict["extensions"],
         "avatar": char.avatar or "",
     }
 
@@ -395,39 +355,26 @@ async def export_character(
             headers={"Content-Disposition": f'attachment; filename="{char.name}.json"'},
         )
     else:
-        # PNG export: embed character data in PNG tEXt chunk
         try:
             from PIL import Image
-            import struct
-            import zlib
 
-            # Create a simple 256x256 image with character avatar or default
             if char.avatar and char.avatar.startswith("data:image"):
                 img_data = base64.b64decode(char.avatar.split(",", 1)[1])
-                img = Image.open(io.BytesIO(img_data)).convert("RGBA")
             else:
-                img = Image.new("RGBA", (256, 256), (100, 100, 200, 255))
+                default_img = Image.new("RGBA", (256, 256), (100, 100, 200, 255))
+                buf = io.BytesIO()
+                default_img.save(buf, format="PNG")
+                img_data = buf.getvalue()
 
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            png_bytes = bytearray(buf.getvalue())
-
-            # Inject chara tEXt chunk before IEND
-            char_b64 = base64.b64encode(json.dumps(data, ensure_ascii=False).encode()).decode()
-            keyword = b"chara"
-            chunk_data = keyword + b"\x00" + char_b64.encode("utf-8")
-            crc = zlib.crc32(b"tEXt" + chunk_data) & 0xFFFFFFFF
-            chunk = struct.pack(">I", len(chunk_data)) + b"tEXt" + chunk_data + struct.pack(">I", crc)
-
-            # Insert before last 12 bytes (IEND chunk)
-            final_png = bytes(png_bytes[:-12]) + chunk + bytes(png_bytes[-12:])
+            final_png = create_png_with_chara_card(img_data, data)
             return Response(
                 content=final_png,
                 media_type="image/png",
                 headers={"Content-Disposition": f'attachment; filename="{char.name}.png"'},
             )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"PNG export failed: {e}")
+        except Exception:
+            logger.exception("PNG export failed")
+            raise HTTPException(status_code=500, detail="PNG export failed")
 
 
 @router_characters.post("/import")
@@ -437,61 +384,154 @@ async def import_character(
     db: Session = Depends(get_db)
 ):
     """导入角色卡（PNG 或 JSON 格式）"""
-    content = await file.read()
+    try:
+        content = await file.read()
+        service = CharacterImportService(db)
+        result = await service.import_from_file(
+            filename=file.filename or "",
+            content=content,
+            user_id=user.id,
+        )
+        return {"status": "ok", "character": result}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to import character")
+        raise HTTPException(status_code=500, detail="导入角色失败")
 
-    char_data = None
-    if file.filename and file.filename.lower().endswith(".png"):
-        char_data = extract_chara_card_from_png(content)
-    elif file.filename and file.filename.lower().endswith(".json"):
+
+class ImportParseImageRequest(BaseModel):
+    image_url: str
+    model: Optional[str] = None
+
+
+@router_characters.post("/import-parse-image")
+async def import_parse_image(
+    req: ImportParseImageRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """从图片自动解析并创建角色（用于 AI 生成图片等非角色卡 PNG）"""
+    if not req.image_url:
+        raise HTTPException(status_code=400, detail="image_url is required")
+
+    image_data = None
+    if req.image_url.startswith("data:image"):
         try:
-            char_data = json.loads(content.decode("utf-8"))
+            image_data = base64.b64decode(req.image_url.split(",", 1)[1])
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid JSON file")
+            raise HTTPException(status_code=400, detail="Invalid base64 image data")
     else:
-        raise HTTPException(status_code=400, detail="Unsupported file format. Use PNG or JSON.")
+        if not _is_public_http_url(req.image_url):
+            raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
+        try:
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            request = urllib.request.Request(
+                req.image_url,
+                headers={"User-Agent": "Palink-AI/1.0"}
+            )
+            with opener.open(request, timeout=15) as r:
+                image_data = _read_with_size_limit(r)
+        except ValueError:
+            raise HTTPException(status_code=413, detail="Image too large (max 50MB)")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Failed to download image")
 
-    if not char_data:
-        raise HTTPException(status_code=422, detail="Could not extract character data from file")
+    if not image_data:
+        raise HTTPException(status_code=400, detail="Could not read image data")
 
-    # Normalize V1/V2/V3 format
-    if "data" in char_data and isinstance(char_data["data"], dict):
-        char_data = char_data["data"]
+    base64_avatar = base64.b64encode(image_data).decode('utf-8')
+    content_type = "image/png" if PngCharacterCardParser.validate_png_format(image_data) else "image/jpeg"
+    avatar_url = f"data:{content_type};base64,{base64_avatar}"
 
     char = Character(
         user_id=user.id,
-        name=char_data.get("name", "Imported Character"),
-        description=char_data.get("description") or char_data.get("char_persona", ""),
-        background=char_data.get("background", ""),
-        personality=char_data.get("personality", ""),
-        scenario=char_data.get("scenario", ""),
-        first_mes=char_data.get("first_mes", ""),
-        mes_example=char_data.get("mes_example", ""),
-        system_prompt=char_data.get("system_prompt", ""),
-        creator=char_data.get("creator", ""),
-        character_version=char_data.get("character_version", ""),
-        tags=json.dumps(char_data.get("tags", []), ensure_ascii=False),
-        extensions=json.dumps(char_data.get("extensions", {}), ensure_ascii=False),
-        is_processing=False,
+        name="AI Image Character",
+        description="",
+        background="",
+        personality="",
+        scenario="",
+        first_mes="",
+        mes_example="",
+        system_prompt="",
+        creator="auto-import",
+        tags="[]",
+        avatar=avatar_url,
+        is_processing=True,
     )
-
-    # Handle avatar from the file
-    if char_data.get("avatar") and char_data["avatar"].startswith("data:image"):
-        # 使用角色卡中提供的base64头像
-        char.avatar = char_data["avatar"]
-    elif file.filename and file.filename.lower().endswith(".png"):
-        # 从PNG文件中提取头像
-        try:
-            import base64
-            # 将PNG数据转换为base64格式
-            base64_avatar = base64.b64encode(content).decode('utf-8')
-            char.avatar = f"data:image/png;base64,{base64_avatar}"
-        except Exception:
-            pass
-
     db.add(char)
     db.commit()
     db.refresh(char)
-    return {"status": "ok", "character": _char_to_dict(char)}
+
+    try:
+        char.is_processing = True
+        char.processing_status = "Parsing..."
+        db.commit()
+
+        model_id = req.model
+        if not model_id:
+            try:
+                model_id = get_default_ai_model()
+            except HTTPException:
+                char.is_processing = False
+                db.commit()
+                return {"status": "ok", "character_id": str(char.id), "auto_parsed": True}
+
+        try:
+            ensure_model_available(model_id)
+        except ValueError as exc:
+            char.is_processing = False
+            db.commit()
+            return {"status": "ok", "character_id": str(char.id), "auto_parsed": True}
+
+        prompt = (
+            "Analyze this character image and generate a detailed character profile. "
+            "The image shows an anime-style character. Create a character card based on what you see.\n\n"
+            "Return a valid JSON object with these fields:\n"
+            "- name: A fitting name for the character based on appearance\n"
+            "- description: Detailed physical appearance and visual traits\n"
+            "- personality: Personality traits inferred from the image\n"
+            "- scenario: A possible scenario or setting for this character\n"
+            "- background: Background story or origin\n"
+            "- first_mes: An opening message/greeting in character\n"
+            "- mes_example: Example dialogues (3-4 exchanges)"
+        )
+        completion = await complete_text_completion(
+            model_id=model_id,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=1500,
+            timeout=60.0,
+        )
+        content = completion.get("content") or ""
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            if parsed.get("name"):
+                char.name = parsed["name"][:100]
+            if parsed.get("description"):
+                char.description = parsed["description"]
+            if parsed.get("personality"):
+                char.personality = parsed["personality"]
+            if parsed.get("scenario"):
+                char.scenario = parsed["scenario"]
+            if parsed.get("background"):
+                char.background = parsed["background"]
+            if parsed.get("first_mes"):
+                char.first_mes = parsed["first_mes"]
+            if parsed.get("mes_example"):
+                char.mes_example = parsed["mes_example"]
+
+        char.is_processing = False
+        char.processing_status = ""
+        db.commit()
+    except Exception as e:
+        logger.exception("Parse failed for character %s", char.id)
+        char.is_processing = False
+        char.processing_status = "Parsing failed"
+        db.commit()
+
+    return {"status": "ok", "character_id": str(char.id), "auto_parsed": True}
 
 
 class ParseCharacterRequest(BaseModel):
@@ -512,7 +552,7 @@ async def parse_character_card(
 
     if req.image_url:
         try:
-            normalized_url = _normalize_model_image_url(req.image_url)
+            normalized_url = normalize_image_url(req.image_url, check_size=True)
 
             if normalized_url.startswith("data:image"):
                 img_data = base64.b64decode(normalized_url.split(",", 1)[1])
@@ -530,16 +570,17 @@ async def parse_character_card(
                     content_type = (r.headers.get("Content-Type") or "").lower()
                     if content_type and not content_type.startswith("image/"):
                         raise HTTPException(status_code=415, detail="URL did not return an image")
-                    img_data = r.read(10 * 1024 * 1024 + 1)
+                    img_data = _read_with_size_limit(r, max_size=10 * 1024 * 1024)
 
-                if len(img_data) > 10 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
+        except ValueError:
+            raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
         except HTTPException:
             raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to fetch image: {e}")
+        except Exception:
+            logger.exception("Failed to fetch character image from URL")
+            raise HTTPException(status_code=400, detail="Failed to fetch image")
 
-        char_data = extract_chara_card_from_png(img_data)
+        char_data = PngCharacterCardParser.extract_character_data(img_data)
         if not char_data:
             raise HTTPException(status_code=422, detail="No character data found in image")
 
@@ -559,17 +600,12 @@ async def parse_character_card(
 
         model_id = req.model
         if not model_id:
-            providers = get_runtime_providers()
-            provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
-            if provider:
-                model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
-            else:
-                local_models = list_enabled_chat_models()
-                if not local_models:
-                    char.is_processing = False
-                    db.commit()
-                    raise HTTPException(status_code=400, detail="No AI model configured")
-                model_id = local_models[0]["id"]
+            try:
+                model_id = get_default_ai_model()
+            except HTTPException:
+                char.is_processing = False
+                db.commit()
+                raise
 
         try:
             ensure_model_available(model_id)
@@ -600,7 +636,6 @@ async def parse_character_card(
                 timeout=30.0,
             )
             content = completion.get("content") or ""
-            import re
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
@@ -616,12 +651,13 @@ async def parse_character_card(
             char.is_processing = False
             char.processing_status = ""
             db.commit()
-            return {"status": "ok", "character": _char_to_dict(char)}
-        except Exception as e:
+            return {"status": "ok", "character": character_to_dict(char)}
+        except Exception:
             char.is_processing = False
-            char.processing_status = f"Parsing failed: {e}"
+            char.processing_status = "Parsing failed"
             db.commit()
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception("Character parsing failed")
+            raise HTTPException(status_code=500, detail="Character parsing failed")
 
 
 class TranslateRequest(BaseModel):
@@ -650,17 +686,12 @@ async def translate_character(
 
     model_id = req.model
     if not model_id:
-        providers = get_runtime_providers()
-        provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
-        if provider:
-            model_id = provider["models"][0]["id"] if isinstance(provider["models"][0], dict) else provider["models"][0]
-        else:
-            local_models = list_enabled_chat_models()
-            if not local_models:
-                char.is_processing = False
-                db.commit()
-                raise HTTPException(status_code=400, detail="No AI model configured")
-            model_id = local_models[0]["id"]
+        try:
+            model_id = get_default_ai_model()
+        except HTTPException:
+            char.is_processing = False
+            db.commit()
+            raise
 
     try:
         ensure_model_available(model_id)
@@ -693,8 +724,6 @@ async def translate_character(
             timeout=30.0,
         )
         content = completion.get("content") or ""
-        # Extract JSON
-        import re
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:
             translated = json.loads(match.group(0))
@@ -715,12 +744,13 @@ async def translate_character(
         char.processing_status = ""
         db.commit()
         db.refresh(char)
-        return {"status": "ok", "character": _char_to_dict(char)}
-    except Exception as e:
+        return {"status": "ok", "character": character_to_dict(char)}
+    except Exception:
         char.is_processing = False
-        char.processing_status = f"Translation failed: {e}"
+        char.processing_status = "Translation failed"
         db.commit()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Character translation failed")
+        raise HTTPException(status_code=500, detail="Character translation failed")
 
 
 # ───────────────────────────────────────────────
@@ -857,9 +887,10 @@ async def edit_character_message(
 
 class BranchCreateRequest(BaseModel):
     session_id: str
-    branch_name: str
+    branch_name: Optional[str] = None
     parent_message_id: Optional[int] = None
     parent_branch_id: Optional[str] = None
+    same_level: bool = True
 
 
 @router_sessions.get("/{session_id}/branches")
@@ -915,23 +946,108 @@ async def create_branch(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    existing_branches = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id
+    ).all()
+    is_first_branch = len(existing_branches) == 0
+
+    branch_name = req.branch_name
+    if not branch_name:
+        branch_num = len(existing_branches) + 1
+        branch_name = f"分支 {branch_num}" if branch_num > 1 else "Main"
+
+    effective_parent_branch_id = req.parent_branch_id
+    effective_parent_message_id = req.parent_message_id
+
+    if req.same_level and not is_first_branch:
+        active_branch = next((b for b in existing_branches if b.is_active), None)
+        if active_branch:
+            effective_parent_branch_id = active_branch.parent_branch_id
+            effective_parent_message_id = active_branch.parent_message_id
+
+    is_root_branch = effective_parent_branch_id is None and effective_parent_message_id is None
+
     branch = CharacterChatSessionBranch(
         session_id=session_id,
-        branch_name=req.branch_name,
-        parent_message_id=req.parent_message_id,
-        parent_branch_id=req.parent_branch_id,
-        is_active=False,
+        branch_name=branch_name,
+        parent_message_id=effective_parent_message_id,
+        parent_branch_id=effective_parent_branch_id,
+        is_active=True,
     )
     db.add(branch)
+
+    if not is_first_branch:
+        db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.session_id == session_id,
+            CharacterChatSessionBranch.id != branch.id,
+        ).update({"is_active": False}, synchronize_session=False)
+
     db.commit()
     db.refresh(branch)
-    return {"status": "ok", "branch": {"id": branch.id, "branch_name": branch.branch_name}}
+
+    greeting_msg = None
+    messages_result = []
+
+    if session.character_id:
+        char = db.query(Character).filter(Character.id == session.character_id).first()
+        if char and char.first_mes:
+            should_add_greeting = False
+            if is_root_branch:
+                should_add_greeting = True
+            elif is_first_branch:
+                should_add_greeting = True
+            elif not req.same_level and req.parent_message_id is not None:
+                should_add_greeting = False
+            else:
+                branch_depth = 0
+                current_bid = effective_parent_branch_id
+                visited = set()
+                while current_bid and current_bid not in visited:
+                    visited.add(current_bid)
+                    parent_b = db.query(CharacterChatSessionBranch).filter(
+                        CharacterChatSessionBranch.id == current_bid
+                    ).first()
+                    if parent_b:
+                        branch_depth += 1
+                        current_bid = parent_b.parent_branch_id
+                    else:
+                        break
+                if branch_depth <= 1:
+                    should_add_greeting = True
+
+            if should_add_greeting:
+                greeting_msg = CharacterChatMessage(
+                    session_id=session_id,
+                    branch_id=branch.id,
+                    role="assistant",
+                    content=char.first_mes,
+                )
+                db.add(greeting_msg)
+                db.commit()
+                db.refresh(greeting_msg)
+                messages_result.append({
+                    "id": greeting_msg.id,
+                    "role": greeting_msg.role,
+                    "content": greeting_msg.content,
+                })
+
+    return {
+        "status": "ok",
+        "branch": {"id": branch.id, "branch_name": branch.branch_name, "is_active": branch.is_active},
+        "greeting": {
+            "id": greeting_msg.id if greeting_msg else None,
+            "content": greeting_msg.content if greeting_msg else None,
+            "role": "assistant",
+        } if greeting_msg else None,
+        "messages": messages_result,
+    }
 
 
 @router_sessions.post("/{session_id}/branches/{branch_id}/switch")
 async def switch_branch(
     session_id: str,
     branch_id: str,
+    up_to_message_id: Optional[int] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -958,9 +1074,9 @@ async def switch_branch(
     db.commit()
 
     # Return messages using full ancestor-chain traversal
-    hist = _get_full_branch_history(db, session_id, branch_id, limit=1000)
+    hist = _get_full_branch_history(db, session_id, branch_id, limit=1000, up_to_message_id=up_to_message_id)
     messages = [{"id": m.id, "role": m.role, "content": m.content, "model": m.model, "created_at": m.created_at} for m in hist]
-    return {"status": "ok", "messages": messages}
+    return {"status": "ok", "messages": messages, "up_to_message_id": up_to_message_id}
 
 
 @router_sessions.get("/{session_id}/branch-tree")
@@ -992,17 +1108,23 @@ async def get_branch_tree(
         db.refresh(main_branch)
         branches = [main_branch]
 
+    all_messages = (
+        db.query(CharacterChatMessage)
+        .filter(
+            CharacterChatMessage.session_id == session_id,
+            CharacterChatMessage.branch_id.in_([b.id for b in branches]),
+        )
+        .order_by(CharacterChatMessage.created_at)
+        .all()
+    )
+
+    msg_by_branch = {}
+    for msg in all_messages:
+        msg_by_branch.setdefault(msg.branch_id, []).append(msg)
+
     result_branches = []
     for branch in branches:
-        msgs = (
-            db.query(CharacterChatMessage)
-            .filter(
-                CharacterChatMessage.session_id == session_id,
-                CharacterChatMessage.branch_id == branch.id,
-            )
-            .order_by(CharacterChatMessage.created_at)
-            .all()
-        )
+        msgs = msg_by_branch.get(branch.id, [])
         pairs = []
         pending_user = None
         for msg in msgs:
@@ -1011,8 +1133,7 @@ async def get_branch_tree(
             elif msg.role == "assistant":
                 if pending_user:
                     # Strip <think>...</think> blocks for summary
-                    import re as _re
-                    ai_display = _re.sub(r"<think>[\s\S]*?</think>", "", msg.content).strip()
+                    ai_display = re.sub(r"<thinking>[\s\S]*?</thinking>", "", msg.content).strip()
                     pairs.append({
                         "pair_id": f"pair_{pending_user.id}",
                         "user_msg_id": pending_user.id,
@@ -1024,9 +1145,7 @@ async def get_branch_tree(
                     })
                     pending_user = None
                 else:
-                    # Init message (character's opening, no preceding user msg)
-                    import re as _re
-                    ai_display = _re.sub(r"<think>[\s\S]*?</think>", "", msg.content).strip()
+                    ai_display = re.sub(r"<thinking>[\s\S]*?</thinking>", "", msg.content).strip()
                     pairs.append({
                         "pair_id": f"ai_{msg.id}",
                         "user_msg_id": None,
@@ -1047,9 +1166,24 @@ async def get_branch_tree(
         })
 
     active_branch = next((b for b in branches if b.is_active), None)
+
+    character_info = None
+    if session.character_id:
+        char = db.query(Character).filter(Character.id == session.character_id).first()
+        if char:
+            character_info = {
+                "id": char.id,
+                "name": char.name,
+                "avatar": char.avatar or "",
+                "first_mes": char.first_mes or "",
+                "background": char.background or "",
+                "user_nickname": char.user_nickname or "",
+            }
+
     return {
         "branches": result_branches,
         "active_branch_id": active_branch.id if active_branch else None,
+        "character_info": character_info,
     }
 
 
@@ -1074,9 +1208,28 @@ async def delete_branch(
         raise HTTPException(status_code=404, detail="Branch not found")
     if branch.is_active:
         raise HTTPException(status_code=400, detail="Cannot delete the active branch")
-    db.delete(branch)
+
+    def _collect_descendant_branch_ids(bid: str, collected: list):
+        children = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.parent_branch_id == bid
+        ).all()
+        for child in children:
+            collected.append(child.id)
+            _collect_descendant_branch_ids(child.id, collected)
+
+    branch_ids_to_delete = [branch_id]
+    _collect_descendant_branch_ids(branch_id, branch_ids_to_delete)
+
+    db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.branch_id.in_(branch_ids_to_delete)
+    ).delete(synchronize_session=False)
+
+    db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id.in_(branch_ids_to_delete)
+    ).delete(synchronize_session=False)
+
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "deleted_branches": branch_ids_to_delete}
 
 
 # ───────────────────────────────────────────────
@@ -1089,6 +1242,13 @@ class CharacterChatRequest(BaseModel):
     session_id: Optional[str] = None
     model: str
     temperature: float = 0.7
+    top_p: float = 0.95
+    max_tokens: int = 2048
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+    min_p: float = 0.05
+    top_k: int = 40
+    repetition_penalty: float = 1.1
     dialogue_mode: str = "first_person"
     branch_id: Optional[str] = None
     user_nickname: Optional[str] = None
@@ -1103,24 +1263,41 @@ async def character_chat(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    try:
+        return await _character_chat_impl(req, request, user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.debug("[CHARACTER-CHAT-ERROR] %s: %s\n%s", type(e).__name__, e, tb)
+        raise
+
+
+async def _character_chat_impl(
+    req: CharacterChatRequest,
+    request: Request,
+    user: User,
+    db: Session,
+):
     enforce_rate_limit(
         request,
         "chat:character",
         settings.CHARACTER_CHAT_RATE_LIMIT_REQUESTS,
         settings.CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS,
     )
-
     char = db.query(Character).filter(Character.id == req.character_id, Character.user_id == user.id).first()
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
 
-    try:
-        ensure_model_available(req.model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
     user_nickname = req.user_nickname or user.username or "用户"
     is_init = req.message.strip() == "__INIT__"
+
+    if not is_init:
+        try:
+            ensure_model_available(req.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid model")
 
     # ── Ensure session ──────────────────────────────────────────────────
     session_id = req.session_id
@@ -1139,6 +1316,7 @@ async def character_chat(
                 )
             except Exception as e:
                 logger.warning(f"Character session compact title fallback used: {e}")
+                db.rollback()
         new_session = CharacterChatSession(
             id=session_id,
             character_id=char.id,
@@ -1194,97 +1372,132 @@ async def character_chat(
     if user_setting and user_setting.memory_mode:
         memory_mode = user_setting.memory_mode
 
+    author_note = None
+    author_note_position = "after_char"
+    author_note_frequency = 0
+    if user_setting:
+        if user_setting.author_note:
+            author_note = user_setting.author_note
+        if user_setting.author_note_position:
+            author_note_position = user_setting.author_note_position
+        if user_setting.author_note_frequency is not None:
+            author_note_frequency = user_setting.author_note_frequency
+
     # ── Build messages array ────────────────────────────────────────────
-    system_prompt = _build_char_system_prompt(char, user_nickname)
+    system_prompt = _build_char_system_prompt(char, user_nickname, req.dialogue_mode or "first_person")
+
+    if author_note:
+        note_text = _replace_placeholders(author_note, user_nickname, char.name or '')
+        if author_note_position == "before_char":
+            system_prompt = note_text + "\n\n" + system_prompt
+        elif author_note_position == "after_system":
+            system_prompt = system_prompt + "\n\n" + note_text
+        else:
+            system_prompt = system_prompt + "\n\n" + note_text
 
     # ── Inject world book context (keyword-trigger) ─────────────────────
-    try:
-        from ..models.character import CharacterChatMessage as CCM
-        recent_for_wb = db.query(CCM).filter(
-            CCM.session_id == session_id
-        ).order_by(CCM.created_at.desc()).limit(8).all()[::-1]
-        recent_msgs_for_wb = [{"role": m.role, "content": m.content} for m in recent_for_wb]
-        wb_context = build_worldbook_context(db, session_id, user.id, recent_msgs_for_wb)
-        if wb_context:
-            system_prompt += "\n\n" + wb_context
-    except Exception as e:
-        logger.warning(f"World book context injection failed: {e}")
-
-    # ── Inject plot line context (linear stage) ──────────────────────────
-    try:
-        pl_context = build_plotline_context(db, session_id, user.id)
-        if pl_context:
-            system_prompt += "\n\n" + pl_context
-    except Exception as e:
-        logger.warning(f"Plot line context injection failed: {e}")
-
-    if memory_mode != "disabled":
+    if not is_init:
         try:
+            nested = db.begin_nested()
+            from ..models.character import CharacterChatMessage as CCM
+            recent_for_wb = db.query(CCM).filter(
+                CCM.session_id == session_id
+            ).order_by(CCM.created_at.desc()).limit(8).all()[::-1]
+            recent_msgs_for_wb = [{"role": m.role, "content": m.content} for m in recent_for_wb]
+            wb_context = build_worldbook_context(db, session_id, user.id, recent_msgs_for_wb)
+            if wb_context:
+                system_prompt += "\n\n" + _replace_placeholders(wb_context, user_nickname, char.name or '')
+            nested.commit()
+        except Exception as e:
+            logger.warning(f"World book context injection failed: {e}")
+            try:
+                nested.rollback()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+    if not is_init:
+        try:
+            nested = db.begin_nested()
+            pl_context = build_plotline_context(db, session_id, user.id)
+            if pl_context:
+                system_prompt += "\n\n" + _replace_placeholders(pl_context, user_nickname, char.name or '')
+            nested.commit()
+        except Exception as e:
+            logger.warning(f"Plot line context injection failed: {e}")
+            try:
+                nested.rollback()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+    if memory_mode != "disabled" and not is_init:
+        try:
+            nested = db.begin_nested()
             mem_svc = MemoryService(db)
             if mem_svc.is_available():
-                mem_ctx = mem_svc.get_context(
+                ancestor_branch_ids = _get_ancestor_branch_ids(db, session_id, branch_id)
+                mem_ctx = await mem_svc.get_context(
                     user_id=user.id,
-                    query=req.message if not is_init else char.name,
+                    query=req.message,
                     session_id=session_id,
                     max_tokens=1500,
+                    branch_ids=ancestor_branch_ids if ancestor_branch_ids else None,
                 )
                 if mem_ctx and mem_ctx.memories:
-                    mem_parts = []
-                    if mem_ctx.user_profile and mem_ctx.user_profile.summary:
-                        mem_parts.append(f"[User Profile]\n{mem_ctx.user_profile.summary}")
-                    mem_lines = []
-                    for mem in mem_ctx.memories:
-                        prefix = "User" if mem.role == "user" else "Assistant"
-                        mem_lines.append(f"- {prefix}: {mem.content[:200]}")
-                    if mem_lines:
-                        mem_parts.append("[Relevant Memories]\n" + "\n".join(mem_lines))
-                    if mem_parts:
-                        system_prompt += "\n\n" + "\n\n".join(mem_parts)
+                    memory_text = build_memory_context(mem_ctx)
+                    if memory_text:
+                        system_prompt += "\n\n" + _replace_placeholders(memory_text, user_nickname, char.name or '')
+            nested.commit()
         except Exception as e:
             logger.warning(f"Memory context retrieval failed: {e}")
+            try:
+                nested.rollback()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
 
     messages = [{"role": "system", "content": system_prompt}]
 
     if char.mes_example:
-        messages.append({"role": "system", "content": f"Example dialogue:\n{char.mes_example}"})
+        messages.append({"role": "system", "content": f"Example dialogue:\n{_replace_placeholders(char.mes_example, user_nickname, char.name or '')}"})
 
     # Load history using ancestor-chain traversal for correct branch context
-    if branch_id:
-        history = _get_full_branch_history(
-            db,
-            session_id,
-            branch_id,
-            limit=settings.CHARACTER_CHAT_HISTORY_LIMIT,
-        )
-    else:
-        history = (
-            db.query(CharacterChatMessage)
-            .filter(
-                CharacterChatMessage.session_id == session_id,
-                CharacterChatMessage.branch_id == None,
+    if not is_init:
+        if branch_id:
+            history = _get_full_branch_history(
+                db,
+                session_id,
+                branch_id,
+                limit=settings.CHARACTER_CHAT_HISTORY_LIMIT,
             )
-            .order_by(CharacterChatMessage.created_at.desc())
-            .limit(settings.CHARACTER_CHAT_HISTORY_LIMIT)
-            .all()[::-1]
-        )
-    for m in history:
-        messages.append({"role": m.role, "content": m.content})
+        else:
+            history = (
+                db.query(CharacterChatMessage)
+                .filter(
+                    CharacterChatMessage.session_id == session_id,
+                    CharacterChatMessage.branch_id == None,
+                )
+                .order_by(CharacterChatMessage.created_at.desc())
+                .limit(settings.CHARACTER_CHAT_HISTORY_LIMIT)
+                .all()[::-1]
+            )
+        for m in history:
+            messages.append({"role": m.role, "content": m.content})
 
     # ── Handle __INIT__ (send character's first message) ────────────────
     if is_init:
         first_mes = (char.first_mes or "").strip()
+        first_mes = _replace_placeholders(first_mes, user_nickname, char.name or "")
         if not first_mes:
             return {"session_id": session_id, "message": ""}
-        init_short_title = None
-        try:
-            init_short_title = await generate_compact_title(
-                db,
-                first_mes,
-                fallback_model_id=req.model,
-                max_len=10,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to generate init short_title: {e}")
+        init_short_title = rule_based_compact_title(first_mes, max_len=10)
         # Save the character's first message directly
         db.add(CharacterChatMessage(
             session_id=session_id,
@@ -1315,7 +1528,7 @@ async def character_chat(
     if req.images:
         content_payload = [{"type": "text", "text": user_content}]
         for img_url in req.images:
-            normalized_img_url = _normalize_model_image_url(img_url)
+            normalized_img_url = normalize_image_url(img_url, check_size=True)
             content_payload.append({"type": "image_url", "image_url": {"url": normalized_img_url}})
         user_msg = {"role": "user", "content": content_payload}
     else:
@@ -1333,58 +1546,39 @@ async def character_chat(
     ))
     db.commit()
 
-    async def event_generator():
-        full_content = ""
-        full_reasoning = ""
-        total_tokens = 0
-        prompt_tokens = 0
-        completion_tokens = 0
+    async def event_generator() -> AsyncGenerator[str, None]:
+        from ..services.stream_builder import StreamResult, stream_chat_deltas
+        result = StreamResult()
         try:
-            # Send session_id on first chunk if new session
+            initial_events = []
             if is_new_session:
-                yield f"data: {json.dumps({'session_id': session_id, 'branch_id': branch_id})}\n\n"
+                initial_events.append({"session_id": session_id, "branch_id": branch_id})
 
-            async for delta in stream_text_completion(
+            stream = stream_text_completion(
                 model_id=req.model,
                 messages=messages,
                 temperature=req.temperature,
+                top_p=req.top_p,
+                max_tokens=req.max_tokens,
+                frequency_penalty=req.frequency_penalty,
+                presence_penalty=req.presence_penalty,
+                min_p=req.min_p,
+                top_k=req.top_k,
+                repetition_penalty=req.repetition_penalty,
                 timeout=30.0,
-            ):
-                usage = delta.get("usage")
-                if usage:
-                    total_tokens = int(usage.get("total_tokens", 0) or 0)
-                    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-                    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-                    continue
+            )
 
-                reasoning = delta.get("reasoning")
-                content = delta.get("content")
-                resp = {}
-                if isinstance(reasoning, str) and reasoning:
-                    full_reasoning += reasoning
-                    resp["reasoning"] = reasoning
-                if isinstance(content, str) and content:
-                    full_content += content
-                    resp["content"] = content
-                if resp:
-                    yield f"data: {json.dumps(resp, ensure_ascii=False)}\n\n"
+            async for sse_event in stream_chat_deltas(stream, result, initial_events=initial_events):
+                yield sse_event
 
-            # Send usage info before DONE
-            if total_tokens > 0:
-                yield f"data: {json.dumps({'type': 'usage', 'total_tokens': total_tokens, 'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens})}\n\n"
-
-            yield "data: [DONE]\n\n"
-
-            # Persist assistant message in a fresh DB session
             from ..core.database import SessionLocal
             new_db = SessionLocal()
             try:
-                final = f"<think>{full_reasoning}</think>\n{full_content}" if full_reasoning else full_content
-                # Use API-reported tokens if available, otherwise estimate
-                token_count = completion_tokens if completion_tokens > 0 else len(full_content) // 2
+                final = result.final_text()
+                token_count = result.token_count()
                 short_title = await generate_compact_title(
                     new_db,
-                    f"{req.message}\n{full_content}",
+                    f"{req.message}\n{result.full_content}",
                     fallback_model_id=req.model,
                     max_len=10,
                 )
@@ -1396,11 +1590,11 @@ async def character_chat(
                     short_title=short_title,
                     model=req.model,
                     tokens=token_count,
-                    prompt_tokens=prompt_tokens,
+                    prompt_tokens=result.prompt_tokens,
+                    reasoning_tokens=result.effective_reasoning_tokens(),
                 ))
                 new_db.commit()
 
-                # Store memories if enabled
                 if memory_mode != "disabled":
                     try:
                         mem_svc = MemoryService(new_db)
@@ -1416,7 +1610,7 @@ async def character_chat(
                                 user_id=user.id,
                                 session_id=session_id,
                                 role="assistant",
-                                content=full_content,
+                                content=result.full_content,
                                 branch_id=branch_id,
                             )
                             new_db.commit()
@@ -1425,10 +1619,12 @@ async def character_chat(
             finally:
                 new_db.close()
 
+        except ServiceError as e:
+            logger.exception("Character chat stream service error")
+            yield f"data: {json.dumps({'content': 'Error: Service error', 'error': True}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("Character chat stream error")
-            print(f"[character_chat_stream_error] {type(e).__name__}: {e}", flush=True)
-            yield f"data: {json.dumps({'content': 'Error: 服务暂时不可用，请稍后重试。', 'error': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'content': 'Error: Internal error', 'error': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

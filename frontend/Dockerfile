@@ -12,5 +12,17 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+COPY security-headers.conf /etc/nginx/security-headers.conf
+RUN awk 'NR==1{sub(/^\xef\xbb\xbf/,"")}1' /etc/nginx/conf.d/default.conf > /tmp/nginx.tmp && mv /tmp/nginx.tmp /etc/nginx/conf.d/default.conf
+RUN awk 'NR==1{sub(/^\xef\xbb\xbf/,"")}1' /etc/nginx/security-headers.conf > /tmp/sh.tmp && mv /tmp/sh.tmp /etc/nginx/security-headers.conf
+RUN adduser -D -u 1000 appuser && \
+    chown -R appuser:appuser /usr/share/nginx/html && \
+    chown -R appuser:appuser /var/cache/nginx && \
+    chown -R appuser:appuser /var/log/nginx && \
+    mkdir -p /run && \
+    chown -R appuser:appuser /run && \
+    sed -i '/^user /d' /etc/nginx/nginx.conf && \
+    sed -i 's|/var/run/nginx.pid|/run/nginx.pid|g' /etc/nginx/nginx.conf
+EXPOSE 8080
+USER appuser
 CMD ["nginx", "-g", "daemon off;"]

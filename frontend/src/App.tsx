@@ -4,12 +4,13 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
 import { DesktopSidebar, MobileBottomNav } from '@/components/ui/custom/Sidebar';
+import { ErrorBoundary } from '@/components/ui/custom/ErrorBoundary';
 import { cn } from '@/lib/utils';
 import { useVirtualKeyboard } from '@/hooks/useVirtualKeyboard';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, AUTH_FAILURE_EVENT } from '@/services/api';
-import type { User, Model, Language, Theme } from '@/types';
+import type { User, Model, Language, Theme, Provider } from '@/types';
 
 // Translations
 const TRANSLATIONS = {
@@ -37,7 +38,7 @@ const TRANSLATIONS = {
     settings_common: "通用设置",
     settings_profile: "个人资料",
     settings_security: "账号安全",
-    settings_providers: "语言模型",
+    settings_providers: "API模型",
     settings_admin: "系统管理",
     settings_about: "关于",
     save: "保存",
@@ -121,7 +122,7 @@ const TRANSLATIONS = {
     language: "语言",
     developer_mode: "开发者模式",
     developer_mode_desc: "开启后普通聊天不会请求真实模型，而是返回示例流式回复",
-    language_models: "语言模型",
+    language_models: "API模型",
     local_models: "本地模型",
     refresh_models: "刷新模型列表",
     upload_model: "上传模型",
@@ -130,7 +131,7 @@ const TRANSLATIONS = {
     old_pwd_required: "请输入旧密码",
     new_pwd_required: "请输入新密码",
     pwd_min_length: "新密码至少需要6个字符",
-    pwd_same_as_old: "新不能与旧密码相同",
+    pwd_same_as_old: "新密码不能与旧密码相同",
     pwd_changed: "密码修改成功",
     pwd_change_failed: "密码修改失败",
     pwd_change_error: "密码修改出错",
@@ -353,6 +354,12 @@ const WorkspaceViewMobile = lazy(() =>
 const SettingsViewMobile = lazy(() =>
   import('@/components/views/SettingsView').then((module) => ({ default: module.SettingsView }))
 );
+const ProviderEditPageDesktop = lazy(() =>
+  import('@/components/views/ProviderEditPage').then((module) => ({ default: module.ProviderEditPage }))
+);
+const ProviderEditPageMobile = lazy(() =>
+  import('@/components/views/ProviderEditPage').then((module) => ({ default: module.ProviderEditPage }))
+);
 const CharacterViewMobile = lazy(() =>
   import('@/components/views/CharacterView').then((module) => ({ default: module.CharacterView }))
 );
@@ -386,6 +393,7 @@ function App() {
   const [isDark, setIsDark] = useState<Theme>(localStorage.getItem('theme') as Theme || 'light');
   const [lang, setLang] = useState<Language>(localStorage.getItem('lang') as Language || 'zh');
   const [models, setModels] = useState<Model[]>([]);
+  const [providers, setProviders] = useState<Provider[]>([]);
   const [systemDefaults, setSystemDefaults] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -393,6 +401,15 @@ function App() {
   const [currentModel, setCurrentModel] = useState<string>('');
 
   const t = TRANSLATIONS[lang];
+
+  const fetchProviders = useCallback(async () => {
+    try {
+      const data = await api.get('/api/admin/providers');
+      setProviders(data);
+    } catch (e) {
+      console.error('Failed to fetch providers:', e);
+    }
+  }, []);
 
   const switchDevice = useCallback((newDevice: 'desktop' | 'mobile') => {
     localStorage.setItem('ui_mode', newDevice);
@@ -466,12 +483,17 @@ function App() {
         if (token) {
             api.get('/api/models').then(data => {
                 setModels(data);
-            }).catch(() => {});
+            }).catch((e) => {
+                console.error('Failed to load models:', e);
+            });
             api.get('/api/admin/system/defaults').then(data => {
                 setSystemDefaults(data);
-            }).catch(() => {});
+            }).catch((e) => {
+                console.error('Failed to load system defaults:', e);
+            });
+            fetchProviders();
         }
-    }, [token]);
+    }, [token, fetchProviders]);
 
   useEffect(() => {
     loadConfig();
@@ -486,6 +508,7 @@ function App() {
   const handleLogin = (data: { access_token: string }) => {
     setToken(data.access_token);
     localStorage.setItem('palink_token', data.access_token);
+    setLoading(true);
   };
 
   const handleLogout = () => {
@@ -505,22 +528,16 @@ function App() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin text-primary" size={32} />
-      </div>
+      <BrowserRouter>
+        <div className="h-screen flex items-center justify-center">
+          <Loader2 className="animate-spin text-primary" size={32} />
+        </div>
+      </BrowserRouter>
     );
   }
 
-  if (!token || !user) {
-    return (
-      <div className={cn('min-h-screen relative', device === 'mobile' ? 'mobile-theme-bg' : 'bg-background')}>
-        {device === 'desktop' && <AuroraBackground />}
-        <div className="relative z-10">
-          <AuthScreen onLogin={handleLogin} />
-        </div>
-      </div>
-    );
-  }
+  const isMobile = device === 'mobile';
+  const isAuthenticated = !!token && !!user;
 
   const sidebarProps = {
     user,
@@ -538,15 +555,16 @@ function App() {
     sidebarCollapsed,
   };
 
-  const routes = (
+  const protectedRoutes = (
     <Routes>
       <Route path="/" element={<Navigate to="/chat" replace />} />
       <Route path="/chat" element={
+        <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           {device === 'desktop' ? (
             <ChatViewDesktop
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               currentModel={currentModel}
               setCurrentModel={setCurrentModel}
@@ -557,8 +575,8 @@ function App() {
             />
           ) : (
             <ChatViewMobile
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               currentModel={currentModel}
               setCurrentModel={setCurrentModel}
@@ -570,13 +588,15 @@ function App() {
             />
           )}
         </Suspense>
+        </ErrorBoundary>
       } />
       <Route path="/workspace" element={
+        <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           {device === 'desktop' ? (
             <WorkspaceViewDesktop
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               systemDefaults={systemDefaults}
               t={t}
@@ -584,8 +604,8 @@ function App() {
             />
           ) : (
             <WorkspaceViewMobile
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               systemDefaults={systemDefaults}
               t={t}
@@ -593,13 +613,15 @@ function App() {
             />
           )}
         </Suspense>
+        </ErrorBoundary>
       } />
       <Route path="/settings" element={
+        <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           {device === 'desktop' ? (
             <SettingsViewDesktop
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               systemDefaults={systemDefaults}
               onLogout={handleLogout}
@@ -614,8 +636,8 @@ function App() {
             />
           ) : (
             <SettingsViewMobile
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               systemDefaults={systemDefaults}
               onLogout={handleLogout}
@@ -630,74 +652,129 @@ function App() {
             />
           )}
         </Suspense>
+        </ErrorBoundary>
+      } />
+      <Route path="/settings/providers/:providerId" element={
+        <ErrorBoundary>
+        <Suspense fallback={<RouteFallback />}>
+          {device === 'desktop' ? (
+            <ProviderEditPageDesktop
+              token={token!}
+              providers={providers}
+              onProvidersUpdate={fetchProviders}
+              t={t}
+            />
+          ) : (
+            <ProviderEditPageMobile
+              token={token!}
+              providers={providers}
+              onProvidersUpdate={fetchProviders}
+              t={t}
+            />
+          )}
+        </Suspense>
+        </ErrorBoundary>
       } />
       <Route path="/characters" element={
+        <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           {device === 'desktop' ? (
             <CharacterViewDesktop
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               t={t}
               systemDefaults={systemDefaults}
               isDark={isDark === 'dark'}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
             />
           ) : (
             <CharacterViewMobile
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               t={t}
               systemDefaults={systemDefaults}
               isDark={isDark === 'dark'}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
             />
           )}
         </Suspense>
+        </ErrorBoundary>
       } />
       <Route path="/characters/:characterId" element={
+        <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           {device === 'desktop' ? (
             <CharacterViewDesktop
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               t={t}
               systemDefaults={systemDefaults}
               isDark={isDark === 'dark'}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
             />
           ) : (
             <CharacterViewMobile
-              token={token}
-              user={user}
+              token={token!}
+              user={user!}
               models={models}
               t={t}
               systemDefaults={systemDefaults}
               isDark={isDark === 'dark'}
+              sidebarCollapsed={sidebarCollapsed}
+              setSidebarCollapsed={setSidebarCollapsed}
             />
           )}
         </Suspense>
+        </ErrorBoundary>
       } />
       <Route path="*" element={<Navigate to="/chat" replace />} />
     </Routes>
   );
 
-  const isMobile = device === 'mobile';
-  const historyOpen = isMobile && !sidebarCollapsed;
-
   return (
+    <ErrorBoundary>
     <BrowserRouter>
-      <div className={cn('h-screen w-full flex flex-col relative overflow-hidden', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
-        {device === 'desktop' && <AuroraBackground />}
-        <div className="flex flex-1 overflow-hidden">
-          {device === 'desktop' && <DesktopSidebar {...sidebarProps} />}
-          <main className="flex-1 overflow-hidden">
-            {routes}
-          </main>
-        </div>
-        {device === 'mobile' && <MobileBottomNav {...sidebarProps} isKeyboardOpen={isKeyboardOpen} />}
-      </div>
+      <Routes>
+        <Route path="/login" element={
+          isAuthenticated ? (
+            <Navigate to="/chat" replace />
+          ) : (
+            <ErrorBoundary>
+            <div className={cn('min-h-screen relative', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
+              {device === 'desktop' && <AuroraBackground />}
+              <div className="relative z-10">
+                <AuthScreen onLogin={handleLogin} />
+              </div>
+            </div>
+            </ErrorBoundary>
+          )
+        } />
+        <Route path="*" element={
+          isAuthenticated ? (
+            <div className={cn('h-screen w-full flex flex-col relative overflow-hidden', isMobile ? 'mobile-theme-bg' : 'bg-background')}>
+              {device === 'desktop' && <AuroraBackground />}
+              <div className="flex flex-1 overflow-hidden">
+                {device === 'desktop' && <DesktopSidebar {...sidebarProps} />}
+                <main className="flex-1 overflow-hidden">
+                  {protectedRoutes}
+                </main>
+              </div>
+              {device === 'mobile' && <MobileBottomNav {...sidebarProps} isKeyboardOpen={isKeyboardOpen} />}
+            </div>
+          ) : (
+            <Navigate to="/login" replace />
+          )
+        } />
+      </Routes>
       <Toaster richColors position="top-right" />
     </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

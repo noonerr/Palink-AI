@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List
+from typing import List, Optional
 from urllib.parse import unquote
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -62,13 +62,16 @@ class ChatService:
             self.db.commit()
             return session_id, False
     
-    def save_user_message(self, session_id: str, message: str, model: str, images: List[str], files: List[str]):
+    def save_user_message(self, session_id: str, message: str, model: str, images: List[str], files: List[str], display_content: Optional[str] = None):
         """保存用户消息到数据库"""
-        db_content = message
-        if images: 
-            db_content += f" [Attached {len(images)} Images]"
-        if files: 
-            db_content += f" [Attached {len(files)} Files]"
+        if display_content:
+            db_content = display_content
+        else:
+            db_content = message
+            if images: 
+                db_content += f" [Attached {len(images)} Images]"
+            if files: 
+                db_content += f" [Attached {len(files)} Files]"
         
         self.db.add(ChatMessage(
             session_id=session_id,

@@ -2,10 +2,29 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+      - "3000:8080"
     depends_on:
       - backend
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 128M
 
   backend:
     build: ./backend
@@ -20,11 +39,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-ai_user}:${DB_PASSWORD:-ai_password}@db:5432/${DB_NAME:-ai_hub}
+      - DATABASE_URL=postgresql://${DB_USER:-ai_user}:${DB_PASSWORD:?请在.env中设置DB_PASSWORD}@db:5432/${DB_NAME:-ai_hub}
       - HF_ENDPOINT=https://hf-mirror.com
       - MEMORY_EMBEDDING_PROVIDER=fastembed
       - MEMORY_VECTOR_DIMENSION=512
-      - RUN_MIGRATIONS_ON_STARTUP=true
+      - RUN_MIGRATIONS_ON_STARTUP=false
       - MIGRATIONS_FAIL_FAST=true
       - PROVIDER_SECRET_CHECK_STRICT=false
       - CHAT_HISTORY_LIMIT=24
@@ -42,13 +61,33 @@ services:
       - DB_POOL_AUTO_TUNE=true
       - DB_CONNECTION_BUDGET=40
       - DB_POOL_RECYCLE_SECONDS=1800
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       db:
         condition: service_healthy
     # -----------------------------------
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+      - backend-db
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          memory: 512M
 
   db:
     image: pgvector/pgvector:pg15
@@ -56,10 +95,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_USER=${DB_USER:-ai_user}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-ai_password}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?请在.env中设置DB_PASSWORD}
       - POSTGRES_DB=${DB_NAME:-ai_hub}
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     # --- 关键修改：添加数据库健康检查 ---
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ai_user} -d ${DB_NAME:-ai_hub}"]
@@ -68,6 +107,24 @@ services:
       retries: 5
     # ---------------------------------
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - backend-db
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          memory: 256M
 
 volumes:
   postgres_data:
+
+networks:
+  frontend-backend:
+  backend-db:

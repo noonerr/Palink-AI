@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from ..core import get_db
+from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.worldbook import WorldBook, WorldBookStage, SessionWorldBook
@@ -190,7 +191,7 @@ async def delete_worldbook(
     db.query(SessionWorldBook).filter(SessionWorldBook.world_book_id == world_book_id).delete()
     db.delete(wb)
     db.commit()
-    return {"ok": True}
+    return {"status": "ok"}
 
 
 # ──────────────────────────────────────────────
@@ -207,7 +208,9 @@ async def import_worldbook(
     if not file.filename or not file.filename.endswith(".json"):
         raise HTTPException(400, "Only .json files are supported")
 
-    content = await file.read()
+    content = await file.read(5 * 1024 * 1024)
+    if await file.read(1):
+        raise HTTPException(413, "File too large (max 5MB)")
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
@@ -234,6 +237,16 @@ async def import_worldbook(
 
     name = data.get("name") or file.filename.replace(".json", "")
     description = data.get("description", "")
+    
+    try:
+        name = sanitize_name(name, max_length=200)
+    except ValueError:
+        name = file.filename.replace(".json", "")
+        name = sanitize_name(name, max_length=200)
+    try:
+        description = sanitize_text(description, max_length=5000) or ""
+    except ValueError:
+        description = ""
 
     wb = WorldBook(
         id=str(uuid.uuid4()),
@@ -251,13 +264,18 @@ async def import_worldbook(
     db.add(wb)
 
     # Auto-create entries from lorebook: keyword-trigger mode
+    MAX_IMPORT_ENTRIES = 500
     stage_index = 0
     for _key, entry in sorted(entries.items(), key=lambda x: x[1].get("order", 0)):
+        if stage_index >= MAX_IMPORT_ENTRIES:
+            break
         if entry.get("disable", False):
             continue
         entry_content = entry.get("content", "").strip()
         if not entry_content:
             continue
+        if len(entry_content) > 50000:
+            entry_content = entry_content[:50000]
         is_constant = entry.get("constant", False)
         stage = WorldBookStage(
             id=str(uuid.uuid4()),
@@ -415,7 +433,7 @@ async def disassociate_worldbook(
     db.commit()
     if not deleted:
         raise HTTPException(404, "No world book associated with this session")
-    return {"ok": True}
+    return {"status": "ok"}
 
 
 @router_session_wb.get("/{session_id}/worldbook/status")

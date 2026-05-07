@@ -101,6 +101,7 @@ class ContextRequest(BaseModel):
     user_id: int
     query: str
     session_id: Optional[str] = None
+    branch_ids: Optional[List[str]] = None
     max_tokens: int = 2000
     include_profile: bool = True
 

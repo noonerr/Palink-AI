@@ -1,0 +1,1 @@
+{"name":"evil_char2","description":"test","personality":"test","background":"test","tags":["<script>alert(1)</script>","<img onerror=alert(1) src=x>"]}

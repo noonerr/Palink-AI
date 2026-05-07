@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 export function isIPhoneWebAppMode(): boolean {
   if (typeof window === 'undefined') return false;
   return /iPhone|iPad|iPod/.test(navigator.userAgent) && 
-    (window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches);
+    ((navigator as any).standalone || window.matchMedia('(display-mode: standalone)').matches);
 }
 
 export function IPhoneWebAppSpacer({ height = '50px' }: { height?: string }) {

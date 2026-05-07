@@ -21,10 +21,12 @@ import {
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { GlassCard } from '@/components/ui/custom/GlassCard';
+import { MarkdownRenderer } from '@/components/ui/custom/MarkdownRenderer';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { api } from '@/services/api';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { FileItem, Folder as FolderType, Model, WorkspaceItems } from '@/types';
 
 interface WorkspaceViewProps {
@@ -45,6 +47,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   isDark = false
 }) => {
   const bottomPadding = useMobileBottomPadding();
+  const isMobile = useIsMobile();
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);
   const [items, setItems] = useState<WorkspaceItems>({ folders: [], files: [], usage: 0, limit: 0 });
   const [loading, setLoading] = useState(false);
@@ -55,9 +58,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   const [selectedFiles, setSelectedFiles] = useState<Set<FileItem>>(new Set());
   const [sidebarTab, setSidebarTab] = useState<'files' | 'projects'>('files');
   const [workspaceMode, setWorkspaceMode] = useState<'browser' | 'chat'>('browser');
-  const [analyzingFile, setAnalyzingFile] = useState<FileItem | null>(null);
-  const [outlineModel, setOutlineModel] = useState('');
-  const [analyzing, setAnalyzing] = useState(false);
+  const [insightFile, setInsightFile] = useState<FileItem | null>(null);
+  const [insightModel, setInsightModel] = useState('');
+  const [insightAnalyzing, setInsightAnalyzing] = useState(false);
+  const [insightContent, setInsightContent] = useState('');
+  const [insightPanelOpen, setInsightPanelOpen] = useState(false);
+  const [mobileInsightOpen, setMobileInsightOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     // 从 sessionStorage 读取状态，默认展开
     const saved = sessionStorage.getItem('workspace_sidebar_collapsed');
@@ -79,7 +85,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
   useEffect(() => {
     if (models.length) {
-      setOutlineModel(systemDefaults.default_outline_model || models[0]?.id);
+      setInsightModel(systemDefaults.default_outline_model || models[0]?.id);
     }
   }, [models, systemDefaults]);
 
@@ -177,44 +183,81 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     }
     
     setSelectedFiles(newSet);
-    
-    if (!exists && newSet.size === 1) {
-      setAnalyzingFile(file);
-    } else if (newSet.size !== 1) {
-      setAnalyzingFile(null);
+  };
+
+  const handleStreamAnalyze = async () => {
+    if (!insightFile || !insightModel) return;
+
+    setInsightAnalyzing(true);
+    setInsightContent('');
+
+    try {
+      const currentLang = t.lang_switch === 'English' ? 'zh' : 'en';
+      const res = await api.stream('/api/workspace/analyze/stream', {
+        file_id: insightFile.id,
+        model: insightModel,
+        lang: currentLang,
+      });
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setInsightAnalyzing(false);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let accumulated = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                accumulated += parsed.content;
+                setInsightContent(accumulated);
+              }
+              if (parsed.error) {
+                console.error('Stream error:', parsed.error);
+              }
+            } catch {
+              // skip non-JSON lines
+            }
+          }
+        }
+      }
+
+      if (accumulated) {
+        setItems((prev: WorkspaceItems) => ({
+          ...prev,
+          files: prev.files.map((f: FileItem) =>
+            f.id === insightFile.id ? { ...f, summary: accumulated } : f
+          )
+        }));
+        setInsightFile((prev: FileItem | null) => prev ? { ...prev, summary: accumulated } : null);
+      }
+    } catch (e) {
+      console.error('Stream analysis failed:', e);
+    } finally {
+      setInsightAnalyzing(false);
     }
   };
 
-  const handleGenerateOutline = async () => {
-    if (!analyzingFile || !outlineModel) return;
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-    setAnalyzing(true);
-    try {
-      const data = await api.post('/api/workspace/analyze', {
-        file_id: analyzingFile.id,
-        model: outlineModel,
-        lang: 'zh'
-      }, { signal: controller.signal } as any);
-
-      setAnalyzingFile((prev: FileItem | null) => prev ? { ...prev, summary: data.summary } : null);
-      setItems((prev: WorkspaceItems) => ({
-        ...prev,
-        files: prev.files.map((f: FileItem) =>
-          f.id === analyzingFile.id ? { ...f, summary: data.summary } : f
-        )
-      }));
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') {
-        console.error('Analysis timed out after 60s');
-      } else {
-        console.error('Analysis failed:', e);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      setAnalyzing(false);
+  const openInsightPanel = (file: FileItem) => {
+    setInsightFile(file);
+    setInsightContent(file.summary || '');
+    if (isMobile) {
+      setMobileInsightOpen(true);
+    } else {
+      setInsightPanelOpen(true);
     }
   };
 
@@ -224,8 +267,6 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     if (s < 1024 * 1024) return (s / 1024).toFixed(1) + 'KB';
     return (s / 1024 / 1024).toFixed(1) + 'MB';
   };
-
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
   if (workspaceMode === 'chat') {
     return (
@@ -244,7 +285,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   }
 
   return (
-    <div className={cn('flex h-full relative pb-[max(4rem,calc(env(safe-area-inset-bottom)+3.5rem))] md:pb-0', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
+    <div className={cn('flex h-full relative', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
       {/* Desktop Sidebar with smooth fade animation */}
       <div 
         className={cn(
@@ -260,10 +301,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
           sidebarCollapsed ? 'opacity-0' : 'opacity-100'
         )}>
         {/* Header */}
-        <div className={cn(
-          "h-[54px] flex items-center justify-between px-4 border-b shrink-0 backdrop-blur-[20px]",
-          isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
-        )}>
+        <div className="h-[54px] flex items-center justify-between px-4 border-b border-border/50 shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-foreground">{t.workspace_title || '工作空间'}</span>
           </div>
@@ -335,48 +373,6 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 ))}
               </div>
 
-              {/* Analysis Panel */}
-              {analyzingFile && (
-                <GlassCard className="p-4 animate-fade-in-up">
-                  <div className="flex items-center gap-2 mb-3 text-sm font-semibold">
-                    <BrainCircuit size={16} className="text-primary" />
-                    {t.outline_title}
-                  </div>
-                  <div className="flex gap-2 mb-3">
-                    <select
-                      value={outlineModel}
-                      onChange={e => setOutlineModel(e.target.value)}
-                      className="flex-1 text-xs p-2 rounded-lg bg-secondary border-none outline-none"
-                    >
-                      {models.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
-                    <Button
-                      size="sm"
-                      onClick={handleGenerateOutline}
-                      disabled={analyzing}
-                    >
-                      {analyzing ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        <Sparkles size={14} />
-                      )}
-                      <span className="ml-1">{t.btn_generate}</span>
-                    </Button>
-                  </div>
-                  <div className="max-h-[200px] overflow-y-auto overscroll-y-contain text-xs text-muted-foreground bg-secondary/50 rounded-lg p-3">
-                    {analyzingFile.summary ? (
-                      <div className="prose prose-sm">{analyzingFile.summary}</div>
-                    ) : (
-                      <div className="text-center italic py-4 opacity-50">
-                        {t.outline_placeholder}
-                      </div>
-                    )}
-                  </div>
-                </GlassCard>
-              )}
-
               {/* Start Project Button */}
               <div className="mt-4 pt-4 border-t border-border/50">
                 <button
@@ -418,20 +414,16 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Mobile Sidebar Header */}
-            <div className={cn(
-              "h-14 flex items-center justify-between px-4 border-b shrink-0 backdrop-blur-[20px]",
-              isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
-            )}>
+            <div className="min-h-[3.5rem] flex items-center justify-between px-4 border-b border-border/50 shrink-0 py-2" style={{ paddingTop: `max(0.5rem, env(safe-area-inset-top))` }}>
               <div className="flex items-center gap-2">
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setMobileSidebarOpen(false)}
-                  className={cn(
-                    'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
-                    isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
-                  )}
+                  className="h-8 w-8"
                 >
                   <ChevronLeft size={20} />
-                </button>
+                </Button>
                 <span className="text-sm font-semibold">{t.workspace_title || '工作空间'}</span>
               </div>
             </div>
@@ -538,48 +530,45 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
-        <div className={cn(
-          'h-[48px] flex items-center justify-between px-4 sm:px-6 border-b z-10 sm:pt-3 backdrop-blur-[30px]',
-          isDark ? 'border-slate-700/70 bg-[#1f2233]' : 'border-[#ddd4c5] bg-[#FFFAFA]'
-        )} style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
+        <div className="h-[48px] flex items-center justify-between px-4 sm:px-6 border-b border-border/50 backdrop-blur-xl bg-background/80 z-10 sm:pt-3" style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
           {/* Breadcrumb */}
           <div className="flex items-center gap-1 text-sm text-muted-foreground min-w-0 flex-1">
             {/* Mobile Sidebar Toggle */}
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setMobileSidebarOpen(true)}
-              className={cn(
-                'md:hidden flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
-                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
-              )}
+              className="md:hidden h-9 w-9"
             >
               <Menu size={18} />
-            </button>
+            </Button>
             {/* Desktop Sidebar Toggle */}
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className={cn(
-                'hidden md:flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
-                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
-              )}
+              className="hidden md:flex h-9 w-9"
             >
               {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setPath([])}
-              className={cn(
-                'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
-                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263]' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2]'
-              )}
+              className="h-9 w-9"
             >
               <Home size={16} />
-            </button>
-            <div className="hidden sm:flex items-center gap-1 min-w-0">
+            </Button>
+            <div className="flex items-center gap-1 min-w-0">
               {path.map((p, idx) => (
                 <React.Fragment key={p.id}>
                   <ChevronRight size={14} className="text-border shrink-0" />
                   <button
                     onClick={() => setPath(path.slice(0, idx + 1))}
-                    className="hover:bg-secondary px-2 py-1 rounded-md transition-colors truncate"
+                    className={cn(
+                      "hover:bg-secondary px-2 py-1 rounded-md transition-colors truncate",
+                      isMobile && idx < path.length - 1 && "hidden"
+                    )}
                   >
                     {p.name}
                   </button>
@@ -590,16 +579,15 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
 
           {/* Actions */}
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={fetchItems}
               disabled={loading}
-              className={cn(
-                'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-[30px] shrink-0 transition-all duration-300 ease-in-out',
-                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white hover:bg-[#3a4263] disabled:opacity-50' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f5eee2] disabled:opacity-50'
-              )}
+              className="shrink-0"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            </button>
+            </Button>
 
             <div className="hidden sm:block w-px h-4 bg-border" />
 
@@ -649,16 +637,16 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               <FolderPlus size={16} />
             </button>
 
-            <div className="hidden sm:block w-px h-4 bg-border" />
+            <div className="block w-px h-4 bg-border" />
 
-            <div className="hidden sm:flex p-1 rounded-lg backdrop-blur-[20px] border" style={isDark ? { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(45,51,80,0.5)' } : { borderColor: '#ddd4c5', backgroundColor: '#f5eee2' }}>
+            <div className="flex bg-secondary/50 p-1 rounded-lg">
               <button
                 onClick={() => setViewMode('list')}
                 className={cn(
                   "p-1.5 rounded-md transition-all",
-                  viewMode === 'list'
-                    ? isDark ? "bg-white/20 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
-                    : isDark ? "text-white/60 hover:text-white/90" : "text-slate-500 hover:text-slate-700"
+                  viewMode === 'list' 
+                    ? "bg-background shadow-sm" 
+                    : "text-muted-foreground hover:text-foreground"
                 )}
               >
                 <List size={16} />
@@ -667,9 +655,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 onClick={() => setViewMode('grid')}
                 className={cn(
                   "p-1.5 rounded-md transition-all",
-                  viewMode === 'grid'
-                    ? isDark ? "bg-white/20 text-white shadow-sm" : "bg-[#FFFAFA] text-slate-800 shadow-sm"
-                    : isDark ? "text-white/60 hover:text-white/90" : "text-slate-500 hover:text-slate-700"
+                  viewMode === 'grid' 
+                    ? "bg-background shadow-sm" 
+                    : "text-muted-foreground hover:text-foreground"
                 )}
               >
                 <Grid size={16} />
@@ -690,7 +678,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 value={newFolderName}
                 onChange={e => setNewFolderName(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleCreateFolder()}
-                className="bg-transparent text-lg font-semibold border-b-2 border-primary outline-none w-64"
+                className="bg-transparent text-lg font-semibold border-b-2 border-primary outline-none w-full max-w-64"
                 placeholder={t.folder_name_placeholder}
               />
               <Button size="sm" onClick={handleCreateFolder}>{t.ok}</Button>
@@ -714,17 +702,20 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   <div className="text-xs text-muted-foreground mr-4">
                     {new Date(folder.created_at).toLocaleDateString()}
                   </div>
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className={cn(
+                    "transition-opacity",
+                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  )}>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 text-destructive hover:bg-destructive/10"
+                      className="h-11 w-11 text-destructive hover:bg-destructive/10"
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
                         handleDelete(folder.id, 'folder');
                       }}
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={16} />
                     </Button>
                   </div>
                 </div>
@@ -748,29 +739,31 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   <div className="text-xs text-muted-foreground mr-4 w-20 text-right">
                     {fmtSize(file.size)}
                   </div>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className={cn(
+                    "flex gap-1 transition-opacity",
+                    isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  )}>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 text-primary hover:bg-primary/10"
+                      className="h-11 w-11 text-primary hover:bg-primary/10"
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
-                        setAnalyzingFile(file);
-                        setSidebarTab('files');
+                        openInsightPanel(file);
                       }}
                     >
-                      <BrainCircuit size={14} />
+                      <BrainCircuit size={16} />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 text-destructive hover:bg-destructive/10"
+                      className="h-11 w-11 text-destructive hover:bg-destructive/10"
                       onClick={(e: React.MouseEvent) => {
                         e.stopPropagation();
                         handleDelete(file.id, 'file');
                       }}
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={16} />
                     </Button>
                   </div>
                 </div>
@@ -826,6 +819,151 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
           </div>
         </ScrollArea>
       </div>
+
+      {/* Desktop Insight Panel */}
+      {insightPanelOpen && insightFile && (
+        <div className={cn(
+          "hidden md:flex flex-col h-full border-l border-border/50 bg-background",
+          "w-80 lg:w-96 transition-all duration-300"
+        )}>
+          {/* Panel Header */}
+          <div className="h-[48px] flex items-center justify-between px-4 border-b border-border/50 shrink-0" style={{ paddingTop: 'max(env(safe-area-inset-top), 6px)' }}>
+            <div className="flex items-center gap-2 min-w-0">
+              <BrainCircuit size={16} className="text-primary shrink-0" />
+              <span className="text-sm font-semibold truncate">{t.insight_panel_title || t.outline_title}</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setInsightPanelOpen(false)}
+            >
+              <X size={16} />
+            </Button>
+          </div>
+
+          {/* File Info */}
+          <div className="px-4 py-3 border-b border-border/50">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{insightFile.type.includes('image') ? '🖼️' : '📄'}</span>
+              <span className="text-sm font-medium truncate flex-1">{insightFile.filename}</span>
+            </div>
+          </div>
+
+          {/* Model Selector + Generate Button */}
+          <div className="px-4 py-3 border-b border-border/50">
+            <div className="flex gap-2">
+              <select
+                value={insightModel}
+                onChange={e => setInsightModel(e.target.value)}
+                className="flex-1 text-xs p-2 rounded-lg bg-secondary border-none outline-none"
+              >
+                {models.map(m => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                onClick={handleStreamAnalyze}
+                disabled={insightAnalyzing}
+              >
+                {insightAnalyzing ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : insightFile.summary ? (
+                  <RefreshCw size={14} />
+                ) : (
+                  <Sparkles size={14} />
+                )}
+                <span className="ml-1">{insightAnalyzing ? (t.insight_generating || '分析中...') : insightFile.summary ? (t.insight_regenerate || '重新分析') : t.btn_generate}</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Insight Content */}
+          <div className="flex-1 overflow-y-auto overscroll-y-contain p-4">
+            {insightContent ? (
+              <div className="text-sm">
+                <MarkdownRenderer content={insightContent} />
+                {insightAnalyzing && (
+                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-middle" />
+                )}
+              </div>
+            ) : (
+              <div className="text-center italic py-8 text-muted-foreground text-xs opacity-50">
+                {t.outline_placeholder}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Insight Sheet */}
+      <Sheet open={mobileInsightOpen} onOpenChange={setMobileInsightOpen}>
+        <SheetContent side="bottom" className="h-[80vh] rounded-t-2xl">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <BrainCircuit size={16} className="text-primary" />
+              {t.insight_panel_title || t.outline_title}
+            </SheetTitle>
+          </SheetHeader>
+          {insightFile && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              {/* File Info */}
+              <div className="py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">{insightFile.type.includes('image') ? '🖼️' : '📄'}</span>
+                  <span className="text-sm font-medium truncate flex-1">{insightFile.filename}</span>
+                </div>
+              </div>
+
+              {/* Model Selector + Generate Button */}
+              <div className="py-2">
+                <div className="flex gap-2">
+                  <select
+                    value={insightModel}
+                    onChange={e => setInsightModel(e.target.value)}
+                    className="flex-1 text-xs p-2 rounded-lg bg-secondary border-none outline-none"
+                  >
+                    {models.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    onClick={handleStreamAnalyze}
+                    disabled={insightAnalyzing}
+                  >
+                    {insightAnalyzing ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : insightFile.summary ? (
+                      <RefreshCw size={14} />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
+                    <span className="ml-1">{insightAnalyzing ? (t.insight_generating || '分析中...') : insightFile.summary ? (t.insight_regenerate || '重新分析') : t.btn_generate}</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Insight Content */}
+              <div className="flex-1 overflow-y-auto overscroll-y-contain py-2">
+                {insightContent ? (
+                  <div className="text-sm">
+                    <MarkdownRenderer content={insightContent} />
+                    {insightAnalyzing && (
+                      <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-middle" />
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center italic py-8 text-muted-foreground text-xs opacity-50">
+                    {t.outline_placeholder}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
 
       <input
         type="file"

@@ -10,6 +10,10 @@ from .config import settings
 _request_history: Dict[str, Deque[float]] = defaultdict(deque)
 _request_lock = threading.Lock()
 
+MAX_KEYS = 10000
+KEY_TTL_SECONDS = 3600
+_last_cleanup: float = 0.0
+
 
 def _client_identifier(request: Request) -> str:
     if settings.TRUST_PROXY_HEADERS:
@@ -29,6 +33,8 @@ def enforce_rate_limit(
     max_requests: int,
     window_seconds: int,
 ) -> None:
+    global _last_cleanup
+
     if max_requests <= 0 or window_seconds <= 0:
         return
 
@@ -36,6 +42,24 @@ def enforce_rate_limit(
     key = f"{scope}:{_client_identifier(request)}"
 
     with _request_lock:
+        if now - _last_cleanup > 300:
+            expired_keys = [
+                k for k, v in _request_history.items()
+                if not v or v[-1] < now - KEY_TTL_SECONDS
+            ]
+            for k in expired_keys:
+                del _request_history[k]
+            _last_cleanup = now
+
+        is_new_key = key not in _request_history
+
+        if is_new_key and len(_request_history) >= MAX_KEYS:
+            oldest_key = min(
+                _request_history,
+                key=lambda k: _request_history[k][-1] if _request_history[k] else float('inf'),
+            )
+            del _request_history[oldest_key]
+
         window_start = now - window_seconds
         entries = _request_history[key]
 

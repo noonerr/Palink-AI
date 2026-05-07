@@ -43,6 +43,11 @@ uploads/
 *.swp
 *.swo
 
+# 排除环境变量文件
+.env
+.env.*
+!.env.example
+
 # 排除 Git
 .git/
 .gitignore

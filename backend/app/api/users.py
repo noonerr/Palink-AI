@@ -14,8 +14,7 @@ def _get_or_create_settings(user: User, db: Session) -> UserSetting:
     if not setting:
         setting = UserSetting(user_id=user.id)
         db.add(setting)
-        db.commit()
-        db.refresh(setting)
+        db.flush()
     return setting
 
 
@@ -27,7 +26,11 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "memory_model": setting.memory_model,
         "show_model_reasoning": setting.show_model_reasoning if setting.show_model_reasoning is not None else True,
         "developer_mode": setting.developer_mode if setting.developer_mode is not None else False,
-        "prompt_language": setting.prompt_language or "auto"
+        "prompt_language": setting.prompt_language or "auto",
+        "character_display_mode": setting.character_display_mode or "framed",
+        "author_note": setting.author_note or "",
+        "author_note_position": setting.author_note_position or "after_char",
+        "author_note_frequency": setting.author_note_frequency if setting.author_note_frequency is not None else 0
     }
 
 
@@ -44,5 +47,13 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.developer_mode = req.developer_mode
     if req.prompt_language is not None:
         setting.prompt_language = req.prompt_language
+    if req.character_display_mode is not None:
+        setting.character_display_mode = req.character_display_mode
+    if req.author_note is not None:
+        setting.author_note = req.author_note
+    if req.author_note_position is not None:
+        setting.author_note_position = req.author_note_position
+    if req.author_note_frequency is not None:
+        setting.author_note_frequency = req.author_note_frequency
     db.commit()
     return {"status": "ok"}

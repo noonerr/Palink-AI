@@ -1,6 +1,20 @@
+"""
+底层 Provider 管理
+
+职责：
+- Provider 的 CRUD 操作（增删改查 providers.json）
+- API Key 的解析与验证（环境变量引用、密钥缺失检测）
+- 运行时 Provider 信息获取（get_runtime_providers、find_model）
+- 模型视觉能力推断（infer_supports_vision）
+
+注意：外部模块如需查找模型，应优先使用 unified_model_registry.find_model，
+而非直接调用本模块的 find_model，以获得统一的模型路由和 provider 选择能力。
+"""
+
 import copy
 import json
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -122,7 +136,7 @@ def get_missing_provider_secret_refs() -> List[Dict[str, str]]:
 
 def find_model(model_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     for provider in get_runtime_providers():
-        if not provider.get("is_active"):
+        if provider.get("is_active") is not None and not provider.get("is_active"):
             continue
         for model in provider.get("models", []):
             model_id_value = model["id"] if isinstance(model, dict) else model
@@ -130,3 +144,45 @@ def find_model(model_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[s
                 normalized_model = model if isinstance(model, dict) else {"id": model, "alias": model}
                 return provider, normalized_model
     return None, None
+
+
+_VISION_PATTERNS = [
+    re.compile(r"gpt-4o", re.IGNORECASE),
+    re.compile(r"gpt-4-turbo", re.IGNORECASE),
+    re.compile(r"o[1-4]", re.IGNORECASE),
+    re.compile(r"claude-3", re.IGNORECASE),
+    re.compile(r"gemini", re.IGNORECASE),
+    re.compile(r"qwen.*vl", re.IGNORECASE),
+    re.compile(r"qwen.*vision", re.IGNORECASE),
+    re.compile(r"qwen2-vl", re.IGNORECASE),
+    re.compile(r"qwen2\.5-vl", re.IGNORECASE),
+    re.compile(r"internvl", re.IGNORECASE),
+    re.compile(r"llava", re.IGNORECASE),
+    re.compile(r"vision", re.IGNORECASE),
+    re.compile(r"mini-cpm", re.IGNORECASE),
+    re.compile(r"glm-4v", re.IGNORECASE),
+    re.compile(r"deepseek-vl", re.IGNORECASE),
+    re.compile(r"yi-vision", re.IGNORECASE),
+    re.compile(r"cogvlm", re.IGNORECASE),
+    re.compile(r"idefics", re.IGNORECASE),
+    re.compile(r"fuyu", re.IGNORECASE),
+    re.compile(r"kosmos", re.IGNORECASE),
+    re.compile(r"moondream", re.IGNORECASE),
+]
+
+
+def infer_supports_vision(model_id: str) -> bool:
+    if not model_id:
+        return False
+    for pattern in _VISION_PATTERNS:
+        if pattern.search(model_id):
+            return True
+    return False
+
+
+def get_model_vision_support(model_id: str, model_data: Optional[Dict[str, Any]] = None) -> bool:
+    if model_data and isinstance(model_data, dict):
+        explicit = model_data.get("supports_vision")
+        if explicit is not None:
+            return bool(explicit)
+    return infer_supports_vision(model_id)

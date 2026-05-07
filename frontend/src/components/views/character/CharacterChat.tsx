@@ -2,11 +2,12 @@
  * CharacterChat — 聊天视图
  * 从CharacterView提取的子组件
  */
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Bot, Plus, X, Play, Sparkles, Trash2, BookOpen, GitBranch,
-  Check, ChevronDown, Clock, MoreVertical,
+  Check, ChevronDown, Clock, MoreVertical, Sliders,
   User as UserIcon,
+  Map as MapIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -19,14 +20,15 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useClickOutside } from '@/hooks/useClickOutside';
-import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
+import { useVirtualKeyboard } from '@/hooks/useVirtualKeyboard';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
+import { PresetSelector } from '@/components/ui/custom/PresetSelector';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { ErrorToast } from '@/components/ui/custom/ErrorToast';
-import StorylinePanel from '@/components/ui/custom/StorylinePanel';
+import StorylineMap from '@/components/ui/custom/StorylineMap';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import { WorldBookSelector } from '@/components/ui/custom/WorldBookSelector';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
@@ -37,6 +39,7 @@ import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type {
   Character, Model, User as UserType,
   CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch,
+  GenerationPreset,
 } from '@/types';
 
 /* ────── Inline sub-components ────────────────────────────────────────────────────── */
@@ -47,10 +50,11 @@ interface BranchSelectorProps {
   onSelect: (branch: CharacterChatSessionBranch) => void;
   onCreate: (name: string) => void;
   onDelete: (branchId: string) => void;
+  t: Record<string, string>;
 }
 
 const BranchSelector: React.FC<BranchSelectorProps> = ({
-  branches, selectedBranch, onSelect, onCreate, onDelete,
+  branches, selectedBranch, onSelect, onCreate, onDelete, t,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
@@ -143,10 +147,11 @@ interface DialogueModeSelectorProps {
   currentMode: 'first_person' | 'third_person';
   onSelect: (mode: 'first_person' | 'third_person') => void;
   lang?: 'zh' | 'en';
+  t: Record<string, string>;
 }
 
 const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
-  currentMode, onSelect, lang = 'zh',
+  currentMode, onSelect, lang = 'zh', t,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -258,20 +263,20 @@ export interface CharacterChatProps {
   handleRetry: () => void;
   handleCloseError: () => void;
   handleUpload: (file: File, type: 'image' | 'file') => Promise<void>;
-  handleEditMessage: (msgId: number, idx: number, content: string) => Promise<void>;
+  handleEditMessage: (msgId: string | number, idx: number, content: string) => Promise<void>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
   showModelReasoning: boolean;
   // branches
   branches: CharacterChatSessionBranch[];
   selectedBranch: CharacterChatSessionBranch | null;
-  createBranch: (name: string) => Promise<void>;
+  createBranch: () => Promise<void>;
   switchBranch: (branch: CharacterChatSessionBranch) => Promise<void>;
   deleteBranch: (branchId: string) => void;
   fetchBranchTree: () => Promise<void>;
   branchTree: BranchTree | null;
-  showStoryline: boolean;
-  setShowStoryline: (v: boolean) => void;
   handleStorylineNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => Promise<void>;
+  forkPoint: { branchId: string; messageId: number } | null;
+  clearForkPoint: () => void;
   showDeleteBranchConfirm: boolean;
   setShowDeleteBranchConfirm: (v: boolean) => void;
   confirmDeleteBranch: () => Promise<void>;
@@ -326,12 +331,101 @@ export interface CharacterChatProps {
   setSelectedPlotLineId: (id: string | null) => void;
   // navigation
   setViewState: (v: 'list' | 'edit' | 'chat') => void;
+  onBackToList?: () => void;
+  // preset
+  currentPreset: GenerationPreset | null;
+  setCurrentPreset: (preset: GenerationPreset) => void;
 }
 
 /* ────── Component ──────────────────────────────────────────────────────────────────────────────── */
 
+const HISTORY_SLIDE_DURATION_MS = 300;
+const NEW_SESSION_FADE_DURATION_MS = 200;
+
 export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
-  const bottomPadding = useMobileBottomPadding();
+  const [composerBottomPx, setComposerBottomPx] = useState(0);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const { isKeyboardOpen } = useVirtualKeyboard();
+  const [isDark, setIsDark] = useState(document.documentElement.classList.contains('dark'));
+  const [showDesktopHint, setShowDesktopHint] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !localStorage.getItem('palink-mobile-desktop-hint-dismissed');
+  });
+  const [sessionVisualSnapshot, setSessionVisualSnapshot] = useState<{
+    activeSessionId: string | null;
+    messages: CharacterChatMessage[];
+  } | null>(null);
+  const [newSessionFadeState, setNewSessionFadeState] = useState<'idle' | 'fading-out' | 'fading-in'>('idle');
+  const [showPresetPanel, setShowPresetPanel] = useState(false);
+  const sessionSwitchTimerRef = useRef<number | null>(null);
+  const newSessionFadeTimerRef = useRef<number | null>(null);
+  const sessionSwitchTokenRef = useRef(0);
+  const isNavigatingRef = useRef(false);
+  const prevMessagesRef = useRef<CharacterChatMessage[]>([]);
+
+  useEffect(() => {
+    const darkObserver = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'));
+    });
+    darkObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => darkObserver.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const measureNav = () => {
+      const _isMobile = window.innerWidth < 768;
+      if (!_isMobile) {
+        setComposerBottomPx(0);
+        return;
+      }
+      const nav = document.querySelector('nav[data-dock="true"]');
+      if (nav) {
+        const navHeight = nav.getBoundingClientRect().height;
+        if (isIOS) {
+          const safeAreaBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-bottom')) || 0;
+          setComposerBottomPx(Math.max(77, navHeight - safeAreaBottom + 4));
+        } else {
+          setComposerBottomPx(navHeight + 7);
+        }
+      } else {
+        setComposerBottomPx(isIOS ? 77 : 90);
+      }
+    };
+    measureNav();
+    const resizeHandler = () => measureNav();
+    window.addEventListener('resize', resizeHandler);
+    const navObserver = new MutationObserver(() => {
+      setTimeout(measureNav, 100);
+      setTimeout(measureNav, 500);
+    });
+    const navEl = document.querySelector('nav[data-dock="true"]');
+    if (navEl) {
+      navObserver.observe(navEl, { attributes: true, attributeFilter: ['class', 'style'] });
+    }
+    return () => {
+      window.removeEventListener('resize', resizeHandler);
+      navObserver.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (sessionSwitchTimerRef.current !== null) {
+        window.clearTimeout(sessionSwitchTimerRef.current);
+      }
+      if (newSessionFadeTimerRef.current !== null) {
+        window.clearTimeout(newSessionFadeTimerRef.current);
+      }
+    };
+  }, []);
+
   const {
     selectedCharacter, user, t, lang,
     models, selectedModel, setSelectedModel,
@@ -348,8 +442,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     handleRetry, handleCloseError, handleUpload, handleEditMessage,
     abortControllerRef, showModelReasoning,
     branches, selectedBranch, createBranch, switchBranch, deleteBranch,
-    fetchBranchTree, branchTree, showStoryline, setShowStoryline,
-    handleStorylineNavigate, showDeleteBranchConfirm, setShowDeleteBranchConfirm, confirmDeleteBranch,
+    fetchBranchTree, branchTree,
+    handleStorylineNavigate, forkPoint, clearForkPoint,
+    showDeleteBranchConfirm, setShowDeleteBranchConfirm, confirmDeleteBranch,
     isMixedDeleteMode, setIsMixedDeleteMode,
     selectedWholeMessages, selectedMessageParts,
     toggleWholeMessageSelect, toggleMessagePartSelect, selectAllPartsInMessage,
@@ -366,124 +461,403 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     selectedPlotLineId: _selectedPlotLineId, setSelectedPlotLineId: _setSelectedPlotLineId,
     setViewState,
+    currentPreset, setCurrentPreset,
   } = props;
+
+  const wrappedHandleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
+    isNavigatingRef.current = true;
+    try {
+      await handleStorylineNavigate(branchId, messageId, isLeaf);
+    } catch (e) {
+      isNavigatingRef.current = false;
+      setNewSessionFadeState('idle');
+      setSessionVisualSnapshot(null);
+      throw e;
+    } finally {
+      setTimeout(() => {
+        isNavigatingRef.current = false;
+      }, 600);
+    }
+  }, [handleStorylineNavigate]);
+
+  const prevBranchIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const branchId = selectedBranch?.id || null;
+    if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
+      isNavigatingRef.current = true;
+      setSessionVisualSnapshot({
+        activeSessionId: selectedSession?.id || null,
+        messages: [...prevMessagesRef.current],
+      });
+      setNewSessionFadeState('fading-out');
+      if (sessionSwitchTimerRef.current !== null) {
+        window.clearTimeout(sessionSwitchTimerRef.current);
+        sessionSwitchTimerRef.current = null;
+      }
+      if (newSessionFadeTimerRef.current !== null) {
+        window.clearTimeout(newSessionFadeTimerRef.current);
+        newSessionFadeTimerRef.current = null;
+      }
+      const switchToken = sessionSwitchTokenRef.current + 1;
+      sessionSwitchTokenRef.current = switchToken;
+      sessionSwitchTimerRef.current = window.setTimeout(() => {
+        if (sessionSwitchTokenRef.current !== switchToken) return;
+        setSessionVisualSnapshot(null);
+        setNewSessionFadeState('fading-in');
+        newSessionFadeTimerRef.current = window.setTimeout(() => {
+          if (sessionSwitchTokenRef.current !== switchToken) return;
+          setNewSessionFadeState('idle');
+          isNavigatingRef.current = false;
+          newSessionFadeTimerRef.current = null;
+        }, NEW_SESSION_FADE_DURATION_MS);
+        sessionSwitchTimerRef.current = null;
+      }, NEW_SESSION_FADE_DURATION_MS);
+      return () => {
+        if (sessionSwitchTimerRef.current !== null) {
+          window.clearTimeout(sessionSwitchTimerRef.current);
+          sessionSwitchTimerRef.current = null;
+        }
+        if (newSessionFadeTimerRef.current !== null) {
+          window.clearTimeout(newSessionFadeTimerRef.current);
+          newSessionFadeTimerRef.current = null;
+        }
+      };
+    }
+    prevBranchIdRef.current = branchId;
+  }, [selectedBranch, selectedSession?.id]);
+
+  useEffect(() => {
+    prevMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    if (newSessionFadeState === 'idle') return;
+
+    const timeoutId = window.setTimeout(() => {
+      setNewSessionFadeState('idle');
+      setSessionVisualSnapshot(null);
+      isNavigatingRef.current = false;
+    }, 1000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [newSessionFadeState]);
+
+  const displayedActiveSessionId = sessionVisualSnapshot ? sessionVisualSnapshot.activeSessionId : (selectedSession?.id || null);
+  const displayedMessages = sessionVisualSnapshot ? sessionVisualSnapshot.messages : messages;
+  const displayedSuggestions = sessionVisualSnapshot ? [] : suggestions;
+
+  const handleSessionSwitchWithFade = (session: CharacterChatSession) => {
+    const switchToken = sessionSwitchTokenRef.current + 1;
+    sessionSwitchTokenRef.current = switchToken;
+
+    setNewSessionFadeState('fading-out');
+    setSessionVisualSnapshot({
+      activeSessionId: selectedSession?.id || null,
+      messages: [...messages],
+    });
+
+    if (sessionSwitchTimerRef.current !== null) {
+      window.clearTimeout(sessionSwitchTimerRef.current);
+      sessionSwitchTimerRef.current = null;
+    }
+    if (newSessionFadeTimerRef.current !== null) {
+      window.clearTimeout(newSessionFadeTimerRef.current);
+      newSessionFadeTimerRef.current = null;
+    }
+
+    setSidebarCollapsed(true);
+
+    const applySessionSwitch = async () => {
+      if (sessionSwitchTokenRef.current !== switchToken) return;
+
+      await handleSelectSession(session);
+
+      if (sessionSwitchTokenRef.current === switchToken) {
+        setSessionVisualSnapshot(null);
+        setNewSessionFadeState('fading-in');
+        newSessionFadeTimerRef.current = window.setTimeout(() => {
+          if (sessionSwitchTokenRef.current !== switchToken) return;
+          setNewSessionFadeState('idle');
+          newSessionFadeTimerRef.current = null;
+        }, NEW_SESSION_FADE_DURATION_MS);
+      }
+    };
+
+    if (!sidebarCollapsed) {
+      sessionSwitchTimerRef.current = window.setTimeout(() => {
+        sessionSwitchTimerRef.current = null;
+        void applySessionSwitch();
+      }, HISTORY_SLIDE_DURATION_MS);
+      return;
+    }
+
+    sessionSwitchTimerRef.current = window.setTimeout(() => {
+      sessionSwitchTimerRef.current = null;
+      void applySessionSwitch();
+    }, NEW_SESSION_FADE_DURATION_MS);
+  };
+
+  const handleNewSessionWithFade = () => {
+    const switchToken = sessionSwitchTokenRef.current + 1;
+    sessionSwitchTokenRef.current = switchToken;
+
+    setNewSessionFadeState('fading-out');
+    setSessionVisualSnapshot({
+      activeSessionId: selectedSession?.id || null,
+      messages: [...messages],
+    });
+
+    if (sessionSwitchTimerRef.current !== null) {
+      window.clearTimeout(sessionSwitchTimerRef.current);
+      sessionSwitchTimerRef.current = null;
+    }
+    if (newSessionFadeTimerRef.current !== null) {
+      window.clearTimeout(newSessionFadeTimerRef.current);
+      newSessionFadeTimerRef.current = null;
+    }
+
+    setSidebarCollapsed(true);
+
+    const resetToNewSession = () => {
+      if (sessionSwitchTokenRef.current !== switchToken) return;
+
+      handleNewSession();
+      setSessionVisualSnapshot(null);
+      setNewSessionFadeState('fading-in');
+      newSessionFadeTimerRef.current = window.setTimeout(() => {
+        if (sessionSwitchTokenRef.current !== switchToken) return;
+        setNewSessionFadeState('idle');
+        newSessionFadeTimerRef.current = null;
+      }, NEW_SESSION_FADE_DURATION_MS);
+    };
+
+    if (!sidebarCollapsed) {
+      sessionSwitchTimerRef.current = window.setTimeout(() => {
+        sessionSwitchTimerRef.current = null;
+        resetToNewSession();
+      }, HISTORY_SLIDE_DURATION_MS);
+      return;
+    }
+
+    sessionSwitchTimerRef.current = window.setTimeout(() => {
+      sessionSwitchTimerRef.current = null;
+      resetToNewSession();
+    }, NEW_SESSION_FADE_DURATION_MS);
+  };
 
   return (
     <div className="flex w-full h-full overflow-hidden">
-      {/* ──── Mobile Sidebar Overlay ──── */}
-      {mobileSidebarOpen && (
-        <div
-          className="fixed inset-0 z-[59] md:hidden animate-fade-in"
-          onClick={() => setMobileSidebarOpen(false)}
-        >
-          <div className="absolute inset-0 bg-black/40" />
-          <div
-            className="absolute inset-y-0 left-0 w-64 bg-background shadow-2xl animate-slide-in-left flex flex-col z-[60] pt-[env(safe-area-inset-top)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="h-14 flex items-center justify-between px-4 border-b border-border/50 shrink-0">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setMobileSidebarOpen(false)}
-                  className="p-2 rounded-lg hover:bg-secondary/80 transition-all"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                </button>
-                <span className="text-sm font-semibold">{t.chat_records || '聊天记录'}</span>
+      {/* ──── Mobile Sidebar (仅移动端渲染，translate3d滑动) ──── */}
+      {isMobile && (
+      <aside
+        className={cn(
+          'mobile-storyline-sidebar fixed inset-y-0 left-0 w-[320px] transform-gpu px-0 pb-0 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform ease-in-out z-[60]',
+          isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
+        )}
+        style={{
+          transform: `translate3d(${!sidebarCollapsed ? 0 : -320}px, 0, 0)`,
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+        }}
+      >
+        <div className="flex h-full flex-col overflow-hidden">
+          <div className={cn('mb-0 flex h-[52px] items-center justify-between px-4', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
+            <div className="flex items-center gap-2">
+              <div className={cn('p-1.5 rounded-lg', isDark ? 'bg-indigo-500/20' : 'bg-indigo-50')}>
+                <MapIcon size={14} className="text-indigo-400" />
               </div>
-            </div>
-            <ChatSessionList
-              sessions={sessions}
-              activeSessionId={selectedSession?.id || null}
-              onSessionSelect={async (session) => {
-                setSelectedSession(session);
-                setMessages([]);
-                if (session?.id) {
-                  await loadMessages(session.id);
-                }
-                setMobileSidebarOpen(false);
-              }}
-              isDeleteMode={isDeleteMode}
-              setIsDeleteMode={setIsDeleteMode}
-              selectedSessions={selectedSessions}
-              toggleSessionSelect={toggleSessionSelect}
-              onDeleteSession={handleDeleteSession}
-              showDeleteButton={false}
-              showHeaderActions={false}
-              headerTitle={t.history_conversation || '历史对话'}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* ──── Desktop Sidebar ──── */}
-      <div className={`transition-all duration-300 ease-in-out hidden md:flex ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
-        <div className="w-64 h-full flex-shrink-0 border-r border-border/50 glass flex flex-col">
-          <div className="h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-8 h-8 bg-gradient-to-br from-primary/20 to-primary/5 rounded-xl flex items-center justify-center text-lg shadow-lg shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
-                {selectedCharacter.avatar ? (
-                  <img src={selectedCharacter.avatar} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="w-full h-full text-gray-400 dark:text-gray-500">
-                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor" />
-                  </svg>
-                )}
-              </div>
-              <span className="text-base font-semibold text-foreground truncate">
-                {selectedCharacter.name}
+              <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>
+                故事线
               </span>
             </div>
-            <div className="flex gap-1">
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => {
-                if (selectedSessions.size > 0) {
-                  handleBatchDelete();
-                } else if (selectedSession) {
-                  handleDeleteSession(selectedSession.id);
-                }
-              }} title={t.delete_conversation || '删除对话'}>
-                <Trash2 size={16} />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewState('list')}>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => createBranch()}
+                className={cn(
+                  'h-7 px-2 flex items-center gap-1 rounded-md text-[11px] font-medium transition-colors',
+                  isDark
+                    ? 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30'
+                    : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
+                )}
+                title="创建新分支"
+              >
+                <Plus size={11} />
+                <span>新分支</span>
+              </button>
+              {selectedBranch && !selectedBranch.is_active && (
+                <button
+                  onClick={() => deleteBranch(selectedBranch.id)}
+                  className={cn(
+                    'h-7 px-2 flex items-center gap-1 rounded-md text-[11px] font-medium transition-colors',
+                    isDark
+                      ? 'bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                      : 'bg-red-50 text-red-600 hover:bg-red-100'
+                  )}
+                  title="删除当前分支"
+                >
+                  <Trash2 size={11} />
+                  <span>删除</span>
+                </button>
+              )}
+              <button
+                onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }}
+                className={cn(
+                  'inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors',
+                  isDark
+                    ? 'border-slate-600/80 bg-[#2d3350] text-slate-100'
+                    : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700'
+                )}
+                aria-label="close-storyline"
+              >
                 <X size={16} />
-              </Button>
+              </button>
             </div>
           </div>
 
-          <ChatSessionList
-            sessions={sessions}
-            activeSessionId={selectedSession?.id || null}
-            onSessionSelect={handleSelectSession}
-            isDeleteMode={isDeleteMode}
-            setIsDeleteMode={setIsDeleteMode}
-            selectedSessions={selectedSessions}
-            toggleSessionSelect={toggleSessionSelect}
-            onBatchDelete={handleBatchDelete}
-            onNewSession={handleNewSession}
-            onDeleteSession={handleDeleteSession}
-            showNewButton={true}
-            showDeleteButton={false}
-            showHeaderActions={false}
-            headerTitle={t.history_conversation || '历史对话'}
-          />
+          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
+            <div className="flex-1 overflow-hidden">
+              <StorylineMap
+                branchTree={branchTree}
+                onNavigate={wrappedHandleStorylineNavigate}
+                isDark={isDark}
+              />
+            </div>
+          ) : (
+            <div className={cn(
+              'flex-1 flex flex-col items-center justify-center gap-3 px-4',
+              isDark ? 'bg-gray-900/95' : 'bg-slate-50/95'
+            )}>
+              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}>
+                <MapIcon size={40} className="text-indigo-400 mx-auto" />
+              </div>
+              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>
+                还没有对话记录
+              </p>
+              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>
+                开始第一句对话，故事线将自动生成
+              </p>
+            </div>
+          )}
+        </div>
+      </aside>
+      )}
+
+      {/* ──── Mobile backdrop (侧边栏打开时显示遮罩，与侧边栏同步淡入淡出) ──── */}
+      {isMobile && (
+      <div
+        className={cn(
+          'fixed inset-0 z-[59] bg-black/40 transition-opacity ease-in-out',
+          !sidebarCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        )}
+        style={{ transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms` }}
+        onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }}
+      />
+      )}
+
+      {/* ──── Desktop Sidebar + Main Content (移动端跟随侧边栏右移) ──── */}
+      <div
+        className="flex-1 flex h-full min-w-0 transition-transform ease-in-out will-change-transform"
+        style={isMobile ? {
+          transform: `translate3d(${!sidebarCollapsed ? 320 : 0}px, 0, 0)`,
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+        } : undefined}
+        data-sidebar-collapsed={String(sidebarCollapsed)}
+        data-transform-x={!sidebarCollapsed ? 320 : 0}
+      >
+      {/* ──── Desktop Sidebar ──── */}
+      {!isMobile && (
+      <div className={`transition-all duration-300 ease-in-out ${!sidebarCollapsed ? 'w-[320px] opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
+        <div className="w-[320px] h-full flex-shrink-0 border-r border-border/50 glass flex flex-col">
+          <div className={cn('flex h-[52px] items-center justify-between px-4 flex-shrink-0', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
+            <div className="flex items-center gap-2">
+              <div className={cn('p-1.5 rounded-lg', isDark ? 'bg-indigo-500/20' : 'bg-indigo-50')}>
+                <MapIcon size={14} className="text-indigo-400" />
+              </div>
+              <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>故事线</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => createBranch()}
+                className={cn('h-7 px-2 flex items-center gap-1 rounded-md text-[11px] font-medium transition-colors', isDark ? 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100')}
+                title="创建新分支"
+              >
+                <Plus size={11} /><span>新分支</span>
+              </button>
+              {selectedBranch && !selectedBranch.is_active && (
+                <button
+                  onClick={() => deleteBranch(selectedBranch.id)}
+                  className={cn('h-7 px-2 flex items-center gap-1 rounded-md text-[11px] font-medium transition-colors', isDark ? 'bg-red-500/15 text-red-300 hover:bg-red-500/25' : 'bg-red-50 text-red-600 hover:bg-red-100')}
+                  title="删除当前分支"
+                >
+                  <Trash2 size={11} /><span>删除</span>
+                </button>
+              )}
+              <button onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }} className={cn('inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors', isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700')} aria-label="close-storyline"><X size={16} /></button>
+            </div>
+          </div>
+
+          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
+            <div className="flex-1 overflow-hidden">
+              <StorylineMap branchTree={branchTree} onNavigate={wrappedHandleStorylineNavigate} isDark={isDark} />
+            </div>
+          ) : (
+            <div className={cn('flex-1 flex flex-col items-center justify-center gap-3 px-4', isDark ? 'bg-gray-900/95' : 'bg-slate-50/95')}>
+              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}><MapIcon size={40} className="text-indigo-400 mx-auto" /></div>
+              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>还没有对话记录</p>
+              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>开始第一句对话，故事线将自动生成</p>
+            </div>
+          )}
         </div>
       </div>
+      )}
 
       {/* ──── Main chat area ──── */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0 bg-slate-50 dark:bg-slate-950">
-        {/* ──── Header toolbar ──── */}
-        <header className="h-16 px-4 flex items-center justify-between z-40 pt-safe">
+      <div className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}>
+        <header className={cn(
+          'flex items-center justify-between z-40',
+          isMobile
+            ? cn(
+                'absolute left-0 right-0 top-0 px-5 pb-3 pt-[calc(env(safe-area-inset-top)+12px)]',
+                'bg-gradient-to-b pointer-events-auto',
+                isDark
+                  ? 'from-slate-900/100 via-slate-900/80 to-slate-900/5'
+                  : 'from-[#FFFAFA]/100 via-[#FFFAFA]/80 to-[#FFFAFA]/5'
+              )
+            : cn(
+                'h-16 px-4 pt-safe border-b',
+                isDark
+                  ? 'border-slate-700/70 bg-slate-950/80 backdrop-blur-[20px]'
+                  : 'border-[#ddd4c5] bg-[#FFFAFA]/80 backdrop-blur-[20px]'
+              )
+        )}>
           <div className="flex items-center space-x-3">
-            {/* Mobile hamburger / Back button */}
-            <button
-              className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-transparent hover:bg-[#FFFAFA]/30 dark:hover:bg-white/[0.05] transition-all flex-shrink-0 inline-flex items-center justify-center"
-              onClick={() => setMobileSidebarOpen(true)}
+            {/* Storyline toggle button - 仅移动端显示 */}
+            {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'h-11 w-11 rounded-full transition-all duration-300 ease-in-out',
+                !sidebarCollapsed && 'rotate-180'
+              )}
+              onClick={() => {
+                if (!sidebarCollapsed) {
+                  setSidebarCollapsed(true);
+                } else {
+                  setSidebarCollapsed(false);
+                  if (selectedSession) fetchBranchTree();
+                }
+              }}
+              aria-label="toggle-storyline"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-            </button>
-            {/* Desktop sidebar toggle */}
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="3" x2="6" y2="15"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+              </svg>
+            </Button>
+            )}
+            {/* Desktop sidebar toggle - 仅桌面端显示 */}
+            {!isMobile && (
             <button
-              className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-primary/10 hover:bg-primary/20 text-primary transition-all hidden md:flex flex-shrink-0 items-center justify-center"
+              className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-primary/10 hover:bg-primary/20 text-primary transition-all flex flex-shrink-0 items-center justify-center"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             >
               {!sidebarCollapsed ? (
@@ -492,6 +866,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
               )}
             </button>
+            )}
             {/* Character avatar and name */}
             <div className="w-10 h-10 rounded-2xl overflow-hidden flex-shrink-0">
               {selectedCharacter.avatar ? (
@@ -511,40 +886,65 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
           {/* Right side actions */}
           <div className="flex items-center gap-1">
-            {/* World book button */}
-            {selectedSession && (
-              <button
-                className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-transparent hover:bg-[#FFFAFA]/30 dark:hover:bg-white/[0.05] transition-all inline-flex items-center justify-center"
-                onClick={() => setShowWorldBookManager(true)}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
-                </svg>
-              </button>
-            )}
-            
-            {/* Storyline button */}
-            {selectedSession && (
-              <button
-                className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-transparent hover:bg-[#FFFAFA]/30 dark:hover:bg-white/[0.05] transition-all inline-flex items-center justify-center"
-                onClick={fetchBranchTree}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="6" y1="3" x2="6" y2="15"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
-                </svg>
-              </button>
-            )}
+            {/* Model selector icon button */}
+            <ModelSelector
+              models={models}
+              currentModel={selectedModel}
+              onSelect={setSelectedModel}
+              triggerStyle="icon"
+              size="sm"
+              theme={isDark ? 'dark' : 'light'}
+            />
+
+            {/* Hidden PresetSelector - triggered via dropdown */}
+            <PresetSelector
+              currentPreset={currentPreset}
+              onPresetChange={setCurrentPreset}
+              theme={isDark ? 'dark' : 'light'}
+              hideTrigger
+              open={showPresetPanel}
+              onClose={() => setShowPresetPanel(false)}
+            />
 
             {/* More options menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="h-12 w-12 rounded-2xl backdrop-blur-[20px] bg-transparent hover:bg-[#FFFAFA]/30 dark:hover:bg-white/[0.05] transition-all inline-flex items-center justify-center">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
-                  </svg>
+                  <MoreVertical size={20} />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
+                {/* Parameter preset */}
+                {selectedSession && (
+                  <DropdownMenuItem onClick={() => setShowPresetPanel(true)}>
+                    <Sliders size={14} className="mr-2" />
+                    {currentPreset?.name || '参数设置'}
+                  </DropdownMenuItem>
+                )}
+                {/* World book */}
+                {selectedSession && (
+                  <DropdownMenuItem onClick={() => setShowWorldBookManager(true)}>
+                    <BookOpen size={14} className="mr-2" />
+                    世界书
+                  </DropdownMenuItem>
+                )}
+                {/* Storyline visualization toggle */}
+                {selectedSession && (
+                  <DropdownMenuItem onClick={() => {
+                    if (!sidebarCollapsed) {
+                      setSidebarCollapsed(true);
+                    } else {
+                      setSidebarCollapsed(false);
+                      fetchBranchTree();
+                    }
+                  }}>
+                    <GitBranch size={14} className="mr-2" />
+                    {!sidebarCollapsed ? '关闭剧情线' : '剧情线可视化'}
+                  </DropdownMenuItem>
+                )}
+
+                <DropdownMenuSeparator />
+
                 {/* Dialogue mode */}
                 <DropdownMenuItem onClick={() => setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person')}>
                   <UserIcon size={14} className="mr-2" />
@@ -552,18 +952,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                     ? (t.switch_story_mode || '切换故事模式')
                     : (t.switch_first_person || '切换第一人称')}
                 </DropdownMenuItem>
-                
-                {/* Model selector */}
-                <DropdownMenuSeparator />
-                <div className="px-2 py-1.5">
-                  <ModelSelector
-                    models={models}
-                    currentModel={selectedModel}
-                    onSelect={setSelectedModel}
-                  />
-                </div>
 
-                {/* Plot line manager */}
+                {/* Plot line stage navigation */}
                 {selectedSession && pl.sessionStatus?.active && (
                   <>
                     <DropdownMenuSeparator />
@@ -625,10 +1015,46 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           </div>
         </header>
 
+        {/* ──── Content area with fade transition ──── */}
+        <div
+          className={cn(
+            'flex-1 flex flex-col overflow-hidden transition-opacity ease-in-out',
+            newSessionFadeState === 'fading-out' ? 'opacity-0' : 'opacity-100'
+          )}
+          style={{ transitionDuration: `${NEW_SESSION_FADE_DURATION_MS}ms` }}
+        >
         {/* ──── Empty state / new chat ──── */}
-        {messages.length === 0 && !selectedSession && !initializingChat && (
+        {displayedMessages.length === 0 && !displayedActiveSessionId && !initializingChat && (
           <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-y-auto">
-            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
+            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up`} style={isMobile ? { paddingBottom: isKeyboardOpen ? 0 : (composerBottomPx > 0 ? `${composerBottomPx}px` : undefined) } : undefined}>
+              {isMobile && <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />}
+              {isMobile && showDesktopHint && (
+                <div className={cn(
+                  'w-full mb-4 px-4 py-3 rounded-xl border text-sm flex items-start gap-3',
+                  isDark
+                    ? 'bg-blue-950/30 border-blue-800/50 text-blue-200'
+                    : 'bg-blue-50 border-blue-200 text-blue-800'
+                )}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 mt-0.5">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                  </svg>
+                  <div className="flex-1">
+                    <p className="font-medium mb-1">移动端窄屏模式</p>
+                    <p className="text-xs opacity-80">
+                      当前为移动端优化布局。如需更完整的宽屏体验（如侧边栏故事线），建议使用电脑端浏览器访问。
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowDesktopHint(false);
+                      localStorage.setItem('palink-mobile-desktop-hint-dismissed', 'true');
+                    }}
+                    className="flex-shrink-0 p-1 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               <div className="mb-6 sm:mb-10 text-center">
                 <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-4 sm:mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
                   {selectedCharacter.avatar ? (
@@ -674,7 +1100,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         {/* ──── Initializing spinner ──── */}
         {initializingChat && (
           <div className="flex-1 flex items-center justify-center p-8 w-full overflow-y-auto">
-            <div className={`w-full flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
+            <div className="w-full flex flex-col items-center animate-fade-in-up" style={isMobile ? { paddingBottom: isKeyboardOpen ? 0 : (composerBottomPx > 0 ? `${composerBottomPx}px` : undefined) } : undefined}>
+              {isMobile && <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />}
               <div className="animate-spin text-primary mb-4"><Bot size={32} /></div>
               <p className="text-muted-foreground">{t.loading_conversation || '正在加载对话...'}</p>
             </div>
@@ -682,14 +1109,42 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         )}
 
         {/* ──── Messages area ──── */}
-        {(messages.length > 0 || selectedSession) && (
-          <div className="flex-1 overflow-y-auto px-4 space-y-4 pt-4 pb-4">
+        {(displayedMessages.length > 0 || displayedActiveSessionId) && (
+          <div
+            className={cn('flex-1 overflow-y-auto space-y-4 pt-4 pb-4', isMobile ? 'px-2' : 'px-4')}
+            style={isMobile ? { paddingBottom: isKeyboardOpen ? 80 : (composerBottomPx > 0 ? `${composerBottomPx + 80}px` : undefined) } : undefined}
+          >
+            {isMobile && (
+              <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />
+            )}
             {wb.sessionStatus?.active && (
               <StageIndicator
                 status={wb.sessionStatus}
               />
             )}
-            {messages.map((msg, idx) => (
+            {forkPoint && (
+              <div className={cn(
+                'flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs font-medium',
+                isDark
+                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/25'
+                  : 'bg-amber-50 text-amber-700 border border-amber-200'
+              )}>
+                <div className="flex items-center gap-1.5">
+                  <GitBranch size={13} />
+                  <span>已截断至此节点 · 输入新消息将从这里分叉</span>
+                </div>
+                <button
+                  onClick={clearForkPoint}
+                  className={cn(
+                    'px-2 py-0.5 rounded-md text-[10px] font-semibold transition-colors',
+                    isDark ? 'bg-amber-500/20 hover:bg-amber-500/30' : 'bg-amber-100 hover:bg-amber-200'
+                  )}
+                >
+                  取消
+                </button>
+              </div>
+            )}
+            {displayedMessages.map((msg, idx) => (
               <Message
                 key={msg.id || idx}
                 message={msg}
@@ -699,18 +1154,18 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 characterName={selectedCharacter.name}
                 isCharacterChat={true}
                 models={models}
-                streaming={(isGenerating && idx === messages.length - 1) || regeneratingMessageIndex === idx}
-                isLast={idx === messages.length - 1}
+                streaming={(isGenerating && idx === displayedMessages.length - 1) || regeneratingMessageIndex === idx}
+                isLast={idx === displayedMessages.length - 1}
                 t={t}
                 tokens={msg.tokens}
                 memoryMode={memoryMode}
-                memoryStats={idx === messages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
-                onCompress={idx === messages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
+                memoryStats={idx === displayedMessages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
+                onCompress={idx === displayedMessages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
                 compressing={compressing}
                 onRegenerate={msg.role === 'assistant' && !isGenerating ? () => handleRegenerate(idx) : undefined}
-                canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && messages[idx - 1]?.role === 'user'}
+                canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
                 showModelReasoning={showModelReasoning}
-                onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
                 canEdit={msg.role === 'assistant' && !isGenerating}
                 isMixedDeleteMode={isMixedDeleteMode}
                 messageIndex={idx}
@@ -722,9 +1177,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               />
             ))}
 
-            {suggestions.length > 0 && !isGenerating && (
+            {displayedSuggestions.length > 0 && !isGenerating && (
               <div className="flex flex-wrap gap-2 pl-4 sm:pl-12 animate-fade-in-up">
-                {suggestions.map((s, idx) => (
+                {displayedSuggestions.map((s, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleSendMessage(s, [])}
@@ -740,19 +1195,66 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
             <div ref={messagesEndRef} />
           </div>
         )}
+        </div>
 
-        {/* ──── Chat input ──── */}
-        <div className="px-4 pt-0 pb-0 backdrop-blur-[20px]">
-          <div className="bg-[#FFFAFA]/40 dark:bg-white/[0.07] backdrop-blur-[20px] border border-[#d9cfbf]/50 dark:border-white/[0.15] rounded-[35px] p-0 flex items-end">
-            <Button
-              variant="ghost" size="icon"
-              className="h-11 w-11 rounded-2xl bg-[#FFFAFA]/40 dark:bg-white/[0.07] backdrop-blur-[20px] border border-[#d9cfbf]/50 dark:border-white/[0.15] hover:bg-[#FFFAFA]/60 dark:hover:bg-white/[0.12] transition-all"
-              onClick={() => setMobileSidebarOpen(true)}
+        {/* ──── Chat input (仅在有会话时显示) ──── */}
+        {displayedActiveSessionId && isMobile && (
+        <div
+          className={cn(
+            'fixed left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear',
+            'bg-gradient-to-t from-transparent via-transparent to-transparent'
+          )}
+          style={{
+            bottom: isKeyboardOpen ? 0 : `${composerBottomPx > 0 ? composerBottomPx : 90}px`,
+          }}
+        >
+          <div className="mx-auto max-w-3xl">
+            <ChatInput
+              value={inputValue}
+              onChange={setInputValue}
+              onSend={handleSendWithInput}
+              onUpload={handleUpload}
+              attachments={attachments}
+              onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
+              disabled={isGenerating}
+              uploading={uploading}
+              placeholder={t.chat_with_character ? t.chat_with_character.replace('{name}', selectedCharacter.name) : `与${selectedCharacter.name}对话...`}
+              streaming={isGenerating}
+              onStop={() => abortControllerRef.current?.abort()}
+              variant="mobile-demo"
+              theme={isDark ? 'dark' : 'light'}
+              leadingAction={
+                <button
+                  type="button"
+                  className="shrink-0 rounded-full p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                  title={t.new_conversation || '新对话'}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 5v14"/><path d="M5 12h14"/>
+                  </svg>
+                </button>
+              }
+            />
+          </div>
+        </div>
+        )}
+        {/* [TAG:DESKTOP-DO-NOT-TOUCH] 整个桌面端暂不重构，等用户说"重构桌面端"后再改 */}
+        {!isMobile && displayedActiveSessionId && (
+        <div
+          className="px-4 pt-[7px] backdrop-blur-[20px]"
+        >
+          <div className="flex gap-2 overflow-visible items-center min-h-[58px] rounded-[28px] px-3 py-2.5 backdrop-blur-2xl border border-[#ddd4c5] bg-[#FFFAFA] shadow-[0_10px_28px_rgba(120,106,79,0.14)] dark:border-slate-700/80 dark:bg-[#23283c] dark:shadow-[0_12px_30px_rgba(2,6,23,0.45)]">
+            <button
+              type="button"
+              className="shrink-0 rounded-full p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              title={t.new_conversation || '新对话'}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14"/><path d="M5 12h14"/>
               </svg>
-            </Button>
+            </button>
             <div className="flex-1">
               <ChatInput
                 value={inputValue}
@@ -766,10 +1268,15 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 placeholder={t.chat_with_character ? t.chat_with_character.replace('{name}', selectedCharacter.name) : `与${selectedCharacter.name}对话...`}
                 streaming={isGenerating}
                 onStop={() => abortControllerRef.current?.abort()}
+                variant="mobile-demo"
+                noContainerStyle
+                theme={isDark ? 'dark' : 'light'}
               />
             </div>
           </div>
         </div>
+        )}
+      </div>
       </div>
 
       {/* ──── Confirm dialogs ──── */}
@@ -828,18 +1335,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
             </div>
           </div>
         </div>
-      )}
-
-      {/* ──── Storyline Panel ──── */}
-      {showStoryline && branchTree && (
-        <StorylinePanel
-          branchTree={branchTree}
-          activeBranchName={selectedBranch?.branch_name || 'Main'}
-          characterName={selectedCharacter.name}
-          onClose={() => setShowStoryline(false)}
-          onNavigate={handleStorylineNavigate}
-          isDark={document.documentElement.classList.contains('dark')}
-        />
       )}
 
       {/* ──── World Book Overview Panel ──── */}

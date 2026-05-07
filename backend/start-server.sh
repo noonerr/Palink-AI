@@ -315,6 +315,17 @@ export TOKENIZERS_PARALLELISM
 
 printf '%s\n' "[startup] profile=$PERFORMANCE_PROFILE worker_source=$WORKER_SOURCE cpu_threads=$CPU_THREADS worker_cpu_divisor=$WORKER_CPU_DIVISOR min_workers=$MIN_WORKERS memory_mb=$AVAILABLE_MEMORY_MB memory_reserve_mb=$MEMORY_RESERVE_MB memory_per_worker_mb=$MEMORY_PER_WORKER_MB workers_cpu_cap=$WORKERS_BY_CPU workers_mem_cap=$WORKERS_BY_MEMORY workers=$WORKERS per_worker_threads=$THREADS_PER_WORKER omp=$OMP_NUM_THREADS api_threadpool_tokens=$API_THREADPOOL_TOKENS db_pool=$DB_POOL_SIZE db_overflow=$DB_MAX_OVERFLOW"
 
+if [ -d /app/data ]; then
+  if [ ! -w /app/data ]; then
+    printf '%s\n' "[startup] WARNING: /app/data is not writable by appuser. Check volume mount permissions."
+  fi
+fi
+if [ -d /app/models ]; then
+  if [ ! -w /app/models ]; then
+    printf '%s\n' "[startup] WARNING: /app/models is not writable by appuser. Check volume mount permissions."
+  fi
+fi
+
 exec uvicorn app.main:app \
   --host 0.0.0.0 \
   --port "$UVICORN_PORT" \

@@ -4,17 +4,26 @@ import base64
 import binascii
 import logging
 import re
-from typing import Optional, Set
+import time
+from typing import Optional, Set, Dict, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from ..core import get_db, settings
-from ..api.dependencies import get_current_user
+from ..api.dependencies import get_current_user, get_admin
 from ..models import User
-from ..services.provider_registry import get_providers
+from ..services.provider_registry import get_providers, get_model_vision_support
 from ..services.local_model_registry import list_enabled_chat_models, list_local_models
+from ..services.unified_model_registry import (
+    get_unified_model_list,
+    get_flat_model_list,
+    save_unified_model_config,
+    get_routing_strategies,
+    invalidate_registry_cache,
+)
+from ..utils import normalize_upload_filename
 
 router = APIRouter(tags=["models"])
 logger = logging.getLogger(__name__)
@@ -40,18 +49,20 @@ def _parse_extensions(raw: str) -> Set[str]:
     }
 
 
-def _normalize_upload_filename(filename: str) -> str:
-    base_name = os.path.basename((filename or "").strip())
-    cleaned = re.sub(r"[^\w.\- ()\[\]]", "_", base_name)
-    cleaned = cleaned.strip(" .")
-    if not cleaned or cleaned in {".", ".."}:
-        cleaned = f"upload_{uuid.uuid4().hex}.bin"
-    return cleaned
+_storage_cache: Dict[int, Tuple[float, int]] = {}
+_STORAGE_CACHE_TTL = 60.0
 
 
-def _directory_size_bytes(path: str) -> int:
+def _directory_size_bytes(path: str, user_id: int = 0) -> int:
+    now = time.monotonic()
+    if user_id and user_id in _storage_cache:
+        cached_ts, cached_size = _storage_cache[user_id]
+        if now - cached_ts < _STORAGE_CACHE_TTL:
+            return cached_size
     total = 0
     if not os.path.exists(path):
+        if user_id:
+            _storage_cache[user_id] = (now, 0)
         return 0
     for root, _dirs, files in os.walk(path):
         for name in files:
@@ -60,6 +71,8 @@ def _directory_size_bytes(path: str) -> int:
                 total += os.path.getsize(fp)
             except OSError:
                 continue
+    if user_id:
+        _storage_cache[user_id] = (now, total)
     return total
 
 
@@ -93,7 +106,7 @@ def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hin
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty file is not allowed")
 
-    safe_filename = _normalize_upload_filename(filename)
+    safe_filename = normalize_upload_filename(filename)
     extension = os.path.splitext(safe_filename)[1].lower()
     if not extension:
         raise HTTPException(status_code=400, detail="File extension is required")
@@ -114,7 +127,7 @@ def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hin
         )
 
     user_dir = os.path.join(settings.UPLOAD_DIR, str(user.id))
-    user_usage = _directory_size_bytes(user_dir)
+    user_usage = _directory_size_bytes(user_dir, user_id=user.id)
     max_user_size = max(0, settings.CHAT_UPLOAD_MAX_USER_STORAGE_MB) * 1024 * 1024
     if max_user_size and (user_usage + len(file_bytes)) > max_user_size:
         raise HTTPException(
@@ -132,7 +145,7 @@ def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hin
 
 
 @router.get("/api/models")
-async def get_models():
+async def get_models(user: User = Depends(get_current_user)):
     """获取所有启用服务商的可用模型列表"""
     result = []
     seen_ids: Set[str] = set()
@@ -143,8 +156,9 @@ async def get_models():
         for m in p.get("models", []):
             if isinstance(m, dict):
                 display_name = m.get("name") or m.get("alias") or m["id"]
+                model_id = m["id"]
                 item = {
-                    "id": m["id"],
+                    "id": model_id,
                     "name": display_name,
                     "alias": display_name,
                     "icon": m.get("icon", "🤖"),
@@ -152,11 +166,16 @@ async def get_models():
                     "context_length": m.get("context_length", 4096),
                     "avatar": m.get("avatar", ""),
                     "provider": p["name"],
+                    "provider_id": p.get("id", ""),
+                    "supports_vision": get_model_vision_support(model_id, m),
                 }
             else:
+                model_id = str(m)
                 item = {
-                    "id": m, "name": m, "icon": "🤖", "description": "",
+                    "id": model_id, "name": m, "icon": "🤖", "description": "",
                     "context_length": 4096, "avatar": "", "provider": p["name"],
+                    "provider_id": p.get("id", ""),
+                    "supports_vision": get_model_vision_support(model_id),
                 }
 
             model_id = str(item.get("id") or "")
@@ -203,6 +222,8 @@ async def upload_file_base64(req: UploadRequest, user: User = Depends(get_curren
         with open(filepath, "wb") as f:
             f.write(file_bytes)
 
+        _storage_cache.pop(user.id, None)
+
         return {
             "url": f"/api/uploads/{user.id}/{unique_name}",
             "filename": safe_filename,
@@ -213,13 +234,68 @@ async def upload_file_base64(req: UploadRequest, user: User = Depends(get_curren
         raise HTTPException(status_code=400, detail="Invalid base64 payload")
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to upload chat file")
-        raise HTTPException(status_code=500, detail=f"Failed to upload file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
 
 
 @router.get("/api/models/local")
-async def get_local_models(all: bool = False, user: User = Depends(get_current_user)):
+async def get_local_models(all: bool = Query(False), user: User = Depends(get_current_user)):
     """获取本地上传的模型文件列表"""
     include_disabled = bool(all and user.role == "admin")
     return list_local_models(include_disabled=include_disabled)
+
+
+@router.get("/api/models/unified")
+async def get_unified_models(user: User = Depends(get_current_user)):
+    """获取统一模型列表（含多提供商信息）"""
+    return get_unified_model_list()
+
+
+@router.get("/api/models/unified/flat")
+async def get_unified_models_flat(user: User = Depends(get_current_user)):
+    """获取扁平化的统一模型列表（用于聊天模型选择器）"""
+    return get_flat_model_list()
+
+
+@router.get("/api/models/unified/strategies")
+async def get_model_routing_strategies(user: User = Depends(get_current_user)):
+    """获取可用的路由策略列表"""
+    return get_routing_strategies()
+
+
+class ProviderOverrideItem(BaseModel):
+    priority: Optional[int] = None
+    weight: Optional[int] = None
+    enabled: Optional[bool] = None
+    max_rpm: Optional[int] = None
+    max_concurrent: Optional[int] = None
+    max_tokens_per_min: Optional[int] = None
+
+
+class UnifiedModelConfigRequest(BaseModel):
+    display_name: Optional[str] = None
+    icon: Optional[str] = None
+    description: Optional[str] = None
+    routing_strategy: Optional[str] = None
+    failover_enabled: Optional[bool] = None
+    provider_overrides: Optional[dict] = None
+
+
+@router.put("/api/models/unified/{unified_id}")
+async def update_unified_model_config(
+    unified_id: str,
+    req: UnifiedModelConfigRequest,
+    user: User = Depends(get_admin),
+):
+    """更新统一模型配置（显示名、路由策略、提供商优先级等）"""
+    result = save_unified_model_config(
+        unified_id=unified_id,
+        display_name=req.display_name,
+        icon=req.icon,
+        description=req.description,
+        routing_strategy=req.routing_strategy,
+        failover_enabled=req.failover_enabled,
+        provider_overrides=req.provider_overrides,
+    )
+    return result

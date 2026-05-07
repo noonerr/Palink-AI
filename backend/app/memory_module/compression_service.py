@@ -1,13 +1,24 @@
 """
 记忆压缩服务
 提供自动和手动记忆压缩功能
+
+.. deprecated::
+    MemoryCompressionService is deprecated, use MemoryLifecycleService instead.
+    此模块仅保留向后兼容，压缩和摘要功能已整合到 MemoryLifecycleService 中。
 """
 
 import asyncio
 import logging
+import warnings
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
+
+warnings.warn(
+    "MemoryCompressionService is deprecated, use MemoryLifecycleService instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
 from sqlalchemy import text
 
 from .storage import MemoryStorage
@@ -103,13 +114,13 @@ class MemoryCompressionService:
                 params = {"user_id": user_id, "session_id": session_id}
             result = self.db.execute(count_sql, params).fetchone()
             
-            message_count = result.count or 0
+            message_count = result[0] or 0
             token_count = int(result.estimated_tokens or 0)
             
             # 计算最旧消息的时间
             oldest_hours = 0
             if result.oldest_message:
-                oldest_hours = (datetime.utcnow() - result.oldest_message).total_seconds() / 3600
+                oldest_hours = (datetime.now(timezone.utc).replace(tzinfo=None) - result.oldest_message).total_seconds() / 3600
             
             return {
                 "message_count": message_count,
@@ -168,16 +179,18 @@ class MemoryCompressionService:
                                  [keep.id for keep in memories_to_keep]]
             
             deleted_count = 0
-            for memory in memories_to_delete:
+            if memories_to_delete:
+                delete_ids = [m.id for m in memories_to_delete]
                 try:
+                    from sqlalchemy import bindparam
                     delete_sql = text("""
                         DELETE FROM conversation_memories
-                        WHERE id = :id
-                    """)
-                    self.db.execute(delete_sql, {"id": memory.id})
-                    deleted_count += 1
+                        WHERE id IN :ids
+                    """).bindparams(bindparam('ids', expanding=True))
+                    self.db.execute(delete_sql, {"ids": delete_ids})
+                    deleted_count = len(delete_ids)
                 except Exception as e:
-                    logger.error(f"删除记忆失败 {memory.id}: {e}")
+                    logger.error(f"批量删除记忆失败: %s", e)
             
             self.db.commit()
             

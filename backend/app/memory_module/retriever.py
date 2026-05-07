@@ -4,7 +4,7 @@
 """
 
 from typing import List, Dict, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import hashlib
 import numpy as np
@@ -36,7 +36,8 @@ class MemoryRetriever:
             stm_memories = self.storage.get_recent(
                 user_id=request.user_id,
                 session_id=request.session_id,
-                limit=recent_limit
+                limit=recent_limit,
+                branch_ids=request.branch_ids
             )
             
             # 使用列表推导式去重，保留最新
@@ -78,11 +79,12 @@ class MemoryRetriever:
                     query_embedding=query_embedding_list,
                     limit=50,
                     min_similarity=memory_config.MIN_SIMILARITY,
-                    session_id=request.session_id
+                    session_id=request.session_id,
+                    branch_ids=request.branch_ids
                 )
                 
                 if semantic_candidates:
-                    now = datetime.utcnow()
+                    now = datetime.now(timezone.utc)
                     scored_candidates = []
                     
                     for memory, similarity in semantic_candidates:
@@ -145,9 +147,8 @@ class MemoryRetriever:
             )
             
         except Exception as e:
-            logger.error(f"检索记忆失败: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"检索记忆失败: {e}")
+            self.storage.db.rollback()
             return ContextResponse(
                 memories=[],
                 user_profile=None,
@@ -178,7 +179,7 @@ class MemoryRetriever:
                 return 0.5
             else:
                 return 0.3
-        except:
+        except (TypeError, ValueError):
             return 0.5
     
     def _deduplicate_memories(self, memories: List[MemoryEntry]) -> List[MemoryEntry]:

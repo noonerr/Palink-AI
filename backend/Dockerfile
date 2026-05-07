@@ -1,14 +1,17 @@
-FROM python:3.10-bullseye AS builder
+FROM python:3.10-bookworm AS builder
 
 WORKDIR /app
 
 ARG INSTALL_ML_EXTRAS=0
 
-# 1. 换 apt 源为腾讯云
-RUN sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+      sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    else \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+      sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+    fi
 
-# 2. 构建阶段安装编译依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libssl-dev \
@@ -20,36 +23,61 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt requirements-ml.txt ./
 
-# 3. 安装 Python 依赖到独立目录
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
-    -i http://mirrors.aliyun.com/pypi/simple/ \
-    --trusted-host mirrors.aliyun.com \
+    -i https://mirrors.aliyun.com/pypi/simple/ \
     --default-timeout=600
 
-# 4. 按需安装重量级 ML 依赖（默认关闭）
 RUN if [ "$INSTALL_ML_EXTRAS" = "1" ]; then \
       pip install --no-cache-dir --prefix=/install -r requirements-ml.txt \
-      -i http://mirrors.aliyun.com/pypi/simple/ \
-      --trusted-host mirrors.aliyun.com \
+      -i https://mirrors.aliyun.com/pypi/simple/ \
       --default-timeout=600; \
     fi
 
+RUN find /install -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \
+    find /install -type f -name "*.pyc" -delete 2>/dev/null; \
+    find /install -type f -name "*.pyo" -delete 2>/dev/null; \
+    rm -rf /install/share/doc /install/share/man /install/share/info 2>/dev/null; \
+    true
 
-FROM python:3.10-bullseye AS runtime
+
+FROM python:3.10-slim-bookworm AS runtime
 
 WORKDIR /app
 
-# 5. 运行阶段仅保留必要系统依赖
-RUN sed -i 's/deb.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.debian.org/mirrors.cloud.tencent.com/g' /etc/apt/sources.list && \
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+      sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    else \
+      sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+      sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+    fi && \
     apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libpq5 \
     libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    gosu \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY --from=builder /install /usr/local
 COPY . .
 
-# 启动脚本会根据容器可用CPU自动计算 worker 和线程上限
+RUN find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \
+    find /app -type f -name "*.pyc" -delete 2>/dev/null; \
+    find /app -type f -name "*.pyo" -delete 2>/dev/null; \
+    true
+
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app/data /app/models && \
+    chown -R appuser:appuser /app/data /app/models
+
+USER appuser
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=40s \
+    CMD curl -f http://localhost:8000/health || exit 1
+
 CMD ["sh", "/app/start-server.sh"]

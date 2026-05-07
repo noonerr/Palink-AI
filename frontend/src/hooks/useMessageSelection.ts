@@ -262,7 +262,7 @@ export function useMessageSelection({
           if (msg && msg.id !== undefined) {
             const selectedParts = selectedMessageParts.get(idx) || new Set();
             const result = rebuildContentWithoutParts(msg.content, selectedParts);
-            await handleEditMessage(msg.id as number, idx, result);
+            await handleEditMessage(msg.id, idx, result);
           }
         }
       }

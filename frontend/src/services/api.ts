@@ -151,6 +151,13 @@ export const api = {
       body: body ? JSON.stringify(body) : undefined,
     }),
 
+  patch: <T = any>(url: string, body?: unknown, options?: RequestOptions) =>
+    request<T>(url, {
+      ...options,
+      method: 'PATCH',
+      body: body instanceof FormData ? body : JSON.stringify(body),
+    }),
+
   /** SSE 流式请求，返回原始 Response 供调用方 getReader() */
   stream,
 

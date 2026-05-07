@@ -11,6 +11,7 @@
 
 import os
 import sys
+import asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from sqlalchemy import create_engine
@@ -195,11 +196,11 @@ def test_memory_retrieval():
         
         # 测试获取上下文
         print("\n   测试上下文获取...")
-        context = service.get_context(
+        context = asyncio.run(service.get_context(
             user_id=user.id,
             query="我想学习数据科学",
             max_tokens=1500
-        )
+        ))
         
         print(f"✅ 上下文获取成功:")
         print(f"   - 记忆数量: {len(context.memories)}")

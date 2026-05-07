@@ -40,8 +40,12 @@ export default defineConfig({
         assetFileNames: 'assets/[name]-[hash][extname]',
         chunkFileNames: 'assets/[name]-[hash].js',
         entryFileNames: 'assets/[name]-[hash].js',
-        onlyExplicitManualChunks: true,
         manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          recharts: ['recharts'],
+          mermaid: ['mermaid'],
+          'framer-motion': ['framer-motion'],
+          highlight: ['highlight.js'],
           ChatSessionList: ['src/components/ui/custom/ChatSessionList.tsx'],
           useMobileBottomPadding: ['src/hooks/useMobileBottomPadding.ts'],
         },

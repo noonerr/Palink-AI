@@ -38,3 +38,17 @@ Thumbs.db
 
 # IDE
 .trae/
+
+# Sensitive files
+*-Pal.env
+*.tmp
+_debug_test.py
+check_settings.py
+create_admin.py
+.tmp_*.json
+*-Pal.yml
+*.pem
+*.key
+*.crt
+backups/
+temp_backup_*/

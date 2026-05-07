@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: Optional[str] = None
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
-    PASSWORD_MIN_LENGTH: int = 8
-    REQUIRE_PASSWORD_MIXED_CASE: bool = True
-    REQUIRE_PASSWORD_DIGIT: bool = True
+    PASSWORD_MIN_LENGTH: int = 4
+    REQUIRE_PASSWORD_MIXED_CASE: bool = False
+    REQUIRE_PASSWORD_DIGIT: bool = False
 
     LOGIN_RATE_LIMIT_REQUESTS: int = 10
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60
@@ -46,13 +46,14 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./data/uploads"
     CHAT_UPLOAD_MAX_FILE_SIZE_MB: int = 20
     CHAT_UPLOAD_MAX_USER_STORAGE_MB: int = 1024
-    CHAT_UPLOAD_ALLOWED_EXTENSIONS: str = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.html,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
-    CHAT_UPLOAD_BLOCKED_EXTENSIONS: str = ".exe,.dll,.bat,.cmd,.com,.msi,.scr,.ps1,.psm1,.vbs,.vbe,.jse,.wsf,.wsh,.hta,.jar,.apk"
+    CHAT_UPLOAD_ALLOWED_EXTENSIONS: str = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
+    CHAT_UPLOAD_BLOCKED_EXTENSIONS: str = ".exe,.dll,.bat,.cmd,.com,.msi,.scr,.ps1,.psm1,.vbs,.vbe,.jse,.wsf,.wsh,.hta,.jar,.apk,.html,.htm,.svg"
     WORKSPACE_DIR: str = "./data/workspace"
     WORKSPACE_MAX_FILE_SIZE_MB: int = 20
     WORKSPACE_MAX_USER_STORAGE_MB: int = 1024
-    WORKSPACE_ALLOWED_EXTENSIONS: str = ".txt,.md,.py,.js,.ts,.tsx,.json,.csv,.html,.css,.yaml,.yml,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp"
+    WORKSPACE_ALLOWED_EXTENSIONS: str = ".txt,.md,.py,.js,.ts,.tsx,.json,.csv,.css,.yaml,.yml,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp"
     WORKSPACE_ANALYZE_MAX_CHARS: int = 12000
+    SUMMARY_MODEL: Optional[str] = None
     
     class Config:
         env_file = ".env"
@@ -65,10 +66,11 @@ class Settings(BaseSettings):
     def _validate_config(self):
         if not self.SECRET_KEY:
             if self.APP_ENV == "development":
-                self.SECRET_KEY = "palink-dev-secret-change-in-production"
+                import secrets
+                self.SECRET_KEY = secrets.token_urlsafe(32)
                 logger.warning(
-                    "[SECURITY] Using default SECRET_KEY in development mode. "
-                    "Set SECRET_KEY environment variable for production."
+                    "[SECURITY] Auto-generated random SECRET_KEY for development mode. "
+                    "This key changes on restart."
                 )
             else:
                 raise RuntimeError(
@@ -85,6 +87,18 @@ class Settings(BaseSettings):
             else:
                 raise RuntimeError(
                     "ADMIN_PASSWORD environment variable is required when APP_ENV != 'development'."
+                )
+
+        if self.APP_ENV == "production":
+            if self.SECRET_KEY == "palink-dev-secret-change-in-production":
+                raise ValueError(
+                    "SECRET_KEY must not use the default value 'palink-dev-secret-change-in-production' "
+                    "in production. Please set a strong, unique SECRET_KEY via environment variable."
+                )
+            if self.ADMIN_PASSWORD == "admin123":
+                raise ValueError(
+                    "ADMIN_PASSWORD must not use the default value 'admin123' "
+                    "in production. Please set a strong, unique ADMIN_PASSWORD via environment variable."
                 )
 
         if self.APP_ENV != "development" and (not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*"):

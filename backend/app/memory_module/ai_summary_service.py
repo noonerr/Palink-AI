@@ -1,18 +1,29 @@
 """
 AI 摘要记忆服务
 使用轻量级 AI 模型生成对话摘要
+
+.. deprecated::
+    AISummaryMemoryService is deprecated, use MemoryLifecycleService instead.
+    此模块仅保留向后兼容，压缩和摘要功能已整合到 MemoryLifecycleService 中。
 """
 
 import asyncio
 import logging
+import warnings
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
+
+warnings.warn(
+    "AISummaryMemoryService is deprecated, use MemoryLifecycleService instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from .storage import MemoryStorage
 from .models import MemoryEntry
 from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
-from ..services.model_queue_service import get_model_queue_service
+from ..services.inference_queue import inference_queue
 
 logger = logging.getLogger("AISummaryMemory")
 
@@ -83,8 +94,6 @@ class AISummaryMemoryService:
 {conversation_text}
 """
             
-            queue_service = get_model_queue_service()
-            
             async def generate_summary_func():
                 return await complete_text_completion(
                     model_id=self.model,
@@ -96,10 +105,12 @@ class AISummaryMemoryService:
                     max_tokens=150,
                     timeout=30.0,
                 )
-            
-            completion = await queue_service.execute_with_queue_and_retry(
+
+            completion = await inference_queue.submit_and_wait(
                 self.model,
-                generate_summary_func
+                generate_summary_func,
+                max_retries=3,
+                retry_delay=2.0,
             )
             
             summary = completion.get("content", "").strip()
@@ -127,14 +138,14 @@ AI: {assistant_msg[:200]}
 
 提取的关键信息（每行一条）："""
             
-            response = await self.client.chat.completions.create(
-                model=self.model,
+            response = await complete_text_completion(
+                model_id=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=100
+                max_tokens=100,
+                temperature=0.2
             )
             
-            content = response.choices[0].message.content.strip()
+            content = response.get("content", "").strip() if response else ""
             
             # 解析结果
             facts = []
@@ -163,7 +174,7 @@ AI: {assistant_msg[:200]}
             "latency_ms": 500
         }
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         result = {
             "summary": "",
@@ -178,7 +189,7 @@ AI: {assistant_msg[:200]}
                 result["summary"] = summary
             
             # 计算延迟
-            result["latency_ms"] = (datetime.utcnow() - start_time).total_seconds() * 1000
+            result["latency_ms"] = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             
         except Exception as e:
             logger.error(f"获取 AI 摘要上下文失败: {e}")
@@ -194,9 +205,8 @@ async def generate_ai_summary_background(db: Session, user_id: int, session_id: 
     summary = await service.generate_summary(user_id, session_id)
     
     if summary:
-        # 存储摘要到内存缓存（这里简化处理，实际可以存到数据库）
-        from .optimized_service import OptimizedMemoryService
+        from .service import MemoryService
         cache_key = f"ai_summary:{user_id}:{session_id}"
-        OptimizedMemoryService._set_cache(cache_key, summary, ttl=600)  # 10分钟缓存
+        await MemoryService.set_cache(cache_key, summary, ttl=600)
         
     return summary

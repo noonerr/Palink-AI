@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import logging
 import os
 import hashlib
+import threading
 
 from .config import memory_config
 
@@ -150,12 +151,18 @@ class SentenceTransformerEmbedder(BaseEmbedder):
             cache_dir = "/app/models/sentence_transformers"
             os.makedirs(cache_dir, exist_ok=True)
             
+            old_hf_endpoint = os.environ.get("HF_ENDPOINT")
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-            
-            self.model = SentenceTransformer(
-                model_name,
-                cache_folder=cache_dir
-            )
+            try:
+                self.model = SentenceTransformer(
+                    model_name,
+                    cache_folder=cache_dir
+                )
+            finally:
+                if old_hf_endpoint is not None:
+                    os.environ["HF_ENDPOINT"] = old_hf_endpoint
+                else:
+                    os.environ.pop("HF_ENDPOINT", None)
             self._dimension = 1024
             
             logger.info(f"SentenceTransformer 模型加载成功: {model_name}, 维度: {self._dimension}")
@@ -182,7 +189,7 @@ class OpenAIEmbedder(BaseEmbedder):
     def __init__(self):
         try:
             import openai
-            self.client = openai.AsyncOpenAI()
+            self.client = openai.OpenAI()
             self._dimension = 1536
             logger.info("OpenAI 嵌入模型初始化成功")
         except ImportError:
@@ -190,22 +197,12 @@ class OpenAIEmbedder(BaseEmbedder):
             raise
     
     def embed(self, text: Union[str, List[str]]) -> np.ndarray:
-        import asyncio
-        
         if isinstance(text, str):
             text = [text]
         
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        response = loop.run_until_complete(
-            self.client.embeddings.create(
-                model=memory_config.OPENAI_MODEL,
-                input=text
-            )
+        response = self.client.embeddings.create(
+            model=memory_config.OPENAI_MODEL,
+            input=text
         )
         
         embeddings = [item.embedding for item in response.data]
@@ -220,12 +217,15 @@ class EmbedderFactory:
     """嵌入模型工厂 - 优先级: SimpleHash > SentenceTransformer > FastEmbed > OpenAI"""
     
     _instance: BaseEmbedder = None
+    _lock = threading.Lock()
     
     @classmethod
     def get_embedder(cls) -> BaseEmbedder:
         """获取或创建嵌入器实例（单例模式）"""
         if cls._instance is None:
-            cls._instance = cls._create_embedder()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls._create_embedder()
         return cls._instance
     
     @classmethod

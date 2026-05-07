@@ -225,9 +225,9 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
 
   return (
     <nav className={cn(
-      'fixed bottom-0 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-auto transition-transform duration-300 ease-in-out w-[92%] max-w-[560px]',
+      'fixed bottom-0 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-auto transition-all duration-300 ease-in-out w-[92%] max-w-[560px]',
       !sidebarCollapsed && 'translate-x-[calc(-50%+280px)]',
-      isKeyboardOpen && 'translate-y-full pointer-events-none'
+      isKeyboardOpen && 'translate-y-full opacity-0 pointer-events-none'
     )} data-dock="true">
       <div
         ref={dockRef}
@@ -254,6 +254,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
             <Link
               key={item.id}
               to={item.id}
+              replace
               ref={(el) => {
                 itemRefs.current[item.id] = el;
               }}

@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 import uuid
+import logging
+
+from ..core.input_validation import sanitize_title, sanitize_text
+
+logger = logging.getLogger(__name__)
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
@@ -13,22 +18,51 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 class BatchDeleteRequest(BaseModel):
-    session_ids: List[str]
+    session_ids: List[str] = Field(..., max_length=100)
 
 
 class MessageUpdate(BaseModel):
     content: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        return sanitize_text(v, max_length=100000) or ""
 
 
 class CreateSessionRequest(BaseModel):
     type: str = "chat"
     title: str = "New Chat"
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        return sanitize_title(v, max_length=500)
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        if v not in ("chat", "character"):
+            raise ValueError("Invalid session type")
+        return v
+
 
 class CreateMessageRequest(BaseModel):
     role: str
     content: str
     model: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in ("user", "assistant", "system"):
+            raise ValueError("Invalid message role")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        return sanitize_text(v, max_length=100000) or ""
 
 
 @router.get("")
@@ -88,9 +122,9 @@ async def get_session_messages(
 
 def delete_session_memories(db: Session, session_ids: List[str], user_id: int):
     """删除指定会话的所有记忆数据"""
+    if not session_ids:
+        return
     try:
-        # 使用 SQL 直接删除 conversation_memories 表中的相关记录
-        # 使用 IN 子句兼容 SQLite 和 PostgreSQL
         placeholders = ", ".join([f":session_id_{i}" for i in range(len(session_ids))])
         params = {"user_id": user_id}
         for i, session_id in enumerate(session_ids):
@@ -103,9 +137,8 @@ def delete_session_memories(db: Session, session_ids: List[str], user_id: int):
         db.execute(sql, params)
         db.commit()
     except Exception as e:
-        # 如果表不存在或出错，回滚并继续（不影响会话删除）
         db.rollback()
-        print(f"删除记忆数据时出错: {e}")
+        logger.error(f"删除记忆数据时出错: {e}")
 
 
 @router.delete("/batch")

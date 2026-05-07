@@ -12,8 +12,8 @@ interface ThinkingProcessProps {
 
 const thinkingExpandedState = new Map<string, boolean>();
 
-export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ 
-  content, 
+export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
+  content,
   streaming = false,
   t,
   messageKey,
@@ -100,20 +100,25 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     : 'max-height 450ms cubic-bezier(0.22, 0.85, 0.24, 1), opacity 350ms ease, transform 450ms cubic-bezier(0.22, 0.85, 0.24, 1)';
 
   return (
-    <div className="mb-3 rounded-xl border border-border/50 bg-muted/50 overflow-hidden animate-fade-in-up">
+    <div className="mb-3 overflow-hidden animate-fade-in-up">
       <button
         onClick={toggleExpand}
-        className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
+        className={cn(
+          "w-full flex items-center gap-2 px-4 py-2 text-xs font-medium",
+          "rounded-xl border border-border/40 bg-muted/20 dark:bg-muted/10",
+          "text-muted-foreground hover:bg-muted/30 dark:hover:bg-muted/20",
+          "transition-colors duration-200"
+        )}
       >
-        <Brain 
-          size={14} 
+        <Brain
+          size={14}
           className={cn(
             streaming && "animate-pulse text-primary"
-          )} 
+          )}
         />
         <span>{t.thinking || 'Thinking'}</span>
         {(content || !streaming) && (
-          <span className="ml-auto">
+          <span className="ml-1">
             <ChevronDown
               size={14}
               className={cn(
@@ -133,7 +138,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
           </span>
         )}
       </button>
-      
+
       <div
         className={cn(
           "overflow-hidden will-change-[max-height,opacity]",
@@ -150,9 +155,13 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
           perspective: '1000px'
         }}
       >
-        <div 
+        <div
           ref={contentRef}
-          className="px-4 py-3 text-xs text-muted-foreground font-mono border-t border-border/50 bg-background/50"
+          className={cn(
+            "mt-1.5 px-4 py-3 text-xs text-muted-foreground font-mono leading-relaxed",
+            "rounded-xl border border-border/30 bg-muted/10 dark:bg-muted/5",
+            "backdrop-blur-sm"
+          )}
         >
           {content ? (
             <MarkdownRenderer content={content} />

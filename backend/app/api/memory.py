@@ -3,7 +3,7 @@
 """
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,7 @@ class CompressRequest(BaseModel):
     session_id: str
     branch_id: Optional[str] = None
     model: str = ""
-    compression_ratio: float = 0.5
+    compression_ratio: float = Field(default=0.5, ge=0.1, le=0.9)
 
 
 @router.get("/stats")
@@ -46,8 +46,8 @@ def get_memory_stats(
             "compression_reason": result.get("reason", ""),
         }
     except Exception as e:
-        logger.error(f"获取记忆统计失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"获取记忆统计失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get memory stats")
 
 
 @router.get("/check-auto-compress")
@@ -63,8 +63,8 @@ def check_auto_compress(
         result = service.check_compression_needed(current_user.id, session_id, branch_id)
         return result
     except Exception as e:
-        logger.error(f"检查自动压缩失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"检查自动压缩失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to check auto compression")
 
 
 @router.post("/compress")
@@ -74,6 +74,13 @@ async def compress_memory(
     current_user: User = Depends(get_current_user),
 ):
     """手动触发记忆压缩"""
+    from ..models import ChatSession
+    session = db.query(ChatSession).filter(
+        ChatSession.id == body.session_id,
+        ChatSession.user_id == current_user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
     try:
         service = MemoryCompressionService(db)
         result = await service.compress_memory(
@@ -84,5 +91,5 @@ async def compress_memory(
         )
         return result
     except Exception as e:
-        logger.error(f"记忆压缩失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"记忆压缩失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to compress memory")

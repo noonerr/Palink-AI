@@ -1,17 +1,29 @@
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import jwt
+import bcrypt
 from .config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if not plain_password or not hashed_password:
+        return False
+    if isinstance(hashed_password, str):
+        hashed_password = hashed_password.encode("utf-8")
+    if isinstance(plain_password, str):
+        plain_password = plain_password.encode("utf-8")
+    try:
+        return bcrypt.checkpw(plain_password, hashed_password)
+    except (ValueError, TypeError):
+        return False
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    if not password:
+        raise ValueError("Password cannot be empty")
+    if isinstance(password, str):
+        password = password.encode("utf-8")
+    return bcrypt.hashpw(password, bcrypt.gensalt()).decode("utf-8")
 
 
 def validate_password_policy(password: str, field_name: str = "Password") -> Optional[str]:
@@ -41,7 +53,7 @@ def create_access_token(data: Dict[str, Any]) -> str:
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM], options={"verify_signature": True})
         return payload
-    except JWTError:
+    except jwt.PyJWTError:
         return None

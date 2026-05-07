@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, X, Edit3, Trash2, Menu } from 'lucide-react';
+import { Sparkles, X, Edit3, Trash2, Menu, Globe } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -8,13 +9,14 @@ import { ChatInput } from '@/components/ui/custom/ChatInput';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
+import { consumeSseStream } from '@/lib/sseStream';
 import type { Message as MessageType, Model, Session } from '@/types';
 
 const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
 
-type StreamStatus = 'idle' | 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
+type StreamStatus = 'idle' | 'pending' | 'queued' | 'streaming' | 'done' | 'error' | 'cancelled';
 
 const WELCOME_DROP_DURATION_MS = 760;
 const HISTORY_PANEL_WIDTH_PX = 280;
@@ -70,6 +72,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
+  const [queueInfo, setQueueInfo] = useState<{ requestId: string; position: number; estimatedWait: number } | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
@@ -93,8 +96,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   const [memoryMode, setMemoryMode] = useState<string>('rule');
   const [developerMode, setDeveloperMode] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchAvailable, setWebSearchAvailable] = useState(true);
 
-  const streaming = streamStatus === 'pending' || streamStatus === 'streaming';
+  const streaming = streamStatus === 'pending' || streamStatus === 'queued' || streamStatus === 'streaming';
 
   const [welcomeDropping, setWelcomeDropping] = useState(false);
   const [welcomeDropDistance, setWelcomeDropDistance] = useState(0);
@@ -136,10 +141,14 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   }, []);
 
   const handleStopStreaming = useCallback(() => {
+    if (queueInfo?.requestId) {
+      api.post(`/api/chat/queue/cancel/${queueInfo.requestId}`).catch(() => {});
+    }
     if (!abortControllerRef.current) return;
     setStreamStatus('cancelled');
+    setQueueInfo(null);
     abortControllerRef.current.abort();
-  }, []);
+  }, [queueInfo]);
 
   const displayedActiveSessionId = sessionVisualSnapshot ? sessionVisualSnapshot.activeSessionId : activeSessionId;
   const displayedMessages = sessionVisualSnapshot ? sessionVisualSnapshot.messages : messages;
@@ -187,11 +196,11 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         session_id: activeSessionId,
         compression_ratio: 0.5,
       });
-      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      console.info(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(activeSessionId);
     } catch (e) {
       console.error('Manual compress failed:', e);
-      alert('压缩失败');
+      console.error('压缩失败');
     } finally {
       setCompressing(false);
     }
@@ -303,6 +312,12 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         window.clearTimeout(newSessionFadeTimerRef.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    api.get('/api/admin/web-search').then((data: any) => {
+      if (data && data.enabled === false) setWebSearchAvailable(false);
+    }).catch(() => {});
   }, []);
 
   const runWelcomeInputDropAnimation = useCallback((seedText: string) => {
@@ -721,48 +736,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     }
   };
 
-  const consumeSseStream = useCallback(
-    async (res: Response, onJson: (json: Record<string, unknown>) => void) => {
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('Invalid stream response');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      const processChunk = (chunk: string) => {
-        buffer += chunk;
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const event of events) {
-          const lines = event.split('\n');
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-
-            const data = line.slice(6).trim();
-            if (!data || data === '[DONE]') continue;
-
-            try {
-              onJson(JSON.parse(data));
-            } catch {
-              // Keep stream resilient for malformed chunks.
-            }
-          }
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processChunk(decoder.decode(value, { stream: true }));
-      }
-
-      const tail = decoder.decode();
-      if (tail) processChunk(tail);
-    },
-    []
-  );
-
   const handleRegenerate = async (messageIndex: number) => {
     if (streaming || uploading || messageIndex < 1) return;
 
@@ -820,6 +793,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         } else {
           setStreamStatus('done');
         }
+        setQueueInfo(null);
         setRegeneratingMessageIndex(null);
         setIsSendingMessage(false);
         abortControllerRef.current = null;
@@ -829,6 +803,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
     let fullContent = '';
     let fullReasoning = '';
+    let isQueued = false;
 
     try {
       const res = await api.stream(
@@ -845,6 +820,21 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       );
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'web_search' && json.results) {
+          setMessages(prev => prev.map(m => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
+          return;
+        }
+        if (json.type === 'queue' && json.request_id) {
+          setStreamStatus('queued');
+          isQueued = true;
+          setQueueInfo({
+            requestId: json.request_id as string,
+            position: typeof json.position === 'number' ? json.position : 0,
+            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
+          });
+          return;
+        }
+
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
@@ -852,6 +842,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (!content && !reasoningDelta) return;
 
+        if (isQueued) {
+          setQueueInfo(null);
+          isQueued = false;
+        }
         markStreamActive();
 
         if (reasoningDelta) {
@@ -892,6 +886,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       } else {
         setStreamStatus('done');
       }
+      setQueueInfo(null);
       setRegeneratingMessageIndex(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
@@ -906,6 +901,16 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     const isFromWelcome = !activeSessionId && messages.length === 0 && !welcomeDropping;
     const switchToken = sessionSwitchTokenRef.current + 1;
     
+    // 在清空状态之前先构建好 displayContent 并保存 attachments
+    let displayContent = text;
+    const savedAttachments = [...attachments];
+    if (attachments.length > 0) {
+      displayContent += '\n\n';
+      attachments.forEach((att) => {
+        displayContent += att.type === 'image' ? `![${att.name}](${att.url})\n` : `[📎 ${att.name}](${att.url})\n`;
+      });
+    }
+    
     if (isFromWelcome) {
       sessionSwitchTokenRef.current = switchToken;
       suppressSmoothScrollRef.current = true;
@@ -918,14 +923,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       setStreamStatus('pending');
       setSuggestions([]);
       setIsSendingMessage(true);
-
-      let displayContent = text;
-      if (attachments.length > 0) {
-        displayContent += '\n\n';
-        attachments.forEach((att) => {
-          displayContent += att.type === 'image' ? `![${att.name}](${att.url})\n` : `[📎 ${att.name}](${att.url})\n`;
-        });
-      }
 
       const userMessageId = generateMessageId();
       const assistantMessageId = generateMessageId();
@@ -1026,6 +1023,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           } else {
             setStreamStatus('done');
           }
+          setQueueInfo(null);
           setIsSendingMessage(false);
           abortControllerRef.current = null;
         }
@@ -1034,6 +1032,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
       let fullContent = '';
       let fullReasoning = '';
+      let isQueued = false;
 
       try {
         const res = await api.stream(
@@ -1043,8 +1042,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             session_type: 'chat',
             message: text,
             model: currentModel,
-            images: attachments.filter((a) => a.type === 'image').map((a) => a.url),
-            files: attachments.filter((a) => a.type === 'file').map((a) => a.url),
+            images: savedAttachments.filter((a) => a.type === 'image').map((a) => a.url),
+            files: savedAttachments.filter((a) => a.type === 'file').map((a) => a.url),
+            display_content: displayContent,
+            web_search: webSearchEnabled
           },
           { signal: abortControllerRef.current.signal }
         );
@@ -1054,6 +1055,21 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         }
 
         await consumeSseStream(res, (json) => {
+          if (json.type === 'web_search' && json.results) {
+            setMessages(prev => prev.map(m => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
+            return;
+          }
+          if (json.type === 'queue' && json.request_id) {
+            setStreamStatus('queued');
+            isQueued = true;
+            setQueueInfo({
+              requestId: json.request_id as string,
+              position: typeof json.position === 'number' ? json.position : 0,
+              estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
+            });
+            return;
+          }
+
           const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
           const content = typeof json.content === 'string' ? json.content : '';
           const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
@@ -1068,6 +1084,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
           if (!content && !reasoningDelta) return;
 
+          if (isQueued) {
+            setQueueInfo(null);
+            isQueued = false;
+          }
           markStreamActive();
 
           if (reasoningDelta) {
@@ -1076,8 +1096,20 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           }
 
           if (content) {
+            let batchBuffer = '';
+            let batchCount = 0;
+            const BATCH_SIZE = 5;
             for (const char of Array.from(content)) {
               fullContent += char;
+              batchBuffer += char;
+              batchCount++;
+              if (batchCount >= BATCH_SIZE) {
+                setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
+                batchBuffer = '';
+                batchCount = 0;
+              }
+            }
+            if (batchBuffer.length > 0) {
               setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
             }
           }
@@ -1099,6 +1131,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             if (idx >= 0) {
               next[idx].content += `\n[Error: ${(e as Error).message}]`;
             }
+            return next;
           });
         }
       } finally {
@@ -1123,14 +1156,6 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
-
-    let displayContent = text;
-    if (attachments.length > 0) {
-      displayContent += '\n\n';
-      attachments.forEach((att) => {
-        displayContent += att.type === 'image' ? `![${att.name}](${att.url})\n` : `[📎 ${att.name}](${att.url})\n`;
-      });
-    }
 
     const userMessageId = generateMessageId();
     const assistantMessageId = generateMessageId();
@@ -1206,6 +1231,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
     let fullContent = '';
     let fullReasoning = '';
+    let isQueued = false;
 
     try {
       const res = await api.stream(
@@ -1215,8 +1241,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           session_type: 'chat',
           message: text,
           model: currentModel,
-          images: attachments.filter((a) => a.type === 'image').map((a) => a.url),
-          files: attachments.filter((a) => a.type === 'file').map((a) => a.url),
+          images: savedAttachments.filter((a) => a.type === 'image').map((a) => a.url),
+          files: savedAttachments.filter((a) => a.type === 'file').map((a) => a.url),
+          display_content: displayContent,
+          web_search: webSearchEnabled
         },
         { signal: abortControllerRef.current.signal }
       );
@@ -1226,6 +1254,21 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       }
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'web_search' && json.results) {
+          setMessages(prev => prev.map(m => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
+          return;
+        }
+        if (json.type === 'queue' && json.request_id) {
+          setStreamStatus('queued');
+          isQueued = true;
+          setQueueInfo({
+            requestId: json.request_id as string,
+            position: typeof json.position === 'number' ? json.position : 0,
+            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
+          });
+          return;
+        }
+
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
@@ -1240,6 +1283,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         if (!content && !reasoningDelta) return;
 
+        if (isQueued) {
+          setQueueInfo(null);
+          isQueued = false;
+        }
         markStreamActive();
 
         if (reasoningDelta) {
@@ -1248,8 +1295,20 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
         }
 
         if (content) {
+          let batchBuffer = '';
+          let batchCount = 0;
+          const BATCH_SIZE = 5;
           for (const char of Array.from(content)) {
             fullContent += char;
+            batchBuffer += char;
+            batchCount++;
+            if (batchCount >= BATCH_SIZE) {
+              setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
+              batchBuffer = '';
+              batchCount = 0;
+            }
+          }
+          if (batchBuffer.length > 0) {
             setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning, true);
           }
         }
@@ -1289,6 +1348,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       } else {
         setStreamStatus('done');
       }
+      setQueueInfo(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
       suppressSmoothScrollRef.current = false;
@@ -1306,15 +1366,17 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     setShowDeleteConfirm(true);
   };
 
-  const handleDeleteMessage = (messageId: number, messageIndex: number) => {
+  const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
     setPendingDelete({ type: 'message', messageId, messageIndex });
     setShowDeleteConfirm(true);
   };
 
-  const handleEditMessage = async (messageId: number, messageIndex: number, newContent: string) => {
+  const handleEditMessage = async (messageId: string | number, messageIndex: number, newContent: string) => {
     if (!activeSessionId) return;
     try {
-      await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      if (typeof messageId === 'number') {
+        await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      }
       setMessages((prev) => {
         const next = [...prev];
         next[messageIndex] = {
@@ -1364,10 +1426,10 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
 
         loadSessions();
       } else if (pendingDelete.type === 'message') {
-        if (activeSessionId) {
+        if (activeSessionId && typeof pendingDelete.messageId === 'number') {
           await api.delete(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`);
-          setMessages((prev) => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
         }
+        setMessages((prev) => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
       }
     } catch (e) {
       console.error('Delete failed:', e);
@@ -1525,29 +1587,53 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
           )}
         >
           <div className="mx-auto flex max-w-3xl items-center justify-between">
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className={cn(
-                'flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-[30px] transition-all duration-300 ease-in-out',
-                isDark ? 'border-slate-600/80 bg-[#2d3350] text-white' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700',
-                historyOpen && (isDark
-                  ? 'rotate-180 bg-[#3a4263] shadow-[0_0_12px_rgba(15,23,42,0.42)]'
-                  : 'rotate-180 bg-[#f5eee2] shadow-[0_0_12px_rgba(120,106,79,0.2)]')
+                'h-11 w-11 rounded-full transition-all duration-300 ease-in-out',
+                historyOpen && 'rotate-180'
               )}
               data-history-toggle="true"
               aria-label="toggle-history"
             >
               <Menu size={20} />
-            </button>
+            </Button>
 
-            <ModelSelector
-              models={models}
-              currentModel={currentModel}
-              onSelect={setCurrentModel}
-              size="sm"
-              triggerStyle="mobile-inline"
-              theme={isDark ? 'dark' : 'light'}
-            />
+            <div className="flex items-center gap-2">
+              {webSearchAvailable && !isWelcome && (
+                <button
+                  onClick={() => setWebSearchEnabled(prev => !prev)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200',
+                    webSearchEnabled
+                      ? cn(
+                          isDark
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                        )
+                      : cn(
+                          isDark
+                            ? 'bg-slate-700/40 text-slate-400 border border-slate-600/30 hover:bg-slate-700/60'
+                            : 'bg-gray-100/80 text-slate-500 border border-gray-200/50 hover:bg-gray-200/80'
+                        )
+                  )}
+                >
+                  <Globe size={12} className={cn('transition-colors', webSearchEnabled ? 'text-emerald-500' : '')} />
+                  <span>{webSearchEnabled ? '搜索开' : '搜索关'}</span>
+                </button>
+              )}
+
+              <ModelSelector
+                models={models}
+                currentModel={currentModel}
+                onSelect={setCurrentModel}
+                size="sm"
+                triggerStyle="mobile-inline"
+                theme={isDark ? 'dark' : 'light'}
+              />
+            </div>
           </div>
         </div>
 
@@ -1585,7 +1671,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                     models={models}
                     currentModel={currentModel}
                     onModelChange={setCurrentModel}
-                    disabled={streaming}
+                    disabled={streaming || isSendingMessage}
                     uploading={uploading}
                     placeholder={t.ask_anything}
                     streaming={streaming}
@@ -1594,6 +1680,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                     theme={isDark ? 'dark' : 'light'}
                     showModelSelector={true}
                     modelSelectorTriggerStyle="icon"
+                    webSearchEnabled={webSearchEnabled}
+                    onToggleWebSearch={() => setWebSearchEnabled(prev => !prev)}
+                    showWebSearch={webSearchAvailable}
                   />
                 </div>
                 </div>
@@ -1630,8 +1719,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                           compressing={compressing}
                           onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
                           canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
-                          onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
-                          onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                          onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
+                          onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
                           canEdit={msg.role === 'assistant' && !streaming}
                           showSelect={false}
                           isCharacterChat={false}
@@ -1641,6 +1730,26 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                       </div>
                     </div>
                   ))}
+
+                  {streamStatus === 'queued' && queueInfo && (
+                    <div className="flex items-center gap-3 pl-10 animate-fade-in-up">
+                      <div className={cn(
+                        'flex items-center gap-2 px-4 py-2 rounded-xl text-sm',
+                        isDark
+                          ? 'bg-amber-900/20 border border-amber-700/50 text-amber-300'
+                          : 'bg-amber-50 border border-amber-200 text-amber-700'
+                      )}>
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        <span>排队中 · 第 {queueInfo.position + 1} 位</span>
+                        {queueInfo.estimatedWait > 0 && (
+                          <span className={isDark ? 'text-amber-400' : 'text-amber-500'}>· 预计 {Math.ceil(queueInfo.estimatedWait)}s</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {displayedSuggestions.length > 0 && !streaming && (
                     <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
@@ -1687,7 +1796,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   models={models}
                   currentModel={currentModel}
                   onModelChange={setCurrentModel}
-                  disabled={streaming}
+                  disabled={streaming || isSendingMessage}
                   uploading={uploading}
                   placeholder={t.ask_anything}
                   streaming={streaming}
@@ -1696,6 +1805,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   theme={isDark ? 'dark' : 'light'}
                   showModelSelector={true}
                   modelSelectorTriggerStyle="icon"
+                  webSearchEnabled={webSearchEnabled}
+                  onToggleWebSearch={() => setWebSearchEnabled(prev => !prev)}
+                  showWebSearch={false}
                 />
               </div>
             </div>
@@ -1745,8 +1857,8 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                           compressing={compressing}
                           onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
                           canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
-                          onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
-                          onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                          onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
+                          onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
                           canEdit={msg.role === 'assistant' && !streaming}
                           showSelect={false}
                           isCharacterChat={false}
@@ -1756,6 +1868,26 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                       </div>
                     </div>
                   ))}
+
+                  {streamStatus === 'queued' && queueInfo && (
+                    <div className="flex items-center gap-3 pl-10 animate-fade-in-up">
+                      <div className={cn(
+                        'flex items-center gap-2 px-4 py-2 rounded-xl text-sm',
+                        isDark
+                          ? 'bg-amber-900/20 border border-amber-700/50 text-amber-300'
+                          : 'bg-amber-50 border border-amber-200 text-amber-700'
+                      )}>
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        <span>排队中 · 第 {queueInfo.position + 1} 位</span>
+                        {queueInfo.estimatedWait > 0 && (
+                          <span className={isDark ? 'text-amber-400' : 'text-amber-500'}>· 预计 {Math.ceil(queueInfo.estimatedWait)}s</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {displayedSuggestions.length > 0 && !streaming && (
                     <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
@@ -1802,7 +1934,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   models={models}
                   currentModel={currentModel}
                   onModelChange={setCurrentModel}
-                  disabled={streaming}
+                  disabled={streaming || isSendingMessage}
                   uploading={uploading}
                   placeholder={t.ask_anything}
                   streaming={streaming}
@@ -1811,6 +1943,9 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                   theme={isDark ? 'dark' : 'light'}
                   showModelSelector={true}
                   modelSelectorTriggerStyle="icon"
+                  webSearchEnabled={webSearchEnabled}
+                  onToggleWebSearch={() => setWebSearchEnabled(prev => !prev)}
+                  showWebSearch={false}
                 />
               </div>
             </div>
@@ -1871,6 +2006,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
               theme={isDark ? 'dark' : 'light'}
               showModelSelector={true}
               modelSelectorTriggerStyle="icon"
+              showWebSearch={false}
             />
           </div>
         )}

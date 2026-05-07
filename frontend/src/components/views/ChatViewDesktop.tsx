@@ -11,14 +11,14 @@ import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
+import { consumeSseStream } from '@/lib/sseStream';
 import type { Message as MessageType, Model, Session } from '@/types';
 
-// Generate unique ID for messages
 const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
 
-type StreamStatus = 'idle' | 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
+type StreamStatus = 'idle' | 'pending' | 'queued' | 'streaming' | 'done' | 'error' | 'cancelled';
 
 interface ChatViewProps {
   token: string;
@@ -61,21 +61,17 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
+  const [queueInfo, setQueueInfo] = useState<{ requestId: string; position: number; estimatedWait: number } | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
   const [suggestions, setSuggestions] = useState<string[]>([]);
-
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'single'; id: string } | { type: 'batch' } | { type: 'message'; messageId: number; messageIndex: number } | null>(null);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showMessageSelect, setShowMessageSelect] = useState(false);
-  
-  // Regenerate state
   const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
-  
-  // Memory compression state
   const [memoryStats, setMemoryStats] = useState<{
     message_count: number;
     token_count: number;
@@ -87,8 +83,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const [memoryMode, setMemoryMode] = useState<string>("rule");
   const [developerMode, setDeveloperMode] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
-
-  const streaming = streamStatus === 'pending' || streamStatus === 'streaming';
+  const streaming = streamStatus === 'pending' || streamStatus === 'queued' || streamStatus === 'streaming';
 
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -104,10 +99,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   }, []);
 
   const handleStopStreaming = useCallback(() => {
+    if (queueInfo?.requestId) {
+      api.post(`/api/chat/queue/cancel/${queueInfo.requestId}`).catch(() => {});
+    }
     if (!abortControllerRef.current) return;
     setStreamStatus('cancelled');
+    setQueueInfo(null);
     abortControllerRef.current.abort();
-  }, []);
+  }, [queueInfo]);
   
   // Load memory stats with session ID tracking to prevent race conditions
   const loadingSessionRef = useRef<string | null>(null);
@@ -167,11 +166,11 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         session_id: activeSessionId,
         compression_ratio: 0.5
       });
-      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      console.info(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(activeSessionId);
     } catch (e) {
       console.error('Manual compress failed:', e);
-      alert('压缩失败');
+      console.error('压缩失败');
     } finally {
       setCompressing(false);
     }
@@ -410,48 +409,6 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     }
   };
 
-  const consumeSseStream = useCallback(
-    async (res: Response, onJson: (json: Record<string, unknown>) => void) => {
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('Invalid stream response');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      const processChunk = (chunk: string) => {
-        buffer += chunk;
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const event of events) {
-          const lines = event.split('\n');
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-
-            const data = line.slice(6).trim();
-            if (!data || data === '[DONE]') continue;
-
-            try {
-              onJson(JSON.parse(data));
-            } catch {
-              // Ignore malformed events to keep stream resilient.
-            }
-          }
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processChunk(decoder.decode(value, { stream: true }));
-      }
-
-      const tail = decoder.decode();
-      if (tail) processChunk(tail);
-    },
-    []
-  );
-
   const handleRegenerate = async (messageIndex: number) => {
     if (streaming || uploading || messageIndex < 1) return;
     
@@ -486,6 +443,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     let fullReasoning = '';
     let streamHasError = false;
     let streamWasCancelled = false;
+    let isQueued = false;
 
     if (developerMode) {
       try {
@@ -531,6 +489,17 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         }, { signal: abortControllerRef.current.signal });
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'queue' && json.request_id) {
+          setStreamStatus('queued');
+          isQueued = true;
+          setQueueInfo({
+            requestId: json.request_id as string,
+            position: typeof json.position === 'number' ? json.position : 0,
+            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
+          });
+          return;
+        }
+
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
@@ -553,6 +522,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           return;
         }
 
+        if (isQueued) {
+          setQueueInfo(null);
+          isQueued = false;
+        }
         markStreamActive();
 
         if (reasoningDelta) {
@@ -592,6 +565,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
       } else {
         setStreamStatus('done');
       }
+      setQueueInfo(null);
       setRegeneratingMessageIndex(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
@@ -602,15 +576,9 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     const text = typeof overrideText === 'string' ? overrideText : input;
     if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
 
-    sessionIdSetRef.current = false; // 重置会话ID设置标记
-    setInput('');
-    setAttachments([]);
-    setStreamStatus('pending');
-    setSuggestions([]);
-    setIsSendingMessage(true);
-
-    // Build display content with attachments
+    // 在清空状态之前先构建好 displayContent 并保存 attachments
     let displayContent = text;
+    const savedAttachments = [...attachments];
     if (attachments.length > 0) {
       displayContent += '\n\n';
       attachments.forEach(att => {
@@ -619,6 +587,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           : `[📎 ${att.name}](${att.url})\n`;
       });
     }
+
+    sessionIdSetRef.current = false; // 重置会话ID设置标记
+    setInput('');
+    setAttachments([]);
+    setStreamStatus('pending');
+    setSuggestions([]);
+    setIsSendingMessage(true);
 
     // Add user message and placeholder for assistant with unique IDs
     const userMessageId = generateMessageId();
@@ -634,6 +609,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     let fullReasoning = '';
     let streamHasError = false;
     let streamWasCancelled = false;
+    let isQueued = false;
 
     if (developerMode) {
       try {
@@ -695,8 +671,9 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           session_type: 'chat',
           message: text,
           model: currentModel,
-          images: attachments.filter(a => a.type === 'image').map(a => a.url),
-          files: attachments.filter(a => a.type === 'file').map(a => a.url)
+          images: savedAttachments.filter(a => a.type === 'image').map(a => a.url),
+          files: savedAttachments.filter(a => a.type === 'file').map(a => a.url),
+          display_content: displayContent
         }, { signal: abortControllerRef.current.signal });
 
       if (!activeSessionId) {
@@ -704,13 +681,23 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
       }
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'queue' && json.request_id) {
+          setStreamStatus('queued');
+          isQueued = true;
+          setQueueInfo({
+            requestId: json.request_id as string,
+            position: typeof json.position === 'number' ? json.position : 0,
+            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
+          });
+          return;
+        }
+
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
         const reasoningDelta = `${reasoning}${modelReasoning}`;
 
-        // 处理会话 ID（新会话）- 只设置一次
         if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
           sessionIdSetRef.current = true;
           setActiveSessionId(sessionId);
@@ -721,6 +708,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
           return;
         }
 
+        if (isQueued) {
+          setQueueInfo(null);
+          isQueued = false;
+        }
         markStreamActive();
 
         if (reasoningDelta) {
@@ -761,6 +752,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
       } else {
         setStreamStatus('done');
       }
+      setQueueInfo(null);
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
@@ -796,10 +788,10 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         
         loadSessions();
       } else if (pendingDelete.type === 'message') {
-        if (activeSessionId) {
+        if (activeSessionId && typeof pendingDelete.messageId === 'number') {
           await api.delete(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`);
-          setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
         }
+        setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
       }
     } catch (e) {
       console.error('Delete failed:', e);
@@ -824,7 +816,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     setShowDeleteConfirm(true);
   };
 
-  const handleDeleteMessage = (messageId: number, messageIndex: number) => {
+  const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
     setPendingDelete({ type: 'message', messageId, messageIndex });
     setShowDeleteConfirm(true);
   };
@@ -853,11 +845,13 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleEditMessage = async (messageId: number, messageIndex: number, newContent: string) => {
+  const handleEditMessage = async (messageId: string | number, messageIndex: number, newContent: string) => {
     if (!activeSessionId) return;
     
     try {
-      await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      if (typeof messageId === 'number') {
+        await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      }
       setMessages(prev => {
         const newMessages = [...prev];
         newMessages[messageIndex] = {
@@ -1230,8 +1224,8 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
                       compressing={compressing}
                       onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
                       canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && messages[idx - 1]?.role === 'user'}
-                      onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
-                      onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                      onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
+                      onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
                       canEdit={msg.role === 'assistant' && !streaming}
                       isSelected={msg.id !== undefined ? selectedMessages.has(String(msg.id)) : false}
                       onToggleSelect={msg.id !== undefined ? () => toggleMessageSelect(String(msg.id)) : undefined}
@@ -1243,6 +1237,21 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
                   </div>
                 </div>
               ))}
+
+              {streamStatus === 'queued' && queueInfo && (
+                <div className="flex items-center gap-3 pl-12 animate-fade-in-up">
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-amber-700 dark:text-amber-300 text-sm">
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span>排队中 · 第 {queueInfo.position + 1} 位</span>
+                    {queueInfo.estimatedWait > 0 && (
+                      <span className="text-amber-500 dark:text-amber-400">· 预计 {Math.ceil(queueInfo.estimatedWait)}s</span>
+                    )}
+                  </div>
+                </div>
+              )}
               
               {/* Suggestions */}
               {suggestions.length > 0 && !streaming && (

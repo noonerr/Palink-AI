@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Palink AI v0.21.2</title>
+    
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#3b82f6" />
+    <meta name="description" content="Palink AI - 智能对话助手" />
+    <meta name="application-name" content="Palink AI" />
+    
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Palink" />
+    
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png" />
+    <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-192x192.png" />
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
+    <link rel="apple-touch-icon" sizes="120x120" href="/icons/icon-128x128.png" />
+    
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/icons/icon-48x48.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512x512.png" />
+    
+    <meta name="msapplication-TileColor" content="#3b82f6" />
+    <meta name="msapplication-tap-highlight" content="no" />
+    <!-- 禁止iOS自动识别电话号码、邮箱，避免样式错乱 -->
+    <meta name="format-detection" content="telephone=no, email=no" />
+    <link rel="stylesheet" href="/katex.min.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      function renderFatalError(message) {
+        const root = document.getElementById('root');
+        if (!root) {
+          return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.style.padding = '20px';
+        wrapper.style.textAlign = 'center';
+        wrapper.style.color = 'red';
+
+        const title = document.createElement('h1');
+        title.textContent = '发生错误';
+
+        const detail = document.createElement('p');
+        detail.textContent = String(message ?? '未知错误');
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.textContent = '刷新页面';
+        refreshBtn.addEventListener('click', () => location.reload());
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(detail);
+        wrapper.appendChild(refreshBtn);
+
+        root.replaceChildren(wrapper);
+      }
+
+      window.onerror = function(msg, url, line, col, error) {
+        console.error('Global error:', msg, url, line, col, error);
+        renderFatalError(msg);
+        return false;
+      };
+      window.onunhandledrejection = function(event) {
+        console.error('Unhandled promise rejection:', event.reason);
+        renderFatalError(event.reason);
+      };
+    </script>
+    <script>
+      // iOS Safari 地址栏收缩优化
+      // 页面加载完成后触发Safari地址栏收缩
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          window.scrollTo(0, 1);
+        }, 100);
+      });
+
+      // 屏幕旋转时重新适配
+      window.addEventListener('orientationchange', () => {
+        setTimeout(() => {
+          window.scrollTo(0, 1);
+        }, 100);
+      });
+    </script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        const cleanupFlag = 'palink_sw_cleanup_done_v4';
+        const hasCleaned = sessionStorage.getItem(cleanupFlag) === '1';
+
+        if (!hasCleaned) {
+          Promise.all([
+            navigator.serviceWorker.getRegistrations()
+              .then((registrations) => Promise.all(registrations.map((r) => r.unregister()))),
+            (window.caches
+              ? caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+              : Promise.resolve([]))
+          ])
+            .then(() => {
+              sessionStorage.setItem(cleanupFlag, '1');
+              location.reload();
+            })
+            .catch(() => {
+              sessionStorage.setItem(cleanupFlag, '1');
+            });
+        }
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      function updateVh() {
+        const vh = window.innerHeight * 0.01;
+        document.documentElement.style.setProperty('--vh', `${vh}px`);
+      }
+      window.addEventListener('resize', updateVh);
+      updateVh();
+    </script>
+  </body>
+</html>

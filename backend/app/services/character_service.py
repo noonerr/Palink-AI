@@ -75,8 +75,6 @@ class CharacterService:
             character.extensions = json.dumps(character_data.extensions, ensure_ascii=False)
         if character_data.user_nickname is not None:
             character.user_nickname = character_data.user_nickname
-        if character_data.is_processing is not None:
-            character.is_processing = character_data.is_processing
         
         self.db.commit()
         self.db.refresh(character)
@@ -99,17 +97,20 @@ class CharacterService:
             session_ids = [s.id for s in sessions]
             
             if session_ids:
-                self.db.query(CharacterChatMessage).filter(
-                    CharacterChatMessage.session_id.in_(session_ids)
-                ).delete(synchronize_session=False)
-                
-                self.db.query(CharacterChatSessionBranch).filter(
-                    CharacterChatSessionBranch.session_id.in_(session_ids)
-                ).delete(synchronize_session=False)
-                
-                self.db.query(CharacterChatSession).filter(
-                    CharacterChatSession.id.in_(session_ids)
-                ).delete(synchronize_session=False)
+                batch_size = 500
+                for i in range(0, len(session_ids), batch_size):
+                    batch = session_ids[i:i + batch_size]
+                    self.db.query(CharacterChatMessage).filter(
+                        CharacterChatMessage.session_id.in_(batch)
+                    ).delete(synchronize_session=False)
+                    
+                    self.db.query(CharacterChatSessionBranch).filter(
+                        CharacterChatSessionBranch.session_id.in_(batch)
+                    ).delete(synchronize_session=False)
+                    
+                    self.db.query(CharacterChatSession).filter(
+                        CharacterChatSession.id.in_(batch)
+                    ).delete(synchronize_session=False)
             
             self.db.delete(character)
             self.db.commit()

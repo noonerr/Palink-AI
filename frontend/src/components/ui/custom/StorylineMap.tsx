@@ -7,15 +7,15 @@
  * Clicking a node triggers onNavigate to fork / switch branches
  */
 
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   MiniMap,
-  Controls,
   Background,
   BackgroundVariant,
   useNodesState,
   useEdgesState,
+  ReactFlowProvider,
   Handle,
   Position,
   type Node,
@@ -24,8 +24,9 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
-import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play } from 'lucide-react';
-import { LoadingDots } from './LoadingDots';
+import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play, User, ZoomIn, ZoomOut, Maximize2, Crosshair } from 'lucide-react';
+
+const rfInstanceRef: { current: any } = { current: null };
 
 // ──────────────────────────────────────────────
 // Types
@@ -51,9 +52,19 @@ export interface StoryBranch {
   nodes: StoryNode[];
 }
 
+export interface CharacterInfo {
+  id: string;
+  name: string;
+  avatar_url: string;
+  greeting: string;
+  background: string;
+  user_nickname: string;
+}
+
 export interface BranchTree {
   branches: StoryBranch[];
   active_branch_id: string | null;
+  character_info: CharacterInfo | null;
 }
 
 interface StorylineMapProps {
@@ -69,6 +80,11 @@ interface StorylineMapProps {
 
 function computeActivePath(branches: StoryBranch[], activeBranchId: string | null): Set<string> {
   const active = new Set<string>();
+
+  // Always include character card root when there are active branches
+  if (activeBranchId && branches.length > 0) {
+    active.add('char_root');
+  }
   if (!activeBranchId) return active;
 
   // Traverse chain: active branch → parent → ... → root
@@ -248,7 +264,125 @@ function StoryNodeComponent({ data }: NodeProps) {
   );
 }
 
-const nodeTypes = { storyNode: StoryNodeComponent };
+// Character card root node (level 0)
+interface CharacterCardData {
+  characterInfo: CharacterInfo;
+  hasActiveBranches: boolean;
+  isDark: boolean;
+}
+
+function CharacterCardNode({ data }: NodeProps) {
+  const d = data as unknown as CharacterCardData;
+  const { characterInfo, hasActiveBranches, isDark } = d;
+
+  const cardBg = isDark
+    ? 'bg-gradient-to-br from-rose-900/80 to-pink-900/80 border-rose-400/50'
+    : 'bg-gradient-to-br from-rose-50 to-pink-50 border-rose-300/70';
+
+  return (
+    <div
+      className={`rounded-2xl border-2 ${cardBg}`}
+      style={{
+        minWidth: 240,
+        maxWidth: 280,
+        boxShadow: '0 0 16px 3px rgba(244,114,182,0.3)',
+        backdropFilter: 'blur(8px)',
+      }}
+    >
+      <div className="px-4 py-3 space-y-2">
+        <div className="flex items-center gap-2">
+          {characterInfo.avatar_url ? (
+            <img src={characterInfo.avatar_url} alt="" className="w-10 h-10 rounded-full object-cover border-2 border-rose-300" />
+          ) : (
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isDark ? 'bg-rose-700' : 'bg-rose-200'}`}>
+              <User size={20} className="text-rose-600" />
+            </div>
+          )}
+          <div>
+            <p className={`text-sm font-bold ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>
+              {characterInfo.name}
+            </p>
+            <p className={`text-[10px] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>角色卡</p>
+          </div>
+        </div>
+        {characterInfo.greeting && (
+          <p className={`text-[11px] leading-relaxed line-clamp-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+            "{characterInfo.greeting.slice(0, 120)}"
+          </p>
+        )}
+        {hasActiveBranches && (
+          <div className="text-[10px] text-emerald-500 font-medium flex items-center gap-1">
+            <Play size={9} fill="currentColor" /> 进行中
+          </div>
+        )}
+      </div>
+      <Handle type="source" position={Position.Bottom} className="!bg-rose-400 !border-white !w-3 !h-3" />
+    </div>
+  );
+}
+
+const nodeTypes = { storyNode: StoryNodeComponent, characterCard: CharacterCardNode };
+
+function CustomControls({ isDark }: { isDark: boolean }) {
+  const btnBase = `w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150 active:scale-95 ${
+    isDark
+      ? 'bg-slate-800/90 border-slate-600/50 text-slate-300 hover:bg-slate-700/90 hover:text-white hover:border-slate-500/70'
+      : 'bg-white/90 border-slate-200/70 text-slate-500 hover:bg-slate-50 hover:text-slate-700 hover:border-slate-300/70'
+  } backdrop-blur-sm shadow-sm`;
+
+  return (
+    <div className="flex flex-col gap-1.5" style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 5 }}>
+      <button className={btnBase} onClick={() => rfInstanceRef.current?.zoomIn({ duration: 200 })} title="放大">
+        <ZoomIn size={14} />
+      </button>
+      <button className={btnBase} onClick={() => rfInstanceRef.current?.zoomOut({ duration: 200 })} title="缩小">
+        <ZoomOut size={14} />
+      </button>
+      <button className={btnBase} onClick={() => rfInstanceRef.current?.fitView({ duration: 300, padding: 0.3 })} title="适配视图">
+        <Maximize2 size={14} />
+      </button>
+    </div>
+  );
+}
+
+function LocateActiveButton({ isDark, activeNodeId }: { isDark: boolean; activeNodeId: string | null }) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [highlighting, setHighlighting] = React.useState(false);
+
+  const handleLocate = useCallback(() => {
+    if (!activeNodeId) return;
+    const instance = rfInstanceRef.current;
+    if (!instance) return;
+    const node = instance.getNode(activeNodeId);
+    if (!node) return;
+
+    const x = node.position.x + (node.measured?.width ?? 240) / 2;
+    const y = node.position.y + (node.measured?.height ?? 140) / 2;
+    instance.setViewport({ x: window.innerWidth / 4 - x, y: window.innerHeight / 4 - y, zoom: 1 }, { duration: 400 });
+
+    setHighlighting(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setHighlighting(false), 1500);
+  }, [activeNodeId]);
+
+  const btnBase = `w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150 active:scale-95 ${
+    isDark
+      ? 'bg-slate-800/90 border-slate-600/50 text-slate-300 hover:bg-slate-700/90 hover:text-white hover:border-slate-500/70'
+      : 'bg-white/90 border-slate-200/70 text-slate-500 hover:bg-slate-50 hover:text-slate-700 hover:border-slate-300/70'
+  } backdrop-blur-sm shadow-sm`;
+
+  return (
+    <div style={{ position: 'absolute', bottom: 16, left: 56, zIndex: 5 }}>
+      <button
+        className={`${btnBase} ${highlighting ? (isDark ? '!bg-indigo-600/80 !border-indigo-400/60 !text-white' : '!bg-indigo-500/90 !border-indigo-300/60 !text-white') : ''}`}
+        onClick={handleLocate}
+        title="定位当前分支"
+      >
+        <Crosshair size={14} />
+      </button>
+    </div>
+  );
+}
 
 // ──────────────────────────────────────────────
 // Dagre layout
@@ -265,8 +399,12 @@ function applyDagreLayout(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges:
   g.setGraph({ rankdir: 'TB', ranksep: RANK_SEP, nodesep: NODE_SEP });
 
   nodes.forEach((n) => {
-    const h = ((n.data as unknown as StoryNodeData).pairIndex === 0 ? NODE_HEIGHT + 28 : NODE_HEIGHT);
-    g.setNode(n.id, { width: NODE_WIDTH, height: h });
+    if (n.id === 'char_root') {
+      g.setNode(n.id, { width: NODE_WIDTH, height: 150 });
+    } else {
+      const h = ((n.data as unknown as StoryNodeData).pairIndex === 0 ? NODE_HEIGHT + 28 : NODE_HEIGHT);
+      g.setNode(n.id, { width: NODE_WIDTH, height: h });
+    }
   });
   edges.forEach((e) => g.setEdge(e.source, e.target));
 
@@ -290,7 +428,7 @@ function buildGraph(
   onNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => void,
   isDark: boolean
 ): { nodes: Node[]; edges: Edge[] } {
-  const { branches, active_branch_id } = branchTree;
+  const { branches, active_branch_id, character_info } = branchTree;
   const branchMap = new Map(branches.map((b) => [b.id, b]));
 
   const rawNodes: Node[] = [];
@@ -298,6 +436,22 @@ function buildGraph(
 
   // Map: "branchId_pairIndex" → node id
   const nodeIdOf = (branchId: string, idx: number) => `${branchId}_${idx}`;
+
+  // Add character card root node (level 0)
+  if (character_info) {
+    const isRootActive = activePath.has('char_root');
+    rawNodes.push({
+      id: 'char_root',
+      type: 'characterCard',
+      position: { x: 0, y: 0 },
+      data: {
+        characterInfo: character_info,
+        hasActiveBranches: isRootActive,
+        isDark,
+      } satisfies CharacterCardData,
+      draggable: true,
+    });
+  }
 
   branches.forEach((branch) => {
     const isActiveBranch = branch.id === active_branch_id;
@@ -344,37 +498,58 @@ function buildGraph(
       }
     });
 
-    // Fork edge: connect parent branch node → first node of this branch
-    if (branch.parent_branch_id && branch.nodes.length > 0) {
-      const parentBranch = branchMap.get(branch.parent_branch_id);
-      if (parentBranch) {
-        // Find which node in parentBranch contains parent_message_id
-        let parentNodeIdx = parentBranch.nodes.length - 1; // default: last node
-        if (branch.parent_message_id !== null) {
-          for (let i = 0; i < parentBranch.nodes.length; i++) {
-            const pn = parentBranch.nodes[i];
-            if (pn.user_msg_id === branch.parent_message_id || pn.ai_msg_id === branch.parent_message_id) {
-              parentNodeIdx = i;
-              break;
+    // Edge: connect to parent (character card root or parent branch)
+    if (branch.nodes.length > 0) {
+      const targetId = nodeIdOf(branch.id, 0);
+
+      if (branch.parent_branch_id) {
+        // Fork edge from parent branch
+        const parentBranch = branchMap.get(branch.parent_branch_id);
+        if (parentBranch) {
+          let parentNodeIdx = parentBranch.nodes.length - 1;
+          if (branch.parent_message_id !== null) {
+            for (let i = 0; i < parentBranch.nodes.length; i++) {
+              const pn = parentBranch.nodes[i];
+              if (pn.user_msg_id === branch.parent_message_id || pn.ai_msg_id === branch.parent_message_id) {
+                parentNodeIdx = i;
+                break;
+              }
             }
           }
+          const sourceId = nodeIdOf(branch.parent_branch_id, parentNodeIdx);
+          const isActiveEdge = activePath.has(sourceId) && activePath.has(targetId);
+          rawEdges.push({
+            id: `e_fork_${sourceId}_${targetId}`,
+            source: sourceId,
+            target: targetId,
+            type: 'smoothstep',
+            animated: isActiveEdge,
+            label: branch.branch_name,
+            labelStyle: { fontSize: 10, fill: isDark ? '#a5b4fc' : '#6366f1', fontWeight: 600 },
+            labelBgStyle: { fill: isDark ? 'rgba(30,27,75,0.8)' : 'rgba(238,242,255,0.9)', rx: 4, ry: 4 },
+            style: {
+              stroke: isActiveEdge ? '#6366f1' : '#8b5cf6',
+              strokeWidth: isActiveEdge ? 2.5 : 1.5,
+              strokeDasharray: isActiveEdge ? undefined : '5 3',
+              opacity: isActiveEdge ? 1 : 0.6,
+            },
+          });
         }
-        const sourceId = nodeIdOf(branch.parent_branch_id, parentNodeIdx);
-        const targetId = nodeIdOf(branch.id, 0);
-        const isActiveEdge = activePath.has(sourceId) && activePath.has(targetId);
+      } else if (character_info) {
+        // Root-level branch: connect from character card
+        const isActiveEdge = activePath.has('char_root') && activePath.has(targetId);
         rawEdges.push({
-          id: `e_fork_${sourceId}_${targetId}`,
-          source: sourceId,
+          id: `e_root_${targetId}`,
+          source: 'char_root',
           target: targetId,
           type: 'smoothstep',
           animated: isActiveEdge,
           label: branch.branch_name,
-          labelStyle: { fontSize: 10, fill: isDark ? '#a5b4fc' : '#6366f1', fontWeight: 600 },
-          labelBgStyle: { fill: isDark ? 'rgba(30,27,75,0.8)' : 'rgba(238,242,255,0.9)', rx: 4, ry: 4 },
+          labelStyle: { fontSize: 10, fill: isDark ? '#f9a8d4' : '#db2777', fontWeight: 600 },
+          labelBgStyle: { fill: isDark ? 'rgba(76,5,25,0.8)' : 'rgba(255,241,242,0.9)', rx: 4, ry: 4 },
           style: {
-            stroke: isActiveEdge ? '#6366f1' : '#8b5cf6',
-            strokeWidth: isActiveEdge ? 2.5 : 1.5,
-            strokeDasharray: isActiveEdge ? undefined : '5 3',
+            stroke: isActiveEdge ? '#ec4899' : isDark ? '#be185d' : '#f9a8d4',
+            strokeWidth: isActiveEdge ? 3 : 2,
             opacity: isActiveEdge ? 1 : 0.6,
           },
         });
@@ -389,7 +564,7 @@ function buildGraph(
 // Main component
 // ──────────────────────────────────────────────
 
-const StorylineMap: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isDark }) => {
+const StorylineMapInner: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isDark }) => {
   const activePath = useMemo(
     () => computeActivePath(branchTree.branches, branchTree.active_branch_id),
     [branchTree]
@@ -402,8 +577,8 @@ const StorylineMap: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isD
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges);
+  const initialFitDoneRef = useRef(false);
 
-  // Re-layout when branchTree changes
   useEffect(() => {
     const { nodes: n, edges: e } = buildGraph(branchTree, activePath, onNavigate, isDark);
     setNodes(n);
@@ -415,6 +590,13 @@ const StorylineMap: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isD
   const miniMapNodeColor = (n: Node) =>
     ((n.data as unknown as StoryNodeData).isOnActivePath ? '#6366f1' : isDark ? '#374151' : '#e5e7eb');
 
+  const activeLeafNodeId = useMemo(() => {
+    if (!branchTree.active_branch_id) return null;
+    const activeBranch = branchTree.branches.find(b => b.id === branchTree.active_branch_id);
+    if (!activeBranch || activeBranch.nodes.length === 0) return null;
+    return `${activeBranch.id}_${activeBranch.nodes.length - 1}`;
+  }, [branchTree]);
+
   return (
     <div className="w-full h-full" style={{ background: bgColor }}>
       <ReactFlow
@@ -423,11 +605,19 @@ const StorylineMap: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isD
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.3 }}
+        onInit={(instance) => {
+          rfInstanceRef.current = instance;
+          if (!initialFitDoneRef.current) {
+            initialFitDoneRef.current = true;
+            requestAnimationFrame(() => {
+              instance.fitView({ padding: 0.15, duration: 250, maxZoom: 1 });
+            });
+          }
+        }}
         minZoom={0.2}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        translateExtent={[[-500, -500], [3000, 5000]]}
       >
         <Background
           variant={BackgroundVariant.Dots}
@@ -435,21 +625,36 @@ const StorylineMap: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isD
           size={1.2}
           color={isDark ? '#1e293b' : '#e2e8f0'}
         />
-        <Controls
-          className="!bg-transparent"
-          style={{ bottom: 16, left: 16 }}
-          showInteractive={false}
-        />
         <MiniMap
           nodeColor={miniMapNodeColor}
-          maskColor={isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)'}
-          style={{ bottom: 16, right: 16, borderRadius: 12 }}
+          nodeStrokeWidth={2}
+          nodeBorderRadius={4}
+          maskColor={isDark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)'}
+          style={{
+            bottom: 16,
+            right: 16,
+            borderRadius: 10,
+            width: 140,
+            height: 100,
+            border: isDark ? '1px solid rgba(71,85,105,0.4)' : '1px solid rgba(203,213,225,0.5)',
+            background: isDark ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.85)',
+            backdropFilter: 'blur(8px)',
+            boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.3)' : '0 2px 8px rgba(0,0,0,0.08)',
+          }}
           pannable
           zoomable
         />
+        <CustomControls isDark={isDark} />
+        <LocateActiveButton isDark={isDark} activeNodeId={activeLeafNodeId} />
       </ReactFlow>
     </div>
   );
 };
+
+const StorylineMap: React.FC<StorylineMapProps> = (props) => (
+  <ReactFlowProvider>
+    <StorylineMapInner {...props} />
+  </ReactFlowProvider>
+);
 
 export default StorylineMap;

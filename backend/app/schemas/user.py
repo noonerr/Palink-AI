@@ -15,6 +15,10 @@ class UserSettingUpdate(BaseModel):
     memory_mode: Optional[str] = None
     memory_model: Optional[str] = None
     prompt_language: Optional[str] = None
+    character_display_mode: Optional[str] = None
+    author_note: Optional[str] = None
+    author_note_position: Optional[str] = None
+    author_note_frequency: Optional[int] = None
 
 class PasswordReset(BaseModel):
     new_password: str

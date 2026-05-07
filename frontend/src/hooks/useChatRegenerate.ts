@@ -111,7 +111,9 @@ export const useChatRegenerate = <T extends Message>({
                 };
                 return newMessages;
               });
-            } catch (e) {}
+            } catch (e) {
+              console.error('Failed to update message content:', e);
+            }
           }
         }
       }

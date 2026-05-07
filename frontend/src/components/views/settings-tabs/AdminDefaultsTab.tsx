@@ -72,7 +72,7 @@ export const AdminDefaultsTab: React.FC<AdminDefaultsTabProps> = ({
 }) => {
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-6 animate-fade-in pr-2">
+      <div className="space-y-6 animate-fade-in pr-2 pb-28">
         <h3 className="text-2xl font-semibold">{t.admin_defaults}</h3>
 
         <GlassCard className="p-6">

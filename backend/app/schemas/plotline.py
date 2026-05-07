@@ -1,6 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 from datetime import datetime
+
+from ..core.input_validation import sanitize_name, sanitize_text
 
 
 # ── PlotStage ────────────────────────────────────────────────────────────────
@@ -54,11 +56,43 @@ class PlotLineCreate(BaseModel):
     description: Optional[str] = None
     raw_content: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        return sanitize_name(v, max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=5000)
+
+    @field_validator("raw_content")
+    @classmethod
+    def validate_raw_content(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=500000)
+
 
 class PlotLineUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     raw_content: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        return sanitize_name(v, max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=5000)
+
+    @field_validator("raw_content")
+    @classmethod
+    def validate_raw_content(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=500000)
 
 
 # ── Session ──────────────────────────────────────────────────────────────────

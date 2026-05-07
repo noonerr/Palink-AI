@@ -1,5 +1,7 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
 
 
 # ── WorldBook ──
@@ -7,10 +9,30 @@ from pydantic import BaseModel
 class WorldBookCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    source_type: str = "online_edit"  # "upload" / "online_edit"
+    source_type: str = "online_edit"
     raw_content: Optional[str] = None
-    format: str = "custom"  # "silly_tavern_v2" / "custom"
+    format: str = "custom"
     tags: Optional[List[str]] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        return sanitize_name(v, max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=5000)
+
+    @field_validator("raw_content")
+    @classmethod
+    def validate_raw_content(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=500000)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        return sanitize_tags(v)
 
 
 class WorldBookUpdate(BaseModel):
@@ -18,6 +40,28 @@ class WorldBookUpdate(BaseModel):
     description: Optional[str] = None
     raw_content: Optional[str] = None
     tags: Optional[List[str]] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        return sanitize_name(v, max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=5000)
+
+    @field_validator("raw_content")
+    @classmethod
+    def validate_raw_content(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v, max_length=500000)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        return sanitize_tags(v)
 
 
 class WorldBookResponse(BaseModel):
@@ -130,9 +174,3 @@ class WorldBookStatus(BaseModel):
 
 class WorldBookParseRequest(BaseModel):
     model: Optional[str] = None
-
-
-# ── Parse Request ──
-
-class WorldBookParseRequest(BaseModel):
-    model: Optional[str] = None  # If None, uses system default

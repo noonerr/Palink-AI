@@ -24,6 +24,44 @@ export interface Model {
   icon?: string;
   avatar?: string;
   description?: string;
+  supports_vision?: boolean;
+  unified_id?: string;
+  provider_count?: number;
+  provider_id?: string;
+}
+
+export interface UnifiedModelProvider {
+  provider_id: string;
+  provider_name: string;
+  provider_type: 'api' | 'local';
+  model_id: string;
+  base_url: string;
+  api_key_resolved: boolean;
+  supports_vision: boolean;
+  context_length: number;
+  priority: number;
+  weight: number;
+  enabled: boolean;
+  max_rpm: number;
+  max_concurrent: number;
+  max_tokens_per_min: number;
+}
+
+export interface UnifiedModel {
+  unified_id: string;
+  display_name: string;
+  icon: string;
+  description: string;
+  model_type: string;
+  providers: UnifiedModelProvider[];
+  routing_strategy: 'priority' | 'round_robin' | 'weighted';
+  failover_enabled: boolean;
+}
+
+export interface RoutingStrategy {
+  id: string;
+  name: string;
+  description: string;
 }
 
 export interface Provider {
@@ -53,6 +91,7 @@ export interface Message {
   created_at?: string;
   tokens?: number;
   summary?: string;
+  webSearchResults?: { query: string; results: { title: string; snippet: string; url: string }[] };
 }
 
 export interface FileItem {
@@ -114,6 +153,8 @@ export interface Character {
   creator?: string;
   character_version?: string;
   extensions?: Record<string, any>;
+  avatar_url?: string;
+  greeting?: string;
 }
 
 // Silly Tavern 角色卡格式
@@ -137,6 +178,8 @@ export interface SillyTavernCharacterCard {
 export interface CharacterChatSession {
   id: string;
   title?: string;
+  character_id?: string;
+  user_id?: number;
   dialogue_mode: string;
   created_at: string;
   updated_at: string;
@@ -302,5 +345,33 @@ export interface PlotStageTransitionResult {
   current_stage_index: number;
   stage_title?: string;
   total_stages: number;
+}
+
+export interface GenerationPreset {
+  id: number;
+  user_id?: number;
+  name: string;
+  is_default: boolean;
+  activation_regex?: string;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  min_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
+  system_prompt_override?: string;
+  post_history_instructions?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryStats {
+  message_count: number;
+  token_count: number;
+  oldest_message_hours: number;
+  compression_needed: boolean;
+  compression_reason: string;
 }
 

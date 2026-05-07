@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback } from 'react';
 import { api } from '@/services/api';
 import { analyzeError, type ErrorInfo } from '@/lib/errorHandler';
-import type { Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch } from '@/types';
+import { consumeSseStream } from '@/lib/sseStream';
+import type { Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 
 const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
 
 export interface Attachment {
@@ -21,12 +22,16 @@ interface UseCharacterChatOptions {
   selectedModel: string;
   dialogueMode: 'first_person' | 'third_person';
   selectedBranch: CharacterChatSessionBranch | null;
+  currentPreset: GenerationPreset | null;
   getDisplayName: (character?: Character | Partial<Character> | null) => string;
   messages: CharacterChatMessage[];
   setMessages: React.Dispatch<React.SetStateAction<CharacterChatMessage[]>>;
   setSelectedSession: (session: CharacterChatSession | null) => void;
   loadSessions: (characterId: string) => Promise<void>;
   loadMemoryStats: (sessionId: string) => Promise<void>;
+  forkPoint: { branchId: string; messageId: number } | null;
+  onForkCreated: () => void;
+  onBranchCreated: (branch: { id: string; branch_name: string; is_active: boolean }) => void;
 }
 
 const TIMEOUT_WARNING_MS = 15000;
@@ -37,12 +42,16 @@ export function useCharacterChat({
   selectedModel,
   dialogueMode,
   selectedBranch,
+  currentPreset,
   getDisplayName,
   messages,
   setMessages,
   setSelectedSession,
   loadSessions,
   loadMemoryStats,
+  forkPoint,
+  onForkCreated,
+  onBranchCreated,
 }: UseCharacterChatOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -62,48 +71,6 @@ export function useCharacterChat({
   const timeoutRef = useRef<number | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  const consumeSseStream = useCallback(
-    async (response: Response, onJson: (json: Record<string, unknown>) => void) => {
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('Invalid stream response');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      const processChunk = (chunk: string) => {
-        buffer += chunk;
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const event of events) {
-          const lines = event.split('\n');
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-
-            const data = line.slice(6).trim();
-            if (!data || data === '[DONE]') continue;
-
-            try {
-              onJson(JSON.parse(data));
-            } catch {
-              // Ignore malformed chunks to keep the stream resilient.
-            }
-          }
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processChunk(decoder.decode(value, { stream: true }));
-      }
-
-      const tail = decoder.decode();
-      if (tail) processChunk(tail);
-    },
-    []
-  );
 
   const handleRegenerate = useCallback(async (messageIndex: number) => {
     if (!selectedCharacter || isGenerating || uploading || messageIndex < 1) return;
@@ -136,6 +103,26 @@ export function useCharacterChat({
     let fullReasoning = '';
     let resolvedSessionId: string | null = selectedSession?.id || null;
     let sessionSynced = false;
+    let effectiveBranchId = selectedBranch?.id;
+
+    if (forkPoint && selectedSession) {
+      try {
+        const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
+          session_id: selectedSession.id,
+          parent_branch_id: forkPoint.branchId,
+          parent_message_id: forkPoint.messageId,
+          same_level: false,
+        });
+        if (resp?.branch?.id) {
+          effectiveBranchId = resp.branch.id;
+          onBranchCreated(resp.branch);
+        }
+        onForkCreated();
+      } catch (e: any) {
+        console.error('Failed to create fork branch:', e);
+        onForkCreated();
+      }
+    }
 
     try {
       const response = await api.stream('/api/character-chat', {
@@ -143,10 +130,16 @@ export function useCharacterChat({
         character_id: selectedCharacter.id,
         message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
         model: selectedModel,
-        temperature: 0.7,
+        temperature: currentPreset?.temperature ?? 0.7,
+        top_p: currentPreset?.top_p ?? 0.9,
+        max_tokens: currentPreset?.max_tokens ?? 2048,
+        frequency_penalty: currentPreset?.frequency_penalty ?? 0,
+        presence_penalty: currentPreset?.presence_penalty ?? 0,
         dialogue_mode: dialogueMode,
-        branch_id: selectedBranch?.id,
+        branch_id: effectiveBranchId,
         user_nickname: getDisplayName(selectedCharacter),
+        images: [],
+        files: [],
       }, { signal: abortControllerRef.current.signal });
 
       await consumeSseStream(response, (json) => {
@@ -210,13 +203,34 @@ export function useCharacterChat({
       setRegeneratingMessageIndex(null);
       abortControllerRef.current = null;
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, consumeSseStream]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats]);
 
   const handleSendMessage = useCallback(async (content: string, images: string[]) => {
     if (!selectedCharacter) return;
 
     const text = content || inputValue;
     if ((!text.trim() && attachments.length === 0) || isGenerating || uploading) return;
+
+    let effectiveBranchId = selectedBranch?.id;
+
+    if (forkPoint && selectedSession) {
+      try {
+        const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
+          session_id: selectedSession.id,
+          parent_branch_id: forkPoint.branchId,
+          parent_message_id: forkPoint.messageId,
+          same_level: false,
+        });
+        if (resp?.branch?.id) {
+          effectiveBranchId = resp.branch.id;
+          onBranchCreated(resp.branch);
+        }
+        onForkCreated();
+      } catch (e: any) {
+        console.error('Failed to create fork branch:', e);
+        onForkCreated();
+      }
+    }
 
     const pendingAttachments = attachments;
     const outgoingImages = pendingAttachments.length > 0
@@ -235,7 +249,7 @@ export function useCharacterChat({
     setRetryMessageImages(outgoingImages);
 
     setRequestStartTime(Date.now());
-    timeoutRef.current = setTimeout(() => {
+    timeoutRef.current = window.setTimeout(() => {
       setTimeoutWarning(true);
     }, TIMEOUT_WARNING_MS);
 
@@ -270,9 +284,13 @@ export function useCharacterChat({
         character_id: selectedCharacter.id,
         message: text,
         model: selectedModel,
-        temperature: 0.7,
+        temperature: currentPreset?.temperature ?? 0.7,
+        top_p: currentPreset?.top_p ?? 0.9,
+        max_tokens: currentPreset?.max_tokens ?? 2048,
+        frequency_penalty: currentPreset?.frequency_penalty ?? 0,
+        presence_penalty: currentPreset?.presence_penalty ?? 0,
         dialogue_mode: dialogueMode,
-        branch_id: selectedBranch?.id,
+        branch_id: effectiveBranchId,
         user_nickname: getDisplayName(selectedCharacter),
         images: outgoingImages,
         files: outgoingFiles,
@@ -287,7 +305,7 @@ export function useCharacterChat({
           hasReceivedData = true;
           setTimeoutWarning(false);
           if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
+            window.clearTimeout(timeoutRef.current);
           }
         }
 
@@ -356,10 +374,10 @@ export function useCharacterChat({
       setTimeoutWarning(false);
       abortControllerRef.current = null;
       if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+        window.clearTimeout(timeoutRef.current);
       }
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, consumeSseStream]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated]);
 
   const handleSendWithInput = useCallback(async () => {
     if (inputValue.trim() || attachments.length > 0) {
@@ -407,8 +425,8 @@ export function useCharacterChat({
     try {
       await api.delete(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`);
       setMessages(prev => prev.filter((msg, idx) => {
-        if (typeof msg.id === 'number') {
-          return msg.id !== messageId;
+        if (msg.id != null) {
+          return String(msg.id) !== String(messageId);
         }
         return idx !== messageIndex;
       }));
@@ -417,13 +435,15 @@ export function useCharacterChat({
     }
   }, [selectedSession, setMessages]);
 
-  const handleEditMessage = useCallback(async (messageId: number, messageIndex: number, newContent: string) => {
+  const handleEditMessage = useCallback(async (messageId: string | number, messageIndex: number, newContent: string) => {
     if (!selectedSession) return;
     try {
-      await api.put(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`, { content: newContent });
+      if (typeof messageId === 'number') {
+        await api.put(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`, { content: newContent });
+      }
       setMessages(prev => {
         const newMessages = [...prev];
-        const targetIndex = newMessages.findIndex((msg) => msg.id === messageId);
+        const targetIndex = newMessages.findIndex((msg) => String(msg.id) === String(messageId));
         const safeIndex = targetIndex >= 0 ? targetIndex : messageIndex;
         if (safeIndex < 0 || safeIndex >= newMessages.length) {
           return newMessages;
@@ -443,7 +463,7 @@ export function useCharacterChat({
   // Cleanup on unmount
   const cleanupTimeout = useCallback(() => {
     if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
+      window.clearTimeout(timeoutRef.current);
     }
   }, []);
 

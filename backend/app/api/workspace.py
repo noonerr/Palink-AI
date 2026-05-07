@@ -1,26 +1,33 @@
+import base64
 import os
 import uuid
 import shutil
-import base64
 import logging
-from typing import Optional, List, Set
+import json as json_lib
+from typing import Optional, List, Set, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from ..core import get_db, settings
 from ..api.dependencies import get_current_user
 from ..models import User, UserFolder, UserFile
-from ..schemas import FolderCreate
-from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
+from ..schemas import FolderCreate, AnalyzeRequest
+from ..services.inference_dispatcher import complete_text_completion, ensure_model_available, stream_text_completion
+from ..utils import normalize_upload_filename
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 logger = logging.getLogger(__name__)
 
 
 # --- helpers ---
+
+def _is_safe_path(file_path: str) -> bool:
+    workspace_root = os.path.realpath(settings.WORKSPACE_DIR)
+    real_path = os.path.realpath(file_path)
+    return real_path.startswith(workspace_root + os.sep) or real_path == workspace_root
 
 def _clean_id(val: Optional[str]) -> Optional[str]:
     if not val or str(val).lower() in ("null", "undefined", "none", ""):
@@ -35,13 +42,6 @@ def _workspace_allowed_extensions() -> Set[str]:
         for ext in raw.split(",")
         if ext and ext.strip()
     }
-
-
-def _normalize_upload_filename(filename: Optional[str]) -> str:
-    safe_name = os.path.basename(filename or "").strip()
-    if not safe_name:
-        safe_name = f"upload_{uuid.uuid4().hex}.bin"
-    return safe_name
 
 
 def _validate_workspace_upload(user: User, file_size: int, filename: str) -> None:
@@ -70,7 +70,102 @@ def _validate_workspace_upload(user: User, file_size: int, filename: str) -> Non
             detail=f"Storage quota exceeded. Max quota: {settings.WORKSPACE_MAX_USER_STORAGE_MB}MB",
         )
 
+def _extract_file_content(f) -> Dict[str, Any]:
+    text_exts = (".txt", ".md", ".py", ".js", ".ts", ".tsx", ".json", ".csv", ".html", ".css", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".sh", ".bash", ".zsh", ".sql", ".r", ".rb", ".go", ".rs", ".java", ".cpp", ".c", ".h", ".hpp")
 
+    if f.mime_type and f.mime_type.startswith("image/"):
+        if _is_safe_path(f.file_path) and os.path.exists(f.file_path):
+            try:
+                with open(f.file_path, "rb") as img_f:
+                    img_data = base64.b64encode(img_f.read()).decode("utf-8")
+                return {"type": "image", "data_url": f"data:{f.mime_type};base64,{img_data}", "filename": f.filename, "mime_type": f.mime_type}
+            except Exception:
+                return {"type": "image_fallback", "text": f"[IMAGE_FILE:{f.filename}]"}
+        return {"type": "image_fallback", "text": f"[IMAGE_FILE:{f.filename}]"}
+
+    if f.filename.lower().endswith(".pdf"):
+        try:
+            import pdfplumber
+            with pdfplumber.open(f.file_path) as pdf:
+                texts = []
+                for page in pdf.pages[:20]:
+                    text = page.extract_text()
+                    if text:
+                        texts.append(text)
+                if texts:
+                    return {"type": "text", "text": "\n\n".join(texts)[:settings.WORKSPACE_ANALYZE_MAX_CHARS]}
+        except ImportError:
+            pass
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(f.file_path)
+            texts = []
+            for page in reader.pages[:20]:
+                text = page.extract_text()
+                if text:
+                    texts.append(text)
+            if texts:
+                return {"type": "text", "text": "\n\n".join(texts)[:settings.WORKSPACE_ANALYZE_MAX_CHARS]}
+        except ImportError:
+            pass
+        return {"type": "text", "text": f"[PDF_FILE:{f.filename}:Unable to extract text - no PDF library installed]"}
+
+    if f.mime_type and f.mime_type.startswith("text/") or f.filename.lower().endswith(text_exts):
+        if not _is_safe_path(f.file_path):
+            return {"type": "text", "text": "[Access denied]"}
+        try:
+            with open(f.file_path, "r", encoding="utf-8", errors="ignore") as fo:
+                return {"type": "text", "text": fo.read(settings.WORKSPACE_ANALYZE_MAX_CHARS)}
+        except Exception:
+            return {"type": "text", "text": "[Unreadable text content]"}
+
+    return {"type": "binary", "text": f"[BINARY_FILE:{f.filename}:type={f.mime_type or 'unknown'}:size={f.file_size or 0}]"}
+
+
+def _build_analysis_messages(f, content_info: Dict[str, Any], lang: str) -> list:
+    content_type = content_info.get("type", "text")
+    content_text = content_info.get("text", "")
+    lang_hint = "请使用中文回答。" if lang == "zh" else "Respond in English."
+
+    if content_type == "image":
+        system_msg = (
+            f"You are a professional file analyst. {lang_hint}\n"
+            f"Analyze the image file and provide a structured insight with:\n"
+            f"1. **Summary**: A concise description of the image content\n"
+            f"2. **Key Points**: Notable elements, objects, text, or patterns in the image (as a numbered list)\n"
+            f"3. **Tags**: 3-5 relevant tags for categorization"
+        )
+        user_content = [
+            {"type": "text", "text": f"FileName: {f.filename}\nFile type: {f.mime_type}\n\nPlease analyze this image."},
+            {"type": "image_url", "image_url": {"url": content_info["data_url"]}},
+        ]
+        return [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_content},
+        ]
+    elif content_type == "binary":
+        system_msg = (
+            f"You are a professional file analyst. {lang_hint}\n"
+            f"Based on the file metadata, provide a brief structured insight:\n"
+            f"1. **Summary**: What this file likely contains based on its name and type\n"
+            f"2. **Key Points**: Potential uses or contents (as a numbered list)\n"
+            f"3. **Tags**: 3-5 relevant tags"
+        )
+        user_msg = f"File metadata:\n{content_text}"
+    else:
+        system_msg = (
+            f"You are a professional file analyst. {lang_hint}\n"
+            f"Analyze the following file content and provide a structured insight with:\n"
+            f"1. **Summary**: A concise summary of the file's purpose and content\n"
+            f"2. **Key Points**: Important information, patterns, or notable elements (as a numbered list)\n"
+            f"3. **Tags**: 3-5 relevant tags for categorization"
+        )
+        user_msg = f"FileName: {f.filename}\n\nContent:\n{content_text}"
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
 
 
 # --- schemas ---
@@ -86,10 +181,30 @@ class DeleteRequest(BaseModel):
     folder_ids: List[str] = []
 
 
-class AnalyzeRequest(BaseModel):
-    file_id: str
-    model: str
-    lang: str = "zh"
+
+def _recursive_delete_folder(db: Session, user: User, folder: UserFolder) -> int:
+    """递归删除文件夹及其所有子文件和子文件夹，返回释放的字节数"""
+    freed = 0
+    child_folders = db.query(UserFolder).filter(
+        UserFolder.parent_id == folder.id, UserFolder.user_id == user.id
+    ).all()
+    for child in child_folders:
+        freed += _recursive_delete_folder(db, user, child)
+
+    child_files = db.query(UserFile).filter(
+        UserFile.folder_id == folder.id, UserFile.user_id == user.id
+    ).all()
+    for f in child_files:
+        if os.path.exists(f.file_path):
+            try:
+                os.remove(f.file_path)
+            except Exception:
+                logger.exception("Failed to delete workspace file %s", f.filename)
+        freed += f.file_size or 0
+        db.delete(f)
+
+    db.delete(folder)
+    return freed
 
 
 # --- routes ---
@@ -162,7 +277,7 @@ async def upload_workspace_file(
     size = file.file.tell()
     file.file.seek(0)
 
-    original_name = _normalize_upload_filename(file.filename)
+    original_name = normalize_upload_filename(file.filename)
     _validate_workspace_upload(user=user, file_size=size, filename=original_name)
 
     fid = _clean_id(folder_id)
@@ -183,8 +298,9 @@ async def upload_workspace_file(
     try:
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write file: {e}")
+    except Exception:
+        logger.exception("Failed to write workspace file")
+        raise HTTPException(status_code=500, detail="Failed to write file")
 
     try:
         db_file = UserFile(
@@ -198,10 +314,11 @@ async def upload_workspace_file(
         user.storage_used = (user.storage_used or 0) + size
         db.add(db_file)
         db.commit()
-    except Exception as e:
+    except Exception:
         if os.path.exists(file_path):
             os.remove(file_path)
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+        logger.exception("Workspace database write failed")
+        raise HTTPException(status_code=500, detail="Database error")
 
     return {"status": "ok", "file": {"id": db_file.id, "filename": db_file.filename}}
 
@@ -242,8 +359,9 @@ async def delete_items(
             if os.path.exists(f.file_path):
                 try:
                     os.remove(f.file_path)
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Failed to delete file '{f.filename}': {e}")
+                except Exception:
+                    logger.exception("Failed to delete workspace file %s", f.filename)
+                    raise HTTPException(status_code=500, detail=f"Failed to delete file '{f.filename}'")
             freed += f.file_size or 0
             db.delete(f)
     if req.folder_ids:
@@ -251,7 +369,7 @@ async def delete_items(
             UserFolder.id.in_(req.folder_ids), UserFolder.user_id == user.id
         ).all()
         for fol in folders:
-            db.delete(fol)
+            freed += _recursive_delete_folder(db, user, fol)
     user.storage_used = max(0, (user.storage_used or 0) - freed)
     db.commit()
     return {"status": "ok"}
@@ -269,6 +387,8 @@ async def download_workspace_file(
     ).first()
     if not f or not os.path.exists(f.file_path):
         raise HTTPException(status_code=404, detail="File not found")
+    if not _is_safe_path(f.file_path):
+        raise HTTPException(status_code=403, detail="Access denied")
     return FileResponse(f.file_path, filename=f.filename)
 
 
@@ -287,28 +407,13 @@ async def analyze_workspace_file(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Read text content
-    text_exts = (".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".html", ".css", ".yaml", ".yml")
-    content = ""
-    if f.mime_type and f.mime_type.startswith("text/") or f.filename.endswith(text_exts):
-        try:
-            with open(f.file_path, "r", encoding="utf-8", errors="ignore") as fo:
-                content = fo.read(settings.WORKSPACE_ANALYZE_MAX_CHARS)
-        except Exception:
-            content = "[Unreadable text content]"
-    else:
-        content = f"[Binary file: {f.filename}]"
-
-    lang_hint = "Respond in English." if req.lang == "en" else "请使用中文回答。"
-    prompt = (
-        f"Analyze the following file and provide a structured outline with key points and a brief summary.\n"
-        f"{lang_hint}\n\nFileName: {f.filename}\n\nContent:\n{content}"
-    )
+    content = _extract_file_content(f)
+    messages = _build_analysis_messages(f, content, req.lang)
 
     try:
         completion = await complete_text_completion(
             model_id=req.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=0.5,
             max_tokens=1200,
             timeout=30.0,
@@ -317,5 +422,62 @@ async def analyze_workspace_file(
         f.summary = summary_text
         db.commit()
         return {"status": "ok", "summary": summary_text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+    except Exception:
+        logger.exception("Workspace file analysis failed")
+        raise HTTPException(status_code=500, detail="Analysis failed")
+
+
+@router.post("/analyze/stream")
+async def stream_analyze_workspace_file(
+    req: AnalyzeRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    f = db.query(UserFile).filter(UserFile.id == req.file_id, UserFile.user_id == user.id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        ensure_model_available(req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    content = _extract_file_content(f)
+    messages = _build_analysis_messages(f, content, req.lang)
+
+    async def event_generator():
+        full_content = ""
+        try:
+            async for chunk in stream_text_completion(
+                model_id=req.model,
+                messages=messages,
+                temperature=0.5,
+                timeout=120.0,
+            ):
+                if "content" in chunk:
+                    text = chunk["content"]
+                    full_content += text
+                    yield f"data: {json_lib.dumps({'content': text})}\n\n"
+                elif "usage" in chunk:
+                    yield f"data: {json_lib.dumps({'usage': chunk['usage']})}\n\n"
+        except Exception as e:
+            logger.exception("Stream analysis error")
+            yield f"data: {json_lib.dumps({'error': str(e)[:200]})}\n\n"
+
+        if full_content:
+            from ..core.database import SessionLocal
+            save_db = SessionLocal()
+            try:
+                file_obj = save_db.query(UserFile).filter(UserFile.id == f.id).first()
+                if file_obj:
+                    file_obj.summary = full_content
+                    save_db.commit()
+            except Exception as e:
+                save_db.rollback()
+                logger.error("Failed to save file summary: %s", e)
+            finally:
+                save_db.close()
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

@@ -1,20 +1,22 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse
+from sqlalchemy import text
 import logging
 import os
+import uuid
 import anyio.to_thread
 import json
+import jwt
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
 
-from sqlalchemy.orm import Session
 from .core import settings, engine, run_migrations, get_password_hash
+from .core.exceptions import ServiceError
 from .api import api_router
 from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
@@ -82,7 +84,7 @@ def _init_default_data() -> None:
                 role="admin"
             )
             db.add(admin)
-            logger.info(f"已创建默认 admin 用户，密码: {settings.ADMIN_PASSWORD}")
+            logger.info("已创建默认 admin 用户，请尽快修改默认密码")
         
         # 创建默认 starter questions
         if not db.query(SystemSetting).filter(SystemSetting.key == "starter_questions").first():
@@ -134,11 +136,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Palink AI Enterprise API v12.7",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
-
-app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
-app.mount("/api/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="api-uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -151,28 +153,130 @@ app.add_middleware(
 app.include_router(api_router)
 
 
+async def _verify_upload_access(
+    request: Request,
+    token: str = Query(None, alias="token"),
+) -> None:
+    if token:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"], options={"verify_signature": True})
+            username: str = payload.get("sub")
+            if username is None:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            exp = payload.get("exp")
+            if exp is not None:
+                from datetime import datetime, timezone
+                if datetime.now(timezone.utc).timestamp() > exp:
+                    raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.PyJWTError:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return
+
+    from .api.dependencies import get_current_user
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from .core import SessionLocal
+    db = SessionLocal()
+    try:
+        bearer_token = auth_header.split(" ", 1)[1]
+        payload = jwt.decode(bearer_token, settings.SECRET_KEY, algorithms=["HS256"], options={"verify_signature": True})
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        from .models import User
+        user = db.query(User).filter(User.username == username).first()
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    finally:
+        db.close()
+
+
+def _safe_serve_upload(file_path: str) -> FileResponse:
+    safe_dir = os.path.realpath(settings.UPLOAD_DIR)
+    full_path = os.path.realpath(os.path.join(safe_dir, file_path))
+    if not (full_path == safe_dir or full_path.startswith(safe_dir + os.sep)):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(full_path)
+
+
+@app.get("/api/uploads/{file_path:path}")
+async def serve_api_upload_file(
+    file_path: str,
+    request: Request,
+    token: str = Query(None, alias="token"),
+):
+    await _verify_upload_access(request, token)
+    return _safe_serve_upload(file_path)
+
+
+@app.get("/uploads/{file_path:path}")
+async def serve_upload_file(
+    file_path: str,
+    request: Request,
+    token: str = Query(None, alias="token"),
+):
+    await _verify_upload_access(request, token)
+    return _safe_serve_upload(file_path)
+
+
+@app.exception_handler(ServiceError)
+async def service_error_handler(request: Request, exc):
+    request_id = getattr(request.state, "request_id", "unknown")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "code": exc.code,
+            "request_id": request_id,
+        },
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = getattr(request.state, "request_id", "unknown")
     if exc.status_code >= 500:
         logger.error(
-            "HTTP %s at %s: %s",
+            "HTTP %s at %s: %s request_id=%s",
             exc.status_code,
             request.url.path,
             exc.detail,
+            request_id,
         )
-        return JSONResponse(status_code=exc.status_code, content={"detail": "Internal server error"})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": "Internal server error", "request_id": request_id},
+        )
 
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": exc.detail, "request_id": request_id},
         headers=exc.headers,
     )
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled server error at %s", request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.exception("Unhandled server error at %s request_id=%s", request.url.path, request_id)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+    )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:16])
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 @app.get("/")
 async def root():
@@ -181,3 +285,37 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/ready")
+async def readiness_check():
+    checks = {}
+    overall = "ready"
+
+    try:
+        from .core import SessionLocal
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        finally:
+            db.close()
+    except Exception as e:
+        checks["database"] = f"error: {str(e)[:100]}"
+        overall = "not_ready"
+
+    try:
+        upload_dir = settings.UPLOAD_DIR
+        if os.path.isdir(upload_dir) and os.access(upload_dir, os.W_OK):
+            checks["disk_space"] = "ok"
+        else:
+            checks["disk_space"] = "upload_dir_not_writable"
+            overall = "degraded"
+    except Exception as e:
+        checks["disk_space"] = f"error: {str(e)[:100]}"
+        overall = "degraded"
+
+    status_code = 200 if overall in ("ready", "degraded") else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": overall, "checks": checks},
+    )

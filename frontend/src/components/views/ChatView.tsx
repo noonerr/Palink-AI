@@ -14,7 +14,7 @@ import type { Message as MessageType, Model, Session } from '@/types';
 
 // Generate unique ID for messages
 const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
 
 interface ChatViewProps {
@@ -42,7 +42,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   token: _token,
   user,
   models,
-  defaultModel,
+  currentModel: defaultModel,
   starterQuestions,
   t
 }) => {
@@ -55,6 +55,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [currentModel, setCurrentModel] = useState(defaultModel);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchAvailable, setWebSearchAvailable] = useState(true);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -148,11 +150,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
         session_id: activeSessionId,
         compression_ratio: 0.5
       });
-      alert(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      console.info(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(activeSessionId);
     } catch (e) {
       console.error('Manual compress failed:', e);
-      alert('压缩失败');
+      console.error('压缩失败');
     } finally {
       setCompressing(false);
     }
@@ -202,6 +204,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, []);
   
   useEffect(() => {
+    api.get('/api/admin/web-search').then((data: any) => {
+      if (data && data.enabled === false) setWebSearchAvailable(false);
+    }).catch(() => {});
     return () => {
       if (sessionsRefreshTimerRef.current) {
         clearTimeout(sessionsRefreshTimerRef.current);
@@ -435,10 +440,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
           message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
           model: currentModel,
           images: [],
-          files: []
+          files: [],
+          web_search: webSearchEnabled
         }, { signal: abortControllerRef.current.signal });
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'web_search' && json.results) {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            if (newMessages[assistantMessageIndex]) {
+              newMessages[assistantMessageIndex] = {
+                ...newMessages[assistantMessageIndex],
+                webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] }
+              };
+            }
+            return newMessages;
+          });
+          return;
+        }
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
@@ -503,15 +522,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const text = typeof overrideText === 'string' ? overrideText : input;
     if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
 
-    sessionIdSetRef.current = false; // 重置会话ID设置标记
-    setInput('');
-    setAttachments([]);
-    setStreaming(true);
-    setSuggestions([]);
-    setIsSendingMessage(true);
-
-    // Build display content with attachments
+    // 在清空状态之前先构建好 displayContent 并保存 attachments
     let displayContent = text;
+    const savedAttachments = [...attachments];
     if (attachments.length > 0) {
       displayContent += '\n\n';
       attachments.forEach(att => {
@@ -520,6 +533,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           : `[📎 ${att.name}](${att.url})\n`;
       });
     }
+
+    sessionIdSetRef.current = false; // 重置会话ID设置标记
+    setInput('');
+    setAttachments([]);
+    setStreaming(true);
+    setSuggestions([]);
+    setIsSendingMessage(true);
 
     // Add user message and placeholder for assistant with unique IDs
     const userMessageId = generateMessageId();
@@ -540,8 +560,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
           session_type: 'chat',
           message: text,
           model: currentModel,
-          images: attachments.filter(a => a.type === 'image').map(a => a.url),
-          files: attachments.filter(a => a.type === 'file').map(a => a.url)
+          images: savedAttachments.filter(a => a.type === 'image').map(a => a.url),
+          files: savedAttachments.filter(a => a.type === 'file').map(a => a.url),
+          display_content: displayContent,
+          web_search: webSearchEnabled
         }, { signal: abortControllerRef.current.signal });
 
       if (!activeSessionId) {
@@ -549,6 +571,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
 
       await consumeSseStream(res, (json) => {
+        if (json.type === 'web_search' && json.results) {
+          setMessages(prev => prev.map(m => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
+          return;
+        }
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
@@ -638,10 +664,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         
         loadSessions();
       } else if (pendingDelete.type === 'message') {
-        if (activeSessionId) {
+        if (activeSessionId && typeof pendingDelete.messageId === 'number') {
           await api.delete(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`);
-          setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
         }
+        setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
       }
     } catch (e) {
       console.error('Delete failed:', e);
@@ -666,7 +692,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setShowDeleteConfirm(true);
   };
 
-  const handleDeleteMessage = (messageId: number, messageIndex: number) => {
+  const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
     setPendingDelete({ type: 'message', messageId, messageIndex });
     setShowDeleteConfirm(true);
   };
@@ -695,11 +721,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleEditMessage = async (messageId: number, messageIndex: number, newContent: string) => {
+  const handleEditMessage = async (messageId: string | number, messageIndex: number, newContent: string) => {
     if (!activeSessionId) return;
     
     try {
-      await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      if (typeof messageId === 'number') {
+        await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
+      }
       setMessages(prev => {
         const newMessages = [...prev];
         newMessages[messageIndex] = {
@@ -900,6 +928,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 placeholder={t.ask_anything}
                 streaming={streaming}
                 onStop={() => abortControllerRef.current?.abort()}
+                webSearchEnabled={webSearchEnabled}
+                onToggleWebSearch={() => setWebSearchEnabled(prev => !prev)}
+                showWebSearch={webSearchAvailable}
               />
               <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
                 {t.ai_disclaimer}
@@ -1094,8 +1125,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       compressing={compressing}
                       onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
                       canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && messages[idx - 1]?.role === 'user'}
-                      onDelete={msg.id ? () => handleDeleteMessage(msg.id as number, idx) : undefined}
-                      onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id as number, idx, newContent) : undefined}
+                      onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
+                      onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
                       canEdit={msg.role === 'assistant' && !streaming}
                       isSelected={msg.id !== undefined ? selectedMessages.has(String(msg.id)) : false}
                       onToggleSelect={msg.id !== undefined ? () => toggleMessageSelect(String(msg.id)) : undefined}
@@ -1144,6 +1175,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               placeholder={t.ask_anything}
               streaming={streaming}
               onStop={() => abortControllerRef.current?.abort()}
+              webSearchEnabled={webSearchEnabled}
+              onToggleWebSearch={() => setWebSearchEnabled(prev => !prev)}
+              showWebSearch={webSearchAvailable}
             />
             <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
               {t.ai_disclaimer}

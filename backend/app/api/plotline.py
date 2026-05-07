@@ -1,6 +1,7 @@
 """PlotLine API routes — CRUD, AI parse, session association, stage transitions."""
 import json
 import uuid
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,7 @@ from ..core import get_db
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.plotline import PlotLine, PlotStage, SessionPlotLine
+from ..models.character import CharacterChatSession
 from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
 from ..schemas.plotline import (
     PlotLineCreate, PlotLineUpdate, PlotLineResponse,
@@ -21,10 +23,21 @@ from ..schemas.plotline import (
 
 router = APIRouter(prefix="/api/plotlines", tags=["plotlines"])
 router_session_pl = APIRouter(prefix="/api/character-sessions", tags=["session-plotline"])
+logger = logging.getLogger(__name__)
 
 
 def _utc_now():
     return datetime.now(timezone.utc)
+
+
+def _verify_session_owner(session_id: str, user_id: int, db: Session):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user_id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 def _pl_to_response(pl: PlotLine) -> dict:
@@ -132,7 +145,7 @@ def delete_plot_line(
         raise HTTPException(status_code=404, detail="PlotLine not found")
     db.delete(pl)
     db.commit()
-    return {"success": True}
+    return {"status": "ok"}
 
 
 # ── AI Parse ─────────────────────────────────────────────────────────────────
@@ -174,8 +187,9 @@ async def parse_plot_line(
             timeout=60.0,
         )
         result_text = completion.get("content") or ""
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+    except Exception:
+        logger.exception("Plotline parse LLM call failed")
+        raise HTTPException(status_code=502, detail="LLM call failed")
 
     # Parse JSON response
     try:
@@ -185,8 +199,9 @@ async def parse_plot_line(
             if raw.startswith("json"):
                 raw = raw[4:]
         stages_data: list = json.loads(raw)
-    except (json.JSONDecodeError, IndexError) as e:
-        raise HTTPException(status_code=422, detail=f"Failed to parse LLM response: {e}")
+    except (json.JSONDecodeError, IndexError):
+        logger.exception("Failed to parse plotline LLM response")
+        raise HTTPException(status_code=422, detail="Failed to parse LLM response")
 
     # Delete existing stages and re-create
     db.query(PlotStage).filter(PlotStage.plot_line_id == pl.id).delete()
@@ -258,6 +273,8 @@ def associate_plot_line(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _verify_session_owner(session_id, current_user.id, db)
+
     pl = db.query(PlotLine).filter(PlotLine.id == req.plot_line_id, PlotLine.user_id == current_user.id).first()
     if not pl:
         raise HTTPException(status_code=404, detail="PlotLine not found")
@@ -269,7 +286,7 @@ def associate_plot_line(
         existing.stage_transition_mode = req.stage_transition_mode
         existing.updated_at = _utc_now()
         db.commit()
-        return {"success": True, "current_stage_index": 0}
+        return {"status": "ok", "current_stage_index": 0}
 
     spl = SessionPlotLine(
         id=str(uuid.uuid4()),
@@ -280,7 +297,7 @@ def associate_plot_line(
     )
     db.add(spl)
     db.commit()
-    return {"success": True, "current_stage_index": 0}
+    return {"status": "ok", "current_stage_index": 0}
 
 
 @router_session_pl.delete("/{session_id}/plotline")
@@ -289,11 +306,13 @@ def remove_plot_line(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _verify_session_owner(session_id, current_user.id, db)
+
     spl = db.query(SessionPlotLine).filter(SessionPlotLine.session_id == session_id).first()
     if spl:
         db.delete(spl)
         db.commit()
-    return {"success": True}
+    return {"status": "ok"}
 
 
 @router_session_pl.get("/{session_id}/plotline/status")
@@ -302,6 +321,8 @@ def get_plot_line_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _verify_session_owner(session_id, current_user.id, db)
+
     spl = db.query(SessionPlotLine).filter(SessionPlotLine.session_id == session_id).first()
     if not spl:
         return {"active": False}
@@ -337,6 +358,8 @@ def transition_stage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _verify_session_owner(session_id, current_user.id, db)
+
     spl = db.query(SessionPlotLine).filter(SessionPlotLine.session_id == session_id).first()
     if not spl:
         raise HTTPException(status_code=404, detail="No plotline for this session")
@@ -360,7 +383,7 @@ def transition_stage(
     ).first()
 
     return {
-        "success": True,
+        "status": "ok",
         "new_stage_index": new_idx,
         "stage_title": stage.title if stage else None,
         "message": f"已切换到阶段 {new_idx + 1}",

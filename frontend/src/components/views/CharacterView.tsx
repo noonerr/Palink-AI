@@ -6,15 +6,15 @@ import { Bot } from 'lucide-react';
 import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
 import { api } from '@/services/api';
+import { toast } from 'sonner';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 import { CharacterList } from './character/CharacterList';
 import { CharacterEditor } from './character/CharacterEditor';
 import { CharacterChat } from './character/CharacterChat';
-// import { CharacterProfile } from './character/CharacterProfile';
 import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
 import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
-import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch } from '@/types';
+import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 
 interface CharacterViewProps {
   token: string;
@@ -23,6 +23,9 @@ interface CharacterViewProps {
   t: Record<string, string>;
   systemDefaults?: Record<string, string>;
   lang?: 'zh' | 'en';
+  isDark?: boolean;
+  sidebarCollapsed?: boolean;
+  setSidebarCollapsed?: (v: boolean) => void;
 }
 
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
@@ -33,7 +36,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   models,
   t,
   systemDefaults,
-  lang
+  lang,
+  sidebarCollapsed: _sidebarCollapsedProp,
+  setSidebarCollapsed: _setSidebarCollapsedProp,
 }) => {
   const { characterId } = useParams<{ characterId?: string }>();
   const navigate = useNavigate();
@@ -41,7 +46,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [viewState, setViewState] = useState<ViewState>('list');
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
-  const [viewingCharacter, setViewingCharacter] = useState<Character | null>(null);
   const [editingCharacter, setEditingCharacter] = useState<Partial<Character>>({});
   
   const getDisplayName = (character?: Character | Partial<Character> | null): string => {
@@ -61,14 +65,28 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   // 对话分支相关状态
   const [branches, setBranches] = useState<CharacterChatSessionBranch[]>([]);
   const [selectedBranch, setSelectedBranch] = useState<CharacterChatSessionBranch | null>(null);
-  const [showBranchSelector, setShowBranchSelector] = useState(false);
-  const [newBranchName, setNewBranchName] = useState('');
-  const [showStoryline, setShowStoryline] = useState(false);
   const [branchTree, setBranchTree] = useState<BranchTree | null>(null);
+  const [forkPoint, setForkPoint] = useState<{ branchId: string; messageId: number } | null>(null);
+  const [currentPreset, setCurrentPreset] = useState<GenerationPreset | null>(null);
   
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [storylineCollapsed, setStorylineCollapsed] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  
+
+  useEffect(() => {
+    console.log('[DEBUG] storylineCollapsed changed:', storylineCollapsed, new Error().stack?.split('\n')[2]?.trim());
+  }, [storylineCollapsed]);
+
+  useEffect(() => {
+    if (window.innerWidth >= 768) return;
+    const nav = document.querySelector('nav[data-dock="true"]');
+    if (!nav) return;
+    if (!storylineCollapsed) {
+      nav.style.transform = 'translateX(calc(-50% + 320px))';
+    } else {
+      nav.style.transform = '';
+    }
+  }, [storylineCollapsed]);
+
   const [memoryStats, setMemoryStats] = useState<{
     message_count: number;
     token_count: number;
@@ -91,9 +109,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const [processingCharacter, setProcessingCharacter] = useState<string | null>(null);
   const [forceShowOverlay, setForceShowOverlay] = useState<string | null>(null);
   const [showProcessingMessage, setShowProcessingMessage] = useState<{ show: boolean; message: string }>({ show: false, message: '' });
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [showModelReasoning, setShowModelReasoning] = useState(false);
   const [memoryMode, setMemoryMode] = useState<string>('rule');
+  const [characterDisplayMode, setCharacterDisplayMode] = useState<string>('framed');
   const [showWorldBookManager, setShowWorldBookManager] = useState(false);
   const [showWorldBookOverview, setShowWorldBookOverview] = useState(false);
   const [selectedWorldBookId, setSelectedWorldBookId] = useState<string | null>(null);
@@ -104,7 +123,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
 
   // World Book hook
   const wb = useWorldBook();
-  // PlotLine hook
   const pl = usePlotLine();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -187,12 +205,16 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     selectedModel,
     dialogueMode,
     selectedBranch,
+    currentPreset,
     getDisplayName,
     messages,
     setMessages,
     setSelectedSession,
     loadSessions,
     loadMemoryStats,
+    forkPoint,
+    onForkCreated: () => setForkPoint(null),
+    onBranchCreated: (branch) => setSelectedBranch({ id: branch.id, branch_name: branch.branch_name, is_active: branch.is_active, session_id: branch.session_id || selectedSession?.id || '', parent_branch_id: branch.parent_branch_id || null, parent_message_id: branch.parent_message_id || null, created_at: branch.created_at || new Date().toISOString() }),
   });
 
   // Message selection hook
@@ -228,6 +250,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       if (e.detail?.memoryMode !== undefined) {
         setMemoryMode(e.detail.memoryMode);
       }
+      if (e.detail?.characterDisplayMode !== undefined) {
+        setCharacterDisplayMode(e.detail.characterDisplayMode);
+      }
     };
     window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
     return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdate);
@@ -248,6 +273,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const settings = await api.get('/api/users/me/settings');
       setShowModelReasoning(settings.show_model_reasoning || false);
       setMemoryMode(settings.memory_mode || 'rule');
+      setCharacterDisplayMode(settings.character_display_mode || 'framed');
     } catch (e) {
       console.error('Failed to fetch user settings:', e);
     }
@@ -293,19 +319,27 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     }
   }, []);
 
-  const createBranch = async (branchName: string) => {
-    if (!selectedSession || !branchName.trim()) return;
+  const createBranch = async (_branchName?: string) => {
+    if (!selectedSession) return;
     try {
-      await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
+      const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
         session_id: selectedSession.id,
-        branch_name: branchName,
-        parent_message_id: messages.length > 0 ? messages[messages.length - 1].id : null
+        same_level: true,
       });
+      const branchName = resp?.branch?.branch_name || '新分支';
+      toast.success(`分支 "${branchName}" 已创建`);
       await loadBranches(selectedSession.id);
-      setNewBranchName('');
-      setShowBranchSelector(false);
-    } catch (e) {
+      await fetchBranchTree();
+
+      if (resp?.branch) {
+        setSelectedBranch(resp.branch);
+      }
+      if (resp?.messages?.length > 0) {
+        setMessages(resp.messages);
+      }
+    } catch (e: any) {
       console.error('Failed to create branch:', e);
+      toast.error(e?.detail || e?.message || '创建分支失败');
     }
   };
 
@@ -315,6 +349,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branch.id}/switch`);
       setSelectedBranch(branch);
       setMessages(data.messages || []);
+      setForkPoint(null);
       await loadBranches(selectedSession.id);
       await loadMemoryStats(selectedSession.id, branch.id);
     } catch (e) {
@@ -335,6 +370,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadBranches(selectedSession.id);
       if (selectedBranch?.id === pendingDeleteBranch) {
         setSelectedBranch(null);
+        setMessages([]);
+        setForkPoint(null);
       }
     } catch (e) {
       console.error('Failed to delete branch:', e);
@@ -349,21 +386,25 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     try {
       const data = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`);
       setBranchTree(data);
-      setShowStoryline(true);
     } catch (e) {
       console.error('Failed to fetch branch tree:', e);
     }
   }, [selectedSession]);
 
-  const handleStorylineNavigate = useCallback(async (branchId: string, _messageId: number | null, _isLeaf: boolean) => {
+  const handleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
     if (!selectedSession) return;
     try {
-      // POST response already contains the full branch history
-      const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch`);
+      const isFork = !isLeaf && messageId !== null;
+      const params = isFork ? `?up_to_message_id=${messageId}` : '';
+      const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch${params}`);
       setMessages(data.messages || []);
-      await loadBranches(selectedSession.id); // also sets selectedBranch to active
+      if (isFork) {
+        setForkPoint({ branchId, messageId });
+      } else {
+        setForkPoint(null);
+      }
+      await loadBranches(selectedSession.id);
       await loadMemoryStats(selectedSession.id, branchId);
-      // Refresh branch tree so storyline map shows updated active node
       try {
         const treeData = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`);
         setBranchTree(treeData);
@@ -374,6 +415,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   }, [selectedSession, loadBranches, loadMemoryStats]);
 
   const loadMessages = useCallback(async (sessionId: string) => {
+    loadingSessionRef.current = sessionId;
     try {
       setMessages([]);
       setSuggestions([]);
@@ -382,6 +424,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       setSelectedBranch(null);
       
       const data = await api.get(`/api/character-sessions/${sessionId}/messages`);
+      if (loadingSessionRef.current !== sessionId) return;
       setMessages(data);
       
       pendingInitialBottomLockRef.current = data.length > 0;
@@ -394,7 +437,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
-  }, [selectedModel, loadMemoryStats, loadBranches]);
+  }, [loadMemoryStats, loadBranches]);
 
   const manualCompressMemory = async () => {
     if (!selectedSession?.id || compressing) return;
@@ -405,11 +448,11 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         branch_id: selectedBranch?.id,
         compression_ratio: 0.5
       });
-      alert(`记忆压缩完成！\n处理: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
+      console.info(`记忆压缩完成！\n处理: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(selectedSession.id, selectedBranch?.id);
     } catch (e: any) {
       console.error('Manual compress failed:', e);
-      alert((t.compress_failed || '压缩失败') + ': ' + (e.message || ''));
+      console.error((t.compress_failed || '压缩失败') + ': ' + (e.message || ''));
     } finally {
       setCompressing(false);
     }
@@ -474,7 +517,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       await loadCharacters();
     } catch (e: any) {
       console.error('Failed to delete character:', e);
-      alert((t.delete_failed || '删除失败') + ': ' + (e.message || ''));
+      console.error((t.delete_failed || '删除失败') + ': ' + (e.message || ''));
     } finally {
       setShowDeleteCharacterConfirm(false);
       setPendingDeleteCharacter(null);
@@ -485,13 +528,49 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     try {
       const formData = new FormData();
       formData.append('file', file);
-      
-      const result = await api.post('/api/characters/import', formData);
-      await loadCharacters();
-      setShowImportOptions(result.character.id);
+
+      const result: any = await api.post('/api/characters/import', formData);
+      if (result.auto_parsed) {
+        toast.info('已自动从图片解析角色信息');
+        await loadCharacters();
+        if (result.character?.id) {
+          setShowImportOptions(result.character.id);
+        }
+      } else {
+        await loadCharacters();
+        setShowImportOptions(result.character.id);
+      }
     } catch (e: any) {
       console.error('Failed to import character:', e);
-      alert((t.import_failed || '导入失败') + ': ' + (e.message || ''));
+      const detail = e?.response?.data?.detail || e?.message || '导入失败';
+      if (detail.includes('AI 生成图片') || detail.includes('从图片解析')) {
+        const confirmParse = window.confirm(
+          detail + '\n\n是否要使用「从图片解析角色」功能，通过 AI 自动分析这张图片并创建角色？'
+        );
+        if (confirmParse) {
+          try {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+              const base64 = event.target?.result as string;
+              try {
+                const parseResult: any = await api.post('/api/characters/import-parse-image', { image_url: base64, model: selectedModel });
+                if (parseResult.character_id) {
+                  toast.success('角色创建成功！正在解析图片...');
+                  setProcessingCharacter(parseResult.character_id);
+                  pollCharacterStatus(parseResult.character_id, true);
+                }
+              } catch (parseErr: any) {
+                toast.error(parseErr?.response?.data?.detail || parseErr?.message || '图片解析失败');
+              }
+            };
+            reader.readAsDataURL(file);
+          } catch (err: any) {
+            toast.error('读取文件失败');
+          }
+        }
+      } else {
+        toast.error(detail);
+      }
     }
   };
 
@@ -521,9 +600,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   };
 
   const stopPolling = () => {
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-      setPollingInterval(null);
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
     }
     setProcessingCharacter(null);
     setForceShowOverlay(null);
@@ -546,8 +625,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const pollCharacterStatus = async (characterId: string, autoTranslate: boolean = false) => {
     console.log('[pollCharacterStatus] Starting poll for character:', characterId, 'autoTranslate:', autoTranslate);
     
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
     }
     
     let translationStarted = false;
@@ -573,8 +652,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
               console.error('[pollCharacterStatus] Translation failed:', translateError);
               setShowProcessingMessage({ show: true, message: (t.translation_failed || '翻译失败') + ': ' + (translateError.message || '') });
               clearInterval(interval);
-              if (pollingInterval === interval) {
-                setPollingInterval(null);
+              if (pollingIntervalRef.current === interval) {
+                pollingIntervalRef.current = null;
               }
               setProcessingCharacter(null);
               setForceShowOverlay(null);
@@ -587,8 +666,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           
           console.log('[pollCharacterStatus] Clearing interval and finishing');
           clearInterval(interval);
-          if (pollingInterval === interval) {
-            setPollingInterval(null);
+          if (pollingIntervalRef.current === interval) {
+            pollingIntervalRef.current = null;
           }
           
           setProcessingCharacter(null);
@@ -618,7 +697,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       }
     }, 2000);
     
-    setPollingInterval(interval);
+    pollingIntervalRef.current = interval;
   };
 
   const handleExportCharacter = async (character: Character, format: 'png' | 'json' = 'png') => {
@@ -646,26 +725,44 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         }
       } else {
         const error = await res.text();
-        alert((t.export_failed || '导出失败') + ': ' + error);
+        console.error((t.export_failed || '导出失败') + ': ' + error);
       }
     } catch (e) {
       console.error('Failed to export character:', e);
-      alert(t.export_failed || '导出失败');
+      console.error(t.export_failed || '导出失败');
     }
   };
 
   const handleStartChat = useCallback(async (character: Character) => {
+    routeCharacterSyncRef.current = character.id;
     setSelectedCharacter(character);
     setSelectedSession(null);
     setMessages([]);
     setMemoryStats(null);
     setSuggestions([]);
+    setForkPoint(null);
+    setBranches([]);
+    setSelectedBranch(null);
+    setBranchTree(null);
     await loadSessions(character.id);
     setViewState('chat');
-  }, [loadSessions]);
+    if (characterId !== character.id) {
+      navigate(`/characters/${character.id}`);
+    }
+  }, [loadSessions, navigate, characterId]);
+
+  const handleBackToList = useCallback(() => {
+    setViewState('list');
+    if (characterId) {
+      navigate('/characters', { replace: true });
+    }
+  }, [navigate, characterId]);
 
   useEffect(() => {
     if (!characterId) {
+      if (routeCharacterSyncRef.current !== null) {
+        setViewState('list');
+      }
       routeCharacterSyncRef.current = null;
       return;
     }
@@ -683,83 +780,141 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     void handleStartChat(targetCharacter);
   }, [characterId, characters, handleStartChat]);
 
-  const handleViewProfile = (character: Character) => {
-    setViewingCharacter(character);
-    setSelectedWorldBookId(null);
-    setSelectedPlotLineId(null);
-    setViewState('profile');
-    // 更新 URL 为包含角色 ID 的路径
-    navigate(`/characters/${character.id}`, { replace: true });
-  };
-
-  const handleStartChatFromProfile = async () => {
-    if (!viewingCharacter) return;
-    
-    setSelectedCharacter(viewingCharacter);
-    setSelectedSession(null);
-    setMessages([]);
-    setMemoryStats(null);
-    setSuggestions([]);
-    await loadSessions(viewingCharacter.id);
-    
-    setViewState('chat');
-  };
-
   const handleInitiateConversation = async (initialMessage?: string) => {
-    if (!selectedCharacter) return;
-    
+    if (!selectedCharacter) {
+      toast.error('请先选择一个角色');
+      return;
+    }
+
     setInitializingChat(true);
-    
+
     try {
-      // 如果没有会话且角色有开场白，创建新会话并发送初始消息
-      if (sessions.length === 0 && selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
-        const data = await api.post('/api/character-chat', {
+      // 如果已有会话，恢复最后一个会话（单角色单对话）
+      if (sessions.length > 0) {
+        const lastSession = sessions[0];
+        setSelectedSession(lastSession);
+        await loadMessages(lastSession.id);
+
+        if (selectedWorldBookId) {
+          try {
+            await wb.associateSession(lastSession.id, selectedWorldBookId);
+            await wb.loadSessionStatus(lastSession.id);
+          } catch (err) {
+            console.error('Failed to associate world book:', err);
+          }
+        }
+        if (selectedPlotLineId) {
+          try {
+            await pl.associateSession(lastSession.id, selectedPlotLineId);
+            await pl.loadSessionStatus(lastSession.id);
+          } catch (err) {
+            console.error('Failed to associate plot line:', err);
+          }
+        }
+        return;
+      }
+
+      // 没有会话且角色有开场白，创建新会话并发送初始消息
+      if (selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
+        const response = await api.stream('/api/character-chat', {
           character_id: selectedCharacter.id,
           message: '__INIT__',
           model: selectedModel,
-          temperature: 0.7,
+          temperature: currentPreset?.temperature ?? 0.7,
+          top_p: currentPreset?.top_p ?? 0.9,
+          max_tokens: currentPreset?.max_tokens ?? 2048,
+          frequency_penalty: currentPreset?.frequency_penalty ?? 0,
+          presence_penalty: currentPreset?.presence_penalty ?? 0,
           dialogue_mode: dialogueMode,
           user_nickname: getDisplayName(selectedCharacter)
         });
-        
-        await loadSessions(selectedCharacter.id);
-        if (data.session_id) {
-          const newSession = {
-            id: data.session_id,
-            title: selectedCharacter.name,
-            character_id: selectedCharacter.id,
-            user_id: user.id,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            dialogue_mode: dialogueMode
-          };
-          setSelectedSession(newSession as any);
-          await loadMessages(data.session_id);
-          // Associate world book if selected
-          if (selectedWorldBookId) {
-            try {
-              await wb.associateSession(data.session_id, selectedWorldBookId);
-              await wb.loadSessionStatus(data.session_id);
-            } catch (err) {
-              console.error('Failed to associate world book:', err);
-            }
-          }
-          // Associate plot line if selected
-          if (selectedPlotLineId) {
-            try {
-              await pl.associateSession(data.session_id, selectedPlotLineId);
-              await pl.loadSessionStatus(data.session_id);
-            } catch (err) {
-              console.error('Failed to associate plot line:', err);
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('无法读取响应流');
+        }
+
+        const decoder = new TextDecoder();
+        let sessionId = '';
+        let branchId = '';
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+
+          for (const event of events) {
+            const lines = event.split('\n');
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              const data = line.slice(6).trim();
+              if (!data || data === '[DONE]') continue;
+              try {
+                const json = JSON.parse(data);
+                if (json.session_id) sessionId = json.session_id;
+                if (json.branch_id) branchId = json.branch_id;
+                if (json.branch_id) {
+                  setSelectedBranch({
+                    id: json.branch_id,
+                    branch_name: 'Main',
+                    is_active: true,
+                    session_id: sessionId,
+                    parent_branch_id: null,
+                    parent_message_id: null,
+                    created_at: new Date().toISOString(),
+                  });
+                }
+              } catch {}
             }
           }
         }
+
+        if (!sessionId) {
+          throw new Error('未能获取会话ID');
+        }
+
+        await loadSessions(selectedCharacter.id);
+        const newSession = {
+          id: sessionId,
+          title: selectedCharacter.name,
+          character_id: selectedCharacter.id,
+          user_id: user.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          dialogue_mode: dialogueMode
+        };
+        setSelectedSession(newSession);
+        await loadMessages(sessionId);
+
+        if (selectedWorldBookId) {
+          try {
+            await wb.associateSession(sessionId, selectedWorldBookId);
+            await wb.loadSessionStatus(sessionId);
+          } catch (err) {
+            console.error('Failed to associate world book:', err);
+          }
+        }
+        if (selectedPlotLineId) {
+          try {
+            await pl.associateSession(sessionId, selectedPlotLineId);
+            await pl.loadSessionStatus(sessionId);
+          } catch (err) {
+            console.error('Failed to associate plot line:', err);
+          }
+        }
       } else if (initialMessage) {
-        // 如果用户提供了初始消息，直接发送
         await handleSendMessage(initialMessage, []);
+      } else {
+        toast.info('该角色暂无开场白，请直接输入消息开始对话');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to initialize chat:', e);
+      const errorMessage = e?.message || '初始化对话失败，请重试';
+      toast.error(errorMessage);
     } finally {
       setInitializingChat(false);
     }
@@ -768,19 +923,16 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const handleSelectSession = async (session: CharacterChatSession) => {
     setSelectedSession(session);
     setMemoryStats(null);
+    setForkPoint(null);
     await loadMessages(session.id);
     await loadMemoryStats(session.id);
-    // Load world book status for this session
     try {
       await wb.loadSessionStatus(session.id);
     } catch {
-      // Session may not have a world book associated
     }
-    // Load plot line status for this session
     try {
       await pl.loadSessionStatus(session.id);
     } catch {
-      // Session may not have a plot line associated
     }
   };
 
@@ -789,6 +941,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setMessages([]);
     setMemoryStats(null);
     setSuggestions([]);
+    setForkPoint(null);
   };
 
   const handleDeleteSession = (sessionId: string) => {
@@ -1025,9 +1178,9 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           deleteBranch={deleteBranch}
           fetchBranchTree={fetchBranchTree}
           branchTree={branchTree}
-          showStoryline={showStoryline}
-          setShowStoryline={setShowStoryline}
           handleStorylineNavigate={handleStorylineNavigate}
+          forkPoint={forkPoint}
+          clearForkPoint={() => setForkPoint(null)}
           showDeleteBranchConfirm={showDeleteBranchConfirm}
           setShowDeleteBranchConfirm={setShowDeleteBranchConfirm}
           confirmDeleteBranch={confirmDeleteBranch}
@@ -1049,8 +1202,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           manualCompressMemory={manualCompressMemory}
           dialogueMode={dialogueMode}
           setDialogueMode={setDialogueMode}
-          sidebarCollapsed={sidebarCollapsed}
-          setSidebarCollapsed={setSidebarCollapsed}
+          sidebarCollapsed={storylineCollapsed}
+          setSidebarCollapsed={setStorylineCollapsed}
           mobileSidebarOpen={mobileSidebarOpen}
           setMobileSidebarOpen={setMobileSidebarOpen}
           initializingChat={initializingChat}
@@ -1068,63 +1221,12 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           selectedPlotLineId={selectedPlotLineId}
           setSelectedPlotLineId={setSelectedPlotLineId}
           setViewState={setViewState}
+          onBackToList={handleBackToList}
+          currentPreset={currentPreset}
+          setCurrentPreset={setCurrentPreset}
         />
       )}
 
-      {/* ── World Book Manager Dialog ── */}
-      {showWorldBookManager && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowWorldBookManager(false)}>
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-          <div
-            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
-            onClick={e => e.stopPropagation()}
-          >
-            <WorldBookManager
-              worldBooks={wb.worldBooks}
-              selectedWorldBook={wb.selectedWorldBook}
-              loading={wb.loading}
-              t={t}
-              onLoad={wb.loadWorldBooks}
-              onCreate={wb.createWorldBook}
-              onUpdate={wb.updateWorldBook}
-              onDelete={wb.deleteWorldBook}
-              onImport={wb.importWorldBook}
-              onSelect={(id) => wb.loadWorldBookDetail(id)}
-              onClose={() => setShowWorldBookManager(false)}
-              selectedForProfileId={selectedWorldBookId}
-              onSelectForProfile={setSelectedWorldBookId}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* ── Plot Line Manager Dialog ── */}
-      {showPlotLineManager && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowPlotLineManager(false)}>
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-          <div
-            className="relative w-full max-w-lg h-[80vh] glass-strong rounded-2xl overflow-hidden animate-in zoom-in-95 duration-200"
-            onClick={e => e.stopPropagation()}
-          >
-            <PlotLineManager
-              plotLines={pl.plotLines}
-              selectedPlotLine={pl.selectedPlotLine}
-              loading={pl.loading}
-              parsing={pl.parsing}
-              models={models}
-              selectedModel={selectedModel}
-              t={t}
-              onLoad={pl.loadPlotLines}
-              onCreate={pl.createPlotLine}
-              onUpdate={pl.updatePlotLine}
-              onDelete={pl.deletePlotLine}
-              onParse={pl.parsePlotLine}
-              onSelect={(id: string) => pl.loadPlotLineDetail(id)}
-              onClose={() => setShowPlotLineManager(false)}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 };

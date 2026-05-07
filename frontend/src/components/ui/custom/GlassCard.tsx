@@ -6,13 +6,15 @@ interface GlassCardProps {
   className?: string;
   strong?: boolean;
   hover?: boolean;
+  onClick?: React.MouseEventHandler<HTMLDivElement>;
 }
 
 export const GlassCard: React.FC<GlassCardProps> = ({ 
   children, 
   className = '',
   strong = false,
-  hover = false
+  hover = false,
+  onClick,
 }) => {
   return (
     <div 
@@ -22,6 +24,7 @@ export const GlassCard: React.FC<GlassCardProps> = ({
         hover && 'card-hover',
         className
       )}
+      onClick={onClick}
     >
       {children}
     </div>

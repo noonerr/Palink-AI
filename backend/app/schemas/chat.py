@@ -9,6 +9,8 @@ class ChatRequest(BaseModel):
     images: List[str] = []
     files: List[str] = []
     session_type: str = "chat"
+    display_content: Optional[str] = None
+    web_search: bool = False
 
 class ChatResponse(BaseModel):
     session_id: Optional[str] = None
@@ -18,3 +20,7 @@ class ChatResponse(BaseModel):
 
 class MessageUpdateRequest(BaseModel):
     content: str
+
+class UploadRequest(BaseModel):
+    filename: str
+    data: str

@@ -1,8 +1,9 @@
 import React from 'react';
-import { Database, Edit3, Plus, RefreshCw, Sparkles, Trash2, UploadCloud } from 'lucide-react';
+import { Database, Edit3, Eye, Plus, RefreshCw, Sparkles, Trash2, UploadCloud } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Switch } from '@/components/ui/switch';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
 import type { Model, Provider } from '@/types';
 
@@ -22,6 +23,7 @@ interface ModelsTabProps {
   handleModelUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleModelEnable: (modelId: string, enabled: boolean) => void;
   handleModelDelete: (modelId: string) => void;
+  handleMmprojToggle?: (modelId: string, enabled: boolean) => void;
 }
 
 export const ModelsTab: React.FC<ModelsTabProps> = ({
@@ -40,6 +42,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({
   handleModelUpload,
   handleModelEnable,
   handleModelDelete,
+  handleMmprojToggle,
 }) => {
   return (
     <div className="flex flex-col h-full animate-fade-in">
@@ -72,7 +75,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({
 
       {modelSubTab === 'llm' && (
         <ScrollArea className="flex-1 min-h-0">
-          <div className="space-y-6 animate-fade-in pr-2 pt-4">
+          <div className="space-y-6 animate-fade-in pr-2 pt-4 pb-28">
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="text-2xl font-semibold">{t.provider_config}</h3>
@@ -175,7 +178,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({
 
       {modelSubTab === 'local' && isAdmin && (
         <ScrollArea className="flex-1 min-h-0">
-          <div className="space-y-6 animate-fade-in pr-2 pt-4">
+          <div className="space-y-6 animate-fade-in pr-2 pt-4 pb-28">
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="text-2xl font-semibold">{t.local_models || '本地模型'}</h3>
@@ -236,28 +239,29 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({
                         </div>
                       </div>
                       <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
-                        <label className="flex items-center cursor-pointer flex-shrink-0">
-                          <input
-                            type="checkbox"
-                            checked={model.enabled !== false}
-                            onChange={(e) => handleModelEnable(model.id, e.target.checked)}
-                            className="sr-only"
-                          />
-                          <div
-                            className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
-                              model.enabled !== false ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                            }`}
-                          >
-                            <div
-                              className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                                model.enabled !== false ? 'translate-x-5' : ''
-                              }`}
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <Switch
+                              checked={model.enabled !== false}
+                              onCheckedChange={(checked) => handleModelEnable(model.id, checked)}
                             />
+                            <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+                              {model.enabled !== false ? '已启用' : '已禁用'}
+                            </span>
                           </div>
-                          <span className="ml-2 text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
-                            {model.enabled !== false ? '已启用' : '已禁用'}
-                          </span>
-                        </label>
+                          {model.enabled && model.mmproj_path && (
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <Switch
+                                checked={model.mmproj_enabled === true}
+                                onCheckedChange={(checked) => handleMmprojToggle?.(model.id, checked)}
+                              />
+                              <Eye size={14} className="text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+                                {model.mmproj_enabled ? '视觉已启用' : '视觉编码器'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
 
                         <Button
                           variant="ghost"

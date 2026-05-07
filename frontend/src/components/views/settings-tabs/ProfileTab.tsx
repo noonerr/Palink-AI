@@ -53,7 +53,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
 }) => {
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-6 animate-fade-in pr-2">
+      <div className="space-y-6 animate-fade-in pr-2 pb-28">
         <h3 className="text-2xl font-semibold">{t.settings_profile}</h3>
 
         <GlassCard className="p-6">

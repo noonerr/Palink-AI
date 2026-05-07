@@ -5,17 +5,17 @@ import {
 } from 'recharts';
 import {
   ArrowUpCircle, ArrowDownCircle, MessageSquare,
-  Sparkles, ChevronLeft, BarChart2,
+  Sparkles, ChevronLeft, BarChart2, Brain,
 } from 'lucide-react';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
 /* ───────────── types ───────────── */
-interface DailyEntry { date: string; input: number; output: number; }
-interface ModelEntry { model: string; input: number; output: number; requests: number; }
-interface CharacterEntry { character_name: string; input: number; output: number; requests: number; }
-interface Summary { requests: number; input: number; output: number; total: number; }
+interface DailyEntry { date: string; input: number; output: number; reasoning: number; }
+interface ModelEntry { model: string; input: number; output: number; reasoning: number; requests: number; }
+interface CharacterEntry { character_name: string; input: number; output: number; reasoning: number; requests: number; }
+interface Summary { requests: number; input: number; output: number; reasoning: number; total: number; }
 
 interface ChatStats {
   summary: Summary;
@@ -75,6 +75,7 @@ function TrendChart({ daily }: { daily: DailyEntry[] }) {
         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
         <Line type="monotone" dataKey="input" name="输入" stroke="#3b82f6" strokeWidth={2} dot={false} />
         <Line type="monotone" dataKey="output" name="输出" stroke="#22c55e" strokeWidth={2} dot={false} />
+        <Line type="monotone" dataKey="reasoning" name="思考" stroke="#a855f7" strokeWidth={2} dot={false} />
       </LineChart>
     </ResponsiveContainer>
   );
@@ -89,7 +90,7 @@ function ModelBadgeList({ models }: { models: ModelEntry[] }) {
           key={m.model}
           className="px-2.5 py-1 rounded-full text-xs bg-secondary/60 border border-border/40 text-foreground"
         >
-          {m.model} ↑{formatTokens(m.input)} ↓{formatTokens(m.output)} {m.requests}次
+          {m.model} ↑{formatTokens(m.input)} ↓{formatTokens(m.output)} 💭{formatTokens(m.reasoning)} {m.requests}次
         </span>
       ))}
     </div>
@@ -107,6 +108,7 @@ function CharacterTable({ rows }: { rows: CharacterEntry[] }) {
             <th className="text-right px-3 py-2">请求</th>
             <th className="text-right px-3 py-2">输入</th>
             <th className="text-right px-3 py-2">输出</th>
+            <th className="text-right px-3 py-2">思考</th>
           </tr>
         </thead>
         <tbody>
@@ -116,6 +118,7 @@ function CharacterTable({ rows }: { rows: CharacterEntry[] }) {
               <td className="px-3 py-2 text-right text-muted-foreground">{r.requests}</td>
               <td className="px-3 py-2 text-right text-blue-500">{formatTokens(r.input)}</td>
               <td className="px-3 py-2 text-right text-green-500">{formatTokens(r.output)}</td>
+              <td className="px-3 py-2 text-right text-purple-500">{formatTokens(r.reasoning)}</td>
             </tr>
           ))}
         </tbody>
@@ -209,9 +212,10 @@ export function TokenUsagePanel({
               <MessageSquare size={16} className="text-primary" />
               普通聊天
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <StatCard label="输入" value={formatTokens(data.regular_chat.summary.input)} icon={ArrowUpCircle} color="text-blue-500" />
               <StatCard label="输出" value={formatTokens(data.regular_chat.summary.output)} icon={ArrowDownCircle} color="text-green-500" />
+              <StatCard label="思考" value={formatTokens(data.regular_chat.summary.reasoning)} icon={Brain} color="text-purple-500" />
               <StatCard label="请求" value={`${data.regular_chat.summary.requests}次`} icon={MessageSquare} color="text-muted-foreground" />
             </div>
           </button>
@@ -226,9 +230,10 @@ export function TokenUsagePanel({
                 <Sparkles size={16} className="text-purple-500" />
                 角色聊天
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <StatCard label="输入" value={formatTokens(data.character_chat.summary.input)} icon={ArrowUpCircle} color="text-blue-500" />
                 <StatCard label="输出" value={formatTokens(data.character_chat.summary.output)} icon={ArrowDownCircle} color="text-green-500" />
+                <StatCard label="思考" value={formatTokens(data.character_chat.summary.reasoning)} icon={Brain} color="text-purple-500" />
                 <StatCard label="请求" value={`${data.character_chat.summary.requests}次`} icon={Sparkles} color="text-purple-500" />
               </div>
             </button>
@@ -244,9 +249,10 @@ export function TokenUsagePanel({
             const stats = detail === 'character' ? data.character_chat : data.regular_chat;
             return (
               <>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <StatCard label="输入 Token" value={formatTokens(stats.summary.input)} icon={ArrowUpCircle} color="text-blue-500" />
                   <StatCard label="输出 Token" value={formatTokens(stats.summary.output)} icon={ArrowDownCircle} color="text-green-500" />
+                  <StatCard label="思考 Token" value={formatTokens(stats.summary.reasoning)} icon={Brain} color="text-purple-500" />
                   <StatCard label="请求次数" value={`${stats.summary.requests}次`} icon={detail === 'character' ? Sparkles : MessageSquare} color={detail === 'character' ? 'text-purple-500' : 'text-muted-foreground'} />
                 </div>
 

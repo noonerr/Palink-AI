@@ -175,6 +175,27 @@ def _normalize_model_view(model: Dict[str, Any]) -> Dict[str, Any]:
     size_bytes = int(model.get("size_bytes") or 0)
     key = str(model.get("key") or "").strip()
     model_id = _local_model_id(key) if key else ""
+
+    vision_source = model.get("vision_source") or None
+    mmproj_enabled = bool(model.get("mmproj_enabled", False))
+    mmproj_path = model.get("mmproj_path") or None
+
+    supports_vision = bool(vision_source or (mmproj_enabled and mmproj_path))
+
+    has_mmproj = False
+    mmproj_name = None
+    if vision_source:
+        if vision_source.startswith(LOCAL_MODEL_PREFIX):
+            data = _load_registry()
+            mmproj_entry = _find_model_entry(data, vision_source)
+            if mmproj_entry:
+                mmproj_name = mmproj_entry.get("display_name") or mmproj_entry.get("filename") or vision_source
+        else:
+            mmproj_name = vision_source
+    elif mmproj_path:
+        has_mmproj = True
+        mmproj_name = os.path.basename(mmproj_path)
+
     return {
         "id": model_id,
         "key": key,
@@ -188,6 +209,13 @@ def _normalize_model_view(model: Dict[str, Any]) -> Dict[str, Any]:
         "context_length": int(model.get("context_length") or 4096),
         "created_at": model.get("created_at"),
         "updated_at": model.get("updated_at"),
+        "supports_vision": supports_vision,
+        "vision_source": vision_source,
+        "mmproj_enabled": mmproj_enabled,
+        "mmproj_path": mmproj_path,
+        "mmproj_name": mmproj_name,
+        "has_mmproj": has_mmproj,
+        "max_concurrent": int(model.get("max_concurrent") or 2),
     }
 
 
@@ -225,7 +253,11 @@ def list_enabled_chat_models() -> List[Dict[str, Any]]:
             "description": "Local GGUF model via llama.cpp",
             "context_length": model.get("context_length") or 4096,
             "avatar": "",
-            "provider": "Local (llama.cpp)",
+            "provider": "local",
+            "provider_id": "local",
+            "supports_vision": model.get("supports_vision", False),
+            "vision_source": model.get("vision_source"),
+            "mmproj_name": model.get("mmproj_name"),
         })
     return result
 
