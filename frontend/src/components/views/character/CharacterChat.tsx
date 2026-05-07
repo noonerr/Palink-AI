@@ -466,24 +466,30 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
   const wrappedHandleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
     isNavigatingRef.current = true;
+    if (!sidebarCollapsed && isMobile) {
+      keepSidebarOpenRef.current = true;
+    }
     try {
       await handleStorylineNavigate(branchId, messageId, isLeaf);
     } catch (e) {
       isNavigatingRef.current = false;
+      keepSidebarOpenRef.current = false;
       setNewSessionFadeState('idle');
       setSessionVisualSnapshot(null);
       throw e;
     } finally {
       setTimeout(() => {
         isNavigatingRef.current = false;
-      }, 600);
+        keepSidebarOpenRef.current = false;
+      }, 800);
     }
-  }, [handleStorylineNavigate]);
+  }, [handleStorylineNavigate, sidebarCollapsed, isMobile]);
 
   const prevBranchIdRef = useRef<string | null>(null);
+  const keepSidebarOpenRef = useRef(false);
 
   useLayoutEffect(() => {
-    if (sidebarCollapsed && isNavigatingRef.current && isMobile) {
+    if (sidebarCollapsed && keepSidebarOpenRef.current && isMobile) {
       setSidebarCollapsed(false);
     }
   }, [sidebarCollapsed, isMobile]);
@@ -492,12 +498,16 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     const branchId = selectedBranch?.id || null;
     if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
       isNavigatingRef.current = true;
+      if (!sidebarCollapsed && isMobile) {
+        keepSidebarOpenRef.current = true;
+      }
       setTimeout(() => {
         isNavigatingRef.current = false;
-      }, 600);
+        keepSidebarOpenRef.current = false;
+      }, 800);
     }
     prevBranchIdRef.current = branchId;
-  }, [selectedBranch, selectedSession?.id]);
+  }, [selectedBranch, selectedSession?.id, sidebarCollapsed, isMobile]);
 
   useEffect(() => {
     prevMessagesRef.current = messages;
@@ -728,7 +738,11 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
       {/* ──── Desktop Sidebar + Main Content (移动端跟随侧边栏右移) ──── */}
       <div
-        className="flex-1 flex h-full min-w-0"
+        className="flex-1 flex h-full min-w-0 transition-transform ease-in-out will-change-transform"
+        style={isMobile ? {
+          transform: `translate3d(${!sidebarCollapsed ? 320 : 0}px, 0, 0)`,
+          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+        } : undefined}
       >
       {/* ──── Desktop Sidebar ──── */}
       {!isMobile && (
@@ -778,17 +792,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       )}
 
       {/* ──── Main chat area ──── */}
-      <div
-        className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}
-        style={isMobile ? {
-          marginLeft: !sidebarCollapsed ? 320 : 0,
-          width: '100vw',
-          transitionProperty: 'margin-left',
-          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
-          transitionTimingFunction: 'ease-in-out',
-          willChange: 'margin-left',
-        } : undefined}
-      >
+      <div className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}>
         <header className={cn(
           'flex items-center justify-between z-40',
           isMobile
