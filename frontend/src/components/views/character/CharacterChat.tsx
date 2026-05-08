@@ -500,11 +500,48 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   const prevBranchIdRef = useRef<string | null>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const contentWrapperRef = useRef<HTMLDivElement>(null);
-  const [visualOffset, setVisualOffset] = useState(0);
+  const outerContainerRef = useRef<HTMLDivElement>(null);
+  const sidebarOffsetRef = useRef(0);
   const sidebarWasOpenBeforeNavRef = useRef(false);
 
+  const applySidebarOffset = useCallback((offset: number, animate: boolean) => {
+    sidebarOffsetRef.current = offset;
+    const el = outerContainerRef.current;
+    if (!el) return;
+    el.style.transition = animate ? `padding-left ${HISTORY_SLIDE_DURATION_MS}ms ease-in-out` : 'none';
+    el.style.paddingLeft = offset === 0 ? '0px' : `${offset}px`;
+    const sidebar = el.querySelector('.mobile-storyline-sidebar') as HTMLElement | null;
+    if (sidebar) {
+      sidebar.style.transition = animate ? `transform ${HISTORY_SLIDE_DURATION_MS}ms ease-in-out` : 'none';
+      sidebar.style.transform = `translate3d(${offset > 0 ? 0 : -320}px, 0, 0)`;
+    }
+    const backdrop = el.querySelector('.fixed.inset-0.z-\\[59\\]') as HTMLElement | null;
+    if (backdrop) {
+      backdrop.style.transition = animate ? `opacity ${HISTORY_SLIDE_DURATION_MS}ms ease-in-out` : 'none';
+      if (offset > 0) {
+        backdrop.style.opacity = '1';
+        backdrop.style.pointerEvents = 'auto';
+      } else {
+        backdrop.style.opacity = '0';
+        backdrop.style.pointerEvents = 'none';
+      }
+    }
+  }, []);
+
   useEffect(() => {
-    if (!isMobile) { setVisualOffset(0); return; }
+    if (!isMobile) return;
+    const initialOffset = !sidebarCollapsed ? 320 : 0;
+    applySidebarOffset(initialOffset, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) {
+      if (sidebarOffsetRef.current !== 0) {
+        applySidebarOffset(0, true);
+      }
+      return;
+    }
     if (isNavigating) {
       if (!sidebarCollapsed) {
         sidebarWasOpenBeforeNavRef.current = true;
@@ -514,11 +551,14 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     if (sidebarWasOpenBeforeNavRef.current) {
       sidebarWasOpenBeforeNavRef.current = false;
       _setSidebarCollapsed(false);
-      setVisualOffset(320);
+      applySidebarOffset(320, true);
       return;
     }
-    setVisualOffset(!sidebarCollapsed ? 320 : 0);
-  }, [sidebarCollapsed, isMobile, isNavigating]);
+    const targetOffset = !sidebarCollapsed ? 320 : 0;
+    if (sidebarOffsetRef.current !== targetOffset) {
+      applySidebarOffset(targetOffset, true);
+    }
+  }, [sidebarCollapsed, isMobile, isNavigating, applySidebarOffset]);
 
 
   useEffect(() => {
@@ -655,13 +695,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
   return (
     <div
+      ref={outerContainerRef}
       className="flex w-full h-full overflow-hidden"
-      style={isMobile ? {
-        paddingLeft: visualOffset,
-        transitionProperty: 'padding-left',
-        transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
-        transitionTimingFunction: 'ease-in-out',
-      } : undefined}
     >
       {/* ──── Mobile Sidebar (仅移动端渲染，translate3d滑动) ──── */}
       {isMobile && (
@@ -671,7 +706,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
         )}
         style={{
-          transform: `translate3d(${visualOffset > 0 ? 0 : -320}px, 0, 0)`,
+          transform: `translate3d(${sidebarOffsetRef.current > 0 ? 0 : -320}px, 0, 0)`,
           transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
         }}
       >
@@ -762,7 +797,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       <div
         className={cn(
           'fixed inset-0 z-[59] bg-black/40 transition-opacity ease-in-out',
-          visualOffset > 0 ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          'opacity-100'
         )}
         style={{ transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms` }}
         onClick={() => { if (!isNavigating) setSidebarCollapsed(true); }}
@@ -852,11 +887,11 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               size="icon"
               className={cn(
                 'h-11 w-11 rounded-full transition-all duration-300 ease-in-out',
-                visualOffset > 0 && 'rotate-180'
+                sidebarOffsetRef.current > 0 && 'rotate-180'
               )}
               onClick={() => {
                 if (isNavigating) return;
-                if (visualOffset > 0) {
+                if (sidebarOffsetRef.current > 0) {
                   setSidebarCollapsed(true);
                 } else {
                   setSidebarCollapsed(false);
@@ -948,7 +983,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 {selectedSession && (
                   <DropdownMenuItem onClick={() => {
                     if (isNavigating) return;
-                    if (visualOffset > 0) {
+                    if (sidebarOffsetRef.current > 0) {
                       setSidebarCollapsed(true);
                     } else {
                       setSidebarCollapsed(false);
@@ -956,7 +991,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                     }
                   }}>
                     <GitBranch size={14} className="mr-2" />
-                    {visualOffset > 0 ? '关闭剧情线' : '剧情线可视化'}
+                    {sidebarOffsetRef.current > 0 ? '关闭剧情线' : '剧情线可视化'}
                   </DropdownMenuItem>
                 )}
 
