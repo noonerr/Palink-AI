@@ -360,7 +360,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   const sessionSwitchTimerRef = useRef<number | null>(null);
   const newSessionFadeTimerRef = useRef<number | null>(null);
   const sessionSwitchTokenRef = useRef(0);
-  const isNavigatingRef = useRef(false);
   const prevMessagesRef = useRef<CharacterChatMessage[]>([]);
 
   useEffect(() => {
@@ -451,7 +450,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     handleMixedDelete, showDeleteMixedConfirm, setShowDeleteMixedConfirm, confirmDeleteMixed, clearSelection,
     memoryMode, memoryStats, compressing, manualCompressMemory,
     dialogueMode, setDialogueMode,
-    sidebarCollapsed, setSidebarCollapsed,
+    sidebarCollapsed, setSidebarCollapsed: _setSidebarCollapsed,
     mobileSidebarOpen, setMobileSidebarOpen,
     initializingChat, handleInitiateConversation,
     wb, showWorldBookManager, setShowWorldBookManager,
@@ -464,50 +463,77 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     currentPreset, setCurrentPreset,
   } = props;
 
+  const [isNavigating, setIsNavigating] = useState(false);
+  const navGenRef = useRef(0);
+
+  const setSidebarCollapsed = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    _setSidebarCollapsed(prev => {
+      const newVal = typeof v === 'function' ? v(prev) : v;
+      if (prev === false && newVal === true && isNavigating && isMobile) {
+        return false;
+      }
+      return newVal;
+    });
+  }, [_setSidebarCollapsed, isMobile, isNavigating]);
+
   const wrappedHandleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
-    isNavigatingRef.current = true;
-    if (!sidebarCollapsed && isMobile) {
-      keepSidebarOpenRef.current = true;
-    }
+    const gen = ++navGenRef.current;
+    setIsNavigating(true);
     try {
       await handleStorylineNavigate(branchId, messageId, isLeaf);
     } catch (e) {
-      isNavigatingRef.current = false;
-      keepSidebarOpenRef.current = false;
+      if (navGenRef.current === gen) {
+        setIsNavigating(false);
+      }
       setNewSessionFadeState('idle');
       setSessionVisualSnapshot(null);
       throw e;
     } finally {
       setTimeout(() => {
-        isNavigatingRef.current = false;
-        keepSidebarOpenRef.current = false;
-      }, 800);
+        if (navGenRef.current === gen) {
+          setIsNavigating(false);
+        }
+      }, 3000);
     }
-  }, [handleStorylineNavigate, sidebarCollapsed, isMobile]);
+  }, [handleStorylineNavigate]);
 
   const prevBranchIdRef = useRef<string | null>(null);
-  const keepSidebarOpenRef = useRef(false);
+  const chatAreaRef = useRef<HTMLDivElement>(null);
+  const contentWrapperRef = useRef<HTMLDivElement>(null);
+  const [visualOffset, setVisualOffset] = useState(0);
+  const sidebarWasOpenBeforeNavRef = useRef(false);
 
-  useLayoutEffect(() => {
-    if (sidebarCollapsed && keepSidebarOpenRef.current && isMobile) {
-      setSidebarCollapsed(false);
+  useEffect(() => {
+    if (!isMobile) { setVisualOffset(0); return; }
+    if (isNavigating) {
+      if (!sidebarCollapsed) {
+        sidebarWasOpenBeforeNavRef.current = true;
+      }
+      return;
     }
-  }, [sidebarCollapsed, isMobile]);
+    if (sidebarWasOpenBeforeNavRef.current) {
+      sidebarWasOpenBeforeNavRef.current = false;
+      _setSidebarCollapsed(false);
+      setVisualOffset(320);
+      return;
+    }
+    setVisualOffset(!sidebarCollapsed ? 320 : 0);
+  }, [sidebarCollapsed, isMobile, isNavigating]);
+
 
   useEffect(() => {
     const branchId = selectedBranch?.id || null;
     if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
-      isNavigatingRef.current = true;
-      if (!sidebarCollapsed && isMobile) {
-        keepSidebarOpenRef.current = true;
-      }
+      const gen = ++navGenRef.current;
+      setIsNavigating(true);
       setTimeout(() => {
-        isNavigatingRef.current = false;
-        keepSidebarOpenRef.current = false;
-      }, 800);
+        if (navGenRef.current === gen) {
+          setIsNavigating(false);
+        }
+      }, 3000);
     }
     prevBranchIdRef.current = branchId;
-  }, [selectedBranch, selectedSession?.id, sidebarCollapsed, isMobile]);
+  }, [selectedBranch, selectedSession?.id]);
 
   useEffect(() => {
     prevMessagesRef.current = messages;
@@ -519,7 +545,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     const timeoutId = window.setTimeout(() => {
       setNewSessionFadeState('idle');
       setSessionVisualSnapshot(null);
-      isNavigatingRef.current = false;
     }, 1000);
 
     return () => window.clearTimeout(timeoutId);
@@ -629,7 +654,15 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   };
 
   return (
-    <div className="flex w-full h-full overflow-hidden">
+    <div
+      className="flex w-full h-full overflow-hidden"
+      style={isMobile ? {
+        paddingLeft: visualOffset,
+        transitionProperty: 'padding-left',
+        transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+        transitionTimingFunction: 'ease-in-out',
+      } : undefined}
+    >
       {/* ──── Mobile Sidebar (仅移动端渲染，translate3d滑动) ──── */}
       {isMobile && (
       <aside
@@ -638,7 +671,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
         )}
         style={{
-          transform: `translate3d(${!sidebarCollapsed ? 0 : -320}px, 0, 0)`,
+          transform: `translate3d(${visualOffset > 0 ? 0 : -320}px, 0, 0)`,
           transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
         }}
       >
@@ -682,7 +715,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 </button>
               )}
               <button
-                onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }}
+                onClick={() => { if (!isNavigating) setSidebarCollapsed(true); }}
                 className={cn(
                   'inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors',
                   isDark
@@ -729,20 +762,18 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       <div
         className={cn(
           'fixed inset-0 z-[59] bg-black/40 transition-opacity ease-in-out',
-          !sidebarCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          visualOffset > 0 ? 'opacity-100' : 'opacity-0 pointer-events-none'
         )}
         style={{ transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms` }}
-        onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }}
+        onClick={() => { if (!isNavigating) setSidebarCollapsed(true); }}
       />
       )}
 
       {/* ──── Desktop Sidebar + Main Content (移动端跟随侧边栏右移) ──── */}
       <div
-        className="flex-1 flex h-full min-w-0 transition-transform ease-in-out will-change-transform"
-        style={isMobile ? {
-          transform: `translate3d(${!sidebarCollapsed ? 320 : 0}px, 0, 0)`,
-          transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
-        } : undefined}
+        ref={contentWrapperRef}
+        className="flex-1 flex h-full min-w-0"
+        style={isMobile ? { minWidth: '100vw' } : undefined}
       >
       {/* ──── Desktop Sidebar ──── */}
       {!isMobile && (
@@ -772,7 +803,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   <Trash2 size={11} /><span>删除</span>
                 </button>
               )}
-              <button onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }} className={cn('inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors', isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700')} aria-label="close-storyline"><X size={16} /></button>
+              <button onClick={() => { if (!isNavigating) setSidebarCollapsed(true); }} className={cn('inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors', isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700')} aria-label="close-storyline"><X size={16} /></button>
             </div>
           </div>
 
@@ -792,7 +823,10 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       )}
 
       {/* ──── Main chat area ──── */}
-      <div className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}>
+      <div
+        ref={chatAreaRef}
+        className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950`}
+      >
         <header className={cn(
           'flex items-center justify-between z-40',
           isMobile
@@ -818,10 +852,11 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               size="icon"
               className={cn(
                 'h-11 w-11 rounded-full transition-all duration-300 ease-in-out',
-                !sidebarCollapsed && 'rotate-180'
+                visualOffset > 0 && 'rotate-180'
               )}
               onClick={() => {
-                if (!sidebarCollapsed) {
+                if (isNavigating) return;
+                if (visualOffset > 0) {
                   setSidebarCollapsed(true);
                 } else {
                   setSidebarCollapsed(false);
@@ -912,7 +947,8 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 {/* Storyline visualization toggle */}
                 {selectedSession && (
                   <DropdownMenuItem onClick={() => {
-                    if (!sidebarCollapsed) {
+                    if (isNavigating) return;
+                    if (visualOffset > 0) {
                       setSidebarCollapsed(true);
                     } else {
                       setSidebarCollapsed(false);
@@ -920,7 +956,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                     }
                   }}>
                     <GitBranch size={14} className="mr-2" />
-                    {!sidebarCollapsed ? '关闭剧情线' : '剧情线可视化'}
+                    {visualOffset > 0 ? '关闭剧情线' : '剧情线可视化'}
                   </DropdownMenuItem>
                 )}
 

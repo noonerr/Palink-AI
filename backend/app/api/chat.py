@@ -269,7 +269,11 @@ async def chat_stream(
 
             async for sse_event in stream_chat_deltas(stream, result, initial_events=initial_events, enable_tools=True):
                 persist_snapshot()
-                yield sse_event
+                try:
+                    yield sse_event
+                except Exception:
+                    persist_snapshot(force=True)
+                    raise
 
             persist_snapshot(force=True)
         except asyncio.CancelledError:

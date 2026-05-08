@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/services/api';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
+import { useChatWebSocket } from '@/hooks/useChatWebSocket';
+import CatchUpAnimator from '@/lib/catchUpAnimator';
 import type { Message as MessageType, Model, Session } from '@/types';
 
 type StreamStatus = 'idle' | 'pending' | 'queued' | 'streaming' | 'done' | 'error' | 'cancelled';
@@ -66,6 +68,14 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const initialBottomLockUntilRef = useRef(0);
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
+  const wsAssistantMessageIdRef = useRef<string | null>(null);
+  const wsFullContentRef = useRef('');
+  const wsFullReasoningRef = useRef('');
+  const wsIsQueuedRef = useRef(false);
+  const wsAnimatorRef = useRef<CatchUpAnimator | null>(null);
+  const wsIsRegeneratingRef = useRef(false);
+  const wsSendCancelRef = useRef<() => void>(() => {});
+
   const markStreamActive = useCallback(() => {
     setStreamStatus((prev) => (prev === 'pending' ? 'streaming' : prev));
   }, []);
@@ -73,6 +83,18 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const handleStopStreaming = useCallback(() => {
     if (queueInfo?.requestId) {
       api.post(`/api/chat/queue/cancel/${queueInfo.requestId}`).catch(() => {});
+    }
+    if (wsAssistantMessageIdRef.current) {
+      wsSendCancelRef.current();
+      if (wsAnimatorRef.current?.isRunning) {
+        wsAnimatorRef.current.stop();
+      }
+      wsAssistantMessageIdRef.current = null;
+      wsIsRegeneratingRef.current = false;
+      setStreamStatus('cancelled');
+      setQueueInfo(null);
+      setIsSendingMessage(false);
+      return;
     }
     if (!abortControllerRef.current) return;
     setStreamStatus('cancelled');
@@ -189,6 +211,114 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     },
     [buildAssistantContent, currentModel, normalizeAssistantAnswer]
   );
+
+  const {
+    connected: wsConnected,
+    useWebSocket,
+    connect: wsConnect,
+    disconnect: wsDisconnect,
+    sendChatRequest: wsSendChatRequest,
+    requestSync: wsRequestSync,
+    sendCancel: wsSendCancel,
+  } = useChatWebSocket({
+    onChunk: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+      if (wsAnimatorRef.current?.isRunning) {
+        if (data.content) {
+          wsFullContentRef.current += data.content;
+          wsAnimatorRef.current.appendContent(wsFullContentRef.current);
+        }
+        if (data.reasoning) {
+          wsFullReasoningRef.current += data.reasoning;
+        }
+        return;
+      }
+      if (data.content) wsFullContentRef.current += data.content;
+      if (data.reasoning) wsFullReasoningRef.current += data.reasoning;
+      if (wsIsQueuedRef.current) {
+        setQueueInfo(null);
+        wsIsQueuedRef.current = false;
+      }
+      markStreamActive();
+      setAssistantMessageSnapshot(assistantId, wsFullContentRef.current, wsFullReasoningRef.current);
+    },
+    onDone: () => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+      if (wsAnimatorRef.current?.isRunning) {
+        wsAnimatorRef.current.stop();
+      }
+      setAssistantMessageSnapshot(assistantId, wsFullContentRef.current, wsFullReasoningRef.current);
+      setStreamStatus('done');
+      setIsSendingMessage(false);
+      setQueueInfo(null);
+      wsAssistantMessageIdRef.current = null;
+      if (wsIsRegeneratingRef.current) {
+        setRegeneratingMessageIndex(null);
+        wsIsRegeneratingRef.current = false;
+      }
+      if (wsFullContentRef.current.length > 20) {
+        api.post('/api/chat/suggestions', { message: wsFullContentRef.current, model: currentModel })
+          .then(setSuggestions)
+          .catch(() => {});
+      }
+    },
+    onSync: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+      wsFullContentRef.current = data.content;
+      if (data.reasoning) wsFullReasoningRef.current = data.reasoning;
+      const animator = new CatchUpAnimator((content) => {
+        setAssistantMessageSnapshot(assistantId, content, wsFullReasoningRef.current);
+      });
+      wsAnimatorRef.current = animator;
+      animator.start(data.content, '');
+      if (data.status === 'streaming') {
+        markStreamActive();
+      }
+    },
+    onError: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+      if (wsAnimatorRef.current?.isRunning) {
+        wsAnimatorRef.current.stop();
+      }
+      setMessages((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((msg) => msg.id === assistantId);
+        if (idx >= 0) {
+          next[idx].content += `\n\n❌ 错误: ${data.message}`;
+        }
+        return next;
+      });
+      setStreamStatus('error');
+      setIsSendingMessage(false);
+      setQueueInfo(null);
+      wsAssistantMessageIdRef.current = null;
+      if (wsIsRegeneratingRef.current) {
+        setRegeneratingMessageIndex(null);
+        wsIsRegeneratingRef.current = false;
+      }
+    },
+    onSessionId: (sessionId) => {
+      if (!activeSessionId && !sessionIdSetRef.current) {
+        sessionIdSetRef.current = true;
+        setActiveSessionId(sessionId);
+        loadSessions();
+      }
+    },
+    onQueueUpdate: (data) => {
+      setStreamStatus('queued');
+      wsIsQueuedRef.current = true;
+      setQueueInfo({
+        requestId: '',
+        position: data.position,
+        estimatedWait: 0,
+      });
+    },
+  });
+  wsSendCancelRef.current = wsSendCancel;
 
   const ensureDeveloperSession = useCallback(async (seedText: string) => {
     if (activeSessionId) {
@@ -314,6 +444,16 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     };
   }, [activeSessionId, messages.length]);
 
+  useEffect(() => {
+    wsConnect('chat');
+    return () => {
+      if (wsAnimatorRef.current?.isRunning) {
+        wsAnimatorRef.current.stop();
+      }
+      wsDisconnect();
+    };
+  }, [wsConnect, wsDisconnect]);
+
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
     try {
@@ -436,6 +576,23 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       return;
     }
 
+    if (useWebSocket && wsConnected) {
+      wsAssistantMessageIdRef.current = assistantMessageId;
+      wsFullContentRef.current = '';
+      wsFullReasoningRef.current = '';
+      wsIsQueuedRef.current = false;
+      wsIsRegeneratingRef.current = true;
+      wsSendChatRequest({
+        session_id: activeSessionId,
+        session_type: 'chat',
+        message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
+        model: currentModel,
+        images: [],
+        files: [],
+      });
+      return;
+    }
+
     try {
       const res = await api.stream('/api/chat', {
         session_id: activeSessionId,
@@ -519,7 +676,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
-  }, [streaming, uploading, messages, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream]);
+  }, [streaming, uploading, messages, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream, useWebSocket, wsConnected, wsSendChatRequest]);
 
   const handleSend = useCallback(async (overrideText?: string, webSearchEnabled = false) => {
     const text = typeof overrideText === 'string' ? overrideText : input;
@@ -603,6 +760,28 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         }
         setIsSendingMessage(false);
         abortControllerRef.current = null;
+      }
+      return;
+    }
+
+    if (useWebSocket && wsConnected) {
+      wsAssistantMessageIdRef.current = assistantMessageId;
+      wsFullContentRef.current = '';
+      wsFullReasoningRef.current = '';
+      wsIsQueuedRef.current = false;
+      wsIsRegeneratingRef.current = false;
+      wsSendChatRequest({
+        session_id: activeSessionId,
+        session_type: 'chat',
+        message: text,
+        model: currentModel,
+        images: savedAttachments.filter((a) => a.type === 'image').map((a) => a.url),
+        files: savedAttachments.filter((a) => a.type === 'file').map((a) => a.url),
+        display_content: displayContent,
+        web_search: webSearchEnabled,
+      });
+      if (!activeSessionId) {
+        setTimeout(loadSessions, 1000);
       }
       return;
     }
@@ -697,7 +876,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
-  }, [input, attachments, streaming, uploading, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream, loadSessions, ensureDeveloperSession]);
+  }, [input, attachments, streaming, uploading, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream, loadSessions, ensureDeveloperSession, useWebSocket, wsConnected, wsSendChatRequest]);
 
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
@@ -865,5 +1044,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     loadingSessionRef,
     pendingInitialBottomLockRef,
     initialBottomLockUntilRef,
+    wsConnected,
+    useWebSocket,
   };
 }

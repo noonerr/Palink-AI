@@ -177,3 +177,12 @@ export const api = {
     return res;
   },
 };
+
+export function ws(path: string): string {
+  const { protocol, host } = window.location;
+  const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+  const token = getToken();
+  const url = new URL(path, `${wsProtocol}//${host}`);
+  if (token) url.searchParams.set('token', token);
+  return url.toString();
+}
