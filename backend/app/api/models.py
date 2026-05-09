@@ -240,10 +240,30 @@ async def upload_file_base64(req: UploadRequest, user: User = Depends(get_curren
 
 
 @router.get("/api/models/local")
-async def get_local_models(all: bool = Query(False), user: User = Depends(get_current_user)):
+async def get_local_models(all: bool = Query(False), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """获取本地上传的模型文件列表"""
     include_disabled = bool(all and user.role == "admin")
-    return list_local_models(include_disabled=include_disabled)
+    models = list_local_models(include_disabled=include_disabled)
+
+    # 检查用户是否开启开发者模式
+    from ..models.system import UserSetting
+    user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if user_setting and user_setting.developer_mode:
+        # 添加测试模型
+        test_model = {
+            "id": "local:test-model",
+            "key": "test-model",
+            "display_name": "测试模型 (开发者)",
+            "filename": "test-model.gguf",
+            "enabled": True,
+            "size_gb": 0.001,
+            "context_length": 4096,
+            "supports_vision": False,
+            "is_test_model": True,
+        }
+        models.append(test_model)
+
+    return models
 
 
 @router.get("/api/models/unified")

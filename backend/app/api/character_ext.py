@@ -912,7 +912,7 @@ async def get_branches(
         # Auto-create main branch
         main_branch = CharacterChatSessionBranch(
             session_id=session_id,
-            branch_name="Main",
+                branch_name="分支 1",
             is_active=True,
         )
         db.add(main_branch)
@@ -953,8 +953,14 @@ async def create_branch(
 
     branch_name = req.branch_name
     if not branch_name:
-        branch_num = len(existing_branches) + 1
-        branch_name = f"分支 {branch_num}" if branch_num > 1 else "Main"
+        # 计算同级分支数量
+        sibling_branches = [
+            b for b in existing_branches
+         if b.parent_branch_id == req.parent_branch_id
+            and b.parent_message_id == req.parent_message_id
+        ]
+        branch_num = len(sibling_branches) + 1
+        branch_name = f"分支 {branch_num}"
 
     effective_parent_branch_id = req.parent_branch_id
     effective_parent_message_id = req.parent_message_id
@@ -964,6 +970,15 @@ async def create_branch(
         if active_branch:
             effective_parent_branch_id = active_branch.parent_branch_id
             effective_parent_message_id = active_branch.parent_message_id
+
+    # 检查同级分支数量限制（每个节点最多3个分支）
+    sibling_branches = [
+        b for b in existing_branches
+        if b.parent_branch_id == effective_parent_branch_id
+        and b.parent_message_id == effective_parent_message_id
+    ]
+    if len(sibling_branches) >= 3:
+        raise HTTPException(status_code=400, detail="每个节点最多只能创建3个分支")
 
     is_root_branch = effective_parent_branch_id is None and effective_parent_message_id is None
 
@@ -1079,6 +1094,113 @@ async def switch_branch(
     return {"status": "ok", "messages": messages, "up_to_message_id": up_to_message_id}
 
 
+@router_sessions.post("/{session_id}/branches/{branch_id}/favorite")
+async def toggle_favorite_branch(
+    session_id: str,
+    branch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """收藏或取消收藏分支"""
+    session = db.query(CharacterChatSession).filter(
+     CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+      raise HTTPException(status_code=404, detail="Session not found")
+
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    branch.is_favorited = not branch.is_favorited
+    db.commit()
+
+    return {"status": "ok", "is_favorited": branch.is_favorited}
+
+
+@router_sessions.post("/{session_id}/branches/{branch_id}/unfreeze")
+async def unfreeze_branch(
+    session_id: str,
+    branch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """解冻分支(用户重新进入冻结的分支时调用)"""
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    branch.is_frozen = False
+    branch.last_message_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"status": "ok"}
+
+
+@router_sessions.post("/{session_id}/check-frozen-branches")
+async def check_frozen_branches(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """检查并冻结超过5个对话（10条消息）未继续的分支"""
+    session = db.query(CharacterChatSession).filter(
+      CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    branches = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id,
+        CharacterChatSessionBranch.is_favorited == False  # 收藏的分支不冻结
+    ).all()
+
+    frozen_count = 0
+    for branch in branches:
+        # 计算该分支的消息数量
+        message_count = db.query(CharacterChatMessage).filter(
+            CharacterChatMessage.branch_id == branch.id
+        ).count()
+
+        # 如果消息数量超过10条，检查最后消息时间
+        if message_count >= 10:
+            # 获取该分支的最后一条消息
+            last_msg = db.query(CharacterChatMessage).filter(
+                CharacterChatMessage.branch_id == branch.id
+            ).order_by(CharacterChatMessage.created_at.desc()).first()
+
+            if last_msg:
+                # 计算距离最后一条消息的对话轮数
+                messages_after = db.query(CharacterChatMessage).filter(
+                    CharacterChatMessage.session_id == session_id,
+                    CharacterChatMessage.created_at > last_msg.created_at
+                ).count()
+
+                # 如果之后有超过10条消息（5轮对话），则冻结
+                if messages_after >= 10 and not branch.is_frozen:
+                    branch.is_frozen = True
+                    frozen_count += 1
+
+    db.commit()
+
+    return {"status": "ok", "frozen_count": frozen_count}
+
+
 @router_sessions.get("/{session_id}/branch-tree")
 async def get_branch_tree(
     session_id: str,
@@ -1100,7 +1222,7 @@ async def get_branch_tree(
     if not branches:
         main_branch = CharacterChatSessionBranch(
             session_id=session_id,
-            branch_name="Main",
+                branch_name="分支 1",
             is_active=True,
         )
         db.add(main_branch)
@@ -1161,6 +1283,9 @@ async def get_branch_tree(
             "parent_branch_id": branch.parent_branch_id,
             "parent_message_id": branch.parent_message_id,
             "is_active": branch.is_active,
+          "is_frozen": branch.is_frozen,
+            "is_favorited": branch.is_favorited,
+            "last_message_at": branch.last_message_at.isoformat() if branch.last_message_at else None,
             "created_at": branch.created_at.isoformat() if branch.created_at else None,
             "nodes": pairs,
         })
@@ -1351,7 +1476,7 @@ async def _character_chat_impl(
             if is_new_session:
                 main_branch = CharacterChatSessionBranch(
                     session_id=session_id,
-                    branch_name="Main",
+                        branch_name="分支 1",
                     is_active=True,
                 )
                 db.add(main_branch)
@@ -1540,10 +1665,20 @@ async def _character_chat_impl(
     db.add(CharacterChatMessage(
         session_id=session_id,
         branch_id=branch_id,
-        role="user",
+      role="user",
         content=req.message,
         model=req.model,
     ))
+
+    # 更新分支的最后消息时间
+    if branch_id:
+        branch = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.id == branch_id
+        ).first()
+        if branch:
+            branch.last_message_at = datetime.now(timezone.utc)
+            branch.is_frozen = False  # 有新消息时解冻
+
     db.commit()
 
     async def event_generator() -> AsyncGenerator[str, None]:
