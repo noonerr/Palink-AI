@@ -27,7 +27,8 @@
       "Bash(python3 -c \"import backend.app.api.character_ext\")",
       "Bash(python3 *)",
       "Bash(docker-compose exec *)",
-      "Bash(docker-compose restart *)"
+      "Bash(docker-compose restart *)",
+      "Bash(curl -I http://localhost:3000)"
     ]
   }
 }
