@@ -414,15 +414,19 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const handleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
     if (!selectedSession) return;
     try {
-      const isFork = !isLeaf && messageId !== null;
+      // 任何节点都可以作为分叉点，不管是否是叶子节点
+      const isFork = messageId !== null;
       const params = isFork ? `?up_to_message_id=${messageId}` : '';
       const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branchId}/switch${params}`);
       setMessages(data.messages || []);
-      if (isFork) {
+
+      // 设置 forkPoint，用于后续创建分支
+      if (messageId !== null) {
         setForkPoint({ branchId, messageId });
       } else {
         setForkPoint(null);
       }
+
       await loadBranches(selectedSession.id);
       await loadMemoryStats(selectedSession.id, branchId);
       try {
