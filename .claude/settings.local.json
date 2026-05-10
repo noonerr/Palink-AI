@@ -25,7 +25,9 @@
       "Bash(xargs grep -l \"storyline\\\\|StorylineNode\")",
       "Bash(python -m py_compile backend/app/api/character_ext.py backend/app/models/character.py)",
       "Bash(python3 -c \"import backend.app.api.character_ext\")",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(docker-compose exec *)",
+      "Bash(docker-compose restart *)"
     ]
   }
 }
