@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Bot, Brain, Eye } from 'lucide-react';
+import { Check, ChevronDown, Bot, Brain, Eye, FlaskConical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Model } from '@/types';
 
@@ -42,15 +42,20 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   const renderTabBar = () => null;
 
-  const renderModelList = () => (
-    <div>
-      <div className="max-h-52 overflow-y-auto p-1.5">
-        {models.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            暂无可用模型
-          </div>
-        ) : (
-          models.map(model => (
+  const renderModelList = () => {
+    const normalModels = models.filter(m => !m.is_test_model);
+    const testModels = models.filter(m => m.is_test_model);
+
+    return (
+      <div>
+        <div className="max-h-52 overflow-y-auto p-1.5">
+          {models.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+              暂无可用模型
+            </div>
+          ) : (
+            <>
+              {normalModels.map(model => (
         <button
           key={model.id}
           onClick={() => {
@@ -83,11 +88,53 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           </div>
           {currentModel === model.id && <Check size={14} className="shrink-0" />}
         </button>
-          ))
-        )}
+              ))}
+              {testModels.length > 0 && (
+                <>
+                  <div className="flex items-center gap-2 px-3 py-1.5 mt-1">
+                    <div className="flex-1 h-px bg-border" />
+                    <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                      <FlaskConical size={10} />
+                      开发者
+                    </span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+                  {testModels.map(model => (
+        <button
+          key={model.id}
+          onClick={() => {
+            onSelect(model.id);
+            setIsOpen(false);
+          }}
+          className={cn(
+            'w-full flex items-start gap-2 sm:gap-3 px-2 sm:px-3 py-2.5 rounded-lg text-sm transition-all touch-target',
+            currentModel === model.id
+              ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400 font-medium'
+              : 'text-foreground hover:bg-amber-500/5'
+          )}
+        >
+          <span className="text-lg shrink-0">
+            <FlaskConical size={18} className="text-amber-500 shrink-0" />
+          </span>
+          <div className="flex-1 text-left min-w-0">
+            <div className="break-words leading-tight text-sm flex items-center gap-1">{getModelDisplayName(model)}</div>
+            <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+              <span className="truncate">{model.provider}</span>
+              <span>•</span>
+              <span>示例回复</span>
+            </div>
+          </div>
+          {currentModel === model.id && <Check size={14} className="shrink-0 text-amber-500" />}
+        </button>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderPortalDropdown = (widthClass: string = 'w-64', extraClass: string = '') => {
     if (!isOpen) return null;

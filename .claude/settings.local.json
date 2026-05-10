@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose down *)",
+      "Bash(docker-compose up *)",
+      "Bash(docker-compose ps *)",
+      "Bash(docker-compose logs *)",
+      "Bash(docker exec *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'fix: 修复 mobileOffset 计算未考虑 keepSidebarOpenRef 状态的问题 *)",
+      "Bash(git reset *)",
+      "Bash(git commit -m 'fix: 修复导航结束后强制恢复侧栏状态导致无法关闭的问题 *)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(git commit *)",
+      "Bash(npm run *)",
+      "Bash(rm -rf node_modules package-lock.json)",
+      "Bash(npm install *)",
+      "Bash(curl -s \"http://localhost:3000/@fs/C:/Users/Pall/OneDrive/桌面/Palink-AI/frontend/src/components/views/character/CharacterChat.css\")",
+      "Bash(docker-compose build *)",
+      "Bash(docker restart palink-ai-frontend-1 *)",
+      "Bash(git checkout *)",
+      "Bash(docker rmi *)",
+      "Bash(python fix_database.py)",
+      "Bash(python \"C:\\\\Users\\\\Pall\\\\OneDrive\\\\桌面\\\\Palink-AI\\\\fix_db.py\")"
+    ]
+  }
+}

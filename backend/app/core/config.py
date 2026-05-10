@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     CHAT_HISTORY_LIMIT: int = 24
     CHARACTER_CHAT_HISTORY_LIMIT: int = 24
     TRUST_PROXY_HEADERS: bool = False
-    RUN_MIGRATIONS_ON_STARTUP: bool = False
+    RUN_MIGRATIONS_ON_STARTUP: bool = True  # 启用自动迁移
     MIGRATIONS_FAIL_FAST: bool = True
     PROVIDER_SECRET_CHECK_STRICT: bool = False
     API_THREADPOOL_TOKENS: int = 16

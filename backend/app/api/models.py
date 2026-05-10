@@ -145,7 +145,7 @@ def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hin
 
 
 @router.get("/api/models")
-async def get_models(user: User = Depends(get_current_user)):
+async def get_models(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """获取所有启用服务商的可用模型列表"""
     result = []
     seen_ids: Set[str] = set()
@@ -188,6 +188,26 @@ async def get_models(user: User = Depends(get_current_user)):
         if model_id and model_id not in seen_ids:
             seen_ids.add(model_id)
             result.append(local_model)
+
+    from ..models.system import UserSetting
+    user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if user_setting and user_setting.developer_mode:
+        test_model_id = "local:test-model"
+        if test_model_id not in seen_ids:
+            seen_ids.add(test_model_id)
+            result.append({
+                "id": test_model_id,
+                "name": "测试模型 (开发者)",
+                "alias": "测试模型 (开发者)",
+                "icon": "🧪",
+                "description": "开发者模式专用，返回预设示例回复",
+                "context_length": 4096,
+                "avatar": "",
+                "provider": "开发者",
+                "provider_id": "developer",
+                "supports_vision": False,
+                "is_test_model": True,
+            })
 
     return result
 

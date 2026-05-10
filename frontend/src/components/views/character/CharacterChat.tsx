@@ -481,9 +481,14 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   }, [handleStorylineNavigate]);
 
   const prevBranchIdRef = useRef<string | null>(null);
+  const contentWrapperRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const branchId = selectedBranch?.id || null;
-    if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
+      if (prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
+    // 切换分支时自动收起故事线侧栏
+      setSidebarCollapsed(true);
+
       isNavigatingRef.current = true;
       setSessionVisualSnapshot({
         activeSessionId: selectedSession?.id || null,
@@ -565,7 +570,10 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       newSessionFadeTimerRef.current = null;
     }
 
-    setSidebarCollapsed(true);
+    // 只在桌面端自动关闭侧栏，移动端保持用户选择的状态
+    if (!isMobile) {
+      setSidebarCollapsed(true);
+    }
 
     const applySessionSwitch = async () => {
       if (sessionSwitchTokenRef.current !== switchToken) return;
@@ -616,7 +624,10 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       newSessionFadeTimerRef.current = null;
     }
 
-    setSidebarCollapsed(true);
+    // 只在桌面端自动关闭侧栏，移动端保持用户选择的状态
+    if (!isMobile) {
+      setSidebarCollapsed(true);
+    }
 
     const resetToNewSession = () => {
       if (sessionSwitchTokenRef.current !== switchToken) return;
@@ -755,6 +766,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
 
       {/* ──── Desktop Sidebar + Main Content (移动端跟随侧边栏右移) ──── */}
       <div
+        ref={contentWrapperRef}
         className="flex-1 flex h-full min-w-0 transition-transform ease-in-out will-change-transform"
         style={isMobile ? {
           transform: `translate3d(${!sidebarCollapsed ? 320 : 0}px, 0, 0)`,

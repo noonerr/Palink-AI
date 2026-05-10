@@ -28,6 +28,7 @@ export interface Model {
   unified_id?: string;
   provider_count?: number;
   provider_id?: string;
+  is_test_model?: boolean;
 }
 
 export interface UnifiedModelProvider {

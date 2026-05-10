@@ -64,6 +64,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const loadingSessionRef = useRef<string | null>(null);
   const pendingInitialBottomLockRef = useRef(false);
   const initialBottomLockUntilRef = useRef(0);
+  const lastLoadedSessionIdRef = useRef<string | null>(null);
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   const markStreamActive = useCallback(() => {
@@ -225,10 +226,10 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   }, [markStreamActive, setAssistantMessageSnapshot]);
 
   const loadMessages = useCallback(async (sessionId: string) => {
+    if (lastLoadedSessionIdRef.current === sessionId) return;
+    lastLoadedSessionIdRef.current = sessionId;
     try {
-      setMessages([]);
       setSuggestions([]);
-      setMemoryStats(null);
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
       setMessages(data);
       pendingInitialBottomLockRef.current = data.length > 0;
@@ -266,6 +267,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setMessages([]);
       setSuggestions([]);
       setMemoryStats(null);
+      lastLoadedSessionIdRef.current = null;
     }
   }, [activeSessionId, loadMessages, isSendingMessage]);
 
@@ -816,6 +818,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     streamStatus,
     setStreamStatus,
     queueInfo,
+    setQueueInfo,
     attachments,
     setAttachments,
     uploading,
@@ -831,11 +834,14 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     showMessageSelect,
     setShowMessageSelect,
     regeneratingMessageIndex,
+    setRegeneratingMessageIndex,
     memoryStats,
+    setMemoryStats,
     compressing,
     memoryMode,
     developerMode,
     isSendingMessage,
+    setIsSendingMessage,
     streaming,
     messagesEndRef,
     abortControllerRef,
