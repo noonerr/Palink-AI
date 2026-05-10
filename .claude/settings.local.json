@@ -21,7 +21,11 @@
       "Bash(git checkout *)",
       "Bash(docker rmi *)",
       "Bash(python fix_database.py)",
-      "Bash(python \"C:\\\\Users\\\\Pall\\\\OneDrive\\\\桌面\\\\Palink-AI\\\\fix_db.py\")"
+      "Bash(python \"C:\\\\Users\\\\Pall\\\\OneDrive\\\\桌面\\\\Palink-AI\\\\fix_db.py\")",
+      "Bash(xargs grep -l \"storyline\\\\|StorylineNode\")",
+      "Bash(python -m py_compile backend/app/api/character_ext.py backend/app/models/character.py)",
+      "Bash(python3 -c \"import backend.app.api.character_ext\")",
+      "Bash(python3 *)"
     ]
   }
 }

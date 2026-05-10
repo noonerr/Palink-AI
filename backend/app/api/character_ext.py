@@ -67,6 +67,50 @@ def _read_with_size_limit(resp, max_size: int = _MAX_IMAGE_SIZE) -> bytes:
 # Branch History Helpers
 # ───────────────────────────────────────────────
 
+def _get_assistant_message_id_for_node(db: Session, session_id: str, branch_id: str, user_msg_id: int) -> Optional[int]:
+    """
+    Given a user message ID, find the immediately following assistant message ID in the same branch.
+    This defines a "dialogue node" as (user_msg, assistant_msg) pair.
+    Returns None if no assistant message follows.
+    """
+    assistant_msg = (
+        db.query(CharacterChatMessage)
+        .filter(
+            CharacterChatMessage.session_id == session_id,
+            CharacterChatMessage.branch_id == branch_id,
+            CharacterChatMessage.role == "assistant",
+            CharacterChatMessage.id > user_msg_id,
+        )
+        .order_by(CharacterChatMessage.id)
+        .first()
+    )
+    return assistant_msg.id if assistant_msg else None
+
+
+def _count_child_branches_from_node(db: Session, session_id: str, parent_branch_id: Optional[str], parent_message_id: Optional[int]) -> int:
+    """
+    Count how many branches fork from a specific node (identified by parent_branch_id + parent_message_id).
+    This enforces the "max 3 branches per node" rule.
+
+    Note: parent_message_id should always point to an assistant message (the end of a dialogue pair).
+    """
+    query = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.session_id == session_id,
+    )
+
+    if parent_branch_id is None:
+        query = query.filter(CharacterChatSessionBranch.parent_branch_id.is_(None))
+    else:
+        query = query.filter(CharacterChatSessionBranch.parent_branch_id == parent_branch_id)
+
+    if parent_message_id is None:
+        query = query.filter(CharacterChatSessionBranch.parent_message_id.is_(None))
+    else:
+        query = query.filter(CharacterChatSessionBranch.parent_message_id == parent_message_id)
+
+    return query.count()
+
+
 def _get_branch_messages_up_to(db: Session, session_id: str, branch_id: str, up_to_message_id: Optional[int] = None) -> list:
     """Get messages for a branch, optionally up to (and including) a specific message id."""
     msgs = (
@@ -96,7 +140,7 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
     loaded so that messages after the fork on a parent branch are excluded.
 
     If up_to_message_id is provided, the target branch's messages are
-    truncated at (and including) that message id — used for "fork from
+    truncated at (and including) that message id - used for "fork from
     here" navigation.
     """
     branch = db.query(CharacterChatSessionBranch).filter(
@@ -965,19 +1009,30 @@ async def create_branch(
     effective_parent_branch_id = req.parent_branch_id
     effective_parent_message_id = req.parent_message_id
 
+    # Validate that parent_message_id points to an assistant message if provided
+    if effective_parent_message_id is not None and effective_parent_branch_id is not None:
+        parent_msg = db.query(CharacterChatMessage).filter(
+            CharacterChatMessage.id == effective_parent_message_id,
+            CharacterChatMessage.session_id == session_id,
+         CharacterChatMessage.branch_id == effective_parent_branch_id,
+        ).first()
+        if parent_msg and parent_msg.role != "assistant":
+          raise HTTPException(
+                status_code=400,
+                detail="parent_message_id must point to an assistant message (end of dialogue pair)"
+        )
+
     if req.same_level and not is_first_branch:
         active_branch = next((b for b in existing_branches if b.is_active), None)
         if active_branch:
             effective_parent_branch_id = active_branch.parent_branch_id
             effective_parent_message_id = active_branch.parent_message_id
 
-    # 检查同级分支数量限制（每个节点最多3个分支）
-    sibling_branches = [
-        b for b in existing_branches
-        if b.parent_branch_id == effective_parent_branch_id
-        and b.parent_message_id == effective_parent_message_id
-    ]
-    if len(sibling_branches) >= 3:
+    # Check branch limit: max 3 branches per node (dialogue pair)
+    child_count = _count_child_branches_from_node(
+        db, session_id, effective_parent_branch_id, effective_parent_message_id
+    )
+    if child_count >= 3:
         raise HTTPException(status_code=400, detail="每个节点最多只能创建3个分支")
 
     is_root_branch = effective_parent_branch_id is None and effective_parent_message_id is None

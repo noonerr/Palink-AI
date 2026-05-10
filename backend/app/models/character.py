@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -46,6 +46,12 @@ class CharacterChatSession(Base):
 
 class CharacterChatSessionBranch(Base):
     __tablename__ = "character_chat_session_branches"
+    __table_args__ = (
+        # Composite index for finding child branches from a specific node
+        Index('idx_branch_parent_lookup', 'session_id', 'parent_branch_id', 'parent_message_id'),
+        # Index for finding active branch in a session
+        Index('idx_branch_session_active', 'session_id', 'is_active'),
+    )
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = Column(String, ForeignKey("character_chat_sessions.id"))
     parent_branch_id = Column(String, ForeignKey("character_chat_session_branches.id"), nullable=True)
@@ -61,6 +67,12 @@ class CharacterChatSessionBranch(Base):
 
 class CharacterChatMessage(Base):
     __tablename__ = "character_chat_messages"
+    __table_args__ = (
+        # Composite index for branch message queries
+        Index('idx_message_branch_lookup', 'session_id', 'branch_id', 'created_at'),
+        # Index for finding assistant messages after a user message
+        Index('idx_message_role_lookup', 'session_id', 'branch_id', 'role', 'id'),
+    )
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, ForeignKey("character_chat_sessions.id"))
     branch_id = Column(String, ForeignKey("character_chat_session_branches.id"), nullable=True)
