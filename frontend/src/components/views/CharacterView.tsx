@@ -322,12 +322,31 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const createBranch = async (_branchName?: string) => {
     if (!selectedSession) return;
     try {
-      const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, {
+      // 如果有 forkPoint，从指定节点创建分支；否则创建同级分支
+      const payload: any = {
         session_id: selectedSession.id,
-        same_level: true,
-      });
+      };
+
+      if (forkPoint) {
+        // 从指定节点分叉
+        payload.parent_branch_id = forkPoint.branchId;
+        payload.parent_message_id = forkPoint.messageId;
+        payload.same_level = false;
+      } else {
+        // 创建同级分支
+      payload.same_level = true;
+      }
+
+      const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, payload);
       const branchName = resp?.branch?.branch_name || '新分支';
-      toast.success(`分支 "${branchName}" 已创建`);
+
+      if (forkPoint) {
+        toast.success(`从节点创建分支 "${branchName}"`);
+        setForkPoint(null); // 清除 forkPoint
+      } else {
+        toast.success(`分支 "${branchName}" 已创建`);
+      }
+
       await loadBranches(selectedSession.id);
       await fetchBranchTree();
 
@@ -342,6 +361,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       toast.error(e?.detail || e?.message || '创建分支失败');
     }
   };
+
 
   const switchBranch = async (branch: CharacterChatSessionBranch) => {
     if (!selectedSession) return;
