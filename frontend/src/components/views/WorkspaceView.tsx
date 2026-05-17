@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Folder,
   UploadCloud,
@@ -38,14 +38,14 @@ interface WorkspaceViewProps {
   isDark?: boolean;
 }
 
-export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
+export function WorkspaceView({
   token: _token,
   user: _user,
   models,
   systemDefaults,
   t,
   isDark = false
-}) => {
+}: WorkspaceViewProps) {
   const bottomPadding = useMobileBottomPadding();
   const isMobile = useIsMobile();
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);

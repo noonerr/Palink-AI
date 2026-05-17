@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, User, Tag, Globe, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -47,13 +47,13 @@ function truncate(text: string | undefined, maxLen: number): string {
   return text.length > maxLen ? text.slice(0, maxLen) + '...' : text;
 }
 
-export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
+export function ImportPreviewModal({
   open,
   onOpenChange,
   characterData,
   onConfirm,
   onCancel,
-}) => {
+}: ImportPreviewModalProps) {
   const [editedName, setEditedName] = useState('');
   const [mounted, setMounted] = useState(false);
 

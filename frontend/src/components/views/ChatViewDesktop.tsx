@@ -1,18 +1,16 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, MessageSquarePlus, X, Edit3, Trash2, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Sparkles } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
-import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
-import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
-import { ModelSelector } from '@/components/ui/custom/ModelSelector';
-import { ChatSessionList } from '@/components/ui/custom/ChatSessionList';
-import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
 import { consumeSseStream } from '@/lib/sseStream';
-import type { Message as MessageType, Model, Session } from '@/types';
+import { ChatSidebar } from './chat/ChatSidebar';
+import { WelcomeContent } from './chat/WelcomeContent';
+import { ChatHeader } from './chat/ChatHeader';
+import type { Message as MessageType, Model, Session, Attachment } from '@/types';
 
 const generateMessageId = () => {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
@@ -33,17 +31,9 @@ interface ChatViewProps {
   showModelReasoning?: boolean;
 }
 
-interface Attachment {
-  type: 'image' | 'file';
-  name: string;
-  url: string;
-  thumbnail?: string;
-  size?: number;
-}
 
 
-
-export const ChatViewDesktop: React.FC<ChatViewProps> = ({
+export function ChatViewDesktop({
   token: _token,
   user,
   models,
@@ -54,8 +44,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   setSidebarCollapsed,
   isDark: _isDark,
   showModelReasoning = true,
-}) => {
-  const bottomPadding = useMobileBottomPadding();
+}: ChatViewProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageType[]>([]);
@@ -92,6 +81,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const sessionIdSetRef = useRef(false);
   const pendingInitialBottomLockRef = useRef(false);
   const initialBottomLockUntilRef = useRef(0);
+  const isAtBottomRef = useRef(true);
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   const markStreamActive = useCallback(() => {
@@ -288,6 +278,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
       
       pendingInitialBottomLockRef.current = data.length > 0;
       initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
+      isAtBottomRef.current = true;
       
       await loadMemoryStats(sessionId);
       
@@ -348,8 +339,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     return () => window.removeEventListener('userSettingsUpdated', fetchUserSettings);
   }, []);
 
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom < 120;
+  }, []);
+
   useEffect(() => {
-    if (!pendingInitialBottomLockRef.current) {
+    if (!pendingInitialBottomLockRef.current && isAtBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, streaming]);
@@ -388,18 +385,14 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
     try {
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      });
-
-      const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
+      const formData = new FormData();
+      formData.append('file', file);
+      const data = await api.post('/api/upload', formData);
       setAttachments(prev => [...prev, {
         type,
         name: file.name,
         url: data.url,
-        thumbnail: type === 'image' ? dataUrl : undefined,
+        thumbnail: type === 'image' ? URL.createObjectURL(file) : undefined,
         size: file.size,
       }]);
     } catch (e) {
@@ -424,7 +417,8 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
-    
+    isAtBottomRef.current = true;
+
     const assistantMessageId = generateMessageId();
     
     setMessages(prev => {
@@ -594,6 +588,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
     setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
+    isAtBottomRef.current = true;
 
     // Add user message and placeholder for assistant with unique IDs
     const userMessageId = generateMessageId();
@@ -869,174 +864,41 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
   // Welcome Screen
   if (messages.length === 0 && !activeSessionId) {
-    const currentModelObj = models.find(m => m.id === currentModel) || models[0];
-
     return (
       <div className="flex h-full overflow-hidden">
-        {/* Mobile Backdrop */}
-        {!sidebarCollapsed && (
-          <div
-            className="fixed inset-0 z-[59] bg-black/40 md:hidden"
-            onClick={() => setSidebarCollapsed(true)}
-          />
-        )}
-        {/* Sidebar */}
-        <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-          <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
-            {/* Header */}
-            <div className="h-[54px] flex items-center justify-between px-4 shrink-0 border-b border-border/50">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
-                  onClick={() => setSidebarCollapsed(true)}
-                >
-                  <ChevronLeft size={16} />
-                </Button>
-                <span className="text-sm font-semibold text-foreground">
-                  {isDeleteMode ? t.batch_manage : t.chat_history}
-                </span>
-              </div>
-              <div className="flex gap-1">
-                <Button
-                  variant={isDeleteMode && selectedSessions.size > 0 ? "destructive" : "ghost"}
-                  size="icon"
-                  className={cn(
-                    "h-8 w-8",
-                    isDeleteMode && selectedSessions.size === 0 && "text-destructive hover:bg-destructive/10"
-                  )}
-                  onClick={() => {
-                    if (isDeleteMode) {
-                      if (selectedSessions.size > 0) {
-                        handleBatchDelete();
-                      } else {
-                        setIsDeleteMode(false);
-                      }
-                    } else {
-                      setIsDeleteMode(true);
-                    }
-                  }}
-                >
-                  {isDeleteMode ? (
-                    selectedSessions.size > 0 ? (
-                      <Trash2 size={14} />
-                    ) : (
-                      <X size={14} />
-                    )
-                  ) : (
-                    <Edit3 size={14} />
-                  )}
-                </Button>
-              </div>
-            </div>
-            <ChatSessionList
-              sessions={sessions}
-              activeSessionId={activeSessionId}
-              onSessionSelect={handleSelectSession}
-              isDeleteMode={isDeleteMode}
-              setIsDeleteMode={setIsDeleteMode}
-              selectedSessions={selectedSessions}
-              toggleSessionSelect={toggleSessionSelect}
-              onBatchDelete={handleBatchDelete}
-              onNewSession={() => setActiveSessionId(null)}
-              onDeleteSession={handleDeleteSession}
-              showNewButton={true}
-              showDeleteButton={false}
-              showHeaderActions={false}
-              t={t}
-            />
-          </div>
-        </div>
-
-
-        {/* Chat Area */}
-        <div className="flex-1 flex flex-col h-full overflow-hidden">
-          {/* Header */}
-          <div className="h-[54px] flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
-            <div className="flex items-center gap-2 min-w-0">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                className="md:hidden h-10 w-10 shrink-0"
-              >
-                <Menu size={18} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden md:flex h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all shrink-0"
-                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              >
-                {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-              </Button>
-              <div className="min-w-0 flex-1">
-                <ModelSelector
-                  models={models}
-                  currentModel={currentModel}
-                  onSelect={setCurrentModel}
-                />
-              </div>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <Button
-                size="sm"
-                onClick={() => setActiveSessionId(null)}
-                className="h-8 px-2 sm:px-3"
-              >
-                <MessageSquarePlus size={16} className="sm:mr-1.5" />
-                <span className="hidden sm:inline">新对话</span>
-              </Button>
-            </div>
-          </div>
-
-          {/* Welcome Content */}
-          <div className="flex-1 flex items-center justify-center p-4 sm:p-8 overflow-auto overscroll-y-contain">
-            <div className={`w-full max-w-2xl flex flex-col items-center animate-fade-in-up ${bottomPadding}`}>
-              {/* Model Display */}
-              <div className="mb-10 text-center">
-                <div className="w-24 h-24 bg-gradient-to-br from-primary/20 to-primary/5 rounded-3xl mx-auto flex items-center justify-center text-5xl mb-6 shadow-xl shadow-primary/10 ring-1 ring-primary/20 overflow-hidden">
-                  {(() => {
-                    const icon = currentModelObj?.icon;
-                    if (icon && (icon.startsWith('/') || icon.startsWith('http') || icon.startsWith('data:'))) {
-                      return <img src={icon} alt="" className="w-full h-full object-cover" />;
-                    }
-                    return <span>{icon || '🤖'}</span>;
-                  })()}
-                </div>
-                <h1 className="text-3xl font-semibold mb-2">
-                  {currentModelObj?.alias || currentModelObj?.name}
-                </h1>
-                <p className="text-muted-foreground">
-                  {currentModelObj?.description || t.welcome_greeting}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Input Area */}
-          <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
-            <div className="max-w-3xl mx-auto">
-              <ChatInput
-                value={input}
-                onChange={setInput}
-                onSend={handleSend}
-                onUpload={handleUpload}
-                attachments={attachments}
-                onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-                disabled={streaming}
-                uploading={uploading}
-                placeholder={t.ask_anything}
-                streaming={streaming}
-                onStop={handleStopStreaming}
-              />
-              <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
-                {t.ai_disclaimer}
-              </p>
-            </div>
-          </div>
-        </div>
+        <ChatSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
+          isDeleteMode={isDeleteMode}
+          setIsDeleteMode={setIsDeleteMode}
+          selectedSessions={selectedSessions}
+          toggleSessionSelect={toggleSessionSelect}
+          handleBatchDelete={handleBatchDelete}
+          handleSelectSession={handleSelectSession}
+          handleDeleteSession={handleDeleteSession}
+          setActiveSessionId={setActiveSessionId}
+          t={t}
+        />
+        <WelcomeContent
+          models={models}
+          currentModel={currentModel}
+          setCurrentModel={setCurrentModel}
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
+          input={input}
+          setInput={setInput}
+          handleSend={handleSend}
+          handleUpload={handleUpload}
+          attachments={attachments}
+          setAttachments={setAttachments}
+          streaming={streaming}
+          uploading={uploading}
+          handleStopStreaming={handleStopStreaming}
+          setActiveSessionId={setActiveSessionId}
+          t={t}
+        />
         <ConfirmDialog
           open={showDeleteConfirm}
           onOpenChange={setShowDeleteConfirm}
@@ -1056,157 +918,44 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Mobile Backdrop */}
-      {!sidebarCollapsed && (
-        <div
-          className="fixed inset-0 z-[59] bg-black/40 md:hidden"
-          onClick={() => setSidebarCollapsed(true)}
-        />
-      )}
-      {/* Sidebar */}
-      <div className={`transition-all duration-300 ease-in-out overflow-hidden fixed inset-y-0 left-0 z-[60] md:relative ${!sidebarCollapsed ? 'w-64 opacity-100' : 'w-0 opacity-0'}`}>
-        <div className="w-64 h-full flex-shrink-0 glass flex flex-col overflow-hidden shadow-lg md:shadow-none pt-[env(safe-area-inset-top)]">
-          {/* Header */}
-          <div className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/50">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-full hover:bg-accent hover:text-accent-foreground"
-                onClick={() => setSidebarCollapsed(true)}
-              >
-                <ChevronLeft size={16} />
-              </Button>
-              <span className="text-sm font-semibold text-foreground">
-                {isDeleteMode ? t.batch_manage : t.chat_history}
-              </span>
-            </div>
-            <div className="flex gap-1">
-              <Button
-                variant={isDeleteMode && selectedSessions.size > 0 ? "destructive" : "ghost"}
-                size="icon"
-                className={cn(
-                  "h-8 w-8",
-                  isDeleteMode && selectedSessions.size === 0 && "text-destructive hover:bg-destructive/10"
-                )}
-                onClick={() => {
-                  if (isDeleteMode) {
-                    if (selectedSessions.size > 0) {
-                      handleBatchDelete();
-                    } else {
-                      setIsDeleteMode(false);
-                    }
-                  } else {
-                    setIsDeleteMode(true);
-                  }
-                }}
-              >
-                {isDeleteMode ? (
-                  selectedSessions.size > 0 ? (
-                    <Trash2 size={14} />
-                  ) : (
-                    <X size={14} />
-                  )
-                ) : (
-                  <Edit3 size={14} />
-                )}
-              </Button>
-            </div>
-          </div>
-          <ChatSessionList
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSessionSelect={handleSelectSession}
-            isDeleteMode={isDeleteMode}
-            setIsDeleteMode={setIsDeleteMode}
-            selectedSessions={selectedSessions}
-            toggleSessionSelect={toggleSessionSelect}
-            onBatchDelete={handleBatchDelete}
-            onNewSession={() => setActiveSessionId(null)}
-            onDeleteSession={handleDeleteSession}
-            showNewButton={true}
-            showDeleteButton={false}
-            showHeaderActions={false}
-            t={t}
-          />
-        </div>
-      </div>
-
+      <ChatSidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        isDeleteMode={isDeleteMode}
+        setIsDeleteMode={setIsDeleteMode}
+        selectedSessions={selectedSessions}
+        toggleSessionSelect={toggleSessionSelect}
+        handleBatchDelete={handleBatchDelete}
+        handleSelectSession={handleSelectSession}
+        handleDeleteSession={handleDeleteSession}
+        setActiveSessionId={setActiveSessionId}
+        t={t}
+      />
 
       {/* Chat Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Header */}
-        <div className="h-14 flex items-center justify-between px-3 md:px-6 border-b border-border/50 glass z-10">
-          <div className="flex items-center gap-2 min-w-0">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="md:hidden h-10 w-10 shrink-0"
-            >
-              <Menu size={18} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hidden md:flex h-8 w-8 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all shrink-0"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            >
-              {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-            </Button>
-            <div className="min-w-0 flex-1">
-              <ModelSelector
-                models={models}
-                currentModel={currentModel}
-                onSelect={setCurrentModel}
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-              {activeSessionId && messages.length > 0 && (
-                <>
-                  <Button
-                    variant={showMessageSelect ? "default" : "ghost"}
-                    size="icon"
-                    className="h-9 w-9 rounded-lg transition-all"
-                    onClick={() => {
-                      setShowMessageSelect(!showMessageSelect);
-                      if (showMessageSelect) {
-                        setSelectedMessages(new Set());
-                      }
-                    }}
-                    title={showMessageSelect ? "退出选择模式" : "选择消息"}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="m9 12 2 2 4-4"/></svg>
-                  </Button>
-                  {showMessageSelect && selectedMessages.size > 0 && (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="h-8 px-2 sm:px-3"
-                      onClick={handleDeleteSelectedMessages}
-                    >
-                      <Trash2 size={14} className="sm:mr-1.5" />
-                      <span className="hidden sm:inline">删除 </span>{selectedMessages.size} 条
-                    </Button>
-                  )}
-                </>
-              )}
-              <Button
-                size="sm"
-                onClick={() => setActiveSessionId(null)}
-                className="h-8 px-2 sm:px-3"
-              >
-                <MessageSquarePlus size={16} className="sm:mr-1.5" />
-                <span className="hidden sm:inline">新对话</span>
-              </Button>
-            </div>
-        </div>
+        <ChatHeader
+          models={models}
+          currentModel={currentModel}
+          setCurrentModel={setCurrentModel}
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
+          activeSessionId={activeSessionId}
+          setActiveSessionId={setActiveSessionId}
+          messages={messages}
+          streaming={streaming}
+          showMessageSelect={showMessageSelect}
+          setShowMessageSelect={setShowMessageSelect}
+          selectedMessages={selectedMessages}
+          handleDeleteSelectedMessages={handleDeleteSelectedMessages}
+        />
 
         {/* Messages */}
         <div className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6">
-            <div className={`max-w-3xl mx-auto space-y-6 ${bottomPadding}`}>
+          <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6" onScroll={handleScroll}>
+            <div className={`max-w-3xl mx-auto space-y-6`}>
               {messages.map((msg, idx) => (
                 <div key={msg.id || idx} className="flex items-start gap-2">
                   <div className="flex-1">
@@ -1275,7 +1024,7 @@ export const ChatViewDesktop: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Input Area */}
-        <div className="p-2 border-t border-border/50 pb-20 md:pb-4">
+        <div className="p-2 border-t border-border/50 pb-4">
           <div className="max-w-3xl mx-auto">
             <ChatInput
               value={input}

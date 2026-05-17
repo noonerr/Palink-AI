@@ -329,9 +329,11 @@ const CodeBlock = memo(({ inline, className, children, ...props }) => {
           {copied ? <Check size={12}/> : <Copy size={12}/>}
         </button>
       </div>
-      <SyntaxHighlighter language={match?.[1]} style={vscDarkPlus} customStyle={{margin:0, padding:'1rem', fontSize:'0.85em', lineHeight:'1.5'}} {...props}>
-        {String(children).replace(/\n$/, '')}
-      </SyntaxHighlighter>
+      <pre className="p-4 text-sm font-mono leading-relaxed overflow-x-auto" style={{margin:0, fontSize:'0.85em', lineHeight:'1.5'}}>
+        <code className="language-{match?.[1] || 'text'}" {...props}>
+          {String(children).replace(/\n$/, '')}
+        </code>
+      </pre>
     </div>
   );
 });
@@ -498,7 +500,7 @@ const WorkspaceView = ({ token, user, filesToUpload, onClearUploads, t, models, 
     }, [token]);
 
     useEffect(() => { fetchItems(); fetchWorkspaceSessions(); }, [fetchItems, fetchWorkspaceSessions]);
-    useEffect(() => { if (filesToUpload?.length) { handleBatchUpload(filesToUpload); onClearUploads(); } }, [filesToUpload]);
+    useEffect(() => { if (filesToUpload?.length) { handleBatchUpload(filesToUpload); onClearUploads(); } }, [filesToUpload, handleBatchUpload, onClearUploads]);
 
     const handleCreateFolder = async () => {
         if(!newFolderName.trim()) return setIsCreateFolder(false);
@@ -741,7 +743,7 @@ const ChatInterface = ({ token, user, sessionId, initialAttachments, onSessionCh
     useEffect(() => {
         if(sessionId) { fetch(`/api/sessions/${sessionId}/messages`, { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then(d => { setMessages(d); setSuggestions([]); }); } 
         else { setMessages([]); if (initialAttachments?.length) setAttachments(initialAttachments); setSuggestions([]); }
-    }, [sessionId]);
+    }, [sessionId, token, initialAttachments]);
 
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streaming, suggestions]);
 

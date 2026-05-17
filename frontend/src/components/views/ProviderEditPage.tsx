@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   User,
@@ -28,12 +28,12 @@ interface ProviderEditPageProps {
   t: Record<string, string>;
 }
 
-export const ProviderEditPage: React.FC<ProviderEditPageProps> = ({
+export function ProviderEditPage({
   token,
   providers,
   onProvidersUpdate,
   t
-}) => {
+}: ProviderEditPageProps) {
   const { providerId } = useParams<{ providerId: string }>();
   const navigate = useNavigate();
   const location = useLocation();

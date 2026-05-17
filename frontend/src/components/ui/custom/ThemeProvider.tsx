@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 文件路径: frontend/src/components/ui/custom/ThemeProvider.tsx
  * 用途: 主题管理组件
  * 特性:
@@ -27,11 +27,11 @@ interface ThemeProviderProps {
   storageKey?: string;
 }
 
-export const ThemeProvider: React.FC<ThemeProviderProps> = ({
+export function ThemeProvider({
   children,
   defaultTheme = 'dark',
   storageKey = 'palink-theme',
-}) => {
+}: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(() => {
     // 从 localStorage 读取
     if (typeof window !== 'undefined') {
@@ -123,10 +123,10 @@ interface ThemeToggleProps {
   size?: 'sm' | 'md' | 'lg';
 }
 
-export const ThemeToggle: React.FC<ThemeToggleProps> = ({ 
+export function ThemeToggle({ 
   className = '',
   size = 'md' 
-}) => {
+}: ThemeToggleProps) {
   const { toggleTheme, isDark } = useTheme();
 
   const sizeClasses = {
@@ -211,11 +211,11 @@ interface LanguageProviderProps {
   storageKey?: string;
 }
 
-export const LanguageProvider: React.FC<LanguageProviderProps> = ({
+export function LanguageProvider({
   children,
   defaultLang = 'zh',
   storageKey = 'palink-lang',
-}) => {
+}: LanguageProviderProps) {
   const [lang, setLangState] = useState<Language>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem(storageKey) as Language;
@@ -264,10 +264,10 @@ interface LanguageToggleProps {
   size?: 'sm' | 'md' | 'lg';
 }
 
-export const LanguageToggle: React.FC<LanguageToggleProps> = ({ 
+export function LanguageToggle({ 
   className = '',
   size = 'md' 
-}) => {
+}: LanguageToggleProps) {
   const { lang, toggleLang } = useLanguage();
 
   const sizeClasses = {

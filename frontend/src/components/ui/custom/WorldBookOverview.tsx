@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorldBookOverview — 侧边滑出面板，展示当前已激活的世界书词条
  */
 import React from 'react';
@@ -11,9 +11,9 @@ interface WorldBookOverviewProps {
   onClose: () => void;
 }
 
-export const WorldBookOverview: React.FC<WorldBookOverviewProps> = ({
+export function WorldBookOverview({
   status, isOpen, onClose,
-}) => {
+}: WorldBookOverviewProps) {
   if (!isOpen || !status.active) return null;
 
   const entries = status.entries_overview || [];

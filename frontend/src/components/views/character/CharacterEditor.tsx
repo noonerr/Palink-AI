@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CharacterEditor — 角色编辑/创建表单
  * 从 CharacterView 提取的子组件
  */
@@ -24,14 +24,14 @@ export interface CharacterEditorProps {
   onImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
-export const CharacterEditor: React.FC<CharacterEditorProps> = ({
+export function CharacterEditor({
   selectedCharacter,
   editingCharacter,
   onSetEditingCharacter,
   onSave,
   onCancel,
   onImageUpload,
-}) => {
+}: CharacterEditorProps) {
   const headerClass = "min-h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0 py-2";
   const bottomPadding = useMobileBottomPadding();
   

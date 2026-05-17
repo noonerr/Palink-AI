@@ -390,10 +390,11 @@ class LlamaRuntime:
 
             yield piece
 
-            await worker
+        # Wait for worker to complete after the stream is done
+        await worker
 
-            if errors:
-                raise RuntimeError(str(errors[0]))
+        if errors:
+            raise RuntimeError(str(errors[0]))
 
 
 local_llama_runtime = LlamaRuntime()

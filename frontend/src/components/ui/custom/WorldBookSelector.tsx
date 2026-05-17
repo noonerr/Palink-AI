@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorldBookSelector — 新建对话时选择世界书
  */
 import React from 'react';
@@ -12,9 +12,9 @@ interface WorldBookSelectorProps {
   loading?: boolean;
 }
 
-export const WorldBookSelector: React.FC<WorldBookSelectorProps> = ({
+export function WorldBookSelector({
   worldBooks, selectedId, onSelect, loading,
-}) => {
+}: WorldBookSelectorProps) {
   if (loading) {
     return <div className="text-xs text-muted-foreground py-2">加载世界书...</div>;
   }

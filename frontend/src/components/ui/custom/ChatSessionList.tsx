@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -84,7 +84,7 @@ const formatSessionTitle = (title: string) => {
   return clampTitleToTenChars(normalized);
 };
 
-const SessionTitleText: React.FC<{ title: string }> = ({ title }) => {
+function SessionTitleText({ title }: { title: string }) {
   if (!mayContainMath(title)) {
     return <>{title}</>;
   }

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PlotLineManager — 剧情线管理界面（Phase 6C）
  * 列表、创建、编辑、AI 分段、阶段预览
  */
@@ -25,10 +25,10 @@ interface PlotLineManagerProps {
   onClose: () => void;
 }
 
-export const PlotLineManager: React.FC<PlotLineManagerProps> = ({
+export function PlotLineManager({
   plotLines, selectedPlotLine, loading, parsing, models, selectedModel,
   t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onParse, onSelect, onClose,
-}) => {
+}: PlotLineManagerProps) {
   const [view, setView] = useState<'list' | 'create'>('list');
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');

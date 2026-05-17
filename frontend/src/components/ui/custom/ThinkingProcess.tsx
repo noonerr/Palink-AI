@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Brain, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -12,12 +12,12 @@ interface ThinkingProcessProps {
 
 const thinkingExpandedState = new Map<string, boolean>();
 
-export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
+export function ThinkingProcess({
   content,
   streaming = false,
   t,
   messageKey,
-}) => {
+}: ThinkingProcessProps) {
   const [isExpanded, setIsExpanded] = useState(() => {
     if (messageKey && thinkingExpandedState.has(messageKey)) {
       return thinkingExpandedState.get(messageKey) ?? true;

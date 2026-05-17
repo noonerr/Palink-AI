@@ -6,6 +6,7 @@ import socket
 import httpx
 from typing import Optional
 from urllib.parse import urlparse
+from .search_rotator import get_rotator
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,19 @@ async def search_web(query: str, num_results: int = 5) -> list:
         return []
 
     engine = config.get("engine", "searxng")
+    # 检查是否启用单引擎轮询模式（默认启用，防止被 ban）
+    use_rotator = config.get("use_single_engine_rotation", True)
+
+    if use_rotator:
+        try:
+            rotator = get_rotator()
+            results, engine_name = await rotator.search(query, num_results)
+            logger.info(f"Single-engine search with {engine_name}: {len(results)} results")
+            return results
+        except Exception as e:
+         logger.error(f"Single-engine search failed: {e}, falling back")
+
+    # 传统模式：使用 SearXNG 聚合（会同时查询多个引擎）
 
     try:
         if engine == "searxng":

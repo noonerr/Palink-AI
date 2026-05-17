@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+﻿import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Bot, Brain, Eye, FlaskConical } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -13,14 +13,14 @@ interface ModelSelectorProps {
   theme?: 'dark' | 'light';
 }
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({
+export function ModelSelector({
   models,
   currentModel,
   onSelect,
   size = 'md',
   triggerStyle = 'default',
   theme = 'dark'
-}) => {
+}: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const isDarkTheme = theme === 'dark';

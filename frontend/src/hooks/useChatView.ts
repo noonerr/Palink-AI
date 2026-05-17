@@ -65,6 +65,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const pendingInitialBottomLockRef = useRef(false);
   const initialBottomLockUntilRef = useRef(0);
   const lastLoadedSessionIdRef = useRef<string | null>(null);
+  const isAtBottomRef = useRef(true);
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   const markStreamActive = useCallback(() => {
@@ -234,6 +235,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setMessages(data);
       pendingInitialBottomLockRef.current = data.length > 0;
       initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
+      isAtBottomRef.current = true;
       await loadMemoryStats(sessionId);
       const lastMsg = data[data.length - 1];
       if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
@@ -287,7 +289,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   }, []);
 
   useEffect(() => {
-    if (!pendingInitialBottomLockRef.current) {
+    if (!pendingInitialBottomLockRef.current && isAtBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, streaming]);
@@ -319,17 +321,14 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const handleUpload = async (file: File, type: 'image' | 'file') => {
     setUploading(true);
     try {
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      });
-      const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
+      const formData = new FormData();
+      formData.append('file', file);
+      const data = await api.post('/api/upload', formData);
       setAttachments((prev) => [...prev, {
         type,
         name: file.name,
         url: data.url,
-        thumbnail: type === 'image' ? dataUrl : undefined,
+        thumbnail: type === 'image' ? URL.createObjectURL(file) : undefined,
         size: file.size,
       }]);
     } catch (e) {
@@ -385,6 +384,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
+    isAtBottomRef.current = true;
 
     const assistantMessageId = generateMessageId();
     setMessages((prev) => {
@@ -542,6 +542,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     setStreamStatus('pending');
     setSuggestions([]);
     setIsSendingMessage(true);
+    isAtBottomRef.current = true;
 
     const userMessageId = generateMessageId();
     const assistantMessageId = generateMessageId();
@@ -871,5 +872,6 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     loadingSessionRef,
     pendingInitialBottomLockRef,
     initialBottomLockUntilRef,
+    isAtBottomRef,
   };
 }

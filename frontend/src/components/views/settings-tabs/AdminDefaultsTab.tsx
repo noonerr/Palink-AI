@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { Bot, ChevronDown, HelpCircle, Save, Sparkles } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -40,7 +40,7 @@ interface AdminDefaultsTabProps {
   handleSaveStarters: () => void;
 }
 
-export const AdminDefaultsTab: React.FC<AdminDefaultsTabProps> = ({
+export function AdminDefaultsTab({
   t,
   models,
   defChat,
@@ -69,7 +69,7 @@ export const AdminDefaultsTab: React.FC<AdminDefaultsTabProps> = ({
   starterQuestions,
   setStarterQuestions,
   handleSaveStarters,
-}) => {
+}: AdminDefaultsTabProps) {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-6 animate-fade-in pr-2 pb-28">
@@ -87,36 +87,40 @@ export const AdminDefaultsTab: React.FC<AdminDefaultsTabProps> = ({
               { label: '每日话题生成模型', value: dailyTopicModel, set: setDailyTopicModel },
               { label: '摘要生成默认模型', value: defSummarization, set: setDefSummarization },
             ].map((item, i) => (
-              <div key={i} className="flex items-center justify-between py-3 border-b border-border/50 last:border-0">
-                <div className="flex items-center gap-3">
-                  <Bot size={18} className="text-muted-foreground" />
-                  <span>{item.label}</span>
+              <div key={i} className="flex items-center gap-3 py-3 border-b border-border/50 last:border-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Bot size={18} className="text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium truncate">{item.label}</span>
                 </div>
+                <div className="shrink-0 ml-auto">
                 <ModelSelector
                   models={models}
                   currentModel={item.value}
                   onSelect={(modelId: string) => item.set(modelId)}
                   size="sm"
                 />
+                </div>
               </div>
             ))}
-            <div className="flex items-center justify-between py-3 border-t border-border/50">
-              <div className="flex items-center gap-3">
-                <Sparkles size={18} className="text-muted-foreground" />
+            <div className="flex items-center gap-3 py-3 border-t border-border/50">
+              <div className="flex items-center gap-2 min-w-0">
+                <Sparkles size={18} className="text-muted-foreground shrink-0" />
                 <div>
-                  <p>允许AI分析用户个人OC卡</p>
+                  <p className="text-sm font-medium">允许AI分析用户个人OC卡</p>
                   <p className="text-xs text-muted-foreground">启用后AI可以深度分析用户的原创角色设定</p>
                 </div>
               </div>
-              <Switch checked={allowOCAnalysis} onCheckedChange={setAllowOCAnalysis} />
+              <Switch checked={allowOCAnalysis} onCheckedChange={setAllowOCAnalysis} className="shrink-0 ml-auto" />
             </div>
             {allowOCAnalysis && (
-              <div className="flex items-center justify-between py-3 border-b border-border/50">
-                <div className="flex items-center gap-3">
-                  <Bot size={18} className="text-muted-foreground" />
-                  <span>OC分析默认模型</span>
+              <div className="flex items-center gap-3 py-3 border-b border-border/50">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Bot size={18} className="text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium truncate">OC分析默认模型</span>
                 </div>
+                <div className="shrink-0 ml-auto">
                 <ModelSelector models={models} currentModel={defOCAnalysis} onSelect={setDefOCAnalysis} size="sm" />
+                </div>
               </div>
             )}
           </div>

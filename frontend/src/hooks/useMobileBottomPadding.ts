@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 export const useMobileBottomPadding = () => {
   const [paddingClass, setPaddingClass] = useState<string>('pb-0');
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     let rafId: number | null = null;
@@ -14,7 +16,6 @@ export const useMobileBottomPadding = () => {
     };
 
     const updatePadding = () => {
-      const isMobile = window.innerWidth < 768;
       if (!isMobile) {
         setPaddingClass('pb-0');
         return;
@@ -52,7 +53,7 @@ export const useMobileBottomPadding = () => {
         cancelAnimationFrame(rafId);
       }
     };
-  }, []);
+  }, [isMobile]);
 
   return paddingClass;
 };

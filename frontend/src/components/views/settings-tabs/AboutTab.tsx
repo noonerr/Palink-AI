@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 interface AboutTabProps {
   t: Record<string, string>;
 }
-export const AboutTab: React.FC<AboutTabProps> = ({ t }) => {
+export function AboutTab({ t }: AboutTabProps) {
   const [developerMode, setDeveloperMode] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -55,22 +55,22 @@ export const AboutTab: React.FC<AboutTabProps> = ({ t }) => {
         </div>
 
         {/* 开发者模式开关 */}
-        <div className="max-w-md mx-auto mt-8 p-4 border rounded-lg bg-card">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
+        <div className="max-w-md mx-auto mt-8 p-5 border rounded-xl bg-card">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1.5">
               <Label htmlFor="developer-mode" className="text-base">
                 开发者模式
               </Label>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground leading-relaxed">
                 启用后可在本地模型中看到测试模型，用于功能测试
               </p>
             </div>
             <Switch
               id="developer-mode"
               checked={developerMode}
-           onCheckedChange={handleDeveloperModeToggle}
+              onCheckedChange={handleDeveloperModeToggle}
               disabled={loading}
-        />
+            />
           </div>
         </div>
       </div>

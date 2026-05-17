@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download } from 'lucide-react';
 
 interface ImageLightboxProps {
@@ -9,13 +9,13 @@ interface ImageLightboxProps {
   onIndexChange?: (index: number) => void;
 }
 
-export const ImageLightbox: React.FC<ImageLightboxProps> = ({
+export function ImageLightbox({
   images,
   currentIndex,
   isOpen,
   onClose,
   onIndexChange
-}) => {
+}: ImageLightboxProps) {
   const [activeIndex, setActiveIndex] = useState(currentIndex);
   const [isZoomed, setIsZoomed] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);

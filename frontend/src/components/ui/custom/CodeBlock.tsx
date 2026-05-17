@@ -67,6 +67,8 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
   const [mermaidSvg, setMermaidSvg] = useState<string>('');
   const [mermaidError, setMermaidError] = useState<string>('');
   const mermaidRef = useRef<HTMLDivElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
 
   const extractPlainText = (node: React.ReactNode): string => {
     if (typeof node === 'string' || typeof node === 'number') {
@@ -112,31 +114,47 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'strict',
+      securityLevel: 'loose',
       fontFamily: 'inherit',
     });
   }, []);
 
   useEffect(() => {
-    setMermaidSvg('');
-    setMermaidError('');
-  }, [language, codeString]);
+    const pre = preRef.current;
+    if (!pre) return;
+    const check = () => setIsOverflowing(pre.scrollWidth > pre.clientWidth + 2);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(pre);
+    return () => ro.disconnect();
+  }, [highlightedCode]);
+
+  const prevCodeStringRef = useRef('');
 
   useEffect(() => {
-    if (language === 'mermaid' && codeString && !mermaidSvg && !mermaidError) {
+    if (language !== 'mermaid' || !codeString) return;
+
+    if (codeString === prevCodeStringRef.current && (mermaidSvg || mermaidError)) return;
+
+    prevCodeStringRef.current = codeString;
+    setMermaidSvg('');
+    setMermaidError('');
+
+    const timer = setTimeout(() => {
       const renderMermaid = async () => {
         try {
           const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
           const { svg } = await mermaid.render(id, codeString);
-          setMermaidSvg(DOMPurify.sanitize(svg));
+          setMermaidSvg(svg);
         } catch (error) {
           console.error('Mermaid render error:', error);
           setMermaidError(error instanceof Error ? error.message : 'Failed to render diagram');
         }
       };
       renderMermaid();
-    }
-  }, [language, codeString, mermaidSvg, mermaidError]);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [language, codeString]);
 
   const handleCopy = () => {
     if (codeString) {
@@ -287,12 +305,22 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto">
-        <code
-          className={`${className || ''} hljs font-mono text-sm`}
-          dangerouslySetInnerHTML={{ __html: highlightedCode }}
-        />
-      </pre>
+      <div className="relative">
+        <pre ref={preRef} className="overflow-x-auto code-block-scroll">
+          <code
+            className={`${className || ''} hljs font-mono text-sm`}
+            dangerouslySetInnerHTML={{ __html: highlightedCode }}
+          />
+        </pre>
+        {isOverflowing && (
+          <div className="absolute bottom-0 left-0 right-0 h-6 flex items-center justify-center pointer-events-none bg-gradient-to-t from-black/5 dark:from-white/5 to-transparent">
+            <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>
+              横向滚动查看更多
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

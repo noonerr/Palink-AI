@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 文件路径: frontend/src/components/ui/custom/KineticButton.tsx
  * 用途: Kinetic 动效按钮组件
  * 特性:
@@ -10,6 +10,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 interface KineticButtonProps {
   children: React.ReactNode;
@@ -20,14 +21,14 @@ interface KineticButtonProps {
   disabled?: boolean;
 }
 
-export const KineticButton: React.FC<KineticButtonProps> = ({
+export function KineticButton({
   children,
   className = '',
   variant = 'primary',
   size = 'md',
   onClick,
   disabled = false,
-}) => {
+}: KineticButtonProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const bgRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -37,20 +38,8 @@ export const KineticButton: React.FC<KineticButtonProps> = ({
   const targetRef = useRef({ x: 0, y: 0 });
   const currentRef = useRef({ x: 0, y: 0 });
   
-  const [isMobile, setIsMobile] = useState(false);
+  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
-
-  useEffect(() => {
-    const checkMobile = () => {
-      const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
-      const isSmallScreen = window.innerWidth < 768;
-      setIsMobile(isTouchDevice || isSmallScreen);
-    };
-
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
 
   // 动画循环
   const animate = useCallback(() => {

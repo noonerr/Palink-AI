@@ -2,8 +2,16 @@
 // Type Definitions
 // ========================================
 
+export interface Attachment {
+  type: 'image' | 'file';
+  name: string;
+  url: string;
+  thumbnail?: string;
+  size?: number;
+}
+
 export interface User {
-  id: string;
+  id: string | number;
   username: string;
   avatar?: string;
   role: 'user' | 'admin';

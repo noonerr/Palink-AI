@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 文件路径: frontend/src/components/ui/custom/GlassContainer.tsx
  * 用途: 玻璃拟态容器组件
  * 特性:
@@ -22,7 +22,7 @@ interface GlassContainerProps {
   shadow?: boolean;
 }
 
-export const GlassContainer: React.FC<GlassContainerProps> = ({
+export function GlassContainer({
   children,
   className = '',
   intensity = 'medium',
@@ -30,7 +30,7 @@ export const GlassContainer: React.FC<GlassContainerProps> = ({
   rounded = 'xl',
   border = true,
   shadow = false,
-}) => {
+}: GlassContainerProps) {
   const intensityStyles = {
     light: {
       bg: 'bg-white/40 dark:bg-black/20',
@@ -85,11 +85,11 @@ interface GlassCardProps {
   hover?: boolean;
 }
 
-export const GlassCard: React.FC<GlassCardProps> = ({
+export function GlassCard({
   children,
   className = '',
   hover = false,
-}) => {
+}: GlassCardProps) {
   return (
     <GlassContainer
       intensity="medium"
@@ -109,13 +109,13 @@ interface GlassButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement>
   size?: 'sm' | 'md' | 'lg';
 }
 
-export const GlassButton: React.FC<GlassButtonProps> = ({
+export function GlassButton({
   children,
   className = '',
   variant = 'primary',
   size = 'md',
   ...props
-}) => {
+}: GlassButtonProps) {
   const variantStyles = {
     primary: 'bg-gradient-to-r from-[#0044ff] to-[#00f2ff] text-white border-transparent',
     secondary: 'bg-white/10 dark:bg-white/5 text-foreground border-white/20 dark:border-white/10',

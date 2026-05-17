@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "持久化记忆 - 让 Claude 记住项目上下文和决策"
+    }
+  }
+}

@@ -136,7 +136,7 @@ export function TokenUsagePanel({
   hideCharacterUsage = false
 }: { 
   token: string;
-  userId?: string;
+  userId?: string | number;
   userName?: string;
   hideCharacterUsage?: boolean;
 }) {

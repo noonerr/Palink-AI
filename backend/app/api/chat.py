@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 from ..utils import normalize_image_url, build_memory_context
+from ..core.default_prompts import build_default_chat_prompt
 
 
 @router.post("")
@@ -90,16 +91,25 @@ async def chat_stream(
         req.display_content
     )
 
-    # ── Build system prompt with optional memory ────────────────────────
-    system_parts = [
-        "You are a helpful assistant.",
-        (
-            "Return only the final answer for the user. "
-            "Do not reveal chain-of-thought or internal analysis. "
-            "Never output labels like 'Final Answer', 'Analysis', or 'Thinking'."
-        ),
-        "Reply in the same language as the user unless explicitly requested otherwise.",
-    ]
+    # Get user's prompt language preference
+    user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    prompt_lang = user_setting.prompt_language if user_setting else "auto"
+
+    # Auto-detect language if needed
+    if prompt_lang == "auto":
+        has_chinese = any('一' <= c <= '鿿' for c in req.message[:100])
+        prompt_lang = "zh" if has_chinese else "en"
+
+    # Build system prompt (use custom or default)
+    if user_setting and user_setting.use_custom_prompts:
+        # Use custom prompt
+        custom_prompt = user_setting.custom_chat_prompt_zh if prompt_lang == "zh" else user_setting.custom_chat_prompt_en
+        system_prompt_base = custom_prompt if custom_prompt else build_default_chat_prompt(prompt_lang)
+    else:
+        # Use default prompt
+        system_prompt_base = build_default_chat_prompt(prompt_lang)
+
+    system_parts = [system_prompt_base]
 
     if memory_mode != "disabled":
         try:
@@ -172,13 +182,22 @@ async def chat_stream(
         last_saved_reasoning_len = 0
         last_flush_ts = 0.0
         memory_stored = False
-        save_db = SessionLocal()
+        save_db = None
+        try:
+            save_db = SessionLocal()
+        except Exception as db_err:
+            logger.error(f"Failed to create database session: {db_err}")
+            yield f"data: {json.dumps({'content': 'Error: Database connection failed', 'error': True}, ensure_ascii=False)}\n\n"
+            return
 
         def persist_snapshot(force: bool = False):
             nonlocal assistant_message_id
             nonlocal last_saved_content_len
             nonlocal last_saved_reasoning_len
             nonlocal last_flush_ts
+
+            if not save_db:
+                return
 
             has_content = result.has_content
             if not has_content:
@@ -196,6 +215,7 @@ async def chat_stream(
 
             final = result.final_text()
             token_count = result.token_count()
+            ws_json = json.dumps({"query": req.message, "results": web_search_results}, ensure_ascii=False) if web_search_results else None
 
             try:
                 if assistant_message_id is None:
@@ -207,6 +227,7 @@ async def chat_stream(
                         tokens=token_count,
                         prompt_tokens=result.prompt_tokens,
                         reasoning_tokens=result.effective_reasoning_tokens(),
+                        web_search_results=ws_json,
                     )
                     save_db.add(msg)
                     save_db.commit()
@@ -223,6 +244,7 @@ async def chat_stream(
                             tokens=token_count,
                             prompt_tokens=result.prompt_tokens,
                             reasoning_tokens=result.effective_reasoning_tokens(),
+                            web_search_results=ws_json,
                         )
                         save_db.add(msg)
                         save_db.commit()
@@ -234,6 +256,8 @@ async def chat_stream(
                         msg.tokens = token_count
                         msg.prompt_tokens = result.prompt_tokens
                         msg.reasoning_tokens = result.effective_reasoning_tokens()
+                        if ws_json is not None:
+                            msg.web_search_results = ws_json
                         save_db.commit()
 
                 last_saved_content_len = len(result.full_content)
@@ -309,7 +333,8 @@ async def chat_stream(
                         save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")
             finally:
-                save_db.close()
+                if save_db:
+                    save_db.close()
 
     return StreamingResponse(
         event_generator(),

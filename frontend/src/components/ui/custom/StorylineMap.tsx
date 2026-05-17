@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StorylineMap — GalGame-style storyline visualizer using React Flow + dagre
  *
  * Layout: Top → Bottom
@@ -7,7 +7,7 @@
  * Clicking a node triggers onNavigate to fork / switch branches
  */
 
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -24,7 +24,8 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
-import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play, User, ZoomIn, ZoomOut, Maximize2, Crosshair, Star, Snowflake } from 'lucide-react';
+import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play, User, ZoomIn, ZoomOut, Maximize2, Crosshair, Star, Snowflake, Trash2, AlertTriangle } from 'lucide-react';
+import { api } from '@/services/api';
 
 const rfInstanceRef: { current: any } = { current: null };
 
@@ -72,9 +73,10 @@ export interface BranchTree {
 
 interface StorylineMapProps {
   branchTree: BranchTree;
-  /** Called when user clicks a node to navigate / fork */
   onNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => void;
   isDark: boolean;
+  sessionId?: string;
+  onDeleteBranch?: (branchId: string) => void;
 }
 
 // ──────────────────────────────────────────────
@@ -137,6 +139,7 @@ interface StoryNodeData {
   isFrozen: boolean;
   isFavorited: boolean;
   onNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => void;
+  onDeleteBranch?: (branchId: string) => void;
   isDark: boolean;
 }
 
@@ -150,6 +153,11 @@ function StoryNodeComponent({ data }: NodeProps) {
   const handleClick = useCallback(() => {
     d.onNavigate(branchId, messageId, isLeaf);
   }, [branchId, messageId, isLeaf, d]);
+
+  const handleDelete = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    d.onDeleteBranch?.(branchId);
+  }, [branchId, d]);
 
   // 冻结分支的灰色样式
   const cardBg = isFrozen
@@ -198,9 +206,22 @@ function StoryNodeComponent({ data }: NodeProps) {
           }`}
         >
           <GitBranch size={11} />
-          <span className="truncate max-w-[160px]">{branchName}</span>
+          <span className="truncate max-w-[120px]">{branchName}</span>
           {isActiveBranch && (
             <span className="ml-auto text-[10px] bg-indigo-500/30 text-indigo-300 px-1.5 py-0.5 rounded-full">当前</span>
+          )}
+          {!isActiveBranch && d.onDeleteBranch && (
+            <button
+              onClick={handleDelete}
+              className={`ml-auto p-0.5 rounded transition-colors ${
+                isDark
+                  ? 'hover:bg-red-500/30 text-gray-500 hover:text-red-400'
+                  : 'hover:bg-red-50 text-gray-400 hover:text-red-500'
+              }`}
+              title="删除此分支"
+            >
+              <Trash2 size={11} />
+            </button>
           )}
         </div>
       )}
@@ -438,7 +459,8 @@ function buildGraph(
   branchTree: BranchTree,
   activePath: Set<string>,
   onNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => void,
-  isDark: boolean
+  isDark: boolean,
+  onDeleteBranch?: (branchId: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
   const { branches, active_branch_id, character_info } = branchTree;
   const branchMap = new Map(branches.map((b) => [b.id, b]));
@@ -486,6 +508,7 @@ function buildGraph(
           isOnActivePath,
           isActiveBranch,
           onNavigate,
+          onDeleteBranch,
           isDark,
         } satisfies StoryNodeData,
         draggable: true,
@@ -576,15 +599,56 @@ function buildGraph(
 // Main component
 // ──────────────────────────────────────────────
 
-const StorylineMapInner: React.FC<StorylineMapProps> = ({ branchTree, onNavigate, isDark }) => {
+function StorylineMapInner({ branchTree, onNavigate, isDark, sessionId, onDeleteBranch }: StorylineMapProps) {
   const activePath = useMemo(
     () => computeActivePath(branchTree.branches, branchTree.active_branch_id),
     [branchTree]
   );
 
+  const [deletePreview, setDeletePreview] = useState<{
+    branchId: string;
+    branchName: string;
+    branchCount: number;
+    messageCount: number;
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteBranch = useCallback(async (branchId: string) => {
+    if (!sessionId) {
+      onDeleteBranch?.(branchId);
+      return;
+    }
+    try {
+      const data = await api.get(`/api/character-sessions/${sessionId}/branches/${branchId}/delete-preview`);
+      setDeletePreview({
+        branchId,
+        branchName: data.branch_name || branchId,
+        branchCount: data.branch_count || 1,
+        messageCount: data.message_count || 0,
+      });
+    } catch (e) {
+      console.error('Failed to preview branch deletion:', e);
+      onDeleteBranch?.(branchId);
+    }
+  }, [sessionId, onDeleteBranch]);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deletePreview || !sessionId) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/api/character-sessions/${sessionId}/branches/${deletePreview.branchId}`);
+      setDeletePreview(null);
+      onDeleteBranch?.(deletePreview.branchId);
+    } catch (e) {
+      console.error('Failed to delete branch:', e);
+    } finally {
+      setDeleting(false);
+    }
+  }, [deletePreview, sessionId, onDeleteBranch]);
+
   const { nodes: initNodes, edges: initEdges } = useMemo(
-    () => buildGraph(branchTree, activePath, onNavigate, isDark),
-    [branchTree, activePath, onNavigate, isDark]
+    () => buildGraph(branchTree, activePath, onNavigate, isDark, handleDeleteBranch),
+    [branchTree, activePath, onNavigate, isDark, handleDeleteBranch]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initNodes);
@@ -592,11 +656,11 @@ const StorylineMapInner: React.FC<StorylineMapProps> = ({ branchTree, onNavigate
   const initialFitDoneRef = useRef(false);
 
   useEffect(() => {
-    const { nodes: n, edges: e } = buildGraph(branchTree, activePath, onNavigate, isDark);
+    const { nodes: n, edges: e } = buildGraph(branchTree, activePath, onNavigate, isDark, handleDeleteBranch);
     setNodes(n);
     setEdges(e);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchTree, isDark]);
+  }, [branchTree, isDark, handleDeleteBranch]);
 
   const bgColor = isDark ? '#0f172a' : '#f8fafc';
   const miniMapNodeColor = (n: Node) =>
@@ -659,14 +723,88 @@ const StorylineMapInner: React.FC<StorylineMapProps> = ({ branchTree, onNavigate
         <CustomControls isDark={isDark} />
         <LocateActiveButton isDark={isDark} activeNodeId={activeLeafNodeId} />
       </ReactFlow>
+
+      {deletePreview && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center"
+          style={{ pointerEvents: 'auto' }}
+        >
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setDeletePreview(null)} />
+          <div
+            className={`relative w-80 rounded-2xl border shadow-2xl p-5 ${
+              isDark
+                ? 'bg-gray-900 border-gray-700 text-white'
+                : 'bg-white border-gray-200 text-gray-900'
+            }`}
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className={`p-2 rounded-xl ${isDark ? 'bg-red-500/20' : 'bg-red-50'}`}>
+                <AlertTriangle size={20} className="text-red-500" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm">删除分支</h3>
+                <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  此操作不可撤销
+                </p>
+              </div>
+            </div>
+
+            <p className={`text-sm mb-3 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+              确定要删除分支 <span className="font-semibold">「{deletePreview.branchName}」</span> 吗？
+            </p>
+
+            {(deletePreview.branchCount > 1 || deletePreview.messageCount > 0) && (
+              <div className={`mb-4 p-3 rounded-xl text-xs space-y-1 ${
+                isDark ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-amber-50 border border-amber-200'
+              }`}>
+                <p className={`font-semibold ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>
+                  受影响的内容：
+                </p>
+                {deletePreview.branchCount > 1 && (
+                  <p className={isDark ? 'text-amber-200/80' : 'text-amber-600'}>
+                    · {deletePreview.branchCount} 条分支（含子分支）
+                  </p>
+                )}
+                {deletePreview.messageCount > 0 && (
+                  <p className={isDark ? 'text-amber-200/80' : 'text-amber-600'}>
+                    · {deletePreview.messageCount} 条消息
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setDeletePreview(null)}
+                className={`px-4 py-2 text-sm rounded-xl font-medium transition-colors ${
+                  isDark
+                    ? 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
+                }`}
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="px-4 py-2 text-sm rounded-xl font-medium bg-red-500 hover:bg-red-600 text-white transition-colors disabled:opacity-50"
+              >
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-const StorylineMap: React.FC<StorylineMapProps> = (props) => (
-  <ReactFlowProvider>
-    <StorylineMapInner {...props} />
-  </ReactFlowProvider>
-);
+function StorylineMap(props: StorylineMapProps) {
+  return (
+    <ReactFlowProvider>
+      <StorylineMapInner {...props} />
+    </ReactFlowProvider>
+  );
+}
 
 export default StorylineMap;

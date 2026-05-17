@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { Trash2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ interface AdminUsersTabProps {
   handleDeleteUser: (userId: string) => void;
 }
 
-export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ t, usersList, handleDeleteUser }) => {
+export function AdminUsersTab({ t, usersList, handleDeleteUser }: AdminUsersTabProps) {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-6 animate-fade-in pr-2 pb-28">

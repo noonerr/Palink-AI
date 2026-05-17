@@ -24,6 +24,12 @@ class UserSetting(Base):
     author_note = Column(Text, nullable=True)
     author_note_position = Column(String, default="after_char")
     author_note_frequency = Column(Integer, default=0)
+    # Custom prompts
+    custom_chat_prompt_zh = Column(Text, nullable=True)
+    custom_chat_prompt_en = Column(Text, nullable=True)
+    custom_character_prompt_zh = Column(Text, nullable=True)
+    custom_character_prompt_en = Column(Text, nullable=True)
+    use_custom_prompts = Column(Boolean, default=False)
     user = relationship("User", back_populates="settings")
 
 class GenerationPreset(Base):

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+﻿import React, { useState, useCallback } from 'react';
 import { X, ZoomIn, ZoomOut, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -13,7 +13,7 @@ interface ImageViewerProps {
   compact?: boolean;
 }
 
-export const ImageThumbnails: React.FC<ImageViewerProps> = ({ images, onFullscreen, compact = false }) => {
+export function ImageThumbnails({ images, onFullscreen, compact = false }: ImageViewerProps) {
   if (!images.length) return null;
 
   return (
@@ -52,11 +52,11 @@ interface FullscreenViewerProps {
   onClose: () => void;
 }
 
-export const FullscreenImageViewer: React.FC<FullscreenViewerProps> = ({
+export function FullscreenImageViewer({
   images,
   initialIndex = 0,
   onClose,
-}) => {
+}: FullscreenViewerProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoom, setZoom] = useState(1);
 

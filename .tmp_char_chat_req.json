@@ -1,6 +1,0 @@
-﻿{
-  "character_id": "'+$cid+'",
-  "message": "你好",
-  "model": "qwen3-0.6b-heretic-abliterated-uncensored.q4_k_m",
-  "temperature": 0.7
-}

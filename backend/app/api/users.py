@@ -54,6 +54,16 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
     if req.author_note_position is not None:
         setting.author_note_position = req.author_note_position
     if req.author_note_frequency is not None:
-        setting.author_note_frequency = req.author_note_frequency
+     setting.author_note_frequency = req.author_note_frequency
+    if req.custom_chat_prompt_zh is not None:
+        setting.custom_chat_prompt_zh = req.custom_chat_prompt_zh
+    if req.custom_chat_prompt_en is not None:
+        setting.custom_chat_prompt_en = req.custom_chat_prompt_en
+    if req.custom_character_prompt_zh is not None:
+        setting.custom_character_prompt_zh = req.custom_character_prompt_zh
+    if req.custom_character_prompt_en is not None:
+        setting.custom_character_prompt_en = req.custom_character_prompt_en
+    if req.use_custom_prompts is not None:
+        setting.use_custom_prompts = req.use_custom_prompts
     db.commit()
     return {"status": "ok"}

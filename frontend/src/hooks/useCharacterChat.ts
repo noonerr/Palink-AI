@@ -101,7 +101,7 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
-    let resolvedSessionId: string | null = selectedSession?.id || null;
+    let resolvedSessionId: string | null = (selectedSession?.id && selectedSession.id !== '__pending__') ? selectedSession.id : null;
     let sessionSynced = false;
     let effectiveBranchId = selectedBranch?.id;
 
@@ -126,7 +126,7 @@ export function useCharacterChat({
 
     try {
       const response = await api.stream('/api/character-chat', {
-        session_id: selectedSession?.id ?? null,
+        session_id: (selectedSession?.id && selectedSession.id !== '__pending__') ? selectedSession.id : null,
         character_id: selectedCharacter.id,
         message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
         model: selectedModel,
@@ -150,7 +150,7 @@ export function useCharacterChat({
 
         if (sessionId) {
           resolvedSessionId = sessionId;
-          if (!selectedSession && !sessionSynced) {
+          if ((!selectedSession || selectedSession.id === '__pending__') && !sessionSynced) {
             sessionSynced = true;
             const now = new Date().toISOString();
             setSelectedSession({
@@ -275,12 +275,12 @@ export function useCharacterChat({
     let fullContent = '';
     let fullReasoning = '';
     let hasReceivedData = false;
-    let resolvedSessionId: string | null = selectedSession?.id || null;
+    let resolvedSessionId: string | null = (selectedSession?.id && selectedSession.id !== '__pending__') ? selectedSession.id : null;
     let sessionSynced = false;
 
     try {
       const response = await api.stream('/api/character-chat', {
-        session_id: selectedSession?.id ?? null,
+        session_id: (selectedSession?.id && selectedSession.id !== '__pending__') ? selectedSession.id : null,
         character_id: selectedCharacter.id,
         message: text,
         model: selectedModel,
@@ -316,7 +316,7 @@ export function useCharacterChat({
 
         if (sessionId) {
           resolvedSessionId = sessionId;
-          if (!selectedSession && !sessionSynced) {
+          if ((!selectedSession || selectedSession.id === '__pending__') && !sessionSynced) {
             sessionSynced = true;
             const now = new Date().toISOString();
             setSelectedSession({
@@ -399,18 +399,14 @@ export function useCharacterChat({
   const handleUpload = useCallback(async (file: File, type: 'image' | 'file') => {
     setUploading(true);
     try {
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      });
-
-      const data = await api.post('/api/upload', { filename: file.name, data: dataUrl });
+      const formData = new FormData();
+      formData.append('file', file);
+      const data = await api.post('/api/upload', formData);
       setAttachments(prev => [...prev, {
         type,
         name: file.name,
         url: data.url,
-        thumbnail: type === 'image' ? dataUrl : undefined,
+        thumbnail: type === 'image' ? URL.createObjectURL(file) : undefined,
         size: file.size,
       }]);
     } catch (e) {

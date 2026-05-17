@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StorylinePanel — fullscreen overlay wrapping StorylineMap
  * Triggered by the "故事线" button in CharacterView header
  */
@@ -15,16 +15,20 @@ interface StorylinePanelProps {
   onClose: () => void;
   onNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => void;
   isDark: boolean;
+  sessionId?: string;
+  onDeleteBranch?: (branchId: string) => void;
 }
 
-const StorylinePanel: React.FC<StorylinePanelProps> = ({
+function StorylinePanel({
   branchTree,
   activeBranchName,
   characterName,
   onClose,
   onNavigate,
   isDark,
-}) => {
+  sessionId,
+  onDeleteBranch,
+}: StorylinePanelProps) {
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -57,10 +61,10 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
       <div className="relative flex flex-col w-full h-full">
         {/* Top bar */}
         <div
-          className={`relative z-10 flex items-center justify-between px-6 py-3 border-b ${
+          className={`relative z-10 flex items-center justify-between px-6 py-3 bg-gradient-to-t pointer-events-auto ${
             isDark
-              ? 'bg-gray-900/95 border-gray-700/60 text-white'
-              : 'bg-white/95 border-gray-200 text-gray-900'
+              ? 'from-gray-900/100 via-gray-900/80 to-gray-900/0 text-white'
+              : 'from-white/100 via-white/80 to-white/0 text-gray-900'
           }`}
           style={{ backdropFilter: 'blur(12px)' }}
         >
@@ -144,6 +148,8 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
               branchTree={branchTree}
               onNavigate={handleNavigate}
               isDark={isDark}
+              sessionId={sessionId}
+              onDeleteBranch={onDeleteBranch}
             />
           </div>
         )}

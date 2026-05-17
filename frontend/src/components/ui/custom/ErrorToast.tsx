@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { AlertCircle, WifiOff, ServerCrash, Clock, Key, CheckCircle2, XCircle, HelpCircle } from 'lucide-react';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -22,13 +22,13 @@ const errorIcons: Record<ErrorType, React.ReactNode> = {
   unknown: <AlertCircle className="h-5 w-5 text-gray-500" />
 };
 
-export const ErrorToast: React.FC<ErrorToastProps> = ({
+export function ErrorToast({
   errorInfo,
   onClose,
   onRetry,
   showRetry = true,
   className = ''
-}) => {
+}: ErrorToastProps) {
   const [showDetails, setShowDetails] = React.useState(false);
 
   return (

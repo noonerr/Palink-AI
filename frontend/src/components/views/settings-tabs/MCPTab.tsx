@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿import React, { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -78,7 +78,7 @@ const defaultForm = (): MCPInstallForm => ({
   headers: {},
 });
 
-export const MCPTab: React.FC<MCPTabProps> = ({ t: _t }) => {
+export function MCPTab({ t: _t }: MCPTabProps) {
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);

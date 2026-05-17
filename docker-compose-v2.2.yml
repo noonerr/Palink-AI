@@ -1,0 +1,75 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: frp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  backend:
+    image: frp-backend:v2.2
+    container_name: frp-backend
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./server/data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - SERVER_IP=${SERVER_IP:-0.0.0.0}
+      - SERVER_PORT=${SERVER_PORT:-7000}
+      - FRP_BIND_PORT=${FRP_BIND_PORT:-7000}
+      - FRP_DASHBOARD_PORT=${FRP_DASHBOARD_PORT:-7500}
+      - FRP_DASHBOARD_USER=${FRP_DASHBOARD_USER:-admin}
+      - FRP_DASHBOARD_PWD=${FRP_DASHBOARD_PWD:-admin}
+      - DOCKER_MODE=1
+      - SERVER_SECRET=${SERVER_SECRET:-}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - FRP_SERVER_ADDR=${FRP_SERVER_ADDR:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - MAX_TUNNELS_PER_USER=${MAX_TUNNELS_PER_USER:-10}
+      - REDIS_HOST=${REDIS_HOST:-localhost}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - CASDOOR_ENABLED=${CASDOOR_ENABLED:-0}
+      - CASDOOR_ENDPOINT=${CASDOOR_ENDPOINT}
+      - CASDOOR_PUBLIC_URL=${CASDOOR_PUBLIC_URL}
+      - CASDOOR_CLIENT_ID=${CASDOOR_CLIENT_ID}
+      - CASDOOR_CLIENT_SECRET=${CASDOOR_CLIENT_SECRET}
+      - CASDOOR_ORGANIZATION=${CASDOOR_ORGANIZATION}
+      - CASDOOR_APPLICATION=${CASDOOR_APPLICATION}
+      - FRONTEND_URL=${FRONTEND_URL}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: frp-frontend:v2.2
+    container_name: frp-frontend
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - backend
+
+  frps:
+    image: snowdreamtech/frps:latest
+    container_name: frps
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./server/data/frps.toml:/etc/frp/frps.toml
+    entrypoint: ["/usr/bin/frps"]
+    command: ["-c", "/etc/frp/frps.toml"]
+
+volumes:
+  redis-data:

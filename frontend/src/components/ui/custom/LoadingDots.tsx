@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { cn } from '@/lib/utils';
 
 interface LoadingDotsProps {
@@ -7,11 +7,11 @@ interface LoadingDotsProps {
   size?: number;
 }
 
-export const LoadingDots: React.FC<LoadingDotsProps> = ({ 
+export function LoadingDots({ 
   className, 
   color = 'text-slate-400',
   size = 6 
-}) => {
+}: LoadingDotsProps) {
   return (
     <div className={cn('flex items-center gap-1', className)}>
       <style>{`

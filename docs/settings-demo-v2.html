@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Palink-AI 设置</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+    --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+    }
+
+    * {
+      font-family: var(--font-sans);
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Glass Effect */
+    .glass {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.08);
+    }
+
+    .dark .glass {
+      background: rgba(30, 30, 46, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    }
+
+    /* Aurora Background */
+    .aurora-bg {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      position: relative;
+    }
+
+    .aurora-bg::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background:
+        radial-gradient(circle at 20% 50%, rgba(120, 119, 198, 0.3), transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(138, 92, 246, 0.3), transparent 50%),
+        radial-gradient(circle at 40% 20%, rgba(59, 130, 246, 0.2), transparent 50%);
+      animation: aurora 20s ease-in-out infinite;
+    }
+
+    @keyframes aurora {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.8; }
+    }
+
+    .dark .aurora-bg {
+      background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+    }
+
+    /* Hide scrollbar */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    /* Smooth transitions */
+    * {
+      transition: all 0.2s ease;
+    }
+
+    /* Card hover effect */
+  .setting-card {
+      transform: translateY(0);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .setting-card:active {
+      transform: translateY(2px) scale(0.98);
+    }
+
+    /* Icon gradient backgrounds */
+    .icon-gradient-1 {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .icon-gradient-2 {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .icon-gradient-3 {
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
+    .icon-gradient-4 {
+      background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+    }
+    .icon-gradient-5 {
+      background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+    }
+    .icon-gradient-6 {
+      background: linear-gradient(135deg, #30cfd0 0%, #330867 100%);
+    }
+    .icon-gradient-7 {
+      background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+    }
+    .icon-gradient-8 {
+      background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+    }
+
+    /* Fade in animation */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+      transform: translateY(0);
+      }
+    }
+
+    .animate-fade-in-up {
+      animation: fadeInUp 0.5s ease-out forwards;
+    }
+
+    .delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .delay-3 { animation-delay: 0.3s; opacity: 0; }
+  </style>
+</head>
+<body>
+  <div class="h-screen w-screen overflow-hidden aurora-bg">
+    <!-- Mobile View -->
+    <div class="h-full flex flex-col">
+      <!-- Header -->
+      <div class="glass shrink-0">
+        <div class="px-6 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <button onclick="goBack()" class="p-2 -ml-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5">
+              <svg class="w-6 h-6 text-white dark:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/>
+              </svg>
+            </button>
+            <div>
+              <h1 class="text-xl font-bold text-white">设置</h1>
+           <p class="text-xs text-white/70">个性化你的 AI 助手</p>
+            </div>
+          </div>
+          <button onclick="toggleTheme()" class="p-2.5 rounded-xl bg-white/20 hover:bg-white/30 backdrop-blur-sm">
+            <svg id="theme-icon" class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 overflow-y-auto no-scrollbar px-6 py-6">
+        <!-- User Profile Card -->
+        <div class="glass rounded-3xl p-6 mb-6 animate-fade-in-up">
+      <div class="flex items-center gap-4">
+            <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-400 to-pink-600 flex items-center justify-center text-white text-2xl font-bold shadow-lg">
+              P
+            </div>
+          <div class="flex-1">
+            <h3 class="text-lg font-bold text-slate-800 dark:text-white">Palink User</h3>
+              <p class="text-sm text-slate-500 dark:text-slate-400">palink@example.com</p>
+         </div>
+      <button onclick="openSetting('profile')" class="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5">
+              <svg class="w-5 h-5 text-slate-600 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+       </div>
+        </div>
+
+        <!-- Settings Grid -->
+        <div class="space-y-6">
+          <!-- 通用 -->
+       <div class="animate-fade-in-up delay-1">
+      <h2 class="text-xs font-bold text-white/90 uppercase tracking-wider mb-3 px-2">通用</h2>
+            <div class="glass rounded-3xl p-3 space-y-2">
+              <button onclick="openSetting('appearance')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+              <div class="w-12 h-12 rounded-xl icon-gradient-1 flex items-center justify-center shadow-lg">
+            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/>
+              </svg>
+           </div>
+                <div class="flex-1 text-left">
+               <div class="font-semibold text-slate-800 dark:text-white">外观</div>
+                <div class="text-xs text-slate-500 dark:text-slate-400">主题、颜色、显示</div>
+                </div>
+        <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+              </button>
+
+           <button onclick="openSetting('language')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+        <div class="w-12 h-12 rounded-xl icon-gradient-2 flex items-center justify-center shadow-lg">
+             <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+             </svg>
+                </div>
+                <div class="flex-1 text-left">
+                  <div class="font-semibold text-slate-800 dark:text-white">语言</div>
+             <div class="text-xs text-slate-500 dark:text-slate-400">界面与提示词语言</div>
+       </div>
+                <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- AI 功能 -->
+          <div class="animate-fade-in-up delay-2">
+            <h2 class="text-xs font-bold text-white/90 uppercase tracking-wider mb-3 px-2">AI 功能</h2>
+            <div class="glass rounded-3xl p-3 space-y-2">
+              <button onclick="openSetting('prompts')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+          <div class="w-12 h-12 rounded-xl icon-gradient-3 flex items-center justify-center shadow-lg">
+                  <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+                </svg>
+            </div>
+                <div class="flex-1 text-left">
+              <div class="font-semibold text-slate-800 dark:text-white">提示词</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">自定义 AI 行为</div>
+         </div>
+                <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+           </svg>
+              </button>
+
+              <button onclick="openSetting('models')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+           <div class="w-12 h-12 rounded-xl icon-gradient-4 flex items-center justify-center shadow-lg">
+              <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                  </svg>
+                </div>
+                <div class="flex-1 text-left">
+                  <div class="font-semibold text-slate-800 dark:text-white">模型</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">管理 AI 模型</div>
+             </div>
+                <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+              </button>
+
+              <button onclick="openSetting('memory')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+                <div class="w-12 h-12 rounded-xl icon-gradient-5 flex items-center justify-center shadow-lg">
+                  <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/>
+                  </svg>
+                </div>
+          <div class="flex-1 text-left">
+               <div class="font-semibold text-slate-800 dark:text-white">记忆</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">对话记忆设置</div>
+                </div>
+            <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+             </svg>
+        </button>
+            </div>
+      </div>
+
+          <!-- 高级 -->
+          <div class="animate-fade-in-up delay-3">
+            <h2 class="text-xs font-bold text-white/90 uppercase tracking-wider mb-3 px-2">高级</h2>
+        <div class="glass rounded-3xl p-3 space-y-2">
+              <button onclick="openSetting('oc')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+             <div class="w-12 h-12 rounded-xl icon-gradient-6 flex items-center justify-center shadow-lg">
+                  <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+               </svg>
+        </div>
+                <div class="flex-1 text-left">
+                  <div class="font-semibold text-slate-800 dark:text-white">角色扮演</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">原创角色管理</div>
+          </div>
+                <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+         </svg>
+              </button>
+
+              <button onclick="openSetting('about')" class="setting-card w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-white/50 dark:hover:bg-white/5">
+             <div class="w-12 h-12 rounded-xl icon-gradient-7 flex items-center justify-center shadow-lg">
+                  <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                  </svg>
+         </div>
+                <div class="flex-1 text-left">
+              <div class="font-semibold text-slate-800 dark:text-white">关于</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">版本与帮助</div>
+              </div>
+                <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+        </button>
+            </div>
+          </div>
+        </div>
+
+      <!-- Bottom spacing -->
+        <div class="h-8"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let isDark = false;
+
+    function toggleTheme() {
+      isDark = !isDark;
+      document.documentElement.classList.toggle('dark', isDark);
+    }
+
+    function goBack() {
+      alert('返回主界面');
+    }
+
+    function openSetting(type) {
+      alert('打开设置: ' + type);
+    }
+
+    // Detect system theme
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      toggleTheme();
+    }
+  </script>
+</body>
+</html>

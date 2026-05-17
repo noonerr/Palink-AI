@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { cn } from '@/lib/utils';
 
 interface GlassCardProps {
@@ -9,13 +9,13 @@ interface GlassCardProps {
   onClick?: React.MouseEventHandler<HTMLDivElement>;
 }
 
-export const GlassCard: React.FC<GlassCardProps> = ({ 
+export function GlassCard({ 
   children, 
   className = '',
   strong = false,
   hover = false,
   onClick,
-}) => {
+}: GlassCardProps) {
   return (
     <div 
       className={cn(

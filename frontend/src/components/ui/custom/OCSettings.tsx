@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -57,7 +57,7 @@ interface OCSettingsProps {
   onUpdate?: () => void;
 }
 
-export const OCSettings: React.FC<OCSettingsProps> = ({ token: _token, models, onUpdate }) => {
+export function OCSettings({ token: _token, models, onUpdate }: OCSettingsProps) {
   const [ocData, setOCData] = useState<OCData>(defaultOCData);
   const [ocConfig, setOCConfig] = useState<OCConfig>(defaultOCConfig);
   const [isSaving, setIsSaving] = useState(false);
@@ -361,45 +361,61 @@ ${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f
           </Card>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-            <div className="space-y-2">
-              <Label>人物特点</Label>
-              <Textarea
-                placeholder="描述角色的外貌特征、身体特点等"
-                value={ocData.traits}
-                onChange={(e) => setOCData(prev => ({ ...prev, traits: e.target.value }))}
-                rows={3}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>性格</Label>
-              <Textarea
-                placeholder="描述角色的性格特点、行为方式等"
-                value={ocData.personality}
-                onChange={(e) => setOCData(prev => ({ ...prev, personality: e.target.value }))}
-                rows={3}
-              />
-            </div>
+            <Card>
+              <CardHeader className="px-4 md:px-6 pb-2">
+                <CardTitle className="text-sm font-medium">人物特点</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 md:px-6 pt-0">
+                <Textarea
+                  placeholder="描述角色的外貌特征、身体特点等"
+                  value={ocData.traits}
+                  onChange={(e) => setOCData(prev => ({ ...prev, traits: e.target.value }))}
+                  rows={3}
+                />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="px-4 md:px-6 pb-2">
+                <CardTitle className="text-sm font-medium">性格</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 md:px-6 pt-0">
+                <Textarea
+                  placeholder="描述角色的性格特点、行为方式等"
+                  value={ocData.personality}
+                  onChange={(e) => setOCData(prev => ({ ...prev, personality: e.target.value }))}
+                  rows={3}
+                />
+              </CardContent>
+            </Card>
           </div>
 
           <div className="grid grid-cols-1 gap-4 md:gap-6">
-            <div className="space-y-2">
-              <Label>爱好</Label>
-              <Textarea
-                placeholder="描述角色的兴趣爱好、喜欢的事物等"
-                value={ocData.hobbies}
-                onChange={(e) => setOCData(prev => ({ ...prev, hobbies: e.target.value }))}
-                rows={2}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>人物背景</Label>
-              <Textarea
-                placeholder="描述角色的成长背景、重要经历等"
-                value={ocData.background}
-                onChange={(e) => setOCData(prev => ({ ...prev, background: e.target.value }))}
-                rows={4}
-              />
-            </div>
+            <Card>
+              <CardHeader className="px-4 md:px-6 pb-2">
+                <CardTitle className="text-sm font-medium">爱好</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 md:px-6 pt-0">
+                <Textarea
+                  placeholder="描述角色的兴趣爱好、喜欢的事物等"
+                  value={ocData.hobbies}
+                  onChange={(e) => setOCData(prev => ({ ...prev, hobbies: e.target.value }))}
+                  rows={2}
+                />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="px-4 md:px-6 pb-2">
+                <CardTitle className="text-sm font-medium">人物背景</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 md:px-6 pt-0">
+                <Textarea
+                  placeholder="描述角色的成长背景、重要经历等"
+                  value={ocData.background}
+                  onChange={(e) => setOCData(prev => ({ ...prev, background: e.target.value }))}
+                  rows={4}
+                />
+              </CardContent>
+            </Card>
           </div>
 
           <Card>
@@ -475,14 +491,14 @@ ${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f
 
                   {ocConfig.allowAIAnalysis && (
                     <div className="space-y-4">
-                      <div className="space-y-2">
+                      <div className="flex items-center gap-4">
                         <Label>分析模型</Label>
-                        <div className="relative">
+                        <div className="relative ml-auto">
                           <button
                             ref={modelButtonRef}
                             type="button"
                             onClick={handleModelButtonClick}
-                            className="w-full flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-secondary hover:bg-secondary/80 transition-all border border-border justify-between"
+                            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-secondary hover:bg-secondary/80 transition-all border border-border"
                           >
                             <span className="flex items-center gap-2">
                               <Bot size={16} />

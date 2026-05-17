@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -17,4 +17,5 @@ class ChatMessage(Base):
     tokens = Column(Integer, default=0)
     prompt_tokens = Column(Integer, default=0)
     reasoning_tokens = Column(Integer, default=0)
+    web_search_results = Column(Text, nullable=True)
     session = relationship("ChatSession", back_populates="messages")

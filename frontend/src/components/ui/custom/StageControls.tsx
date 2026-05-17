@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StageControls — 剧情线阶段手动控制按钮（Phase 6D）
  */
 import React from 'react';
@@ -12,9 +12,9 @@ interface StageControlsProps {
   onJump: (index: number) => void;
 }
 
-export const StageControls: React.FC<StageControlsProps> = ({
+export function StageControls({
   status, onNext, onPrev, onJump,
-}) => {
+}: StageControlsProps) {
   if (!status.active || !status.total_stages) return null;
 
   const current = status.current_stage_index ?? 0;

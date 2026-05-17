@@ -1,13 +1,18 @@
 import psycopg2
 import json
+import os
 
+# Use environment variables for database credentials
 conn = psycopg2.connect(
-    host="db",
-    port=5432,
-    database="ai_hub",
-    user="ai_user",
-    password="ai_password"
+    host=os.getenv("DB_HOST", "db"),
+    port=int(os.getenv("DB_PORT", "5432")),
+    database=os.getenv("DB_NAME", "ai_hub"),
+    user=os.getenv("DB_USER", "ai_user"),
+    password=os.getenv("DB_PASSWORD")
 )
+
+if not os.getenv("DB_PASSWORD"):
+    raise ValueError("DB_PASSWORD environment variable is required")
 
 cur = conn.cursor()
 

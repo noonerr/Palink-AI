@@ -53,10 +53,11 @@ export function useMobileChatAnimations(activeSessionId: string | null, messages
     const dock = document.querySelector('nav[data-dock="true"]');
 
     let offset = 220;
+    // Note: Using window.innerWidth directly for animation calculations (not mobile detection)
     const fallbackWidth = Math.min(Math.max(window.innerWidth - 40, 280), 448);
     let snapshot: { top: number; left: number; width: number } = {
       top: Math.max(140, Math.round(window.innerHeight * 0.4)),
-      left: Math.max(20, Math.round((window.innerWidth - fallbackWidth) / 2)),
+    left: Math.max(20, Math.round((window.innerWidth - fallbackWidth) / 2)),
       width: fallbackWidth,
     };
     if (composer && dock instanceof HTMLElement) {

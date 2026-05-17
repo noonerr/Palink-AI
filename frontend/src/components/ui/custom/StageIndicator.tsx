@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StageIndicator — 世界书激活词条数量 badge（Phase 6B）
  */
 import React from 'react';
@@ -9,7 +9,7 @@ interface StageIndicatorProps {
   status: WorldBookStatus;
 }
 
-export const StageIndicator: React.FC<StageIndicatorProps> = ({ status }) => {
+export function StageIndicator({ status }: StageIndicatorProps) {
   if (!status.active) return null;
 
   return (

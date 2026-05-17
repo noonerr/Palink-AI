@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { 
@@ -37,12 +37,15 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { Switch } from '@/components/ui/switch';
 import { OCSettings } from '@/components/ui/custom/OCSettings';
+import { PromptSettings } from './settings-tabs/PromptSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelManagementTab } from './settings-tabs/ModelManagementTab';
 import { AboutTab } from './settings-tabs/AboutTab';
+import { ProfileTab } from './settings-tabs/ProfileTab';
 import { EMOJIS } from './settings-constants';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { Model, Provider, User as UserType } from '@/types';
 
 interface SettingsViewProps {
@@ -57,14 +60,12 @@ interface SettingsViewProps {
   onThemeToggle?: () => void;
   lang?: string;
   onLangToggle?: () => void;
-  switchDevice?: (newDevice: 'desktop' | 'mobile') => void;
-  currentDevice?: 'desktop' | 'mobile';
 }
 
-type SettingsTab = 'profile' | 'appearance' | 'language' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage' | 'user_usage';
+type SettingsTab = 'profile' | 'appearance' | 'models' | 'memory' | 'oc' | 'admin_users' | 'admin_defaults' | 'admin_starters' | 'about' | 'usage' | 'user_usage';
 type ModelSubTab = 'llm' | 'local' | 'vision';
 
-export const SettingsView: React.FC<SettingsViewProps> = ({
+export function SettingsView({
   token,
   user,
   models,
@@ -75,16 +76,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isDark,
   onThemeToggle,
   lang,
-  onLangToggle,
-  switchDevice,
-  currentDevice
-}) => {
+  onLangToggle
+}: SettingsViewProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const bottomPadding = useMobileBottomPadding();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const state = location.state as { activeTab?: string } | null;
-    if (state?.activeTab && ['profile', 'appearance', 'language', 'models', 'memory', 'oc', 'admin_users', 'admin_defaults', 'admin_starters', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
+    if (state?.activeTab && ['profile', 'appearance', 'models', 'memory', 'oc', 'admin_users', 'admin_defaults', 'admin_starters', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
       return state.activeTab as SettingsTab;
     }
     return 'profile';
@@ -168,26 +167,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [imageCleanupEnabled, setImageCleanupEnabled] = useState(true);
   const [imageCleanupMaxAge, setImageCleanupMaxAge] = useState(30);
   const [imageCleanupExpanded, setImageCleanupExpanded] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
+  const isMobile = useIsMobile();
+  const isDesktop = !isMobile;
 
   // Confirm dialog state
   const [modelDeleteConfirm, setModelDeleteConfirm] = useState<{ open: boolean; modelId: string }>({ open: false, modelId: '' });
-  const [userDeleteConfirm, setUserDeleteConfirm] = useState<{ open: boolean; userId: string }>({ open: false, userId: '' });
+  const [userDeleteConfirm, setUserDeleteConfirm] = useState<{ open: boolean; userId: string | number }>({ open: false, userId: '' });
   const [providerDeleteConfirm, setProviderDeleteConfirm] = useState<{ open: boolean; providerId: string }>({ open: false, providerId: '' });
   const [viewingUser, setViewingUser] = useState<UserType | null>(null);
 
   const isAdmin = user.role === 'admin';
-
-  useEffect(() => {
-    const checkIsDesktop = () => {
-      setIsDesktop(window.innerWidth >= 768);
-    };
-    
-    checkIsDesktop();
-    window.addEventListener('resize', checkIsDesktop);
-    
-    return () => window.removeEventListener('resize', checkIsDesktop);
-  }, []);
 
   useEffect(() => {
     if (isAdmin) {
@@ -509,11 +498,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleDeleteUser = (userId: string) => {
+  const handleDeleteUser = (userId: string | number) => {
     setUserDeleteConfirm({ open: true, userId });
   };
 
-  const doDeleteUser = async (userId: string) => {
+  const doDeleteUser = async (userId: string | number) => {
     try {
       await api.delete(`/api/admin/users/${userId}`);
       setUsersList(usersList.filter((u: UserType) => u.id !== userId));
@@ -659,8 +648,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const menuItems = [
     { id: 'profile' as SettingsTab, label: t.settings_profile, icon: User },
     { id: 'oc' as SettingsTab, label: '原创角色(OC)', icon: User },
-    { id: 'appearance' as SettingsTab, label: t.appearance || '外观', icon: Sun },
-    { id: 'language' as SettingsTab, label: t.language || '语言', icon: AlertCircle },
+    { id: 'appearance' as SettingsTab, label: t.appearance || '外观与语言', icon: Sun },
+    { id: 'prompts' as SettingsTab, label: '提示词', icon: MessageSquareText },
   ];
 
   if (isAdmin) {
@@ -675,8 +664,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     { id: 'usage' as SettingsTab, label: '用量统计', icon: Zap },
     { id: 'about' as SettingsTab, label: t.settings_about, icon: AlertCircle }
   );
-
-  const isMobile = !isDesktop;
 
   return (
     <div className={cn('relative flex h-full overflow-hidden', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
@@ -758,161 +745,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="max-w-4xl mx-auto h-full overflow-hidden">
               {/* Profile Tab */}
               {activeTab === 'profile' && (
-                <ScrollArea className="h-full">
-                  <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-                  <h3 className="text-xl md:text-2xl font-semibold">{t.settings_profile}</h3>
-                
-                <GlassCard className="p-4 md:p-6">
-                  <div className="flex flex-col md:flex-row items-center md:items-start gap-4 md:gap-6">
-                    <Avatar className="w-20 h-20 shrink-0">
-                      <AvatarImage src={avatarUrl} />
-                      <AvatarFallback className="text-2xl bg-primary/10">
-                        {user.username?.[0]?.toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    
-                    <div className="flex-1 space-y-4 w-full">
-                      <div className="flex gap-2 flex-wrap">
-                        {(['emoji', 'image', 'url'] as const).map(type => (
-                          <button
-                            key={type}
-                            onClick={() => setAvatarType(type)}
-                            className={cn(
-                              "px-3 py-1.5 text-xs rounded-full border transition-all active:scale-95",
-                              avatarType === type
-                                ? "bg-primary text-primary-foreground border-primary"
-                                : "border-border text-muted-foreground hover:text-foreground"
-                            )}
-                          >
-                            {type === 'emoji' ? t.choose_emoji : type === 'image' ? t.upload_image : t.use_url}
-                          </button>
-                        ))}
-                      </div>
-
-                      {avatarType === 'image' && (
-                        <label className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:bg-secondary/50 active:bg-secondary/60 transition-colors cursor-pointer block">
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={handleImageUpload}
-                          />
-                          <UploadCloud className="mx-auto text-muted-foreground mb-2" size={24} />
-                          <span className="text-sm text-muted-foreground">{t.click_to_upload}</span>
-                        </label>
-                      )}
-
-                      {avatarType === 'emoji' && (
-                        <div className="grid grid-cols-6 sm:grid-cols-8 gap-2">
-                          {EMOJIS.map(e => (
-                            <button
-                              key={e}
-                              onClick={() => setAvatarUrl(e)}
-                              className={cn(
-                                "p-2 hover:bg-secondary active:bg-secondary/80 rounded-lg text-xl transition-all min-h-[44px] flex items-center justify-center",
-                                avatarUrl === e && "bg-primary/10 ring-2 ring-primary"
-                              )}
-                            >
-                              {e}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      {avatarType === 'url' && (
-                        <Input
-                          value={avatarUrl}
-                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAvatarUrl(e.target.value)}
-                          placeholder="https://..."
-                        />
-                      )}
-                    </div>
-                  </div>
-
-                <div className="mt-6 pt-6 border-t border-border/50">
-                  <label className="text-sm font-medium mb-2 block">{t.settings_username}</label>
-                  <Input
-                    value={newUsername}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewUsername(e.target.value)}
-                    placeholder="Username"
-                    className="touch-input"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">{t.settings_username_desc}</p>
-                </div>
-
-                <div className="mt-6 flex justify-end">
-                  <Button onClick={handleUpdateProfile} className="min-h-[44px]">
-                    <Save size={16} className="mr-2" />
-                    {t.save}
-                  </Button>
-                </div>
-              </GlassCard>
-
-              {/* 账户安全 - 统一的账户安全管理模块 */}
-              <GlassCard className="p-4 md:p-6 border-destructive/50">
-                <h4 className="font-semibold text-destructive mb-4 flex items-center gap-2">
-                  <Shield size={18} />
-                  {t.settings_danger_zone}
-                </h4>
-                
-                <div 
-                  className="flex items-center justify-between cursor-pointer py-3 border-b border-border/50 min-h-[44px]"
-                  onClick={() => setShowPasswordForm(!showPasswordForm)}
-                >
-                  <div className="flex items-center gap-2">
-                    <Key size={16} className="text-muted-foreground" />
-                    <span className="text-sm">{t.change_pwd}</span>
-                  </div>
-                  <ChevronDown 
-                    size={16} 
-                    className={`text-muted-foreground transition-transform ${showPasswordForm ? 'rotate-180' : ''}`}
-                  />
-                </div>
-                
-                {showPasswordForm && (
-                  <div className="mt-4 pt-4 border-t border-border/50 animate-fade-in">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
-                      <Input
-                        type="password"
-                        placeholder={t.old_pwd}
-                        value={pwdOld}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPwdOld(e.target.value)}
-                        className="touch-input"
-                      />
-                      <Input
-                        type="password"
-                        placeholder={t.new_pwd}
-                        value={pwdNew}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPwdNew(e.target.value)}
-                        className="touch-input"
-                      />
-                    </div>
-                    <div className="mt-4 flex justify-end gap-2">
-                      <Button variant="ghost" onClick={() => {setShowPasswordForm(false); setPwdOld(''); setPwdNew('');}} className="min-h-[44px]">
-                        {t.cancel || '取消'}
-                      </Button>
-                      <Button onClick={handleChangePassword} className="min-h-[44px]">
-                        {t.save || '保存'}
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 py-3">
-                  <div className="flex items-center gap-2">
-                    <LogOut size={16} className="text-muted-foreground shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium">{t.logout}</p>
-                      <p className="text-xs text-muted-foreground">{t.logout_desc}</p>
-                    </div>
-                  </div>
-                  <Button variant="destructive" size="sm" onClick={onLogout} className="min-h-[44px] w-full sm:w-auto">
-                    {t.logout}
-                  </Button>
-                </div>
-              </GlassCard>
-                  </div>
-                </ScrollArea>
+                <ProfileTab
+                  t={t}
+                  user={user}
+                  avatarUrl={avatarUrl}
+                  setAvatarUrl={setAvatarUrl}
+                  avatarType={avatarType}
+                  setAvatarType={setAvatarType}
+                  newUsername={newUsername}
+                  setNewUsername={setNewUsername}
+                  showPasswordForm={showPasswordForm}
+                  setShowPasswordForm={setShowPasswordForm}
+                  pwdOld={pwdOld}
+                  setPwdOld={setPwdOld}
+                  pwdNew={pwdNew}
+                  setPwdNew={setPwdNew}
+                  handleImageUpload={handleImageUpload}
+                  handleUpdateProfile={handleUpdateProfile}
+                  handleChangePassword={handleChangePassword}
+                  onLogout={onLogout}
+                />
               )}
 
           {/* Models Tab - Unified Model Management */}
@@ -950,20 +802,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     { label: '解析/翻译人物卡默认模型', value: defCharacterParse, set: setDefCharacterParse },
                     { label: '人物卡翻译默认模型', value: defCharacterTranslate, set: setDefCharacterTranslate },
                     { label: '角色扮演默认模型', value: defCharacterChat, set: setDefCharacterChat },
-                    { label: '每日话题生成模型', value: dailyTopicModel, set: setDailyTopicModel },
                     { label: '摘要生成默认模型', value: defSummarization, set: setDefSummarization }
                   ].map((item, i) => (
-                    <div key={i} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3 border-b border-border/50 last:border-0">
-                      <div className="flex items-center gap-3">
+                    <div key={i} className="flex items-center gap-3 py-3 border-b border-border/50 last:border-0">
+                      <div className="flex items-center gap-2 min-w-0">
                         <Bot size={18} className="text-muted-foreground shrink-0" />
-                        <span className="text-sm">{item.label}</span>
+                        <span className="text-sm font-medium truncate">{item.label}</span>
                       </div>
+                      <div className="shrink-0 ml-auto">
                       <ModelSelector
                         models={models}
                         currentModel={item.value}
                         onSelect={(modelId: string) => item.set(modelId)}
                         size="sm"
                       />
+                      </div>
                     </div>
                   ))}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-t border-border/50">
@@ -1002,47 +855,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </Button>
                 </div>
               </GlassCard>
-
-              <div className="space-y-4">
-                <button
-                  onClick={() => setStartersExpanded(!startersExpanded)}
-                  className="w-full flex items-center justify-between p-3 rounded-xl transition-all bg-secondary hover:bg-secondary/80 active:bg-secondary/60 min-h-[48px]"
-                >
-                  <div className="flex items-center gap-3">
-                    <HelpCircle size={18} className="text-muted-foreground shrink-0" />
-                    <span className="font-medium text-sm">{t.admin_starters}</span>
-                  </div>
-                  <ChevronDown
-                    size={18}
-                    className={cn(
-                      "text-muted-foreground transition-transform duration-300 shrink-0",
-                      startersExpanded && "rotate-180"
-                    )}
-                  />
-                </button>
-
-                {startersExpanded && (
-                  <div className="animate-in slide-in-from-top-2 fade-in duration-300">
-                    <GlassCard className="p-4 md:p-6">
-                      <p className="text-sm text-muted-foreground mb-4">
-                        如果设置了"每日话题生成模型"，可以自动每日生成。
-                      </p>
-                      <textarea
-                        value={starterQuestions.join('\n')}
-                        onChange={e => setStarterQuestions(e.target.value.split('\n'))}
-                        className="w-full h-48 p-4 rounded-xl bg-secondary border-none outline-none resize-none font-mono text-sm touch-input"
-                        placeholder={t.enter_question_placeholder}
-                      />
-                      <div className="mt-4 flex justify-end">
-                        <Button onClick={handleSaveStarters} className="min-h-[44px]">
-                          <Save size={16} className="mr-2" />
-                          {t.save}
-                        </Button>
-                      </div>
-                    </GlassCard>
-                  </div>
-                )}
-              </div>
 
               <div className="space-y-4 mt-4">
                 <button
@@ -1193,7 +1005,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {activeTab === 'appearance' && (
             <ScrollArea className="h-full">
               <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-              <h3 className="text-xl md:text-2xl font-semibold">{t.appearance || '外观设置'}</h3>
+              <h3 className="text-xl md:text-2xl font-semibold">{t.appearance || '外观与语言'}</h3>
               
               <GlassCard className="p-4 md:p-6">
                 <div className="space-y-4">
@@ -1215,36 +1027,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       {isDark ? <Sun size={16} className="mr-2" /> : <Moon size={16} className="mr-2" />}
                       {isDark ? t.switch_light || '切换浅色' : t.switch_dark || '切换深色'}
                     </Button>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <MessageSquareText size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">界面模式</p>
-                        <p className="text-xs text-muted-foreground">当前: {currentDevice === 'desktop' ? '桌面端' : '移动端'}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto">
-                      <Button
-                        variant={currentDevice === 'desktop' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => switchDevice?.('desktop')}
-                        disabled={!switchDevice}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        桌面端
-                      </Button>
-                      <Button
-                        variant={currentDevice === 'mobile' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => switchDevice?.('mobile')}
-                        disabled={!switchDevice}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        移动端
-                      </Button>
-                    </div>
                   </div>
 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
@@ -1293,7 +1075,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
                     <div className="flex items-center gap-3">
                       <Database size={20} className="text-muted-foreground shrink-0" />
                       <div>
@@ -1320,81 +1102,54 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </Button>
                     </div>
                   </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg font-semibold w-8 text-center shrink-0">{lang?.toUpperCase()}</span>
+                      <div>
+                        <p className="font-medium">{t.language_setting || '语言设置'}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t.language_setting_desc || '同时设置界面语言和AI提示词语言'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 w-full sm:w-auto">
+                      <Button
+                        variant={lang === 'zh' && promptLanguage === 'zh' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={async () => {
+                          onLangToggle?.();
+                          await handleSavePromptLanguage('zh');
+                        }}
+                        className="flex-1 sm:flex-none min-h-[44px]"
+                      >
+                        {t.lang_zh || '中文'}
+                      </Button>
+                      <Button
+                        variant={lang === 'en' && promptLanguage === 'en' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={async () => {
+                          if (lang !== 'en') onLangToggle?.();
+                          await handleSavePromptLanguage('en');
+                        }}
+                        className="flex-1 sm:flex-none min-h-[44px]"
+                      >
+                        {t.lang_en || 'English'}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </GlassCard>
               </div>
             </ScrollArea>
           )}
 
-          {/* Language Tab */}
-          {activeTab === 'language' && (
+          {/* Prompts Tab */}
+          {activeTab === 'prompts' && (
             <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-              <h3 className="text-xl md:text-2xl font-semibold">{t.language || '语言设置'}</h3>
-              
-              <GlassCard className="p-4 md:p-6">
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg font-semibold w-8 text-center shrink-0">{lang?.toUpperCase()}</span>
-                      <div>
-                        <p className="font-medium">{t.current_language || '当前语言'}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {lang === 'zh' ? '简体中文' : lang === 'en' ? 'English' : lang}
-                        </p>
-                      </div>
-                    </div>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={onLangToggle}
-                      disabled={!onLangToggle}
-                      className="min-h-[44px] w-full sm:w-auto"
-                    >
-                      {t.switch_language || '切换语言'}
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3">
-                    <div className="flex items-center gap-3">
-                      <MessageSquareText size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">{t.prompt_language || '提示词语言'}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {t.prompt_language_desc || '角色扮演时 AI 提示词的语言'}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto">
-                      <Button
-                        variant={promptLanguage === 'auto' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => handleSavePromptLanguage('auto')}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.prompt_lang_auto || '自动'}
-                      </Button>
-                      <Button
-                        variant={promptLanguage === 'zh' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => handleSavePromptLanguage('zh')}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.prompt_lang_zh || '中文'}
-                      </Button>
-                      <Button
-                        variant={promptLanguage === 'en' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => handleSavePromptLanguage('en')}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.prompt_lang_en || 'English'}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </GlassCard>
-              </div>
+            <div className={`animate-fade-in pr-2 ${bottomPadding}`}>
+             <PromptSettings token={token} />
+         </div>
             </ScrollArea>
           )}
 

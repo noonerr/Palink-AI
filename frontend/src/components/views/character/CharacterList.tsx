@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CharacterList — 角色列表/网格视图
  * 全新的响应式布局设计
  */
@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useWindowSize } from '@/hooks/useWindowSize';
 import type { Character } from '@/types';
 
 export interface CharacterListProps {
@@ -816,7 +818,7 @@ const DesktopView = ({
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
+  const { width: windowWidth } = useWindowSize();
   const [layoutKey, setLayoutKey] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -836,20 +838,8 @@ const DesktopView = ({
   const prevCategoryRef = useRef(activeCategory);
 
   useEffect(() => {
-    let timeout: NodeJS.Timeout;
-    const handleResize = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => {
-        setWindowWidth(window.innerWidth);
-        setLayoutKey(prev => prev + 1);
-      }, 150);
-    };
-    window.addEventListener('resize', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      clearTimeout(timeout);
-    };
-  }, []);
+    setLayoutKey(prev => prev + 1);
+  }, [windowWidth]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -1064,16 +1054,8 @@ const DesktopView = ({
   );
 };
 
-export const CharacterList: React.FC<CharacterListProps> = (props) => {
-  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+export function CharacterList(props: CharacterListProps) {
+  const isMobile = useIsMobile();
 
   if (isMobile) {
     return <MobileView {...props} />;

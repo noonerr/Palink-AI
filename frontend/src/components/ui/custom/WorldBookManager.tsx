@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorldBookManager — 世界书管理界面（Phase 6B 关键词模式）
  * 列表、创建、编辑、导入、词条预览
  */
@@ -24,11 +24,11 @@ interface WorldBookManagerProps {
   onSelectForProfile?: (id: string | null) => void;
 }
 
-export const WorldBookManager: React.FC<WorldBookManagerProps> = ({
+export function WorldBookManager({
   worldBooks, selectedWorldBook, loading,
   t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onImport, onSelect, onClose,
   selectedForProfileId, onSelectForProfile,
-}) => {
+}: WorldBookManagerProps) {
   const [showCreate, setShowCreate] = useState(false);
   const [_editingId, _setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState('');

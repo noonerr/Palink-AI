@@ -5,10 +5,10 @@ interface TopBarProps {
   theme?: 'dark' | 'light';
 }
 
-const TopBar: React.FC<TopBarProps> = ({
+function TopBar({
   height = 'calc(env(safe-area-inset-top) + 4.2rem)',
   theme = 'dark',
-}) => {
+}: TopBarProps) {
   const isDark = theme === 'dark';
   const gradientBase = isDark ? '15, 23, 42' : '255, 250, 250';
 

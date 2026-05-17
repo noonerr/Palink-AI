@@ -4,6 +4,7 @@ from sqlalchemy import text
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 import uuid
+import json
 import logging
 
 from ..core.input_validation import sanitize_title, sanitize_text
@@ -107,8 +108,9 @@ async def get_session_messages(
         .order_by(ChatMessage.created_at)
         .all()
     )
-    return [
-        {
+    result = []
+    for m in messages:
+        entry = {
             "id": m.id,
             "role": m.role,
             "content": m.content,
@@ -116,8 +118,13 @@ async def get_session_messages(
             "created_at": m.created_at,
             "tokens": m.tokens,
         }
-        for m in messages
-    ]
+        if m.web_search_results:
+            try:
+                entry["webSearchResults"] = json.loads(m.web_search_results)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(entry)
+    return result
 
 
 def delete_session_memories(db: Session, session_ids: List[str], user_id: int):

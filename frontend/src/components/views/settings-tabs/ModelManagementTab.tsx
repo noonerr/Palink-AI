@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+﻿import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import {
@@ -60,11 +60,13 @@ interface ModelManagementTabProps {
   handleModelEnable: (modelId: string, enabled: boolean) => void;
   handleModelDelete: (modelId: string) => void;
   handleMmprojToggle?: (modelId: string, enabled: boolean) => void;
+  hideSubTabs?: SubTab[];
+  defaultSubTab?: SubTab;
 }
 
 const API_BASE = '/api/models/unified';
 
-export const ModelManagementTab: React.FC<ModelManagementTabProps> = ({
+export function ModelManagementTab({
   t,
   isAdmin,
   providers,
@@ -79,8 +81,10 @@ export const ModelManagementTab: React.FC<ModelManagementTabProps> = ({
   handleModelEnable,
   handleModelDelete,
   handleMmprojToggle,
-}) => {
-  const [subTab, setSubTab] = useState<SubTab>('providers');
+  hideSubTabs = [],
+  defaultSubTab,
+}: ModelManagementTabProps) {
+  const [subTab, setSubTab] = useState<SubTab>(defaultSubTab || 'providers');
   const [unifiedModels, setUnifiedModels] = useState<UnifiedModel[]>([]);
   const [strategies, setStrategies] = useState<RoutingStrategy[]>([]);
   const [loading, setLoading] = useState(false);
@@ -338,10 +342,14 @@ export const ModelManagementTab: React.FC<ModelManagementTabProps> = ({
     { key: 'mcp', label: 'MCP', icon: <Plug size={16} /> },
   ];
 
+  const visibleSubTabs = subTabs.filter(tab => !hideSubTabs.includes(tab.key));
+  const showSubTabs = visibleSubTabs.length > 1;
+
   return (
     <div className="flex flex-col h-full animate-fade-in overflow-hidden">
+      {showSubTabs && (
       <div className="flex items-center gap-2 border-b border-border/50 pb-4 shrink-0 overflow-x-auto">
-        {subTabs.map((tab) => {
+        {visibleSubTabs.map((tab) => {
           if (tab.key === 'local' && !isAdmin) return null;
           if (tab.key === 'routing' && !isAdmin) return null;
           return (
@@ -360,6 +368,7 @@ export const ModelManagementTab: React.FC<ModelManagementTabProps> = ({
           );
         })}
       </div>
+      )}
 
       {subTab === 'providers' && (
         <ScrollArea className="flex-1 min-h-0">

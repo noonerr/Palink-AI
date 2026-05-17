@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import {
   Plus,
   Trash2,
@@ -24,7 +24,7 @@ interface ModelEditorProps {
   providerName: string;
 }
 
-export const ModelEditor: React.FC<ModelEditorProps> = ({ models, onChange, providerName }) => {
+export function ModelEditor({ models, onChange, providerName }: ModelEditorProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [iconSearch, setIconSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('全部');

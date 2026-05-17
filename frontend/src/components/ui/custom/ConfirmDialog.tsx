@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -21,7 +21,7 @@ interface ConfirmDialogProps {
   variant?: 'default' | 'destructive';
 }
 
-export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
+export function ConfirmDialog({
   open,
   onOpenChange,
   title,
@@ -31,7 +31,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   confirmText = '确认',
   cancelText = '取消',
   variant = 'destructive',
-}) => {
+}: ConfirmDialogProps) {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleConfirm = async () => {

@@ -37,6 +37,7 @@ from ..services.inference_dispatcher import (
     ensure_model_available,
     stream_text_completion,
 )
+from ..core.default_prompts import build_default_character_prompt
 from ..services.compact_title_service import generate_compact_title, rule_based_compact_title
 
 router_characters = APIRouter(prefix="/api/characters", tags=["character-ext"])
@@ -264,184 +265,49 @@ def _replace_placeholders(text: str, user_nickname: str = "用户", char_name: s
     return result
 
 
-def _build_char_system_prompt(char: Character, user_nickname: str = "用户", dialogue_mode: str = "first_person") -> str:
-    parts = []
-    if char.system_prompt:
-        parts.append(_replace_placeholders(char.system_prompt, user_nickname, char.name))
-    parts.append(f"You are {char.name}. Stay in character at all times.")
-    if dialogue_mode == 'third_person':
-        parts.append("Narrate in third person, describing the character's actions, dialogue, and inner thoughts from an outside perspective. Use the character's name instead of 'I'.")
-    else:
-        parts.append("Respond in first person as if you are the character. Speak and act as the character would.")
-    if char.personality:
-        parts.append(f"Personality: {_replace_placeholders(char.personality, user_nickname, char.name)}")
-    if char.background:
-        parts.append(f"Background: {_replace_placeholders(char.background, user_nickname, char.name)}")
-    if char.scenario:
-        parts.append(f"Scenario: {_replace_placeholders(char.scenario, user_nickname, char.name)}")
-    if char.description:
-        parts.append(f"Description: {_replace_placeholders(char.description, user_nickname, char.name)}")
-    parts.append(f'The user\'s name is "{user_nickname}".')
-    parts.append(
-        'Response format rules:\n'
-        '- Wrap spoken dialogue in double quotes: "Hello!"\n'
-        '- Wrap inner thoughts and internal monologue in parentheses: (What should I do...)\n'
-        '- Write actions, narration, and descriptions as plain text without special markers.\n'
-        '- Do NOT use XML tags like <action> or <thinking>.\n'
-        '- Never output chain-of-thought, analysis text, or labels like "Final Answer".\n'
-        '- Stay immersive: respond as the character would, with emotions, gestures, and sensory details.\n'
-        '- Vary response length based on the situation: short for quick exchanges, longer for emotional or dramatic moments.'
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户", dialogue_mode: str = "first_person", prompt_lang: str = "auto", user_setting: Optional[UserSetting] = None) -> str:
+    """Build character system prompt using config file.
+    
+    Args:
+        char: Character object
+        user_nickname: User's nickname
+        dialogue_mode: 'first_person' or 'third_person'
+        prompt_lang: 'auto', 'zh', or 'en'
+        user_setting: User's settings (for custom prompts)
+    """
+    # Auto-detect language if needed
+    if prompt_lang == "auto":
+        has_chinese = any('一' <= c <= '鿿' for c in (char.name or "") + (char.description or "")[:100])
+        prompt_lang = "zh" if has_chinese else "en"
+    
+    # Check if user has custom prompts enabled
+    if user_setting and user_setting.use_custom_prompts:
+        custom_prompt = None
+        if prompt_lang == "zh" and user_setting.custom_character_prompt_zh:
+            custom_prompt = user_setting.custom_character_prompt_zh
+        elif prompt_lang == "en" and user_setting.custom_character_prompt_en:
+            custom_prompt = user_setting.custom_character_prompt_en
+        
+        if custom_prompt:
+            # Replace placeholders in custom prompt
+            custom_prompt = _replace_placeholders(custom_prompt, user_nickname, char.name or "Character")
+            return custom_prompt
+    
+    # Build system prompt using default config
+    from ..core.default_prompts import build_default_character_prompt
+    system_prompt = build_default_character_prompt(
+        char_name=char.name or "Character",
+        user_nickname=user_nickname,
+        dialogue_mode=dialogue_mode,
+        lang=prompt_lang,
+        personality=char.personality,
+        background=char.background,
+        scenario=char.scenario,
+        description=char.description,
+        custom_prompt=char.system_prompt
     )
-    return "\n\n".join(parts)
-
-
-# ───────────────────────────────────────────────
-# Character Sessions
-# ───────────────────────────────────────────────
-
-@router_characters.get("/{character_id}/sessions")
-async def get_character_sessions(
-    character_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
-    if not char:
-        raise HTTPException(status_code=404, detail="Character not found")
-    sessions = (
-        db.query(CharacterChatSession)
-        .filter(CharacterChatSession.character_id == character_id, CharacterChatSession.user_id == user.id)
-        .order_by(CharacterChatSession.updated_at.desc())
-        .all()
-    )
-    return [
-        {
-            "id": s.id,
-            "title": s.title,
-            "character_id": s.character_id,
-            "user_id": s.user_id,
-            "dialogue_mode": s.dialogue_mode,
-            "created_at": s.created_at,
-            "updated_at": s.updated_at,
-        }
-        for s in sessions
-    ]
-
-
-# ───────────────────────────────────────────────
-# Character status / export / import / parse / translate
-# ───────────────────────────────────────────────
-
-@router_characters.get("/{character_id}/status")
-async def get_character_status(
-    character_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
-    if not char:
-        raise HTTPException(status_code=404, detail="Character not found")
-    return {
-        "id": char.id,
-        "is_processing": char.is_processing or False,
-        "processing_status": char.processing_status or "",
-    }
-
-
-@router_characters.post("/{character_id}/reset-status")
-async def reset_character_status(
-    character_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
-    if not char:
-        raise HTTPException(status_code=404, detail="Character not found")
-    char.is_processing = False
-    char.processing_status = ""
-    db.commit()
-    return {"status": "ok"}
-
-
-@router_characters.get("/{character_id}/export")
-async def export_character(
-    character_id: str,
-    format: str = "json",
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    char = db.query(Character).filter(Character.id == character_id, Character.user_id == user.id).first()
-    if not char:
-        raise HTTPException(status_code=404, detail="Character not found")
-
-    char_dict = character_to_dict(char)
-    data = {
-        "name": char.name,
-        "description": char.description or "",
-        "personality": char.personality or "",
-        "scenario": char.scenario or "",
-        "first_mes": char.first_mes or "",
-        "mes_example": char.mes_example or "",
-        "system_prompt": char.system_prompt or "",
-        "background": char.background or "",
-        "creator": char.creator or "",
-        "character_version": char.character_version or "",
-        "tags": char_dict["tags"],
-        "extensions": char_dict["extensions"],
-        "avatar": char.avatar or "",
-    }
-
-    if format == "json":
-        content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        return Response(
-            content=content,
-            media_type="application/json",
-            headers={"Content-Disposition": f'attachment; filename="{char.name}.json"'},
-        )
-    else:
-        try:
-            from PIL import Image
-
-            if char.avatar and char.avatar.startswith("data:image"):
-                img_data = base64.b64decode(char.avatar.split(",", 1)[1])
-            else:
-                default_img = Image.new("RGBA", (256, 256), (100, 100, 200, 255))
-                buf = io.BytesIO()
-                default_img.save(buf, format="PNG")
-                img_data = buf.getvalue()
-
-            final_png = create_png_with_chara_card(img_data, data)
-            return Response(
-                content=final_png,
-                media_type="image/png",
-                headers={"Content-Disposition": f'attachment; filename="{char.name}.png"'},
-            )
-        except Exception:
-            logger.exception("PNG export failed")
-            raise HTTPException(status_code=500, detail="PNG export failed")
-
-
-@router_characters.post("/import")
-async def import_character(
-    file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """导入角色卡（PNG 或 JSON 格式）"""
-    try:
-        content = await file.read()
-        service = CharacterImportService(db)
-        result = await service.import_from_file(
-            filename=file.filename or "",
-            content=content,
-            user_id=user.id,
-        )
-        return {"status": "ok", "character": result}
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to import character")
-        raise HTTPException(status_code=500, detail="导入角色失败")
+    
+    return system_prompt
 
 
 class ImportParseImageRequest(BaseModel):
@@ -795,6 +661,44 @@ async def translate_character(
         db.commit()
         logger.exception("Character translation failed")
         raise HTTPException(status_code=500, detail="Character translation failed")
+
+
+@router_characters.get("/{character_id}/sessions")
+async def list_character_sessions(
+    character_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取指定角色的所有对话会话列表"""
+    char = db.query(Character).filter(
+        Character.id == character_id,
+        Character.user_id == user.id,
+    ).first()
+    if not char:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    sessions = (
+        db.query(CharacterChatSession)
+        .filter(
+            CharacterChatSession.character_id == character_id,
+            CharacterChatSession.user_id == user.id,
+        )
+        .order_by(CharacterChatSession.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": s.id,
+            "character_id": s.character_id,
+            "title": s.title,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+            "dialogue_mode": s.dialogue_mode,
+            "user_id": s.user_id,
+        }
+        for s in sessions
+    ]
 
 
 # ───────────────────────────────────────────────
@@ -1367,6 +1271,51 @@ async def get_branch_tree(
     }
 
 
+@router_sessions.get("/{session_id}/branches/{branch_id}/delete-preview")
+async def delete_branch_preview(
+    session_id: str,
+    branch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    if branch.is_active:
+        raise HTTPException(status_code=400, detail="Cannot delete the active branch")
+
+    def _collect_descendant_branch_ids(bid: str, collected: list):
+        children = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.parent_branch_id == bid
+        ).all()
+        for child in children:
+            collected.append(child.id)
+            _collect_descendant_branch_ids(child.id, collected)
+
+    branch_ids = [branch_id]
+    _collect_descendant_branch_ids(branch_id, branch_ids)
+
+    message_count = db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.branch_id.in_(branch_ids)
+    ).count()
+
+    return {
+        "branch_ids": branch_ids,
+        "branch_count": len(branch_ids),
+        "message_count": message_count,
+        "branch_name": branch.branch_name,
+    }
+
+
 @router_sessions.delete("/{session_id}/branches/{branch_id}")
 async def delete_branch(
     session_id: str,
@@ -1564,7 +1513,11 @@ async def _character_chat_impl(
             author_note_frequency = user_setting.author_note_frequency
 
     # ── Build messages array ────────────────────────────────────────────
-    system_prompt = _build_char_system_prompt(char, user_nickname, req.dialogue_mode or "first_person")
+    # Get prompt language preference
+    prompt_lang = user_setting.prompt_language if user_setting else "auto"
+    system_prompt = _build_char_system_prompt(
+        char, user_nickname, req.dialogue_mode or "first_person", prompt_lang, user_setting
+    )
 
     if author_note:
         note_text = _replace_placeholders(author_note, user_nickname, char.name or '')

@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { Database, Edit3, Eye, Plus, RefreshCw, Sparkles, Trash2, UploadCloud } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ interface ModelsTabProps {
   handleMmprojToggle?: (modelId: string, enabled: boolean) => void;
 }
 
-export const ModelsTab: React.FC<ModelsTabProps> = ({
+export function ModelsTab({
   t,
   isAdmin,
   modelSubTab,
@@ -43,7 +43,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({
   handleModelEnable,
   handleModelDelete,
   handleMmprojToggle,
-}) => {
+}: ModelsTabProps) {
   return (
     <div className="flex flex-col h-full animate-fade-in">
       <div className="flex items-center gap-2 border-b border-border/50 pb-4 shrink-0">

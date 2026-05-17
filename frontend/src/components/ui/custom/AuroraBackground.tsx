@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 文件路径: frontend/src/components/ui/custom/AuroraBackground.tsx
  * 用途: Aurora 多层 Blob 背景组件
  * 特性: 
@@ -10,48 +10,34 @@
 
 import React, { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 interface AuroraBackgroundProps {
   className?: string;
   reducedMotion?: boolean;
 }
 
-export const AuroraBackground: React.FC<AuroraBackgroundProps> = ({ 
+export function AuroraBackground({ 
   className = ''
   // reducedMotion 参数保留供将来使用，当前强制静态背景
-}) => {
-  // 以下状态保留供将来恢复动画时使用
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_isMobile, _setIsMobile] = useState(false);
+}: AuroraBackgroundProps) {
+  const _isMobile = useIsMobile();
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [_prefersReducedMotion, _setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
-    // 检测移动设备（保留供将来使用）
-    const checkMobile = () => {
-      const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
-      const isSmallScreen = window.innerWidth < 768;
-      _setIsMobile(isTouchDevice || isSmallScreen);
-    };
-
-    // 检测用户是否偏好减少动画（保留供将来使用）
     const checkReducedMotion = () => {
       const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
       _setPrefersReducedMotion(mediaQuery.matches);
     };
-
-    checkMobile();
     checkReducedMotion();
-
-    window.addEventListener('resize', checkMobile);
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     mediaQuery.addEventListener('change', checkReducedMotion);
 
     return () => {
-      window.removeEventListener('resize', checkMobile);
       mediaQuery.removeEventListener('change', checkReducedMotion);
     };
-  }, [_setIsMobile, _setPrefersReducedMotion]);
+  }, [_setPrefersReducedMotion]);
 
   // 注意：当前设置为静态背景以优化系统资源（GPU/CPU/内存）占用
   // 如需恢复动态动画，将下一行改为：const shouldReduceMotion = reducedMotion || _prefersReducedMotion || _isMobile;

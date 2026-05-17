@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import {
   MessageSquare,
   FolderOpen,
@@ -6,25 +6,22 @@ import {
   Sun,
   Moon,
   LogOut,
-  Bot,
-  Monitor,
-  Smartphone
+  Bot
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Link, useLocation } from 'react-router-dom';
 import type { User } from '@/types';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 interface SidebarProps {
-  user?: User;
+  user?: User | null;
   isDark?: boolean;
   onThemeToggle?: () => void;
   lang?: string;
   onLangToggle?: () => void;
   onLogout?: () => void;
   t: Record<string, string>;
-  switchDevice?: (newDevice: 'desktop' | 'mobile') => void;
-  currentDevice?: 'desktop' | 'mobile';
   sidebarCollapsed?: boolean;
   isKeyboardOpen?: boolean;
 }
@@ -37,7 +34,7 @@ interface NavItemProps {
   isMobile?: boolean;
 }
 
-const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMobile }) => {
+function NavItem({ icon: Icon, to, tooltip, label, isMobile }: NavItemProps) {
   const location = useLocation();
   const isActive = location.pathname === to;
 
@@ -65,7 +62,7 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, to, tooltip, label, isMob
 };
 
 // Desktop Sidebar Component
-export const DesktopSidebar: React.FC<SidebarProps> = ({
+export function DesktopSidebar({
   user,
   isDark,
   onThemeToggle,
@@ -73,11 +70,7 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
   onLangToggle,
   onLogout,
   t,
-  switchDevice,
-  currentDevice = 'desktop'
-}) => {
-  const nextVariant = currentDevice === 'desktop' ? 'mobile' : 'desktop';
-
+}: SidebarProps) {
   return (
     <aside className="w-[64px] h-full flex flex-col items-center pt-[max(1rem,env(safe-area-inset-top))] pb-5 bg-sidebar text-sidebar-foreground border-r border-sidebar-border/40">
       {/* Logo */}
@@ -133,14 +126,6 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
         </button>
 
         <button
-          onClick={() => switchDevice && switchDevice(nextVariant)}
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all"
-          title={nextVariant === 'mobile' ? 'Switch to Mobile UI' : 'Switch to Desktop UI'}
-        >
-          {nextVariant === 'mobile' ? <Smartphone size={18} /> : <Monitor size={18} />}
-        </button>
-
-        <button
           onClick={onLogout}
           className="w-10 h-10 rounded-xl flex items-center justify-center text-sidebar-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
           title={t.logout || 'Logout'}
@@ -162,12 +147,12 @@ export const DesktopSidebar: React.FC<SidebarProps> = ({
 };
 
 // Mobile Bottom Navigation Component
-export const MobileBottomNav: React.FC<SidebarProps> = ({
+export function MobileBottomNav({
   t,
   isDark = false,
   sidebarCollapsed = true,
   isKeyboardOpen = false
-}) => {
+}: SidebarProps) {
   const location = useLocation();
   const dockRef = React.useRef<HTMLDivElement | null>(null);
   const itemRefs = React.useRef<Record<string, HTMLAnchorElement | null>>({});
@@ -285,17 +270,8 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({
 };
 
 // Main Sidebar Component (exports both)
-export const Sidebar: React.FC<SidebarProps> = (props) => {
-  const [isMobile, setIsMobile] = React.useState(false);
-
-  React.useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+export function Sidebar(props: SidebarProps) {
+  const isMobile = useIsMobile();
 
   if (isMobile) {
     return <MobileBottomNav {...props} />;

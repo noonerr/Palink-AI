@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+﻿import React, { useEffect, useState, useRef } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface SmoothOutputProps {
@@ -6,10 +6,10 @@ interface SmoothOutputProps {
   streaming?: boolean;
 }
 
-export const SmoothOutput: React.FC<SmoothOutputProps> = ({
+export function SmoothOutput({
   content,
   streaming = false
-}) => {
+}: SmoothOutputProps) {
   const [displayContent, setDisplayContent] = useState('');
   const [isAnimating, setIsAnimating] = useState(false);
   const rafRef = useRef<number | null>(null);

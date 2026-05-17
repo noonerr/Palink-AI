@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSearch SSE Test</title>
+    <style>
+      body { font-family: monospace; padding: 20px; }
+        #log { white-space: pre-wrap; background: #f0f0f0; padding: 10px; }
+        .event { border-bottom: 1px solid #ccc; margin: 5px 0; padding: 5px; }
+        .web-search { background: #e8f5e9; }
+        .error { background: #ffebee; }
+    </style>
+</head>
+<body>
+    <h1>WebSearch SSE Event Test</h1>
+    <button onclick="testWebSearch()">Test WebSearch</button>
+    <button onclick="clearLog()">Clear Log</button>
+    <div id="log"></div>
+
+    <script>
+        const log = document.getElementById('log');
+
+        function addLog(message, className = '') {
+            const div = document.createElement('div');
+            div.className = 'event ' + className;
+            div.textContent = new Date().toISOString() + ': ' + message;
+         log.appendChild(div);
+          log.scrollTop = log.scrollHeight;
+    }
+
+        function clearLog() {
+            log.innerHTML = '';
+        }
+
+     async function testWebSearch() {
+            addLog('Starting WebSearch test...');
+
+       try {
+                const response = await fetch('http://localhost:8000/api/chat', {
+                 method: 'POST',
+                 headers: {
+                'Content-Type': 'application/json',
+                      'Authorization': 'Bearer YOUR_TOKEN_HERE' // 需要替换
+                    },
+               body: JSON.stringify({
+                        message: '北京今天天气',
+                    model: 'mimo-v2.5-pro',
+                temperature: 0.7,
+              web_search: true,
+               session_type: 'chat'
+                    })
+           });
+
+           if (!response.ok) {
+                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+              addLog('Connected to SSE stream');
+
+                const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+                let buffer = '';
+
+              while (true) {
+                    const { done, value } = await reader.read();
+              if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+               for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                   const data = line.slice(6);
+                         try {
+                            const json = JSON.parse(data);
+
+                     if (json.type === 'web_search') {
+                               addLog('🔍 WebSearch Event: ' + JSON.stringify(json, null, 2), 'web-search');
+                             } else if (json.content) {
+              addLog('💬 Content: ' + json.content.substring(0, 50) + '...');
+                        } else {
+                    addLog('📦 Event: ' + JSON.stringify(json));
+                        }
+                 } catch (e) {
+                addLog('⚠️ Parse error: ' + e.message, 'error');
+                   }
+                    }
+         }
+           }
+
+                addLog('✅ Stream completed');
+            } catch (error) {
+                addLog('❌ Error: ' + error.message, 'error');
+        }
+        }
+    </script>
+</body>
+</html>

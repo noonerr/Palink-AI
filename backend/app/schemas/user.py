@@ -19,6 +19,11 @@ class UserSettingUpdate(BaseModel):
     author_note: Optional[str] = None
     author_note_position: Optional[str] = None
     author_note_frequency: Optional[int] = None
+    custom_chat_prompt_zh: Optional[str] = None
+    custom_chat_prompt_en: Optional[str] = None
+    custom_character_prompt_zh: Optional[str] = None
+    custom_character_prompt_en: Optional[str] = None
+    use_custom_prompts: Optional[bool] = None
 
 class PasswordReset(BaseModel):
     new_password: str

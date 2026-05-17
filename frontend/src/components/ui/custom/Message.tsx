@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useCallback } from 'react';
-import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink } from 'lucide-react';
+﻿import React, { useState, useMemo, useCallback } from 'react';
+import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
@@ -10,6 +10,7 @@ import { CodeBlock } from './CodeBlock';
 import { ThinkingProcess } from './ThinkingProcess';
 import { SmoothOutput } from './SmoothOutput';
 import { ImageThumbnails, FullscreenImageViewer, extractImagesFromContent } from './ImageViewer';
+import { WebSearchResults } from './WebSearchResults';
 import type { Message as MessageType, Model } from '@/types';
 
 const IMAGE_HOSTING_DOMAINS = [
@@ -103,53 +104,142 @@ type ContentSegment = {
   text: string;
 };
 
-function parseContentSegments(displayContent: string): ContentSegment[] {
+function parseContentSegments(displayContent: string, isStreaming: boolean = false): ContentSegment[] {
+  const protectedBlocks: string[] = [];
+
+  const openCodeBlockRegex = /```[^\n]*$/;
+  let content = displayContent;
+  if (isStreaming && openCodeBlockRegex.test(content)) {
+    content = content.replace(openCodeBlockRegex, (match) => {
+      protectedBlocks.push(match);
+      return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+    });
+  }
+
+  const codeBlockRegex = /```[\s\S]*?```/g;
+  content = content.replace(codeBlockRegex, (match) => {
+    protectedBlocks.push(match);
+    return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+  });
+
+  const inlineCodeRegex = /`[^`\n]+`/g;
+  content = content.replace(inlineCodeRegex, (match) => {
+    protectedBlocks.push(match);
+    return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+  });
+
+  const displayMathRegex = /\$\$[\s\S]*?\$\$/g;
+  content = content.replace(displayMathRegex, (match) => {
+    protectedBlocks.push(match);
+    return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+  });
+
+  const openDisplayMathRegex = /\$\$[\s\S]*$/;
+  if (isStreaming && openDisplayMathRegex.test(content)) {
+    content = content.replace(openDisplayMathRegex, (match) => {
+      protectedBlocks.push(match);
+      return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+    });
+  }
+
+  const inlineMathRegex = /\$[^\$\n]+?\$/g;
+  content = content.replace(inlineMathRegex, (match) => {
+    protectedBlocks.push(match);
+    return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
+  });
+
   const segments: ContentSegment[] = [];
-  const segmentRegex = /"([^"]+)"|\(([^)]+)\)/g;
+  const segmentRegex = /"([^"]*)"|\(([^)]*)\)/g;
   let cursor = 0;
   let match;
 
-  while ((match = segmentRegex.exec(displayContent)) !== null) {
+  while ((match = segmentRegex.exec(content)) !== null) {
     if (match.index > cursor) {
-      const normalText = displayContent.slice(cursor, match.index).trim();
+      const normalText = content.slice(cursor, match.index).trim();
       if (normalText) {
         segments.push({ type: 'normal', text: normalText });
       }
     }
 
-    if (match[1] !== undefined) {
+    const isCompleteDialogue = match[1] !== undefined && match[0].endsWith('"');
+    const isCompleteThinking = match[2] !== undefined && match[0].endsWith(')');
+
+    if (isCompleteDialogue) {
       segments.push({ type: 'dialogue', text: match[1] });
-    } else if (match[2] !== undefined) {
+    } else if (isCompleteThinking) {
       segments.push({ type: 'character_thinking', text: match[2] });
+    } else {
+      segments.push({ type: 'normal', text: match[0] });
     }
 
     cursor = match.index + match[0].length;
   }
 
-  if (cursor < displayContent.length) {
-    const normalText = displayContent.slice(cursor).trim();
-    if (normalText) {
-      segments.push({ type: 'normal', text: normalText });
+  if (cursor < content.length) {
+    const remaining = content.slice(cursor);
+    const trimmed = remaining.trimStart();
+    const leadingSpaces = remaining.length - trimmed.length;
+
+    if (isStreaming) {
+      const openQuoteIdx = trimmed.lastIndexOf('"');
+      const openParenIdx = trimmed.lastIndexOf('(');
+
+      if (openQuoteIdx > openParenIdx && openQuoteIdx >= 0) {
+        const beforeOpen = trimmed.slice(0, openQuoteIdx).trim();
+        if (beforeOpen) {
+          segments.push({ type: 'normal', text: beforeOpen });
+        }
+        const quotedContent = trimmed.slice(openQuoteIdx + 1);
+        if (quotedContent) {
+          segments.push({ type: 'dialogue', text: quotedContent });
+        }
+      } else if (openParenIdx > openQuoteIdx && openParenIdx >= 0) {
+        const beforeOpen = trimmed.slice(0, openParenIdx).trim();
+        if (beforeOpen) {
+          segments.push({ type: 'normal', text: beforeOpen });
+        }
+        const parenContent = trimmed.slice(openParenIdx + 1);
+        if (parenContent) {
+          segments.push({ type: 'character_thinking', text: parenContent });
+        }
+      } else if (trimmed) {
+        segments.push({ type: 'normal', text: trimmed });
+      }
+    } else {
+      if (trimmed) {
+        segments.push({ type: 'normal', text: trimmed });
+      }
     }
   }
 
-  if (segments.length === 0 && displayContent.trim()) {
-    segments.push({ type: 'normal', text: displayContent.trim() });
+  if (segments.length === 0 && content.trim()) {
+    segments.push({ type: 'normal', text: content.trim() });
+  }
+
+  const placeholderRegex = /\x00PBLOCK(\d+)\x00/g;
+  for (const seg of segments) {
+    seg.text = seg.text.replace(placeholderRegex, (_, idx) => protectedBlocks[parseInt(idx)]);
   }
 
   return segments;
 }
 
-const SegmentBox: React.FC<{
+function SegmentBox({ segment, markdownComponents }: {
   segment: ContentSegment;
   markdownComponents: Record<string, React.ComponentType<any>>;
-}> = ({ segment, markdownComponents }) => {
+}) {
   if (segment.type === 'character_thinking') {
     return (
       <div className="my-1 px-3 py-2 rounded-lg bg-purple-50/80 dark:bg-purple-950/30 border-l-2 border-purple-400 dark:border-purple-600">
-        <p className="text-[13px] text-purple-700 dark:text-purple-300 italic leading-relaxed">
-          {segment.text}
-        </p>
+        <div className="text-[15px] text-purple-700 dark:text-purple-300 italic leading-relaxed">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={markdownComponents}
+          >
+            {`(${segment.text})`}
+          </ReactMarkdown>
+        </div>
       </div>
     );
   }
@@ -157,9 +247,15 @@ const SegmentBox: React.FC<{
   if (segment.type === 'dialogue') {
     return (
       <div className="my-1 px-3 py-2 rounded-lg bg-blue-50/80 dark:bg-blue-950/30 border-l-2 border-blue-400 dark:border-blue-600">
-        <p className="text-[17px] text-blue-600 dark:text-blue-400 font-semibold leading-relaxed">
-          &ldquo;{segment.text}&rdquo;
-        </p>
+        <div className="text-[15px] text-blue-600 dark:text-blue-400 font-semibold leading-relaxed">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={markdownComponents}
+          >
+            {`"${segment.text}"`}
+          </ReactMarkdown>
+        </div>
       </div>
     );
   }
@@ -179,31 +275,42 @@ const SegmentBox: React.FC<{
   );
 };
 
-const FramelessContent: React.FC<{
+function FramelessContent({ segments, streaming, markdownComponents }: {
   segments: ContentSegment[];
   streaming?: boolean;
-}> = ({ segments, streaming }) => {
+  markdownComponents: Record<string, React.ComponentType<any>>;
+}) {
   return (
     <div className="w-full break-words overflow-wrap-anywhere space-y-0.5">
       {segments.map((seg, i) => {
         if (seg.type === 'dialogue') {
           return (
-            <span
-              key={i}
-              className="text-[17px] font-semibold text-blue-600 dark:text-blue-400 leading-relaxed"
-            >
-              &ldquo;{seg.text}&rdquo;
-            </span>
+            <div key={i} className="text-[15px] font-semibold text-blue-600 dark:text-blue-400 leading-relaxed">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={markdownComponents}
+                unwrapDisallowed
+                allowedElements={['p', 'span', 'em', 'strong', 'code', 'math', 'inlineMath']}
+              >
+                {`"${seg.text}"`}
+              </ReactMarkdown>
+            </div>
           );
         }
         if (seg.type === 'character_thinking') {
           return (
-            <p
-              key={i}
-              className="text-[13px] text-purple-600 dark:text-purple-400 italic leading-relaxed"
-            >
-              ({seg.text})
-            </p>
+            <div key={i} className="text-[15px] text-purple-600 dark:text-purple-400 italic leading-relaxed">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={markdownComponents}
+                unwrapDisallowed
+                allowedElements={['p', 'span', 'em', 'strong', 'code', 'math', 'inlineMath']}
+              >
+                {`(${seg.text})`}
+              </ReactMarkdown>
+            </div>
           );
         }
         return (
@@ -222,7 +329,7 @@ const FramelessContent: React.FC<{
   );
 };
 
-const MessageInner: React.FC<MessageProps> = ({
+function MessageInner({
   message,
   userAvatar: _userAvatar,
   userName: _userName,
@@ -257,9 +364,10 @@ const MessageInner: React.FC<MessageProps> = ({
   memoryMode,
   summary,
   characterDisplayMode = 'framed',
-}) => {
+}: MessageProps) {
   const [copied, setCopied] = useState(false);
   const [fullscreenIndex, setFullscreenIndex] = useState<number | null>(null);
+  const [webSearchExpanded, setWebSearchExpanded] = useState(false);
   const isUser = message.role === 'user';
   const isFrameless = isCharacterChat && characterDisplayMode === 'frameless';
 
@@ -280,14 +388,13 @@ const MessageInner: React.FC<MessageProps> = ({
 
   const contentSegments = useMemo(() => {
     if (isUser || !isCharacterChat) return [];
-    if (streaming && isLast) return [];
-    return parseContentSegments(displayContent);
+    return parseContentSegments(displayContent, streaming && isLast);
   }, [isUser, isCharacterChat, displayContent, streaming, isLast]);
 
   const framelessSegments = useMemo(() => {
     if (!isFrameless || isUser) return [];
-    return parseContentSegments(displayContent);
-  }, [isFrameless, isUser, displayContent]);
+    return parseContentSegments(displayContent, streaming && isLast);
+  }, [isFrameless, isUser, displayContent, streaming, isLast]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -352,7 +459,7 @@ const MessageInner: React.FC<MessageProps> = ({
     )
   };
 
-  const shouldUseSegments = isCharacterChat && !isUser && !(streaming && isLast) && contentSegments.length > 0;
+  const shouldUseSegments = isCharacterChat && !isUser && contentSegments.length > 0;
 
   return (
     <div
@@ -371,10 +478,10 @@ const MessageInner: React.FC<MessageProps> = ({
         }
       }}
     >
-      <div className={cn(isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]", isUser ? "items-end flex" : "items-start flex gap-3 w-full")}>
-        {!isUser && (
+      <div className={cn(isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]", isUser ? "items-end flex" : cn("items-start flex", isCharacterChat ? "w-full" : "gap-3 w-full"))}>
+        {!isUser && !isCharacterChat && (
           <div className="w-9 h-9 rounded-2xl overflow-hidden flex-shrink-0">
-            {isCharacterChat && characterAvatar ? (
+            {characterAvatar ? (
               <img src={characterAvatar} alt="" className="w-full h-full object-cover" />
             ) : (
               <Avatar className={cn(
@@ -424,45 +531,12 @@ const MessageInner: React.FC<MessageProps> = ({
                 messageKey={message.id ? String(message.id) : (messageIndex !== undefined ? `msg-${messageIndex}` : undefined)}
               />
             )}
-            {!isUser && message.webSearchResults && message.webSearchResults.results.length > 0 && (
-              <div className="mb-2 px-5 py-2.5 bg-slate-100 dark:bg-slate-800 rounded-3xl rounded-bl-lg max-w-full">
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Globe size={12} className="text-primary shrink-0" />
-                  <span className="text-[11px] font-medium text-primary">网络搜索</span>
-                  <span className="text-[10px] text-muted-foreground truncate max-w-[200px]">
-                    {message.webSearchResults.query}
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {message.webSearchResults.results.map((r, i) => (
-                    <div key={i} className="group rounded-lg bg-white/50 dark:bg-white/5 px-2.5 py-1.5 hover:bg-white/80 dark:hover:bg-white/10 transition-colors">
-                      <div className="flex items-start gap-1.5">
-                        <span className="text-[10px] text-muted-foreground/60 shrink-0 mt-0.5">{i + 1}.</span>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[11px] font-medium text-foreground/90 leading-tight truncate">
-                            {r.title}
-                          </div>
-                          {r.snippet && (
-                            <div className="text-[10px] text-muted-foreground/80 leading-snug mt-0.5 line-clamp-2">
-                              {r.snippet}
-                            </div>
-                          )}
-                          <a
-                            href={r.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-0.5 text-[9px] text-primary/70 hover:text-primary mt-0.5 transition-colors max-w-full"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <ExternalLink size={8} className="shrink-0" />
-                            <span className="truncate">{r.url}</span>
-                          </a>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+         {!isUser && message.webSearchResults && message.webSearchResults.results.length > 0 && (
+            <WebSearchResults
+            query={message.webSearchResults.query}
+                results={message.webSearchResults.results}
+              messageId={message.id}
+              />
             )}
             {(!isUser && displayContent) || isUser ? (
             <div className={cn(
@@ -492,6 +566,7 @@ const MessageInner: React.FC<MessageProps> = ({
                 <FramelessContent
                   segments={framelessSegments}
                   streaming={streaming && isLast}
+                  markdownComponents={markdownComponents}
                 />
               ) : shouldUseSegments ? (
                 contentSegments.map((segment, i) => (

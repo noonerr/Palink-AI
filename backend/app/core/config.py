@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: Optional[str] = None
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
-    PASSWORD_MIN_LENGTH: int = 4
-    REQUIRE_PASSWORD_MIXED_CASE: bool = False
-    REQUIRE_PASSWORD_DIGIT: bool = False
+    PASSWORD_MIN_LENGTH: int = 8
+    REQUIRE_PASSWORD_MIXED_CASE: bool = True
+    REQUIRE_PASSWORD_DIGIT: bool = True
 
     LOGIN_RATE_LIMIT_REQUESTS: int = 10
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     CHAT_HISTORY_LIMIT: int = 24
     CHARACTER_CHAT_HISTORY_LIMIT: int = 24
     TRUST_PROXY_HEADERS: bool = False
-    RUN_MIGRATIONS_ON_STARTUP: bool = True  # 启用自动迁移
+    RUN_MIGRATIONS_ON_STARTUP: bool = False
     MIGRATIONS_FAIL_FAST: bool = True
     PROVIDER_SECRET_CHECK_STRICT: bool = False
     API_THREADPOOL_TOKENS: int = 16
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 8
     DB_POOL_RECYCLE_SECONDS: int = 1800
     
-    CORS_ORIGINS: str = "*"
+    CORS_ORIGINS: str = "*"  # 生产环境必须设置为具体域名，多个用逗号分隔，如 "https://app.example.com,https://admin.example.com"
     
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"

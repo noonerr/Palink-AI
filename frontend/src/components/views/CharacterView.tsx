@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
 import { Bot } from 'lucide-react';
 import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/services/api';
 import { toast } from 'sonner';
 import { getOCData } from '@/components/ui/custom/OCSettings';
@@ -30,7 +31,7 @@ interface CharacterViewProps {
 
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
 
-export const CharacterView: React.FC<CharacterViewProps> = ({
+export function CharacterView({
   token: _token,
   user,
   models,
@@ -39,9 +40,10 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   lang,
   sidebarCollapsed: _sidebarCollapsedProp,
   setSidebarCollapsed: _setSidebarCollapsedProp,
-}) => {
+}: CharacterViewProps) {
   const { characterId } = useParams<{ characterId?: string }>();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   
   const [viewState, setViewState] = useState<ViewState>('list');
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -77,15 +79,15 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   }, [storylineCollapsed]);
 
   useEffect(() => {
-    if (window.innerWidth >= 768) return;
-    const nav = document.querySelector('nav[data-dock="true"]');
+    if (!isMobile) return;
+    const nav = document.querySelector('nav[data-dock="true"]') as HTMLElement | null;
     if (!nav) return;
     if (!storylineCollapsed) {
       nav.style.transform = 'translateX(calc(-50% + 320px))';
     } else {
       nav.style.transform = '';
     }
-  }, [storylineCollapsed]);
+  }, [storylineCollapsed, isMobile]);
 
   const [memoryStats, setMemoryStats] = useState<{
     message_count: number;
@@ -131,6 +133,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   const loadingSessionRef = useRef<string | null>(null);
   const pendingInitialBottomLockRef = useRef(false);
   const initialBottomLockUntilRef = useRef(0);
+  const isAtBottomRef = useRef(true);
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   // Forward-declare loadSessions and loadMemoryStats for hooks
@@ -453,6 +456,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       
       pendingInitialBottomLockRef.current = data.length > 0;
       initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
+      isAtBottomRef.current = true;
       
       await loadMemoryStats(sessionId);
       await loadBranches(sessionId);
@@ -813,7 +817,6 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
     setInitializingChat(true);
 
     try {
-      // 如果已有会话，恢复最后一个会话（单角色单对话）
       if (sessions.length > 0) {
         const lastSession = sessions[0];
         setSelectedSession(lastSession);
@@ -838,8 +841,8 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         return;
       }
 
-      // 没有会话且角色有开场白，创建新会话并发送初始消息
       if (selectedCharacter.first_mes && selectedCharacter.first_mes.trim()) {
+        const controller = new AbortController();
         const response = await api.stream('/api/character-chat', {
           character_id: selectedCharacter.id,
           message: '__INIT__',
@@ -851,7 +854,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           presence_penalty: currentPreset?.presence_penalty ?? 0,
           dialogue_mode: dialogueMode,
           user_nickname: getDisplayName(selectedCharacter)
-        });
+        }, { signal: controller.signal });
 
         const reader = response.body?.getReader();
         if (!reader) {
@@ -863,38 +866,46 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
         let branchId = '';
         let buffer = '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || '';
 
-          for (const event of events) {
-            const lines = event.split('\n');
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue;
-              const data = line.slice(6).trim();
-              if (!data || data === '[DONE]') continue;
-              try {
-                const json = JSON.parse(data);
-                if (json.session_id) sessionId = json.session_id;
-                if (json.branch_id) branchId = json.branch_id;
-                if (json.branch_id) {
-                  setSelectedBranch({
-                    id: json.branch_id,
-                    branch_name: 'Main',
-                    is_active: true,
-                    session_id: sessionId,
-                    parent_branch_id: null,
-                    parent_message_id: null,
-                    created_at: new Date().toISOString(),
-                  });
-                }
-              } catch {}
+            for (const event of events) {
+              const lines = event.split('\n');
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (!data || data === '[DONE]') continue;
+                try {
+                  const json = JSON.parse(data);
+                  if (json.session_id) sessionId = json.session_id;
+                  if (json.branch_id) branchId = json.branch_id;
+                  if (json.branch_id) {
+                    setSelectedBranch({
+                      id: json.branch_id,
+                      branch_name: 'Main',
+                      is_active: true,
+                      session_id: sessionId,
+                      parent_branch_id: null,
+                      parent_message_id: null,
+                      created_at: new Date().toISOString(),
+                    });
+                  }
+                } catch {}
+              }
             }
           }
+        } catch (readError: any) {
+          if (readError?.name === 'AbortError') {
+            console.log('[CharacterView] Stream reading aborted');
+            return;
+          }
+          throw readError;
         }
 
         if (!sessionId) {
@@ -933,9 +944,20 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
       } else if (initialMessage) {
         await handleSendMessage(initialMessage, []);
       } else {
-        toast.info('该角色暂无开场白，请直接输入消息开始对话');
+        setSelectedSession({
+          id: '__pending__',
+          character_id: selectedCharacter.id,
+          dialogue_mode: dialogueMode,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        setMessages([]);
       }
     } catch (e: any) {
+      if (e?.name === 'AbortError') {
+        console.log('[CharacterView] Initiate conversation aborted');
+        return;
+      }
       console.error('Failed to initialize chat:', e);
       const errorMessage = e?.message || '初始化对话失败，请重试';
       toast.error(errorMessage);
@@ -1036,7 +1058,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
   };
 
   useEffect(() => {
-    if (!pendingInitialBottomLockRef.current) {
+    if (!pendingInitialBottomLockRef.current && isAtBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, isGenerating]);
@@ -1175,6 +1197,7 @@ export const CharacterView: React.FC<CharacterViewProps> = ({
           setMessages={setMessages}
           loadMessages={loadMessages}
           messagesEndRef={messagesEndRef}
+          isAtBottomRef={isAtBottomRef}
           isGenerating={isGenerating}
           inputValue={inputValue}
           setInputValue={setInputValue}

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+﻿import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { ArrowUp, Paperclip, X, Square, Loader2, AlertCircle, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Model } from '@/types';
@@ -42,7 +42,7 @@ const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
-export const ChatInput: React.FC<ChatInputProps> = ({
+export function ChatInput({
   value,
   onChange,
   onSend,
@@ -62,7 +62,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   noContainerStyle = false,
   hideAttachmentButton = false,
   leadingAction
-}) => {
+}: ChatInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDragging, setIsDragging] = useState(false);

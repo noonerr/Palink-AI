@@ -1,13 +1,10 @@
 import os
 import uuid
-import base64
-import binascii
 import logging
-import re
 import time
 from typing import Optional, Set, Dict, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -27,11 +24,6 @@ from ..utils import normalize_upload_filename
 
 router = APIRouter(tags=["models"])
 logger = logging.getLogger(__name__)
-
-
-class UploadRequest(BaseModel):
-    filename: str
-    data: str  # base64 data URL
 
 
 _TEXT_LIKE_EXTENSIONS = {
@@ -213,26 +205,13 @@ async def get_models(user: User = Depends(get_current_user), db: Session = Depen
 
 
 @router.post("/api/upload")
-async def upload_file_base64(req: UploadRequest, user: User = Depends(get_current_user)):
-    """Base64 文件上传（聊天图片/附件）"""
+async def upload_file(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    """multipart 文件上传（聊天图片/附件）"""
     try:
-        payload = req.data.strip()
-        mime_hint: Optional[str] = None
+        file_bytes = await file.read()
+        mime_hint = file.content_type
 
-        match = re.match(r"^data:([^;,]+);base64,(.+)$", payload, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            mime_hint = match.group(1).lower().strip()
-            encoded = match.group(2).strip()
-        else:
-            encoded = payload
-
-        encoded = re.sub(r"\s+", "", encoded)
-        missing_padding = len(encoded) % 4
-        if missing_padding:
-            encoded += "=" * (4 - missing_padding)
-
-        file_bytes = base64.b64decode(encoded, validate=True)
-        safe_filename = _validate_chat_upload(user=user, filename=req.filename, file_bytes=file_bytes, mime_hint=mime_hint)
+        safe_filename = _validate_chat_upload(user=user, filename=file.filename or "upload.bin", file_bytes=file_bytes, mime_hint=mime_hint)
 
         user_dir = os.path.join(settings.UPLOAD_DIR, str(user.id))
         os.makedirs(user_dir, exist_ok=True)
@@ -250,8 +229,6 @@ async def upload_file_base64(req: UploadRequest, user: User = Depends(get_curren
             "size": len(file_bytes),
             "mime_type": mime_hint or "application/octet-stream",
         }
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid base64 payload")
     except HTTPException:
         raise
     except Exception:

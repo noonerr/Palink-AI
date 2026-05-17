@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CharacterChat — 聊天视图
  * 从CharacterView提取的子组件
  */
@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { useVirtualKeyboard } from '@/hooks/useVirtualKeyboard';
 import { ModelSelector } from '@/components/ui/custom/ModelSelector';
 import { PresetSelector } from '@/components/ui/custom/PresetSelector';
@@ -53,9 +54,9 @@ interface BranchSelectorProps {
   t: Record<string, string>;
 }
 
-const BranchSelector: React.FC<BranchSelectorProps> = ({
+function BranchSelector({
   branches, selectedBranch, onSelect, onCreate, onDelete, t,
-}) => {
+}: BranchSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -150,9 +151,9 @@ interface DialogueModeSelectorProps {
   t: Record<string, string>;
 }
 
-const DialogueModeSelector: React.FC<DialogueModeSelectorProps> = ({
+function DialogueModeSelector({
   currentMode, onSelect, lang = 'zh', t,
-}) => {
+}: DialogueModeSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   useClickOutside(containerRef, () => setIsOpen(false));
@@ -245,6 +246,7 @@ export interface CharacterChatProps {
   setMessages: React.Dispatch<React.SetStateAction<CharacterChatMessage[]>>;
   loadMessages: (id: string) => Promise<void>;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  isAtBottomRef: React.MutableRefObject<boolean>;
   // chat hook
   isGenerating: boolean;
   inputValue: string;
@@ -342,9 +344,9 @@ export interface CharacterChatProps {
 const HISTORY_SLIDE_DURATION_MS = 300;
 const NEW_SESSION_FADE_DURATION_MS = 200;
 
-export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
+export function CharacterChat(props: CharacterChatProps) {
   const [composerBottomPx, setComposerBottomPx] = useState(0);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const isMobile = useIsMobile();
   const { isKeyboardOpen } = useVirtualKeyboard();
   const [isDark, setIsDark] = useState(document.documentElement.classList.contains('dark'));
   const [showDesktopHint, setShowDesktopHint] = useState(() => {
@@ -372,15 +374,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   }, []);
 
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  useEffect(() => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const measureNav = () => {
-      const _isMobile = window.innerWidth < 768;
+      const _isMobile = isMobile;
       if (!_isMobile) {
         setComposerBottomPx(0);
         return;
@@ -413,7 +409,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       window.removeEventListener('resize', resizeHandler);
       navObserver.disconnect();
     };
-  }, []);
+  }, [isMobile]);
 
   useEffect(() => {
     return () => {
@@ -434,6 +430,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
     isDeleteMode, setIsDeleteMode, selectedSessions, toggleSessionSelect, handleBatchDelete,
     showDeleteConfirm, setShowDeleteConfirm, pendingDelete, confirmDelete,
     messages, setMessages, loadMessages, messagesEndRef,
+    isAtBottomRef,
     isGenerating, inputValue, setInputValue,
     attachments, setAttachments, uploading,
     suggestions, regeneratingMessageIndex,
@@ -534,6 +531,32 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
   useEffect(() => {
     prevMessagesRef.current = messages;
   }, [messages]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom < 120;
+  }, [isAtBottomRef]);
+
+  const wrappedHandleSendWithInput = useCallback(async () => {
+    isAtBottomRef.current = true;
+    await handleSendWithInput();
+  }, [handleSendWithInput, isAtBottomRef]);
+
+  const wrappedHandleSendMessage = useCallback(async (msg: string, attachments: any[]) => {
+    isAtBottomRef.current = true;
+    await handleSendMessage(msg, attachments);
+  }, [handleSendMessage, isAtBottomRef]);
+
+  const wrappedHandleInitiateConversation = useCallback(async (msg?: string) => {
+    isAtBottomRef.current = true;
+    await handleInitiateConversation(msg);
+  }, [handleInitiateConversation, isAtBottomRef]);
+
+  const wrappedHandleRegenerate = useCallback(async (idx: number) => {
+    isAtBottomRef.current = true;
+    await handleRegenerate(idx);
+  }, [handleRegenerate, isAtBottomRef]);
 
   useEffect(() => {
     if (newSessionFadeState === 'idle') return;
@@ -670,9 +693,35 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
           transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
         }}
       >
-        <div className="flex h-full flex-col overflow-hidden">
-          <div className={cn('mb-0 flex h-[52px] items-center justify-between px-4', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
-            <div className="flex items-center gap-2">
+        <div className="flex h-full flex-col overflow-hidden relative">
+          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
+            <div className="flex-1 overflow-hidden">
+              <StorylineMap
+                branchTree={branchTree}
+                onNavigate={wrappedHandleStorylineNavigate}
+                isDark={isDark}
+                sessionId={selectedSession?.id}
+                onDeleteBranch={deleteBranch}
+              />
+            </div>
+          ) : (
+            <div className={cn(
+              'flex-1 flex flex-col items-center justify-center gap-3 px-4 pt-16',
+              isDark ? 'bg-gray-900/95' : 'bg-slate-50/95'
+            )}>
+              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}>
+                <MapIcon size={40} className="text-indigo-400 mx-auto" />
+              </div>
+              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>
+                还没有对话记录
+              </p>
+              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>
+                开始第一句对话，故事线将自动生成
+              </p>
+            </div>
+          )}
+          <div className={cn('absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 pt-3 pb-10 bg-gradient-to-b pointer-events-none', isDark ? 'from-[#1f2233] via-[#1f2233]/80 to-transparent' : 'from-[#FFFAFA] via-[#FFFAFA]/80 to-transparent')}>
+            <div className="flex items-center gap-2 pointer-events-auto">
               <div className={cn('p-1.5 rounded-lg', isDark ? 'bg-indigo-500/20' : 'bg-indigo-50')}>
                 <MapIcon size={14} className="text-indigo-400" />
               </div>
@@ -680,7 +729,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 故事线
               </span>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 pointer-events-auto">
               <button
                 onClick={() => createBranch()}
                 className={cn(
@@ -723,31 +772,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               </button>
             </div>
           </div>
-
-          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
-            <div className="flex-1 overflow-hidden">
-              <StorylineMap
-                branchTree={branchTree}
-                onNavigate={wrappedHandleStorylineNavigate}
-                isDark={isDark}
-              />
-            </div>
-          ) : (
-            <div className={cn(
-              'flex-1 flex flex-col items-center justify-center gap-3 px-4',
-              isDark ? 'bg-gray-900/95' : 'bg-slate-50/95'
-            )}>
-              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}>
-                <MapIcon size={40} className="text-indigo-400 mx-auto" />
-              </div>
-              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>
-                还没有对话记录
-              </p>
-              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>
-                开始第一句对话，故事线将自动生成
-              </p>
-            </div>
-          )}
         </div>
       </aside>
       )}
@@ -778,15 +802,26 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
       {/* ──── Desktop Sidebar ──── */}
       {!isMobile && (
       <div className={`transition-all duration-300 ease-in-out ${!sidebarCollapsed ? 'w-[320px] opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
-        <div className="w-[320px] h-full flex-shrink-0 border-r border-border/50 glass flex flex-col">
-          <div className={cn('flex h-[52px] items-center justify-between px-4 flex-shrink-0', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
-            <div className="flex items-center gap-2">
+        <div className="w-[320px] h-full flex-shrink-0 border-r border-border/50 glass flex flex-col relative overflow-hidden">
+          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
+            <div className="flex-1 overflow-hidden">
+              <StorylineMap branchTree={branchTree} onNavigate={wrappedHandleStorylineNavigate} isDark={isDark} sessionId={selectedSession?.id} onDeleteBranch={deleteBranch} />
+            </div>
+          ) : (
+            <div className={cn('flex-1 flex flex-col items-center justify-center gap-3 px-4 pt-16', isDark ? 'bg-gray-900/95' : 'bg-slate-50/95')}>
+              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}><MapIcon size={40} className="text-indigo-400 mx-auto" /></div>
+              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>还没有对话记录</p>
+              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>开始第一句对话，故事线将自动生成</p>
+            </div>
+          )}
+          <div className={cn('absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 pt-3 pb-10 bg-gradient-to-b pointer-events-none', isDark ? 'from-[#1f2233] via-[#1f2233]/80 to-transparent' : 'from-[#FFFAFA] via-[#FFFAFA]/80 to-transparent')}>
+            <div className="flex items-center gap-2 pointer-events-auto">
               <div className={cn('p-1.5 rounded-lg', isDark ? 'bg-indigo-500/20' : 'bg-indigo-50')}>
                 <MapIcon size={14} className="text-indigo-400" />
               </div>
               <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>故事线</span>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 pointer-events-auto">
               <button
                 onClick={() => createBranch()}
                 className={cn('h-7 px-2 flex items-center gap-1 rounded-md text-[11px] font-medium transition-colors', isDark ? 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100')}
@@ -806,18 +841,6 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               <button onClick={() => { if (!isNavigatingRef.current) setSidebarCollapsed(true); }} className={cn('inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors', isDark ? 'border-slate-600/80 bg-[#2d3350] text-slate-100' : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700')} aria-label="close-storyline"><X size={16} /></button>
             </div>
           </div>
-
-          {branchTree && branchTree.branches.reduce((sum, b) => sum + b.nodes.length, 0) > 0 ? (
-            <div className="flex-1 overflow-hidden">
-              <StorylineMap branchTree={branchTree} onNavigate={wrappedHandleStorylineNavigate} isDark={isDark} />
-            </div>
-          ) : (
-            <div className={cn('flex-1 flex flex-col items-center justify-center gap-3 px-4', isDark ? 'bg-gray-900/95' : 'bg-slate-50/95')}>
-              <div className={cn('p-5 rounded-2xl shadow-lg', isDark ? 'bg-gray-800' : 'bg-white')}><MapIcon size={40} className="text-indigo-400 mx-auto" /></div>
-              <p className={cn('text-base font-semibold', isDark ? 'text-gray-300' : 'text-gray-600')}>还没有对话记录</p>
-              <p className={cn('text-sm', isDark ? 'text-gray-500' : 'text-gray-400')}>开始第一句对话，故事线将自动生成</p>
-            </div>
-          )}
         </div>
       </div>
       )}
@@ -1096,7 +1119,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                   'inline-flex items-center justify-center gap-2 text-base font-medium rounded-2xl h-12 px-8 border backdrop-blur-[20px] transition-all',
                   'bg-slate-900/80 dark:bg-white/80 text-white dark:text-slate-900 border-slate-700/30 dark:border-white/20',
                   'hover:bg-slate-800/90 dark:hover:bg-white/90 active:scale-[0.98]'
-                )} onClick={() => handleInitiateConversation()} disabled={initializingChat}>
+                )} onClick={() => wrappedHandleInitiateConversation()} disabled={initializingChat}>
                   {initializingChat ? (
                     <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
                   ) : (
@@ -1123,8 +1146,9 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
         {/* ──── Messages area ──── */}
         {(displayedMessages.length > 0 || displayedActiveSessionId) && (
           <div
-            className={cn('flex-1 overflow-y-auto space-y-4 pt-4 pb-4', isMobile ? 'px-2' : 'px-4')}
+            className={cn('flex-1 overflow-y-auto space-y-4 pt-4 pb-4', isMobile ? 'px-1' : 'px-2')}
             style={isMobile ? { paddingBottom: isKeyboardOpen ? 80 : (composerBottomPx > 0 ? `${composerBottomPx + 80}px` : undefined) } : undefined}
+            onScroll={handleScroll}
           >
             {isMobile && (
               <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />
@@ -1174,7 +1198,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 memoryStats={idx === displayedMessages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
                 onCompress={idx === displayedMessages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
                 compressing={compressing}
-                onRegenerate={msg.role === 'assistant' && !isGenerating ? () => handleRegenerate(idx) : undefined}
+                onRegenerate={msg.role === 'assistant' && !isGenerating ? () => wrappedHandleRegenerate(idx) : undefined}
                 canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
                 showModelReasoning={showModelReasoning}
                 onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
@@ -1194,7 +1218,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
                 {displayedSuggestions.map((s, idx) => (
                   <button
                     key={idx}
-                    onClick={() => handleSendMessage(s, [])}
+                    onClick={() => wrappedHandleSendMessage(s, [])}
                     className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-full text-xs font-medium transition-colors"
                   >
                     <Sparkles size={10} className="inline mr-1" />
@@ -1224,7 +1248,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
             <ChatInput
               value={inputValue}
               onChange={setInputValue}
-              onSend={handleSendWithInput}
+              onSend={wrappedHandleSendWithInput}
               onUpload={handleUpload}
               attachments={attachments}
               onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
@@ -1271,7 +1295,7 @@ export const CharacterChat: React.FC<CharacterChatProps> = (props) => {
               <ChatInput
                 value={inputValue}
                 onChange={setInputValue}
-                onSend={handleSendWithInput}
+                onSend={wrappedHandleSendWithInput}
                 onUpload={handleUpload}
                 attachments={attachments}
                 onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}

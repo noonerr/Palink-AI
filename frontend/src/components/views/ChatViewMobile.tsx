@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useCallback } from 'react';
 import { Sparkles, X, Edit3, Trash2, Menu, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
@@ -31,7 +31,7 @@ interface ChatViewProps {
   showModelReasoning?: boolean;
 }
 
-export const ChatViewMobile: React.FC<ChatViewProps> = ({
+export function ChatViewMobile({
   token: _token,
   user,
   models,
@@ -43,7 +43,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
   isDark = false,
   isKeyboardOpen = false,
   showModelReasoning = true,
-}) => {
+}: ChatViewProps) {
   const chat = useChatView({ currentModel, t });
   const anim = useMobileChatAnimations(chat.activeSessionId, chat.messages);
   const [hasSentFirstMessage, setHasSentFirstMessage] = useState(false);
@@ -115,6 +115,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
       anim.suppressSmoothScrollRef.current = true;
 
       setHasSentFirstMessage(true);
+      chat.isAtBottomRef.current = true;
       chat.sessionIdSetRef.current = false;
       chat.setInput('');
       chat.setAttachments([]);
@@ -370,9 +371,17 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
     }).catch(() => {});
   }, []);
 
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    chat.isAtBottomRef.current = distanceFromBottom < 120;
+  }, [chat.isAtBottomRef]);
+
   useEffect(() => {
     const behavior: ScrollBehavior = chat.streaming || anim.welcomeDropping || anim.suppressSmoothScrollRef.current ? 'auto' : 'smooth';
-    chat.messagesEndRef.current?.scrollIntoView({ behavior });
+    if (chat.isAtBottomRef.current) {
+      chat.messagesEndRef.current?.scrollIntoView({ behavior });
+    }
   }, [chat.messages, chat.streaming, anim.welcomeDropping]);
 
   useEffect(() => {
@@ -598,11 +607,12 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             <div
               ref={kb.messagesScrollWrapRef}
               className="flex-1 min-h-0 overflow-y-auto"
+              onScroll={handleScroll}
             >
               <div className="px-3 pb-4">
                 <div
                   ref={kb.messageStackRef}
-                  className="mx-auto max-w-3xl space-y-6"
+                  className="mx-auto w-[92%] max-w-[560px] space-y-6"
                   style={{ paddingBottom: `${kb.messageBottomPaddingPx}px` }}
                 >
                   {kb.needsTopSpacer && (
@@ -692,7 +702,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 bottom: isKeyboardOpen ? 0 : `${kb.composerBottomOffset > 0 ? kb.composerBottomOffset : 90}px`,
               }}
             >
-              <div ref={kb.mobileComposerRef} className="mx-auto max-w-3xl">
+              <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput
                   value={chat.input}
                   onChange={chat.setInput}
@@ -735,11 +745,12 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
             <div
               ref={kb.messagesScrollWrapRef}
               className="flex-1 min-h-0 overflow-y-auto"
+              onScroll={handleScroll}
             >
               <div className="px-3 pb-4">
                 <div
                   ref={kb.messageStackRef}
-                  className="mx-auto max-w-3xl space-y-6"
+                  className="mx-auto w-[92%] max-w-[560px] space-y-6"
                   style={{ paddingBottom: `${kb.messageBottomPaddingPx}px` }}
                 >
                   {kb.needsTopSpacer && (
@@ -829,7 +840,7 @@ export const ChatViewMobile: React.FC<ChatViewProps> = ({
                 bottom: isKeyboardOpen ? 0 : `${kb.composerBottomOffset > 0 ? kb.composerBottomOffset : 90}px`,
               }}
             >
-              <div ref={kb.mobileComposerRef} className="mx-auto max-w-3xl">
+              <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput
                   value={chat.input}
                   onChange={chat.setInput}

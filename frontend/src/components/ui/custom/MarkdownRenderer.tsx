@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -70,12 +70,12 @@ function preprocessImageUrls(text: string): string {
   return processed.join('\n');
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+export function MarkdownRenderer({
   content,
   className,
   components,
   renderImage,
-}) => {
+}: MarkdownRendererProps) {
   const processedContent = React.useMemo(() => preprocessImageUrls(content), [content]);
 
   const baseComponents: Components = {
