@@ -26,7 +26,6 @@ env-v2*
 *.key
 *.crt
 casdoor_app.conf
-fix_casdoor_https.sh
 
 # Large files / backups
 *.zip
@@ -61,6 +60,10 @@ Thumbs.db
 
 # Sensitive scripts & temp files
 *.tmp
+*.bak
+*.backup
+*.backup_*
+*.docx
 _debug_test.py
 check_settings.py
 create_admin.py
@@ -69,4 +72,31 @@ fix_*.sh
 fix_*.py
 update_env.sh
 modify_app.py
-fix_app_ratelimit.py
+
+# Root-level temp/legacy files (not part of app)
+/app.py
+/app_backup.py
+/app_build.py
+/build_app.py
+/database.py
+/main.py
+/update_starters.py
+/_fix_routes.py
+/auth_casdoor_with_token.py
+/casdoor_client_fixed.py
+/check_syntax.py
+/test_login.py
+/test_register.py
+/frp-client-gui.py
+/frp-memory-protection.service
+/frp-platform-nginx*.conf
+/nginx_https*.conf
+/docker-compose-v2*.yml
+/index-fixed.html
+/mobile-settings-*.html
+/test_websearch_sse.html
+/apply_protection_now.sh
+/check_*.sh
+/copy_certs_*.sh
+/optimize-static.sh
+/sync-static.sh
