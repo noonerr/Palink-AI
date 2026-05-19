@@ -217,6 +217,28 @@ export function ChatViewMobile({
         return;
       }
 
+      if (useWebSocket && wsConnected) {
+        wsAssistantMessageIdRef.current = assistantMessageId;
+        wsFullContentRef.current = '';
+        wsFullReasoningRef.current = '';
+        wsIsQueuedRef.current = false;
+        wsIsRegeneratingRef.current = false;
+        wsSendChatRequest({
+          session_id: activeSessionId,
+          session_type: 'chat',
+          message: text,
+          model: currentModel,
+          images: savedAttachments.filter((a) => a.type === 'image').map((a) => a.url),
+          files: savedAttachments.filter((a) => a.type === 'file').map((a) => a.url),
+          display_content: displayContent,
+          web_search: webSearchEnabled,
+        });
+        if (!activeSessionId) {
+          setTimeout(loadSessions, 1000);
+        }
+        return;
+      }
+
       let fullContent = '';
       let fullReasoning = '';
       let isQueued = false;

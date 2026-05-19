@@ -73,10 +73,6 @@ export function CharacterView({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
-    console.log('[DEBUG] storylineCollapsed changed:', storylineCollapsed, new Error().stack?.split('\n')[2]?.trim());
-  }, [storylineCollapsed]);
-
-  useEffect(() => {
     if (!isMobile) return;
     const nav = document.querySelector('nav[data-dock="true"]') as HTMLElement | null;
     if (!nav) return;
@@ -150,7 +146,6 @@ export function CharacterView({
       const branchParam = branchId ? `&branch_id=${branchId}` : ``;
       const data = await api.get(`/api/memory/check-auto-compress?session_id=${sessionId}${branchParam}`);
       if (loadingSessionRef.current === sessionId && data.auto_compressed) {
-        console.log('Memory auto-compressed:', data.message);
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
@@ -478,7 +473,6 @@ export function CharacterView({
         branch_id: selectedBranch?.id,
         compression_ratio: 0.5
       });
-      console.info(`记忆压缩完成！\n处理: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
       await loadMemoryStats(selectedSession.id, selectedBranch?.id);
     } catch (e: any) {
       console.error('Manual compress failed:', e);
@@ -605,7 +599,6 @@ export function CharacterView({
   };
 
   const handleParseAndTranslateCharacter = async (characterId: string) => {
-    console.log('[handleParseAndTranslateCharacter] Starting for character:', characterId, 'selectedModel:', selectedModel);
     try {
       setProcessingCharacter(characterId);
       setForceShowOverlay(characterId);
@@ -613,9 +606,7 @@ export function CharacterView({
       
       setShowProcessingMessage({ show: true, message: '正在解析角色...' });
       
-      console.log('[handleParseAndTranslateCharacter] Calling parse API...');
       await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
-      console.log('[handleParseAndTranslateCharacter] Parse API called successfully');
       
       pollCharacterStatus(characterId, true);
     } catch (e: any) {
@@ -653,7 +644,6 @@ export function CharacterView({
   };
 
   const pollCharacterStatus = async (characterId: string, autoTranslate: boolean = false) => {
-    console.log('[pollCharacterStatus] Starting poll for character:', characterId, 'autoTranslate:', autoTranslate);
     
     if (pollingIntervalRef.current) {
       clearInterval(pollingIntervalRef.current);
@@ -664,19 +654,15 @@ export function CharacterView({
     const interval = setInterval(async () => {
       try {
         const status = await api.get(`/api/characters/${characterId}/status`);
-        console.log('[pollCharacterStatus] Status:', status);
           
         if (!status.is_processing) {
-          console.log('[pollCharacterStatus] Not processing anymore, autoTranslate:', autoTranslate, 'translationStarted:', translationStarted);
           
           if (autoTranslate && !translationStarted && !status.processing_status?.includes('失败')) {
-            console.log('[pollCharacterStatus] Starting translation...');
             translationStarted = true;
             setShowProcessingMessage({ show: true, message: t.translation_started || '已经开始翻译，请稍候...' });
             
             try {
               await api.post('/api/characters/translate', { character_id: characterId, target_language: 'zh', model: selectedModel });
-              console.log('[pollCharacterStatus] Translation API called successfully');
               pollCharacterStatus(characterId, false);
             } catch (translateError: any) {
               console.error('[pollCharacterStatus] Translation failed:', translateError);
@@ -694,7 +680,6 @@ export function CharacterView({
             return;
           }
           
-          console.log('[pollCharacterStatus] Clearing interval and finishing');
           clearInterval(interval);
           if (pollingIntervalRef.current === interval) {
             pollingIntervalRef.current = null;
@@ -904,7 +889,6 @@ export function CharacterView({
           }
         } catch (readError: any) {
           if (readError?.name === 'AbortError') {
-            console.log('[CharacterView] Stream reading aborted');
             return;
           }
           throw readError;
@@ -957,7 +941,6 @@ export function CharacterView({
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
-        console.log('[CharacterView] Initiate conversation aborted');
         return;
       }
       console.error('Failed to initialize chat:', e);

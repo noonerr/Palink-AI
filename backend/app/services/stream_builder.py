@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +110,77 @@ async def stream_chat_deltas(
         yield f"data: {json.dumps({'type': 'usage', 'total_tokens': result.total_tokens, 'prompt_tokens': result.prompt_tokens, 'completion_tokens': result.completion_tokens, 'reasoning_tokens': result.effective_reasoning_tokens()})}\n\n"
 
     yield "data: [DONE]\n\n"
+
+
+async def parse_stream_deltas(
+    stream: AsyncIterator[Dict[str, Any]],
+    result: StreamResult,
+    on_chunk: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    enable_tools: bool = False,
+) -> None:
+    async for delta in stream:
+        queue_info = delta.get("type")
+        if queue_info == "queue":
+            if on_chunk:
+                await on_chunk(delta)
+            continue
+
+        usage = delta.get("usage")
+        if usage:
+            result.total_tokens = int(usage.get("total_tokens", 0) or 0)
+            result.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            result.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+            _rt = int(usage.get("reasoning_tokens", 0) or 0)
+            if not _rt:
+                _details = usage.get("completion_tokens_details") or {}
+                _rt = int(_details.get("reasoning_tokens", 0) or 0)
+            result.reasoning_tokens = _rt
+            continue
+
+        if enable_tools:
+            tool_call = delta.get("tool_call")
+            if tool_call:
+                if on_chunk:
+                    await on_chunk({
+                        "type": "tool_call",
+                        "id": tool_call.get("id", ""),
+                        "name": tool_call.get("name", ""),
+                        "arguments": tool_call.get("arguments", {}),
+                    })
+                continue
+
+            tool_result = delta.get("tool_result")
+            if tool_result:
+                if on_chunk:
+                    await on_chunk({
+                        "type": "tool_result",
+                        "id": tool_result.get("id", ""),
+                        "name": tool_result.get("name", ""),
+                        "content": tool_result.get("content", "")[:2000],
+                    })
+                continue
+
+        reasoning = delta.get("reasoning")
+        content = delta.get("content")
+        resp = {}
+        if isinstance(reasoning, str) and reasoning:
+            result.full_reasoning += reasoning
+            resp["reasoning"] = reasoning
+        if isinstance(content, str) and content:
+            result.full_content += content
+            resp["content"] = content
+        if resp and on_chunk:
+            await on_chunk(resp)
+
+
+async def run_stream_to_completion(
+    stream: AsyncIterator[Dict[str, Any]],
+    result: StreamResult,
+    on_chunk: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    enable_tools: bool = False,
+) -> None:
+    await parse_stream_deltas(stream, result, on_chunk=on_chunk, enable_tools=enable_tools)
+    if not result.has_content:
+        result.full_content = "Error: 模型未返回任何可显示内容，请切换模型或稍后重试。"
+        if on_chunk:
+            await on_chunk({"content": result.full_content, "error": True})

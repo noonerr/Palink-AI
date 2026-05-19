@@ -1,8 +1,10 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { analyzeError, type ErrorInfo } from '@/lib/errorHandler';
 import { consumeSseStream } from '@/lib/sseStream';
+import { useChatWebSocket } from '@/hooks/useChatWebSocket';
+import CatchUpAnimator from '@/lib/catchUpAnimator';
 import type { Attachment, Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 
 const generateMessageId = () => {
@@ -65,6 +67,161 @@ export function useCharacterChat({
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const wsAssistantMessageIdRef = useRef<string | null>(null);
+  const wsFullContentRef = useRef('');
+  const wsFullReasoningRef = useRef('');
+  const wsResolvedSessionIdRef = useRef<string | null>(null);
+  const wsSessionSyncedRef = useRef(false);
+  const wsHasReceivedDataRef = useRef(false);
+  const catchUpAnimatorRef = useRef<CatchUpAnimator | null>(null);
+
+  const {
+    connected: wsConnected,
+    useWebSocket,
+    connect: wsConnect,
+    disconnect: wsDisconnect,
+    sendCharacterChatRequest: wsSendCharacterChatRequest,
+    requestSync: wsRequestSync,
+    sendCancel: wsSendCancel,
+  } = useChatWebSocket({
+    onChunk: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+
+      if (!wsHasReceivedDataRef.current) {
+        wsHasReceivedDataRef.current = true;
+        setTimeoutWarning(false);
+        if (timeoutRef.current) {
+          window.clearTimeout(timeoutRef.current);
+        }
+      }
+
+      if (data.reasoning) wsFullReasoningRef.current += data.reasoning;
+      if (data.content) wsFullContentRef.current += data.content;
+
+      setMessages(prev => {
+        const newMessages = [...prev];
+        const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantId);
+        if (assistantIdx === -1) return newMessages;
+
+        newMessages[assistantIdx] = {
+          ...newMessages[assistantIdx],
+          content: wsFullReasoningRef.current
+            ? ` SubLObject${wsFullReasoningRef.current} Subcommittee${wsFullContentRef.current}`
+            : wsFullContentRef.current,
+        };
+        return newMessages;
+      });
+    },
+    onDone: () => {
+      setIsGenerating(false);
+      setRegeneratingMessageIndex(null);
+      setRequestStartTime(null);
+      setTimeoutWarning(false);
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      if (wsResolvedSessionIdRef.current) {
+        loadMemoryStats(wsResolvedSessionIdRef.current);
+      }
+      wsAssistantMessageIdRef.current = null;
+    },
+    onSync: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (!assistantId) return;
+
+      if (!catchUpAnimatorRef.current) {
+        catchUpAnimatorRef.current = new CatchUpAnimator((content) => {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantId);
+            if (assistantIdx === -1) return newMessages;
+            newMessages[assistantIdx] = {
+              ...newMessages[assistantIdx],
+              content,
+            };
+            return newMessages;
+          });
+        });
+      }
+
+      const fullContent = data.reasoning
+        ? ` SubLObject${data.reasoning} Subcommittee${data.content}`
+        : data.content;
+
+      if (catchUpAnimatorRef.current.isRunning) {
+        catchUpAnimatorRef.current.appendContent(fullContent);
+      } else {
+        setMessages(prev => {
+          const currentMsg = prev.find((msg) => msg.id === assistantId);
+          catchUpAnimatorRef.current!.start(fullContent, currentMsg?.content ?? '');
+          return prev;
+        });
+      }
+
+      if (data.status === 'done') {
+        catchUpAnimatorRef.current.stop();
+        catchUpAnimatorRef.current = null;
+        setIsGenerating(false);
+        setRegeneratingMessageIndex(null);
+      }
+    },
+    onError: (data) => {
+      const assistantId = wsAssistantMessageIdRef.current;
+      if (assistantId) {
+        const errorInfo = analyzeError(new Error(data.message));
+        setCurrentError(errorInfo);
+
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantId);
+          if (assistantIdx >= 0) {
+            newMessages[assistantIdx].content =
+              `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
+          }
+          return newMessages;
+        });
+      }
+      setIsGenerating(false);
+      setRegeneratingMessageIndex(null);
+      setRequestStartTime(null);
+      setTimeoutWarning(false);
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      wsAssistantMessageIdRef.current = null;
+    },
+    onSessionId: (sessionId) => {
+      wsResolvedSessionIdRef.current = sessionId;
+      if (!selectedSession && !wsSessionSyncedRef.current) {
+        wsSessionSyncedRef.current = true;
+        const now = new Date().toISOString();
+        setSelectedSession({
+          id: sessionId,
+          dialogue_mode: dialogueMode,
+          created_at: now,
+          updated_at: now,
+        });
+        if (selectedCharacter) {
+          loadSessions(selectedCharacter.id);
+        }
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (selectedCharacter) {
+      wsConnect('character');
+    }
+    return () => {
+      wsDisconnect();
+      if (catchUpAnimatorRef.current) {
+        catchUpAnimatorRef.current.stop();
+        catchUpAnimatorRef.current = null;
+      }
+    };
+  }, [selectedCharacter?.id, wsConnect, wsDisconnect]);
+
   const handleRegenerate = useCallback(async (messageIndex: number) => {
     if (!selectedCharacter || isGenerating || uploading || messageIndex < 1) return;
 
@@ -115,6 +272,34 @@ export function useCharacterChat({
         console.error('Failed to create fork branch:', e);
         onForkCreated();
       }
+    }
+
+    if (useWebSocket && wsConnected) {
+      wsAssistantMessageIdRef.current = assistantMessageId;
+      wsFullContentRef.current = '';
+      wsFullReasoningRef.current = '';
+      wsResolvedSessionIdRef.current = selectedSession?.id ?? null;
+      wsSessionSyncedRef.current = false;
+      wsHasReceivedDataRef.current = false;
+
+      wsSendCharacterChatRequest({
+        session_id: selectedSession?.id ?? null,
+        character_id: selectedCharacter.id,
+        message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
+        model: selectedModel,
+        temperature: currentPreset?.temperature ?? 0.7,
+        top_p: currentPreset?.top_p ?? 0.9,
+        max_tokens: currentPreset?.max_tokens ?? 2048,
+        frequency_penalty: currentPreset?.frequency_penalty ?? 0,
+        presence_penalty: currentPreset?.presence_penalty ?? 0,
+        dialogue_mode: dialogueMode,
+        branch_id: effectiveBranchId,
+        user_nickname: getDisplayName(selectedCharacter),
+        images: [],
+        files: [],
+      });
+
+      return;
     }
 
     try {
@@ -201,7 +386,7 @@ export function useCharacterChat({
       setRegeneratingMessageIndex(null);
       abortControllerRef.current = null;
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, isGenerating, uploading, messages, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, useWebSocket, wsConnected, wsSendCharacterChatRequest]);
 
   const handleSendMessage = useCallback(async (content: string, images: string[]) => {
     if (!selectedCharacter) return;
@@ -275,6 +460,38 @@ export function useCharacterChat({
     let hasReceivedData = false;
     let resolvedSessionId: string | null = (selectedSession?.id && selectedSession.id !== '__pending__') ? selectedSession.id : null;
     let sessionSynced = false;
+
+    if (useWebSocket && wsConnected) {
+      wsAssistantMessageIdRef.current = assistantMessageId;
+      wsFullContentRef.current = '';
+      wsFullReasoningRef.current = '';
+      wsResolvedSessionIdRef.current = selectedSession?.id ?? null;
+      wsSessionSyncedRef.current = false;
+      wsHasReceivedDataRef.current = false;
+
+      wsSendCharacterChatRequest({
+        session_id: selectedSession?.id ?? null,
+        character_id: selectedCharacter.id,
+        message: text,
+        model: selectedModel,
+        temperature: currentPreset?.temperature ?? 0.7,
+        top_p: currentPreset?.top_p ?? 0.9,
+        max_tokens: currentPreset?.max_tokens ?? 2048,
+        frequency_penalty: currentPreset?.frequency_penalty ?? 0,
+        presence_penalty: currentPreset?.presence_penalty ?? 0,
+        dialogue_mode: dialogueMode,
+        branch_id: effectiveBranchId,
+        user_nickname: getDisplayName(selectedCharacter),
+        images: outgoingImages,
+        files: outgoingFiles,
+      });
+
+      if (!selectedSession) {
+        loadSessions(selectedCharacter.id);
+      }
+
+      return;
+    }
 
     try {
       const response = await api.stream('/api/character-chat', {
@@ -380,7 +597,7 @@ export function useCharacterChat({
         window.clearTimeout(timeoutRef.current);
       }
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated]);
+  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated, useWebSocket, wsConnected, wsSendCharacterChatRequest]);
 
   const handleSendWithInput = useCallback(async () => {
     if (inputValue.trim() || attachments.length > 0) {
@@ -499,5 +716,7 @@ export function useCharacterChat({
     handleEditMessage,
     abortControllerRef,
     cleanupTimeout,
+    wsConnected,
+    useWebSocket,
   };
 }

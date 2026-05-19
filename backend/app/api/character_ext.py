@@ -8,6 +8,7 @@ import uuid
 import logging
 import re
 import base64
+import time
 import urllib.request
 import urllib.error
 from typing import Optional, List, AsyncGenerator
@@ -21,6 +22,7 @@ from sqlalchemy import func
 from pydantic import BaseModel
 
 from ..core import get_db, settings
+from ..core.database import SessionLocal
 from ..core.rate_limit import enforce_rate_limit
 from ..core.exceptions import ServiceError
 from ..api.dependencies import get_current_user
@@ -1717,6 +1719,83 @@ async def _character_chat_impl(
     async def event_generator() -> AsyncGenerator[str, None]:
         from ..services.stream_builder import StreamResult, stream_chat_deltas
         result = StreamResult()
+        assistant_message_id = None
+        last_saved_content_len = 0
+        last_saved_reasoning_len = 0
+        last_flush_ts = 0.0
+        save_db = SessionLocal()
+
+        def persist_snapshot(force: bool = False):
+            nonlocal assistant_message_id
+            nonlocal last_saved_content_len
+            nonlocal last_saved_reasoning_len
+            nonlocal last_flush_ts
+
+            has_content = result.has_content
+            if not has_content:
+                return
+
+            content_delta = len(result.full_content) - last_saved_content_len
+            reasoning_delta = len(result.full_reasoning) - last_saved_reasoning_len
+            changed = content_delta > 0 or reasoning_delta > 0
+
+            if not force:
+                if not changed:
+                    return
+                if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
+                    return
+
+            final = result.final_text()
+            token_count = result.token_count()
+
+            try:
+                if assistant_message_id is None:
+                    msg = CharacterChatMessage(
+                        session_id=session_id,
+                        branch_id=branch_id,
+                        role="assistant",
+                        content=final,
+                        model=req.model,
+                        tokens=token_count,
+                        prompt_tokens=result.prompt_tokens,
+                        reasoning_tokens=result.effective_reasoning_tokens(),
+                    )
+                    save_db.add(msg)
+                    save_db.commit()
+                    save_db.refresh(msg)
+                    assistant_message_id = msg.id
+                else:
+                    msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == assistant_message_id).first()
+                    if msg is None:
+                        msg = CharacterChatMessage(
+                            session_id=session_id,
+                            branch_id=branch_id,
+                            role="assistant",
+                            content=final,
+                            model=req.model,
+                            tokens=token_count,
+                            prompt_tokens=result.prompt_tokens,
+                            reasoning_tokens=result.effective_reasoning_tokens(),
+                        )
+                        save_db.add(msg)
+                        save_db.commit()
+                        save_db.refresh(msg)
+                        assistant_message_id = msg.id
+                    else:
+                        msg.content = final
+                        msg.model = req.model
+                        msg.tokens = token_count
+                        msg.prompt_tokens = result.prompt_tokens
+                        msg.reasoning_tokens = result.effective_reasoning_tokens()
+                        save_db.commit()
+
+                last_saved_content_len = len(result.full_content)
+                last_saved_reasoning_len = len(result.full_reasoning)
+                last_flush_ts = time.monotonic()
+            except Exception as persist_error:
+                save_db.rollback()
+                logger.warning(f"Failed to persist assistant snapshot: {persist_error}")
+
         try:
             initial_events = []
             if is_new_session:
@@ -1737,62 +1816,71 @@ async def _character_chat_impl(
             )
 
             async for sse_event in stream_chat_deltas(stream, result, initial_events=initial_events):
+                persist_snapshot()
                 yield sse_event
-
-            from ..core.database import SessionLocal
-            new_db = SessionLocal()
-            try:
-                final = result.final_text()
-                token_count = result.token_count()
-                short_title = await generate_compact_title(
-                    new_db,
-                    f"{req.message}\n{result.full_content}",
-                    fallback_model_id=req.model,
-                    max_len=10,
-                )
-                new_db.add(CharacterChatMessage(
-                    session_id=session_id,
-                    branch_id=branch_id,
-                    role="assistant",
-                    content=final,
-                    short_title=short_title,
-                    model=req.model,
-                    tokens=token_count,
-                    prompt_tokens=result.prompt_tokens,
-                    reasoning_tokens=result.effective_reasoning_tokens(),
-                ))
-                new_db.commit()
-
-                if memory_mode != "disabled":
-                    try:
-                        mem_svc = MemoryService(new_db)
-                        if mem_svc.is_available():
-                            mem_svc.store_memory(
-                                user_id=user.id,
-                                session_id=session_id,
-                                role="user",
-                                content=req.message,
-                                branch_id=branch_id,
-                            )
-                            mem_svc.store_memory(
-                                user_id=user.id,
-                                session_id=session_id,
-                                role="assistant",
-                                content=result.full_content,
-                                branch_id=branch_id,
-                            )
-                            new_db.commit()
-                    except Exception as e:
-                        logger.warning(f"Memory storage failed: {e}")
-            finally:
-                new_db.close()
 
         except ServiceError as e:
             logger.exception("Character chat stream service error")
-            yield f"data: {json.dumps({'content': f'Error: {e.message}', 'error': True}, ensure_ascii=False)}\n\n"
+            if not result.has_content:
+                result.full_content = f"Error: {e.message}"
+            else:
+                result.full_content += f"\n\n[{e.message}]"
+            yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
+            persist_snapshot(force=True)
         except Exception as e:
             logger.exception("Character chat stream error")
-            yield f"data: {json.dumps({'content': 'Error: 推理过程中发生错误，请稍后重试。', 'error': True}, ensure_ascii=False)}\n\n"
+            err_msg = "推理过程中发生错误，请稍后重试。"
+            if not result.has_content:
+                result.full_content = f"Error: {err_msg}"
+            else:
+                result.full_content += f"\n\n[推理中断: {err_msg}]"
+            yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
+            persist_snapshot(force=True)
+        finally:
+            try:
+                persist_snapshot(force=True)
+
+                if assistant_message_id is not None:
+                    try:
+                        msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == assistant_message_id).first()
+                        if msg and msg.short_title is None:
+                            short_title = await generate_compact_title(
+                                save_db,
+                                f"{req.message}\n{result.full_content}",
+                                fallback_model_id=req.model,
+                                max_len=10,
+                            )
+                            msg.short_title = short_title
+                            save_db.commit()
+                    except Exception as e:
+                        save_db.rollback()
+                        logger.warning(f"Failed to generate short title: {e}")
+
+                if memory_mode != "disabled" and result.full_content:
+                    try:
+                        if not result.full_content.strip().startswith("Error:"):
+                            mem_svc = MemoryService(save_db)
+                            if mem_svc.is_available():
+                                mem_svc.store_memory(
+                                    user_id=user.id,
+                                    session_id=session_id,
+                                    role="user",
+                                    content=req.message,
+                                    branch_id=branch_id,
+                                )
+                                mem_svc.store_memory(
+                                    user_id=user.id,
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content=result.full_content,
+                                    branch_id=branch_id,
+                                )
+                                save_db.commit()
+                    except Exception as e:
+                        save_db.rollback()
+                        logger.warning(f"Memory storage failed: {e}")
+            finally:
+                save_db.close()
 
     return StreamingResponse(
         event_generator(),

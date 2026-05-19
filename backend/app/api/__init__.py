@@ -16,6 +16,7 @@ from .plotline import router as plotline_router, router_session_pl as plotline_s
 from .stats import router as stats_router
 from .mcp import router as mcp_router
 from .presets import router as presets_router
+from .websocket import router as websocket_router
 
 api_router = APIRouter()
 
@@ -39,3 +40,4 @@ api_router.include_router(plotline_session_router)
 api_router.include_router(stats_router)
 api_router.include_router(mcp_router)
 api_router.include_router(presets_router)
+api_router.include_router(websocket_router)
