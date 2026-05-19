@@ -1,20 +1,13 @@
 import { useState, useRef, useCallback } from 'react';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { analyzeError, type ErrorInfo } from '@/lib/errorHandler';
 import { consumeSseStream } from '@/lib/sseStream';
-import type { Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
+import type { Attachment, Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 
 const generateMessageId = () => {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
-
-export interface Attachment {
-  type: 'image' | 'file';
-  name: string;
-  url: string;
-  thumbnail?: string;
-  size?: number;
-}
 
 interface UseCharacterChatOptions {
   selectedCharacter: Character | null;
@@ -142,7 +135,7 @@ export function useCharacterChat({
         files: [],
       }, { signal: abortControllerRef.current.signal });
 
-      await consumeSseStream(response, (json) => {
+      const streamResult = await consumeSseStream(response, (json) => {
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
         const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
@@ -183,6 +176,11 @@ export function useCharacterChat({
           return newMessages;
         });
       });
+
+      if (streamResult.cancelled) {
+        setIsGenerating(false);
+        return;
+      }
 
       if (resolvedSessionId) {
         await loadMemoryStats(resolvedSessionId);
@@ -300,7 +298,7 @@ export function useCharacterChat({
         loadSessions(selectedCharacter.id);
       }
 
-      await consumeSseStream(response, (json) => {
+      const streamResult2 = await consumeSseStream(response, (json) => {
         if (!hasReceivedData) {
           hasReceivedData = true;
           setTimeoutWarning(false);
@@ -349,6 +347,11 @@ export function useCharacterChat({
           return newMessages;
         });
       });
+
+      if (streamResult2.cancelled) {
+        setIsGenerating(false);
+        return;
+      }
 
       if (resolvedSessionId) {
         await loadMemoryStats(resolvedSessionId);
@@ -402,6 +405,9 @@ export function useCharacterChat({
       const formData = new FormData();
       formData.append('file', file);
       const data = await api.post('/api/upload', formData);
+      if (!data.url) {
+        throw new Error('上传返回数据异常');
+      }
       setAttachments(prev => [...prev, {
         type,
         name: file.name,
@@ -411,6 +417,7 @@ export function useCharacterChat({
       }]);
     } catch (e) {
       console.error('Upload failed:', e);
+      toast.error('文件上传失败');
     } finally {
       setUploading(false);
     }
@@ -428,6 +435,7 @@ export function useCharacterChat({
       }));
     } catch (e) {
       console.error('Failed to delete message:', e);
+      toast.error('删除消息失败');
     }
   }, [selectedSession, setMessages]);
 
@@ -453,6 +461,7 @@ export function useCharacterChat({
       });
     } catch (e) {
       console.error('Failed to edit message:', e);
+      toast.error('编辑消息失败');
     }
   }, [selectedSession, setMessages]);
 

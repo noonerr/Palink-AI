@@ -24,6 +24,7 @@ class UserSettingUpdate(BaseModel):
     custom_character_prompt_zh: Optional[str] = None
     custom_character_prompt_en: Optional[str] = None
     use_custom_prompts: Optional[bool] = None
+    show_character_status: Optional[bool] = None
 
 class PasswordReset(BaseModel):
     new_password: str

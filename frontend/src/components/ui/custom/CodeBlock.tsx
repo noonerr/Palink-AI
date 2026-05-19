@@ -114,7 +114,7 @@ export const CodeBlock = ({ inline, className, children }: CodeBlockProps) => {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
       fontFamily: 'inherit',
     });
   }, []);

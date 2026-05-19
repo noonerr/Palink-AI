@@ -1,1 +1,0 @@
-{"name":"<img src=x onerror=alert(document.cookie)>","description":"test","personality":"test","background":"test","scenario":"test","first_mes":"<script>alert('xss')</script>"}

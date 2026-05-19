@@ -81,21 +81,20 @@ class CharacterService:
         return character
     
     def delete_character(self, character_id: str, user_id: int) -> bool:
-        """删除角色"""
         character = self.db.query(Character).filter(
             Character.id == character_id,
             Character.user_id == user_id
         ).first()
-        
+
         if not character:
             return False
-        
+
         try:
             sessions = self.db.query(CharacterChatSession).filter(
                 CharacterChatSession.character_id == character_id
             ).all()
             session_ids = [s.id for s in sessions]
-            
+
             if session_ids:
                 batch_size = 500
                 for i in range(0, len(session_ids), batch_size):
@@ -103,22 +102,22 @@ class CharacterService:
                     self.db.query(CharacterChatMessage).filter(
                         CharacterChatMessage.session_id.in_(batch)
                     ).delete(synchronize_session=False)
-                    
+
                     self.db.query(CharacterChatSessionBranch).filter(
                         CharacterChatSessionBranch.session_id.in_(batch)
                     ).delete(synchronize_session=False)
-                    
+
                     self.db.query(CharacterChatSession).filter(
                         CharacterChatSession.id.in_(batch)
                     ).delete(synchronize_session=False)
-            
+
             self.db.delete(character)
             self.db.commit()
             return True
         except Exception as e:
             logger.error(f"Error deleting character: {e}")
             self.db.rollback()
-            return False
+            raise
     
     def get_character(self, character_id: str, user_id: int) -> Optional[Character]:
         """获取角色信息"""

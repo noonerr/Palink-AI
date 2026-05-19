@@ -55,7 +55,7 @@ def get_providers() -> List[Dict[str, Any]]:
 
     with _provider_cache_lock:
         if _cached_mtime is not None and _cached_mtime == mtime:
-            return copy.deepcopy(_cached_providers)
+            return list(_cached_providers)
 
         try:
             with open(path, "r", encoding="utf-8") as provider_file:

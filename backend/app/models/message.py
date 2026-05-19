@@ -9,7 +9,7 @@ def utc_now():
 class ChatMessage(Base):
     __tablename__ = "messages"
     id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(String, ForeignKey("sessions.id"))
+    session_id = Column(String, ForeignKey("sessions.id"), index=True)
     role = Column(String)
     content = Column(Text)
     model = Column(String)

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import uuid
 import logging
 import time
@@ -94,7 +95,7 @@ def _has_expected_magic(extension: str, content: bytes) -> bool:
     return True
 
 
-def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hint: Optional[str]) -> str:
+async def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hint: Optional[str]) -> str:
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty file is not allowed")
 
@@ -119,7 +120,7 @@ def _validate_chat_upload(user: User, filename: str, file_bytes: bytes, mime_hin
         )
 
     user_dir = os.path.join(settings.UPLOAD_DIR, str(user.id))
-    user_usage = _directory_size_bytes(user_dir, user_id=user.id)
+    user_usage = await asyncio.to_thread(_directory_size_bytes, user_dir, user.id)
     max_user_size = max(0, settings.CHAT_UPLOAD_MAX_USER_STORAGE_MB) * 1024 * 1024
     if max_user_size and (user_usage + len(file_bytes)) > max_user_size:
         raise HTTPException(
@@ -211,7 +212,7 @@ async def upload_file(file: UploadFile = File(...), user: User = Depends(get_cur
         file_bytes = await file.read()
         mime_hint = file.content_type
 
-        safe_filename = _validate_chat_upload(user=user, filename=file.filename or "upload.bin", file_bytes=file_bytes, mime_hint=mime_hint)
+        safe_filename = await _validate_chat_upload(user=user, filename=file.filename or "upload.bin", file_bytes=file_bytes, mime_hint=mime_hint)
 
         user_dir = os.path.join(settings.UPLOAD_DIR, str(user.id))
         os.makedirs(user_dir, exist_ok=True)

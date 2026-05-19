@@ -30,7 +30,8 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "character_display_mode": setting.character_display_mode or "framed",
         "author_note": setting.author_note or "",
         "author_note_position": setting.author_note_position or "after_char",
-        "author_note_frequency": setting.author_note_frequency if setting.author_note_frequency is not None else 0
+        "author_note_frequency": setting.author_note_frequency if setting.author_note_frequency is not None else 0,
+        "show_character_status": setting.show_character_status if setting.show_character_status is not None else False,
     }
 
 
@@ -65,5 +66,7 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.custom_character_prompt_en = req.custom_character_prompt_en
     if req.use_custom_prompts is not None:
         setting.use_custom_prompts = req.use_custom_prompts
+    if req.show_character_status is not None:
+        setting.show_character_status = req.show_character_status
     db.commit()
     return {"status": "ok"}

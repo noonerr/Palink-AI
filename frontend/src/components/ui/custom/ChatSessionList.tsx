@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -6,6 +6,9 @@ import { MessageSquare, Trash2, CheckSquare, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { LoadingDots } from './LoadingDots';
+
+const MATH_REMARK_PLUGINS = [remarkMath];
+const MATH_REHYPE_PLUGINS = [rehypeKatex];
 
 interface Session {
   id: string;
@@ -92,8 +95,8 @@ function SessionTitleText({ title }: { title: string }) {
   return (
     <span className="session-title-markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={MATH_REMARK_PLUGINS}
+        rehypePlugins={MATH_REHYPE_PLUGINS}
         components={{
           p: ({ node: _node, children }) => <span>{children}</span>,
         }}
@@ -203,20 +206,8 @@ export const ChatSessionList = React.memo<ChatSessionListProps>(({
   loadingSessionIds,
 }) => {
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="chat-session-list flex flex-col h-full overflow-hidden">
       <ScrollArea className="flex-1 px-0 min-h-0" style={{ scrollbarGutter: 'stable both-edges' }}>
-        <style>{`
-          [data-radix-scroll-area-viewport] > div {
-            display: block !important;
-            min-width: 0 !important;
-            width: 100% !important;
-          }
-          @media (max-width: 768px) {
-            .mobile-padding {
-              padding-bottom: calc(80px + env(safe-area-inset-bottom));
-            }
-          }
-        `}</style>
         <div className="space-y-0 w-full min-w-0 mobile-padding">
           {sessions.map((session) => (
             <ChatSessionItem

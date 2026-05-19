@@ -15,7 +15,7 @@ from .core import settings
 logger = logging.getLogger(__name__)
 
 
-def normalize_image_url(img_url: str, check_size: bool = False) -> str:
+def normalize_image_url(img_url: str, check_size: bool = False, user_id: Optional[int] = None) -> str:
     if not isinstance(img_url, str) or not img_url.strip():
         if check_size:
             raise HTTPException(status_code=400, detail="Invalid image URL")
@@ -51,6 +51,13 @@ def normalize_image_url(img_url: str, check_size: bool = False) -> str:
             if check_size:
                 raise HTTPException(status_code=400, detail="Invalid uploaded image path")
             return img_url
+
+        if user_id is not None:
+            user_dir = os.path.abspath(os.path.join(upload_root, str(user_id)))
+            if not (file_path == user_dir or file_path.startswith(user_dir + os.sep)):
+                if check_size:
+                    raise HTTPException(status_code=403, detail="Image does not belong to current user")
+                return img_url
 
         if not os.path.exists(file_path):
             if check_size:
@@ -217,61 +224,6 @@ def _is_mime_compatible(detected: str, declared: str) -> bool:
         if detected in group and declared in group:
             return True
     return False
-
-
-def validate_file_mime_type(file_content: bytes, declared_mime: str, filename: str) -> str:
-    if not file_content:
-        return declared_mime or "application/octet-stream"
-
-    header = file_content[:12]
-
-    detected_mime = None
-    for sig, mime_type in _MAGIC_SIGNATURES:
-        if header.startswith(sig):
-            if sig == b"RIFF" and len(file_content) >= 12:
-                if file_content[8:12] == b"WEBP":
-                    detected_mime = "image/webp"
-                else:
-                    detected_mime = "audio/wav"
-            else:
-                detected_mime = mime_type
-            break
-
-    if detected_mime is None:
-        try:
-            chunk = file_content[:65536].decode("utf-8", errors="ignore").strip()
-            if chunk.startswith("{") or chunk.startswith("["):
-                import json
-                json.loads(chunk)
-                detected_mime = "application/json"
-        except Exception:
-            pass
-
-    if detected_mime is None:
-        try:
-            chunk = file_content[:4096].decode("utf-8", errors="ignore")
-            if all(ord(c) >= 32 or c in "\r\n\t" for c in chunk[:512]):
-                detected_mime = "text/plain"
-        except Exception:
-            pass
-
-    if detected_mime and declared_mime:
-        if not _is_mime_compatible(detected_mime, declared_mime):
-            logger.warning(
-                "MIME mismatch for %s: declared=%s, detected=%s",
-                filename, declared_mime, detected_mime,
-            )
-            return "application/octet-stream"
-
-    if detected_mime:
-        ext_mime, _ = mimetypes.guess_type(filename)
-        if ext_mime and not _is_mime_compatible(detected_mime, ext_mime):
-            logger.warning(
-                "Extension MIME mismatch for %s: ext=%s, detected=%s",
-                filename, ext_mime, detected_mime,
-            )
-
-    return detected_mime or declared_mime or "application/octet-stream"
 
 
 def get_default_ai_model(db=None) -> str:

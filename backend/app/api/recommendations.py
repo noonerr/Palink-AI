@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..core import get_db, settings
-from ..models import SystemSetting
+from ..models import SystemSetting, User
+from ..api.dependencies import get_current_user
 from ..services.inference_dispatcher import complete_text_completion, ensure_model_available
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/starters")
-async def get_starter_questions(db: Session = Depends(get_db)):
+async def get_starter_questions(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """获取推荐对话开场问题，必要时自动用 AI 生成"""
     setting = db.query(SystemSetting).filter(SystemSetting.key == "starter_questions").first()
     last_update_setting = db.query(SystemSetting).filter(SystemSetting.key == "last_starters_update").first()

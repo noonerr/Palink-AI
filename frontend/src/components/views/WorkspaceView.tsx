@@ -39,8 +39,6 @@ interface WorkspaceViewProps {
 }
 
 export function WorkspaceView({
-  token: _token,
-  user: _user,
   models,
   systemDefaults,
   t,

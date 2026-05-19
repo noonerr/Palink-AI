@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,6 +6,9 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { cn } from '@/lib/utils';
 import { CodeBlock } from './CodeBlock';
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
 
 interface MarkdownRendererProps {
   content: string;
@@ -58,7 +61,7 @@ function preprocessImageUrls(text: string): string {
       existingImageRefs.push(m[1]);
     }
 
-    const urlPattern = /(?<![(\[])(https?:\/\/[^\s<>\"')\]]+)/g;
+    const urlPattern = /(?<![(\[])(https?:\/\/[^\s<>"')\]]+)/g;
     return line.replace(urlPattern, (url) => {
       if (existingImageRefs.includes(url)) return url;
       if (isImageUrl(url)) {
@@ -78,7 +81,7 @@ export function MarkdownRenderer({
 }: MarkdownRendererProps) {
   const processedContent = React.useMemo(() => preprocessImageUrls(content), [content]);
 
-  const baseComponents: Components = {
+  const baseComponents: Components = React.useMemo(() => ({
     code: CodeBlock,
     p: ({ children, ...props }) => (
       <p className="break-words overflow-wrap-anywhere" {...props}>{children}</p>
@@ -97,11 +100,35 @@ export function MarkdownRenderer({
         </a>
       );
     },
-    table: ({ node: _node, children, ...props }) => (
+    table: ({ children, ...props }) => (
       <div className="markdown-table-wrapper my-3 overflow-x-auto">
         <table {...props}>{children}</table>
       </div>
     ),
+    thead: ({ children, ...props }) => {
+      const allThEmpty = React.Children.toArray(children).every((child: any) => {
+        const trChildren = child?.props?.children;
+        if (!Array.isArray(trChildren)) return true;
+        return trChildren.every((th: any) => {
+          const text = typeof th?.props?.children === 'string'
+            ? th.props.children
+            : Array.isArray(th?.props?.children)
+              ? th.props.children.join('')
+              : '';
+          return text.trim() === '';
+        });
+      });
+      if (allThEmpty) return null;
+      return <thead {...props}>{children}</thead>;
+    },
+    td: ({ children, ...props }) => {
+      const text = React.Children.toArray(children).join('');
+      const isStatusCell = ['🧥', '💖', '🎬', '💭', '🎯', '📍'].some(e => text.includes(e));
+      if (isStatusCell) {
+        return <td data-character-status {...props}>{children}</td>;
+      }
+      return <td {...props}>{children}</td>;
+    },
     img: ({ node: _node, src, alt, ...props }) => {
       const rawSrc = typeof src === 'string' ? src : '';
       const imageSrc = appendUploadToken(rawSrc);
@@ -135,13 +162,13 @@ export function MarkdownRenderer({
         />
       );
     },
-  };
+  }), []);
 
   return (
     <div className={cn('markdown-content w-full break-words overflow-wrap-anywhere', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         components={{ ...baseComponents, ...components }}
       >
         {processedContent || ' '}

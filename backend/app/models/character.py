@@ -10,7 +10,7 @@ def utc_now():
 class Character(Base):
     __tablename__ = "characters"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     background = Column(Text, nullable=True)
@@ -34,6 +34,10 @@ class Character(Base):
 
 class CharacterChatSession(Base):
     __tablename__ = "character_chat_sessions"
+    __table_args__ = (
+        Index('idx_ccs_character_user', 'character_id', 'user_id'),
+        Index('idx_ccs_user_id', 'user_id'),
+    )
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     character_id = Column(String, ForeignKey("characters.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
@@ -72,6 +76,8 @@ class CharacterChatMessage(Base):
         Index('idx_message_branch_lookup', 'session_id', 'branch_id', 'created_at'),
         # Index for finding assistant messages after a user message
         Index('idx_message_role_lookup', 'session_id', 'branch_id', 'role', 'id'),
+        # Standalone index for branch_id (used in check_frozen_branches, etc.)
+        Index('idx_message_branch_only', 'branch_id'),
     )
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, ForeignKey("character_chat_sessions.id"))

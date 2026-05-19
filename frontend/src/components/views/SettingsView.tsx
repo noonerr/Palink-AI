@@ -417,6 +417,7 @@ export function SettingsView({
       setProviders(data);
     } catch (e) {
       console.error('Failed to fetch providers:', e);
+      toast.error('加载服务商列表失败');
     }
   };
 
@@ -426,6 +427,7 @@ export function SettingsView({
       setUsersList(data);
     } catch (e) {
       console.error('Failed to fetch users:', e);
+      toast.error('加载用户列表失败');
     }
   };
 
@@ -435,6 +437,7 @@ export function SettingsView({
       setStarterQuestions(data);
     } catch (e) {
       console.error('Failed to fetch starters:', e);
+      toast.error('加载推荐问题失败');
     }
   };
 
@@ -444,6 +447,7 @@ export function SettingsView({
       toast.success('Profile updated');
     } catch (e) {
       console.error('Failed to update profile:', e);
+      toast.error('更新个人资料失败');
     }
   };
 
@@ -495,6 +499,7 @@ export function SettingsView({
       toast.success(t.defaults_saved || '默认配置已保存');
     } catch (e) {
       console.error('Failed to save defaults:', e);
+      toast.error('保存默认配置失败');
     }
   };
 
@@ -518,6 +523,7 @@ export function SettingsView({
       toast.success('Starters saved');
     } catch (e) {
       console.error('Failed to save starters:', e);
+      toast.error('保存推荐问题失败');
     }
   };
 

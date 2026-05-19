@@ -1,10 +1,13 @@
 import logging
 import json
 import os
+import ipaddress
+import socket
 import uuid
 from datetime import datetime, timezone
 from contextlib import AsyncExitStack
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,7 +26,6 @@ ALLOWED_ENV_KEYS = {
 
 ALLOWED_MCP_COMMANDS = {
     "npx", "node", "python", "python3", "uvx", "uv",
-    "docker", "pip", "pip3",
 }
 
 ALLOWED_COMMAND_PATH_PREFIXES = (
@@ -33,6 +35,39 @@ ALLOWED_COMMAND_PATH_PREFIXES = (
 )
 
 _active_connections: dict = {}
+
+
+def _is_safe_mcp_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    lowered = host.lower()
+    if lowered in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::]", "0:0:0:0:0:0:0:1", "0:0:0:0:0:0:0:0"} or lowered.endswith(".local"):
+        return False
+
+    def _is_private_ip(ip_str: str) -> bool:
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+            return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_unspecified
+        except ValueError:
+            return False
+
+    if _is_private_ip(host):
+        return False
+    try:
+        addr_info = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+    for info in addr_info:
+        if _is_private_ip(info[4][0]):
+            return False
+    return True
 
 
 def _validate_mcp_command(command: str) -> bool:
@@ -148,6 +183,9 @@ async def connect_server(server: dict) -> dict:
 
     if transport_type == "stdio":
         return await _connect_stdio(server)
+
+    if url and not _is_safe_mcp_url(url):
+        raise ValueError(f"MCP server URL blocked (SSRF protection): {url}")
 
     exit_stack = AsyncExitStack()
     try:

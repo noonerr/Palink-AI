@@ -1,22 +1,14 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React from 'react';
 import { Sparkles } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
-import { api } from '@/services/api';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
-import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
-import { consumeSseStream } from '@/lib/sseStream';
 import { ChatSidebar } from './chat/ChatSidebar';
 import { WelcomeContent } from './chat/WelcomeContent';
 import { ChatHeader } from './chat/ChatHeader';
-import type { Message as MessageType, Model, Session, Attachment } from '@/types';
-
-const generateMessageId = () => {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-};
-
-type StreamStatus = 'idle' | 'pending' | 'queued' | 'streaming' | 'done' | 'error' | 'cancelled';
+import { useChatView } from '@/hooks/useChatView';
+import type { Model } from '@/types';
 
 interface ChatViewProps {
   token: string;
@@ -31,10 +23,7 @@ interface ChatViewProps {
   showModelReasoning?: boolean;
 }
 
-
-
 export function ChatViewDesktop({
-  token: _token,
   user,
   models,
   currentModel,
@@ -42,843 +31,30 @@ export function ChatViewDesktop({
   t,
   sidebarCollapsed,
   setSidebarCollapsed,
-  isDark: _isDark,
   showModelReasoning = true,
 }: ChatViewProps) {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MessageType[]>([]);
-  const [input, setInput] = useState('');
-  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
-  const [queueInfo, setQueueInfo] = useState<{ requestId: string; position: number; estimatedWait: number } | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [isDeleteMode, setIsDeleteMode] = useState(false);
-  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<{ type: 'single'; id: string } | { type: 'batch' } | { type: 'message'; messageId: number; messageIndex: number } | null>(null);
-  const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
-  const [showMessageSelect, setShowMessageSelect] = useState(false);
-  const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
-  const [memoryStats, setMemoryStats] = useState<{
-    message_count: number;
-    token_count: number;
-    oldest_message_hours: number;
-    compression_needed: boolean;
-    compression_reason: string;
-  } | null>(null);
-  const [compressing, setCompressing] = useState(false);
-  const [memoryMode, setMemoryMode] = useState<string>("rule");
-  const [developerMode, setDeveloperMode] = useState(false);
-  const [isSendingMessage, setIsSendingMessage] = useState(false);
-  const streaming = streamStatus === 'pending' || streamStatus === 'queued' || streamStatus === 'streaming';
-
-  
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const suggestionsAbortRef = useRef<AbortController | null>(null);
-  const sessionIdSetRef = useRef(false);
-  const pendingInitialBottomLockRef = useRef(false);
-  const initialBottomLockUntilRef = useRef(0);
-  const isAtBottomRef = useRef(true);
-  const INITIAL_BOTTOM_LOCK_MS = 1500;
-
-  const markStreamActive = useCallback(() => {
-    setStreamStatus((prev) => (prev === 'pending' ? 'streaming' : prev));
-  }, []);
-
-  const handleStopStreaming = useCallback(() => {
-    if (queueInfo?.requestId) {
-      api.post(`/api/chat/queue/cancel/${queueInfo.requestId}`).catch(() => {});
-    }
-    if (!abortControllerRef.current) return;
-    setStreamStatus('cancelled');
-    setQueueInfo(null);
-    abortControllerRef.current.abort();
-  }, [queueInfo]);
-  
-  // Load memory stats with session ID tracking to prevent race conditions
-  const loadingSessionRef = useRef<string | null>(null);
-  
-  const loadMemoryStats = useCallback(async (sessionId: string) => {
-    if (!sessionId) return;
-    
-    // Track which session we're loading
-    loadingSessionRef.current = sessionId;
-    
-    try {
-      const data = await api.get(`/api/memory/stats?session_id=${sessionId}`);
-      
-      // Only update if this is still the current session being loaded
-      if (loadingSessionRef.current === sessionId) {
-        const stats = data.stats || {};
-        setMemoryStats({
-          message_count: stats.message_count ?? 0,
-          token_count: stats.token_count ?? 0,
-          oldest_message_hours: stats.oldest_message_hours ?? 0,
-          compression_needed: data.compression_needed ?? false,
-          compression_reason: data.reason ?? '',
-        });
-        
-        if (data.compression_needed) {
-          await autoCompressMemory(sessionId);
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load memory stats:', e);
-    }
-  }, []);
-
-  // Auto compress memory
-  const autoCompressMemory = async (sessionId: string) => {
-    // Only proceed if this is still the current session
-    if (loadingSessionRef.current !== sessionId) return;
-    
-    try {
-      const data = await api.post('/api/memory/compress', { session_id: sessionId, compression_ratio: 0.5 });
-      if (loadingSessionRef.current === sessionId && data?.compressed_count > 0) {
-        console.log('Memory auto-compressed:', data.message);
-      }
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        console.error('Auto compress failed:', e);
-      }
-    }
-  };
-
-  // Manual compress memory
-  const manualCompressMemory = async () => {
-    if (!activeSessionId || compressing) return;
-    setCompressing(true);
-    try {
-      const data = await api.post('/api/memory/compress', {
-        session_id: activeSessionId,
-        compression_ratio: 0.5
-      });
-      console.info(`记忆压缩完成！\n删除: ${data.compressed_count} 条\n保留: ${data.remaining_count} 条\n摘要: ${data.summary}`);
-      await loadMemoryStats(activeSessionId);
-    } catch (e) {
-      console.error('Manual compress failed:', e);
-      console.error('压缩失败');
-    } finally {
-      setCompressing(false);
-    }
-  };
-
-  // Load sessions
-  const loadSessions = useCallback(async () => {
-    try {
-      const data = await api.get<Session[]>('/api/sessions?type=chat');
-      setSessions(data);
-    } catch (e) {
-      console.error('Failed to load sessions:', e);
-    }
-  }, []);
-
-  const buildAssistantContent = useCallback((content: string, reasoning: string) => {
-    if (!reasoning) {
-      return content;
-    }
-    return `<think>${reasoning}</think>\n${content}`;
-  }, []);
-
-  const normalizeAssistantAnswer = useCallback((rawContent: string) => {
-    if (!rawContent) {
-      return rawContent;
-    }
-
-    const finalAnswerParts = rawContent
-      .split(/Final\s*Answer\s*[:：]?/gi)
-      .map((part) => part.trim())
-      .filter(Boolean);
-
-    if (finalAnswerParts.length > 1) {
-      return finalAnswerParts[finalAnswerParts.length - 1];
-    }
-
-    return rawContent;
-  }, []);
-
-  const setAssistantMessageSnapshot = useCallback(
-    (assistantMessageId: string, content: string, reasoning: string, _forceSync = false) => {
-      const nextContent = buildAssistantContent(normalizeAssistantAnswer(content), reasoning);
-      setMessages((prev) => {
-        const next = [...prev];
-        const idx = next.findIndex((msg) => msg.id === assistantMessageId);
-        if (idx === -1) {
-          next.push({
-            id: assistantMessageId,
-            role: 'assistant',
-            content: nextContent,
-            model: currentModel,
-          });
-          return next;
-        }
-        next[idx] = {
-          ...next[idx],
-          content: nextContent,
-        };
-        return next;
-      });
-    },
-    [buildAssistantContent, currentModel, normalizeAssistantAnswer]
-  );
-
-  const ensureDeveloperSession = useCallback(async (seedText: string) => {
-    if (activeSessionId) {
-      return activeSessionId;
-    }
-
-    try {
-      const title = (seedText || '').trim().slice(0, 24) || t.new_chat || 'New Chat';
-      const created = await api.post<{ id: string }>('/api/sessions', {
-        type: 'chat',
-        title,
-      });
-      if (created?.id) {
-        setActiveSessionId(created.id);
-        return created.id;
-      }
-    } catch (error) {
-      console.error('Failed to create developer-mode session:', error);
-    }
-
-    return null;
-  }, [activeSessionId, t.new_chat]);
-
-  const streamMockIntoMessage = useCallback(async (seedText: string, assistantMessageId: string) => {
-    let fullContent = '';
-    await streamMockAssistantReply(
-      seedText,
-      (chunk) => {
-        markStreamActive();
-        fullContent += chunk;
-        setAssistantMessageSnapshot(assistantMessageId, fullContent, '');
-      },
-      { signal: abortControllerRef.current?.signal }
-    );
-    return fullContent;
-  }, [markStreamActive, setAssistantMessageSnapshot]);
-
-  // Load messages for active session
-  const handleSelectSession = (session: any) => {
-    const sessionId = typeof session === 'string' ? session : session.id;
-    setActiveSessionId(sessionId);
-  };
-
-  const loadMessages = useCallback(async (sessionId: string) => {
-    try {
-      setMessages([]);
-      setSuggestions([]);
-      setMemoryStats(null);
-      
-      const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
-      setMessages(data);
-      
-      pendingInitialBottomLockRef.current = data.length > 0;
-      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
-      isAtBottomRef.current = true;
-      
-      await loadMemoryStats(sessionId);
-      
-      const lastMsg = data[data.length - 1];
-      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content.length > 20) {
-        if (suggestionsAbortRef.current) {
-          suggestionsAbortRef.current.abort();
-        }
-        suggestionsAbortRef.current = new AbortController();
-        const currentAbortController = suggestionsAbortRef.current;
-        
-        api.post('/api/chat/suggestions',
-          { message: lastMsg.content, model: currentModel },
-          { signal: currentAbortController.signal }
-        )
-          .then((data: string[]) => {
-            if (Array.isArray(data) && !currentAbortController.signal.aborted) {
-              setSuggestions(data);
-            }
-          })
-          .catch(() => {});
-      }
-    } catch (e) {
-      console.error('Failed to load messages:', e);
-    }
-  }, [currentModel, loadMemoryStats]);
-
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
-
-  useEffect(() => {
-    if (activeSessionId && !isSendingMessage) {
-      // Reset memory stats when switching sessions
-      setMemoryStats(null);
-      loadMessages(activeSessionId);
-    } else if (!activeSessionId) {
-      setMessages([]);
-      setSuggestions([]);
-      setMemoryStats(null);
-    }
-  }, [activeSessionId, loadMessages, isSendingMessage]);
-
-  useEffect(() => {
-    const fetchUserSettings = async () => {
-      try {
-        const settings = await api.get('/api/users/me/settings');
-        setMemoryMode(settings.memory_mode || 'rule');
-        setDeveloperMode(settings.developer_mode === true);
-      } catch (e) {
-        console.error('Failed to fetch user settings:', e);
-      }
-    };
-    
-    fetchUserSettings();
-    
-    window.addEventListener('userSettingsUpdated', fetchUserSettings);
-    return () => window.removeEventListener('userSettingsUpdated', fetchUserSettings);
-  }, []);
-
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    isAtBottomRef.current = distanceFromBottom < 120;
-  }, []);
-
-  useEffect(() => {
-    if (!pendingInitialBottomLockRef.current && isAtBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages, streaming]);
-
-  useEffect(() => {
-    if (!activeSessionId || messages.length === 0) {
-      pendingInitialBottomLockRef.current = false;
-      return;
-    }
-
-    if (!pendingInitialBottomLockRef.current) {
-      return;
-    }
-
-    if (performance.now() >= initialBottomLockUntilRef.current) {
-      pendingInitialBottomLockRef.current = false;
-      return;
-    }
-
-    let rafA: number | null = null;
-    let rafB: number | null = null;
-
-    rafA = requestAnimationFrame(() => {
-      rafB = requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-        pendingInitialBottomLockRef.current = false;
-      });
-    });
-
-    return () => {
-      if (rafA !== null) cancelAnimationFrame(rafA);
-      if (rafB !== null) cancelAnimationFrame(rafB);
-    };
-  }, [activeSessionId, messages.length]);
-
-  const handleUpload = async (file: File, type: 'image' | 'file') => {
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const data = await api.post('/api/upload', formData);
-      setAttachments(prev => [...prev, {
-        type,
-        name: file.name,
-        url: data.url,
-        thumbnail: type === 'image' ? URL.createObjectURL(file) : undefined,
-        size: file.size,
-      }]);
-    } catch (e) {
-      console.error('Upload failed:', e);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleRegenerate = async (messageIndex: number) => {
-    if (streaming || uploading || messageIndex < 1) return;
-    
-    const assistantMessageIndex = messageIndex;
-    const userMessageIndex = assistantMessageIndex - 1;
-    
-    if (userMessageIndex < 0) return;
-    
-    const userMessage = messages[userMessageIndex];
-    if (userMessage.role !== 'user') return;
-    
-    setRegeneratingMessageIndex(assistantMessageIndex);
-    setStreamStatus('pending');
-    setSuggestions([]);
-    setIsSendingMessage(true);
-    isAtBottomRef.current = true;
-
-    const assistantMessageId = generateMessageId();
-    
-    setMessages(prev => {
-      const newMessages = [...prev];
-      newMessages[assistantMessageIndex] = { 
-        id: assistantMessageId, 
-        role: 'assistant', 
-        content: '', 
-        model: currentModel 
-      };
-      return newMessages;
-    });
-    
-    abortControllerRef.current = new AbortController();
-    let fullContent = '';
-    let fullReasoning = '';
-    let streamHasError = false;
-    let streamWasCancelled = false;
-    let isQueued = false;
-
-    if (developerMode) {
-      try {
-        fullContent = await streamMockIntoMessage(userMessage.content, assistantMessageId);
-        setSuggestions(buildMockSuggestions());
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') {
-          streamWasCancelled = true;
-        } else {
-          streamHasError = true;
-          setMessages(prev => {
-            const newMessages = [...prev];
-            const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
-            if (assistantIdx >= 0) {
-              newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
-            }
-            return newMessages;
-          });
-        }
-      } finally {
-        if (streamWasCancelled) {
-          setStreamStatus('cancelled');
-        } else if (streamHasError) {
-          setStreamStatus('error');
-        } else {
-          setStreamStatus('done');
-        }
-        setRegeneratingMessageIndex(null);
-        setIsSendingMessage(false);
-        abortControllerRef.current = null;
-      }
-      return;
-    }
-    
-    try {
-      const res = await api.stream('/api/chat', {
-          session_id: activeSessionId,
-          session_type: 'chat',
-          message: userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim(),
-          model: currentModel,
-          images: [],
-          files: []
-        }, { signal: abortControllerRef.current.signal });
-
-      await consumeSseStream(res, (json) => {
-        if (json.type === 'queue' && json.request_id) {
-          setStreamStatus('queued');
-          isQueued = true;
-          setQueueInfo({
-            requestId: json.request_id as string,
-            position: typeof json.position === 'number' ? json.position : 0,
-            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
-          });
-          return;
-        }
-
-        const content = typeof json.content === 'string' ? json.content : '';
-        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
-        const reasoningDelta = `${reasoning}${modelReasoning}`;
-
-        if (content.startsWith('Error:')) {
-          streamHasError = true;
-          const errorMsg = content.replace('Error: ', '');
-          setMessages(prev => {
-            const newMessages = [...prev];
-            if (newMessages[assistantMessageIndex]) {
-              newMessages[assistantMessageIndex].content += `\n\n❌ 错误: ${errorMsg}`;
-            }
-            return newMessages;
-          });
-          return;
-        }
-
-        if (!content && !reasoningDelta) {
-          return;
-        }
-
-        if (isQueued) {
-          setQueueInfo(null);
-          isQueued = false;
-        }
-        markStreamActive();
-
-        if (reasoningDelta) {
-          fullReasoning += reasoningDelta;
-          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-        }
-
-        if (content) {
-          fullContent += content;
-          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-        }
-      });
-
-      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-      
-      if (fullContent.length > 20) {
-        api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
-          .then(setSuggestions)
-          .catch(() => {});
-      }
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') {
-        streamWasCancelled = true;
-      } else {
-        streamHasError = true;
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[assistantMessageIndex].content += `\n[Error: ${(e as Error).message}]`;
-          return newMessages;
-        });
-      }
-    } finally {
-      if (streamWasCancelled) {
-        setStreamStatus('cancelled');
-      } else if (streamHasError) {
-        setStreamStatus('error');
-      } else {
-        setStreamStatus('done');
-      }
-      setQueueInfo(null);
-      setRegeneratingMessageIndex(null);
-      setIsSendingMessage(false);
-      abortControllerRef.current = null;
-    }
-  };
+  const chat = useChatView({ currentModel, t });
 
   const handleSend = async (overrideText?: string) => {
-    const text = typeof overrideText === 'string' ? overrideText : input;
-    if ((!text.trim() && attachments.length === 0) || streaming || uploading) return;
-
-    // 在清空状态之前先构建好 displayContent 并保存 attachments
-    let displayContent = text;
-    const savedAttachments = [...attachments];
-    if (attachments.length > 0) {
-      displayContent += '\n\n';
-      attachments.forEach(att => {
-        displayContent += att.type === 'image' 
-          ? `![${att.name}](${att.url})\n`
-          : `[📎 ${att.name}](${att.url})\n`;
-      });
-    }
-
-    sessionIdSetRef.current = false; // 重置会话ID设置标记
-    setInput('');
-    setAttachments([]);
-    setStreamStatus('pending');
-    setSuggestions([]);
-    setIsSendingMessage(true);
-    isAtBottomRef.current = true;
-
-    // Add user message and placeholder for assistant with unique IDs
-    const userMessageId = generateMessageId();
-    const assistantMessageId = generateMessageId();
-    setMessages(prev => [
-      ...prev,
-      { id: userMessageId, role: 'user', content: displayContent },
-      { id: assistantMessageId, role: 'assistant', content: '', model: currentModel }
-    ]);
-
-    abortControllerRef.current = new AbortController();
-    let fullContent = '';
-    let fullReasoning = '';
-    let streamHasError = false;
-    let streamWasCancelled = false;
-    let isQueued = false;
-
-    if (developerMode) {
-      try {
-        const sessionId = await ensureDeveloperSession(text);
-        if (sessionId) {
-          await api.post(`/api/sessions/${sessionId}/messages`, {
-            role: 'user',
-            content: displayContent,
-            model: currentModel,
-          });
-          if (!activeSessionId) {
-            setActiveSessionId(sessionId);
-          }
-        }
-
-        fullContent = await streamMockIntoMessage(text, assistantMessageId);
-
-        if (sessionId) {
-          await api.post(`/api/sessions/${sessionId}/messages`, {
-            role: 'assistant',
-            content: fullContent,
-            model: currentModel,
-          });
-          await loadSessions();
-        }
-
-        setSuggestions(buildMockSuggestions());
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') {
-          streamWasCancelled = true;
-        } else {
-          streamHasError = true;
-          setMessages(prev => {
-            const newMessages = [...prev];
-            const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
-            if (assistantIdx >= 0) {
-              newMessages[assistantIdx].content += `\n[Error: ${(e as Error).message}]`;
-            }
-            return newMessages;
-          });
-        }
-      } finally {
-        if (streamWasCancelled) {
-          setStreamStatus('cancelled');
-        } else if (streamHasError) {
-          setStreamStatus('error');
-        } else {
-          setStreamStatus('done');
-        }
-        setIsSendingMessage(false);
-        abortControllerRef.current = null;
-      }
-      return;
-    }
-
-    try {
-      const res = await api.stream('/api/chat', {
-          session_id: activeSessionId,
-          session_type: 'chat',
-          message: text,
-          model: currentModel,
-          images: savedAttachments.filter(a => a.type === 'image').map(a => a.url),
-          files: savedAttachments.filter(a => a.type === 'file').map(a => a.url),
-          display_content: displayContent
-        }, { signal: abortControllerRef.current.signal });
-
-      if (!activeSessionId) {
-        setTimeout(loadSessions, 1000);
-      }
-
-      await consumeSseStream(res, (json) => {
-        if (json.type === 'queue' && json.request_id) {
-          setStreamStatus('queued');
-          isQueued = true;
-          setQueueInfo({
-            requestId: json.request_id as string,
-            position: typeof json.position === 'number' ? json.position : 0,
-            estimatedWait: typeof json.estimated_wait === 'number' ? json.estimated_wait : 0,
-          });
-          return;
-        }
-
-        const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
-        const content = typeof json.content === 'string' ? json.content : '';
-        const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
-        const reasoningDelta = `${reasoning}${modelReasoning}`;
-
-        if (sessionId && !activeSessionId && !sessionIdSetRef.current) {
-          sessionIdSetRef.current = true;
-          setActiveSessionId(sessionId);
-          loadSessions();
-        }
-
-        if (!content && !reasoningDelta) {
-          return;
-        }
-
-        if (isQueued) {
-          setQueueInfo(null);
-          isQueued = false;
-        }
-        markStreamActive();
-
-        if (reasoningDelta) {
-          fullReasoning += reasoningDelta;
-          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-        }
-
-        if (content) {
-          fullContent += content;
-          setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-        }
-      });
-
-      setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-
-      // Get suggestions after message completes
-      if (fullContent.length > 20) {
-        api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
-          .then(setSuggestions)
-          .catch(() => {});
-      }
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') {
-        streamWasCancelled = true;
-      } else {
-        streamHasError = true;
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1].content += `\n[Error: ${(e as Error).message}]`;
-          return newMessages;
-        });
-      }
-    } finally {
-      if (streamWasCancelled) {
-        setStreamStatus('cancelled');
-      } else if (streamHasError) {
-        setStreamStatus('error');
-      } else {
-        setStreamStatus('done');
-      }
-      setQueueInfo(null);
-      setIsSendingMessage(false);
-      abortControllerRef.current = null;
-    }
+    await chat.handleSend(overrideText);
   };
 
-  const handleBatchDelete = () => {
-    if (selectedSessions.size === 0) return;
-    setPendingDelete({ type: 'batch' });
-    setShowDeleteConfirm(true);
-  };
-
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-
-    try {
-      if (pendingDelete.type === 'batch') {
-        const idsToDelete = Array.from(selectedSessions);
-        await api.delete('/api/sessions/batch', { session_ids: idsToDelete });
-        
-        if (activeSessionId && idsToDelete.includes(activeSessionId)) {
-          setActiveSessionId(null);
-        }
-        
-        setSelectedSessions(new Set());
-        setIsDeleteMode(false);
-        loadSessions();
-      } else if (pendingDelete.type === 'single') {
-        await api.delete(`/api/sessions/${pendingDelete.id}`);
-        
-        if (activeSessionId === pendingDelete.id) {
-          setActiveSessionId(null);
-        }
-        
-        loadSessions();
-      } else if (pendingDelete.type === 'message') {
-        if (activeSessionId && typeof pendingDelete.messageId === 'number') {
-          await api.delete(`/api/sessions/${activeSessionId}/messages/${pendingDelete.messageId}`);
-        }
-        setMessages(prev => prev.filter((_, idx) => idx !== pendingDelete.messageIndex));
-      }
-    } catch (e) {
-      console.error('Delete failed:', e);
-    } finally {
-      setPendingDelete(null);
-      setShowDeleteConfirm(false);
-    }
-  };
-
-  const toggleSessionSelect = (sessionId: string) => {
-    const newSet = new Set(selectedSessions);
-    if (newSet.has(sessionId)) {
-      newSet.delete(sessionId);
-    } else {
-      newSet.add(sessionId);
-    }
-    setSelectedSessions(newSet);
-  };
-
-  const handleDeleteSession = (sessionId: string) => {
-    setPendingDelete({ type: 'single', id: sessionId });
-    setShowDeleteConfirm(true);
-  };
-
-  const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
-    setPendingDelete({ type: 'message', messageId, messageIndex });
-    setShowDeleteConfirm(true);
-  };
-
-  const toggleMessageSelect = (messageId: string) => {
-    const newSet = new Set(selectedMessages);
-    if (newSet.has(messageId)) {
-      newSet.delete(messageId);
-    } else {
-      newSet.add(messageId);
-    }
-    setSelectedMessages(newSet);
-  };
-
-  const handleDeleteSelectedMessages = async () => {
-    if (!activeSessionId || selectedMessages.size === 0) return;
-    try {
-      for (const messageId of Array.from(selectedMessages)) {
-        await api.delete(`/api/sessions/${activeSessionId}/messages/${messageId}`);
-      }
-      setMessages(prev => prev.filter(m => m.id === undefined || !selectedMessages.has(String(m.id))));
-      setSelectedMessages(new Set());
-      setShowMessageSelect(false);
-    } catch (e) {
-      console.error('Delete messages failed:', e);
-    }
-  };
-
-  const handleEditMessage = async (messageId: string | number, messageIndex: number, newContent: string) => {
-    if (!activeSessionId) return;
-    
-    try {
-      if (typeof messageId === 'number') {
-        await api.put(`/api/sessions/${activeSessionId}/messages/${messageId}`, { content: newContent });
-      }
-      setMessages(prev => {
-        const newMessages = [...prev];
-        newMessages[messageIndex] = {
-          ...newMessages[messageIndex],
-          content: newContent
-        };
-        return newMessages;
-      });
-    } catch (e) {
-      console.error('Failed to edit message:', e);
-    }
-  };
-
-
-
-  // Welcome Screen
-  if (messages.length === 0 && !activeSessionId) {
+  if (chat.messages.length === 0 && !chat.activeSessionId) {
     return (
       <div className="flex h-full overflow-hidden">
         <ChatSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
+          sessions={chat.sessions}
+          activeSessionId={chat.activeSessionId}
           sidebarCollapsed={sidebarCollapsed}
           setSidebarCollapsed={setSidebarCollapsed}
-          isDeleteMode={isDeleteMode}
-          setIsDeleteMode={setIsDeleteMode}
-          selectedSessions={selectedSessions}
-          toggleSessionSelect={toggleSessionSelect}
-          handleBatchDelete={handleBatchDelete}
-          handleSelectSession={handleSelectSession}
-          handleDeleteSession={handleDeleteSession}
-          setActiveSessionId={setActiveSessionId}
+          isDeleteMode={chat.isDeleteMode}
+          setIsDeleteMode={chat.setIsDeleteMode}
+          selectedSessions={chat.selectedSessions}
+          toggleSessionSelect={chat.toggleSessionSelect}
+          handleBatchDelete={chat.handleBatchDelete}
+          handleSelectSession={chat.handleSelectSession}
+          handleDeleteSession={chat.handleDeleteSession}
+          setActiveSessionId={chat.setActiveSessionId}
           t={t}
         />
         <WelcomeContent
@@ -887,28 +63,28 @@ export function ChatViewDesktop({
           setCurrentModel={setCurrentModel}
           sidebarCollapsed={sidebarCollapsed}
           setSidebarCollapsed={setSidebarCollapsed}
-          input={input}
-          setInput={setInput}
+          input={chat.input}
+          setInput={chat.setInput}
           handleSend={handleSend}
-          handleUpload={handleUpload}
-          attachments={attachments}
-          setAttachments={setAttachments}
-          streaming={streaming}
-          uploading={uploading}
-          handleStopStreaming={handleStopStreaming}
-          setActiveSessionId={setActiveSessionId}
+          handleUpload={chat.handleUpload}
+          attachments={chat.attachments}
+          setAttachments={chat.setAttachments}
+          streaming={chat.streaming}
+          uploading={chat.uploading}
+          handleStopStreaming={chat.handleStopStreaming}
+          setActiveSessionId={chat.setActiveSessionId}
           t={t}
         />
         <ConfirmDialog
-          open={showDeleteConfirm}
-          onOpenChange={setShowDeleteConfirm}
-          title={pendingDelete?.type === 'batch' ? t.delete_selected + '?' : pendingDelete?.type === 'message' ? '删除消息?' : t.delete_chat + '?'}
-          description={pendingDelete?.type === 'batch' 
-            ? `确定要删除选中的 ${selectedSessions.size} 个对话吗？此操作无法撤销。`
-            : pendingDelete?.type === 'message' 
+          open={chat.showDeleteConfirm}
+          onOpenChange={chat.setShowDeleteConfirm}
+          title={chat.pendingDelete?.type === 'batch' ? t.delete_selected + '?' : chat.pendingDelete?.type === 'message' ? '删除消息?' : t.delete_chat + '?'}
+          description={chat.pendingDelete?.type === 'batch'
+            ? `确定要删除选中的 ${chat.selectedSessions.size} 个对话吗？此操作无法撤销。`
+            : chat.pendingDelete?.type === 'message'
               ? "确定要删除这条消息吗？删除后该内容将从上下文中移除，AI将不再保留此记忆。此操作无法撤销。"
               : "确定要删除这个对话吗？此操作无法撤销。"}
-          onConfirm={confirmDelete}
+          onConfirm={chat.confirmDelete}
           confirmText={t.ok}
           cancelText={t.cancel}
         />
@@ -919,22 +95,21 @@ export function ChatViewDesktop({
   return (
     <div className="flex h-full overflow-hidden">
       <ChatSidebar
-        sessions={sessions}
-        activeSessionId={activeSessionId}
+        sessions={chat.sessions}
+        activeSessionId={chat.activeSessionId}
         sidebarCollapsed={sidebarCollapsed}
         setSidebarCollapsed={setSidebarCollapsed}
-        isDeleteMode={isDeleteMode}
-        setIsDeleteMode={setIsDeleteMode}
-        selectedSessions={selectedSessions}
-        toggleSessionSelect={toggleSessionSelect}
-        handleBatchDelete={handleBatchDelete}
-        handleSelectSession={handleSelectSession}
-        handleDeleteSession={handleDeleteSession}
-        setActiveSessionId={setActiveSessionId}
+        isDeleteMode={chat.isDeleteMode}
+        setIsDeleteMode={chat.setIsDeleteMode}
+        selectedSessions={chat.selectedSessions}
+        toggleSessionSelect={chat.toggleSessionSelect}
+        handleBatchDelete={chat.handleBatchDelete}
+        handleSelectSession={chat.handleSelectSession}
+        handleDeleteSession={chat.handleDeleteSession}
+        setActiveSessionId={chat.setActiveSessionId}
         t={t}
       />
 
-      {/* Chat Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <ChatHeader
           models={models}
@@ -942,21 +117,20 @@ export function ChatViewDesktop({
           setCurrentModel={setCurrentModel}
           sidebarCollapsed={sidebarCollapsed}
           setSidebarCollapsed={setSidebarCollapsed}
-          activeSessionId={activeSessionId}
-          setActiveSessionId={setActiveSessionId}
-          messages={messages}
-          streaming={streaming}
-          showMessageSelect={showMessageSelect}
-          setShowMessageSelect={setShowMessageSelect}
-          selectedMessages={selectedMessages}
-          handleDeleteSelectedMessages={handleDeleteSelectedMessages}
+          activeSessionId={chat.activeSessionId}
+          setActiveSessionId={chat.setActiveSessionId}
+          messages={chat.messages}
+          streaming={chat.streaming}
+          showMessageSelect={chat.showMessageSelect}
+          setShowMessageSelect={chat.setShowMessageSelect}
+          selectedMessages={chat.selectedMessages}
+          handleDeleteSelectedMessages={chat.handleDeleteSelectedMessages}
         />
 
-        {/* Messages */}
         <div className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6" onScroll={handleScroll}>
+          <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6" onScroll={chat.handleScroll}>
             <div className={`max-w-3xl mx-auto space-y-6`}>
-              {messages.map((msg, idx) => (
+              {chat.messages.map((msg, idx) => (
                 <div key={msg.id || idx} className="flex items-start gap-2">
                   <div className="flex-1">
                     <Message
@@ -964,48 +138,47 @@ export function ChatViewDesktop({
                       userAvatar={user.avatar}
                       userName={user.username}
                       models={models}
-                      streaming={(streaming && idx === messages.length - 1) || regeneratingMessageIndex === idx}
-                      isLast={idx === messages.length - 1}
+                      streaming={(chat.streaming && idx === chat.messages.length - 1) || chat.regeneratingMessageIndex === idx}
+                      isLast={idx === chat.messages.length - 1}
                       t={t}
                       tokens={msg.tokens}
-                      memoryStats={memoryMode === 'rule' && idx === messages.length - 1 && msg.role === 'assistant' ? memoryStats : null}
-                      onCompress={memoryMode === 'rule' && idx === messages.length - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
-                      compressing={compressing}
-                      onRegenerate={msg.role === 'assistant' && !streaming ? () => handleRegenerate(idx) : undefined}
-                      canRegenerate={msg.role === 'assistant' && !streaming && idx > 0 && messages[idx - 1]?.role === 'user'}
-                      onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
-                      onEdit={msg.id ? (newContent: string) => handleEditMessage(msg.id, idx, newContent) : undefined}
-                      canEdit={msg.role === 'assistant' && !streaming}
-                      isSelected={msg.id !== undefined ? selectedMessages.has(String(msg.id)) : false}
-                      onToggleSelect={msg.id !== undefined ? () => toggleMessageSelect(String(msg.id)) : undefined}
-                      showSelect={showMessageSelect}
+                      memoryStats={chat.memoryMode === 'rule' && idx === chat.messages.length - 1 && msg.role === 'assistant' ? chat.memoryStats : null}
+                      onCompress={chat.memoryMode === 'rule' && idx === chat.messages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
+                      compressing={chat.compressing}
+                      onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
+                      canRegenerate={msg.role === 'assistant' && !chat.streaming && idx > 0 && chat.messages[idx - 1]?.role === 'user'}
+                      onDelete={msg.id != null ? () => chat.handleDeleteMessage(msg.id as string | number, idx) : undefined}
+                      onEdit={msg.id != null ? (newContent: string) => chat.handleEditMessage(msg.id as string | number, idx, newContent) : undefined}
+                      canEdit={msg.role === 'assistant' && !chat.streaming}
+                      isSelected={msg.id !== undefined ? chat.selectedMessages.has(String(msg.id)) : false}
+                      onToggleSelect={msg.id !== undefined ? () => chat.toggleMessageSelect(String(msg.id)) : undefined}
+                      showSelect={chat.showMessageSelect}
                       isCharacterChat={false}
-                      memoryMode={memoryMode}
+                      memoryMode={chat.memoryMode}
                       showModelReasoning={showModelReasoning}
                     />
                   </div>
                 </div>
               ))}
 
-              {streamStatus === 'queued' && queueInfo && (
+              {chat.streamStatus === 'queued' && chat.queueInfo && (
                 <div className="flex items-center gap-3 pl-12 animate-fade-in-up">
                   <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-amber-700 dark:text-amber-300 text-sm">
                     <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    <span>排队中 · 第 {queueInfo.position + 1} 位</span>
-                    {queueInfo.estimatedWait > 0 && (
-                      <span className="text-amber-500 dark:text-amber-400">· 预计 {Math.ceil(queueInfo.estimatedWait)}s</span>
+                    <span>排队中 · 第 {chat.queueInfo.position + 1} 位</span>
+                    {chat.queueInfo.estimatedWait > 0 && (
+                      <span className="text-amber-500 dark:text-amber-400">· 预计 {Math.ceil(chat.queueInfo.estimatedWait)}s</span>
                     )}
                   </div>
                 </div>
               )}
-              
-              {/* Suggestions */}
-              {suggestions.length > 0 && !streaming && (
+
+              {chat.suggestions.length > 0 && !chat.streaming && (
                 <div className="flex flex-wrap gap-2 pl-12 animate-fade-in-up">
-                  {suggestions.map((s, idx) => (
+                  {chat.suggestions.map((s, idx) => (
                     <button
                       key={idx}
                       onClick={() => handleSend(s)}
@@ -1017,27 +190,26 @@ export function ChatViewDesktop({
                   ))}
                 </div>
               )}
-              
-              <div ref={messagesEndRef} />
+
+              <div ref={chat.messagesEndRef} />
             </div>
           </ScrollArea>
         </div>
 
-        {/* Input Area */}
         <div className="p-2 border-t border-border/50 pb-4">
           <div className="max-w-3xl mx-auto">
             <ChatInput
-              value={input}
-              onChange={setInput}
+              value={chat.input}
+              onChange={chat.setInput}
               onSend={handleSend}
-              onUpload={handleUpload}
-              attachments={attachments}
-              onRemoveAttachment={(idx) => setAttachments(prev => prev.filter((_, i) => i !== idx))}
-              disabled={streaming}
-              uploading={uploading}
+              onUpload={chat.handleUpload}
+              attachments={chat.attachments}
+              onRemoveAttachment={(idx) => chat.setAttachments(prev => prev.filter((_, i) => i !== idx))}
+              disabled={chat.streaming}
+              uploading={chat.uploading}
               placeholder={t.ask_anything}
-              streaming={streaming}
-              onStop={handleStopStreaming}
+              streaming={chat.streaming}
+              onStop={chat.handleStopStreaming}
             />
             <p className="text-center mt-2 text-[10px] text-muted-foreground/60">
               {t.ai_disclaimer}
@@ -1045,15 +217,15 @@ export function ChatViewDesktop({
           </div>
         </div>
         <ConfirmDialog
-          open={showDeleteConfirm}
-          onOpenChange={setShowDeleteConfirm}
-          title={pendingDelete?.type === 'batch' ? t.delete_selected + '?' : pendingDelete?.type === 'message' ? '删除消息?' : t.delete_chat + '?'}
-          description={pendingDelete?.type === 'batch' 
-            ? `确定要删除选中的 ${selectedSessions.size} 个对话吗？此操作无法撤销。`
-            : pendingDelete?.type === 'message' 
+          open={chat.showDeleteConfirm}
+          onOpenChange={chat.setShowDeleteConfirm}
+          title={chat.pendingDelete?.type === 'batch' ? t.delete_selected + '?' : chat.pendingDelete?.type === 'message' ? '删除消息?' : t.delete_chat + '?'}
+          description={chat.pendingDelete?.type === 'batch'
+            ? `确定要删除选中的 ${chat.selectedSessions.size} 个对话吗？此操作无法撤销。`
+            : chat.pendingDelete?.type === 'message'
               ? "确定要删除这条消息吗？删除后该内容将从上下文中移除，AI将不再保留此记忆。此操作无法撤销。"
               : "确定要删除这个对话吗？此操作无法撤销。"}
-          onConfirm={confirmDelete}
+          onConfirm={chat.confirmDelete}
           confirmText={t.ok}
           cancelText={t.cancel}
         />

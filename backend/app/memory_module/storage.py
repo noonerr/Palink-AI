@@ -396,7 +396,8 @@ class MemoryStorage:
                             importance_score=row.importance_score,
                             topics=json.loads(row.topics) if row.topics else [],
                             tokens_count=row.tokens_count or 0,
-                            created_at=row.created_at
+                            created_at=row.created_at,
+                            embedding=embedding_list,
                         )
                         memories_with_similarity.append((memory, similarity))
                         

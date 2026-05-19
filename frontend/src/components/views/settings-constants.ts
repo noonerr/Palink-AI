@@ -1,5 +1,3 @@
-import type { Model } from '@/types';
-
 export const PRESETS = [
   { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', icon: '🌐', models: [] },
   { name: 'DeepSeek', url: 'https://api.deepseek.com', icon: '🐋', models: [] },
@@ -128,12 +126,4 @@ export function autoMatchIcon(modelId: string, displayName?: string): string {
     }
   }
   return '/icons/openrouter.webp';
-}
-
-export function normalizeModelForSave(model: Model): Model {
-  return {
-    ...model,
-    name: model.name || model.id,
-    id: (model as any).alias || model.id,
-  };
 }

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from typing import List, Optional
 from urllib.parse import unquote
@@ -25,7 +26,7 @@ class ChatService:
         
         context_text = ""
         if req.files:
-            context_text = self._process_file_references(req.files, user_id)
+            context_text = await asyncio.to_thread(self._process_file_references, req.files, user_id)
         
         final_user_content = req.message + "\n\n" + context_text
         user_message = {"role": "user", "content": final_user_content}

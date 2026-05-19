@@ -94,9 +94,12 @@ class ModelQueue:
                 return i
         return -1
 
-    def get_queue_status(self, request_id: str) -> Dict[str, Any]:
+    def get_queue_status(self, request_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         position = self._get_position(request_id)
         if position >= 0:
+            req = self._queue[position]
+            if user_id is not None and req.user_id is not None and req.user_id != user_id:
+                return {"status": "forbidden", "position": -1}
             return {
                 "status": "queued",
                 "position": position,
@@ -105,6 +108,8 @@ class ModelQueue:
             }
         if request_id in self._active:
             req = self._active[request_id]
+            if user_id is not None and req.user_id is not None and req.user_id != user_id:
+                return {"status": "forbidden", "position": -1}
             return {
                 "status": "running",
                 "position": 0,
@@ -138,9 +143,11 @@ class ModelQueue:
             ],
         }
 
-    def cancel_request(self, request_id: str) -> bool:
+    def cancel_request(self, request_id: str, user_id: Optional[int] = None) -> bool:
         for i, req in enumerate(self._queue):
             if req.request_id == request_id:
+                if user_id is not None and req.user_id is not None and req.user_id != user_id:
+                    return False
                 req.cancelled = True
                 req._cancel_event.set()
                 req._acquire_event.set()
@@ -150,6 +157,8 @@ class ModelQueue:
 
         if request_id in self._active:
             req = self._active[request_id]
+            if user_id is not None and req.user_id is not None and req.user_id != user_id:
+                return False
             req.cancelled = True
             req._cancel_event.set()
             logger.info("Cancellation signalled for active request %s on model %s", request_id, self.model_key)
@@ -279,16 +288,16 @@ class InferenceQueueManager:
             raise RuntimeError(f"Inference queue is full (max_queue_size={self._max_queue_size})")
         return q.submit_request(user_id=user_id, priority=priority)
 
-    def get_queue_status(self, request_id: str) -> Dict[str, Any]:
+    def get_queue_status(self, request_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         for q in self._model_queues.values():
-            status = q.get_queue_status(request_id)
+            status = q.get_queue_status(request_id, user_id=user_id)
             if status.get("status") != "unknown":
                 return status
         return {"status": "unknown", "position": -1}
 
-    def cancel_request(self, request_id: str) -> bool:
+    def cancel_request(self, request_id: str, user_id: Optional[int] = None) -> bool:
         for q in self._model_queues.values():
-            if q.cancel_request(request_id):
+            if q.cancel_request(request_id, user_id=user_id):
                 return True
         return False
 

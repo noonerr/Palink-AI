@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import {
@@ -113,6 +113,7 @@ export function ModelManagementTab({
   const [wsBaiduCookie, setWsBaiduCookie] = useState('');
   const [wsCustomUrl, setWsCustomUrl] = useState('');
   const [wsCustomEngine, setWsCustomEngine] = useState<'searxng' | 'brave'>('searxng');
+  const [wsSearchToken, setWsSearchToken] = useState('');
   const [wsTesting, setWsTesting] = useState(false);
   const [wsTestResult, setWsTestResult] = useState<{success: boolean; message: string} | null>(null);
   const [mmprojFiles, setMmprojFiles] = useState<{filename: string; path: string; size_bytes: number}[]>([]);
@@ -215,6 +216,7 @@ export function ModelManagementTab({
         setWsBaiduCookie(data.baidu_cookie ?? '');
         setWsCustomUrl(data.custom_url ?? '');
         setWsCustomEngine(data.custom_engine ?? 'searxng');
+        setWsSearchToken(data.search_token ?? '');
       }).catch((e) => {
         console.error('Failed to load web search config:', e);
       });
@@ -1512,6 +1514,23 @@ export function ModelManagementTab({
                 </>
               )}
 
+              {wsEnabled && (
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">搜索服务访问令牌</label>
+                  <div className="relative">
+                    <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      placeholder="可选，留空则不验证"
+                      value={wsSearchToken}
+                      onChange={e => setWsSearchToken(e.target.value)}
+                      className="pl-9"
+                      type="password"
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">如果你的 SearXNG 实例配置了 Bearer Token 认证，在此填写。请求时会自动附带 Authorization 头</p>
+                </div>
+              )}
+
               <div className="flex justify-between items-center pt-2 border-t border-border/50">
                 <Button
                   variant="outline"
@@ -1581,6 +1600,7 @@ export function ModelManagementTab({
                         baidu_cookie: wsBaiduCookie,
                         custom_url: wsCustomUrl,
                         custom_engine: wsCustomEngine,
+                        search_token: wsSearchToken,
                       });
                       toast.success('网络搜索配置已保存');
                       setWsTestResult(null);

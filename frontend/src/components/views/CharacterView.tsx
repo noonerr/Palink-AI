@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
@@ -32,14 +32,11 @@ interface CharacterViewProps {
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
 
 export function CharacterView({
-  token: _token,
   user,
   models,
   t,
   systemDefaults,
   lang,
-  sidebarCollapsed: _sidebarCollapsedProp,
-  setSidebarCollapsed: _setSidebarCollapsedProp,
 }: CharacterViewProps) {
   const { characterId } = useParams<{ characterId?: string }>();
   const navigate = useNavigate();
@@ -62,6 +59,7 @@ export function CharacterView({
   const [messages, setMessages] = useState<CharacterChatMessage[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(systemDefaults?.default_character_chat_model || models[0]?.id || '');
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
+  const [showCharacterStatus, setShowCharacterStatus] = useState(false);
   const [loading, setLoading] = useState(true);
   
   // 对话分支相关状态
@@ -256,6 +254,9 @@ export function CharacterView({
       if (e.detail?.characterDisplayMode !== undefined) {
         setCharacterDisplayMode(e.detail.characterDisplayMode);
       }
+      if (e.detail?.showCharacterStatus !== undefined) {
+        setShowCharacterStatus(e.detail.showCharacterStatus);
+      }
     };
     window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
     return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdate);
@@ -277,6 +278,7 @@ export function CharacterView({
       setShowModelReasoning(settings.show_model_reasoning || false);
       setMemoryMode(settings.memory_mode || 'rule');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
+      setShowCharacterStatus(settings.show_character_status || false);
     } catch (e) {
       console.error('Failed to fetch user settings:', e);
     }
@@ -609,7 +611,7 @@ export function CharacterView({
       setForceShowOverlay(characterId);
       setShowImportOptions(null);
       
-      setShowProcessingMessage({ show: true, message: 'Processing stopped' });
+      setShowProcessingMessage({ show: true, message: '正在解析角色...' });
       
       console.log('[handleParseAndTranslateCharacter] Calling parse API...');
       await api.post('/api/characters/parse', { character_id: characterId, model: selectedModel });
@@ -1249,6 +1251,8 @@ export function CharacterView({
           manualCompressMemory={manualCompressMemory}
           dialogueMode={dialogueMode}
           setDialogueMode={setDialogueMode}
+          showCharacterStatus={showCharacterStatus}
+          setShowCharacterStatus={setShowCharacterStatus}
           sidebarCollapsed={storylineCollapsed}
           setSidebarCollapsed={setStorylineCollapsed}
           mobileSidebarOpen={mobileSidebarOpen}

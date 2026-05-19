@@ -30,6 +30,7 @@ class UserSetting(Base):
     custom_character_prompt_zh = Column(Text, nullable=True)
     custom_character_prompt_en = Column(Text, nullable=True)
     use_custom_prompts = Column(Boolean, default=False)
+    show_character_status = Column(Boolean, default=False)
     user = relationship("User", back_populates="settings")
 
 class GenerationPreset(Base):

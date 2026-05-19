@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Sparkles, X, Edit3, Trash2, Menu, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
@@ -32,7 +32,6 @@ interface ChatViewProps {
 }
 
 export function ChatViewMobile({
-  token: _token,
   user,
   models,
   currentModel,
@@ -242,7 +241,7 @@ export function ChatViewMobile({
           setTimeout(() => chat.loadSessions(), 1000);
         }
 
-        await consumeSseStream(res, (json) => {
+        const streamResult = await consumeSseStream(res, (json) => {
           if (json.type === 'web_search' && json.results) {
             chat.setMessages(prev => prev.map(m => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
             return;
@@ -305,7 +304,9 @@ export function ChatViewMobile({
 
         chat.setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
 
-        if (fullContent.length > 20) {
+        if (streamResult.cancelled) {
+          streamWasCancelled = true;
+        } else if (fullContent.length > 20) {
           api.post('/api/chat/suggestions', { message: fullContent, model: currentModel }).then(chat.setSuggestions).catch(() => {});
         }
       } catch (e) {

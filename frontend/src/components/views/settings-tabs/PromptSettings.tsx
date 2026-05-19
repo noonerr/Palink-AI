@@ -155,6 +155,7 @@ export function PromptSettings({ token }: PromptSettingsProps) {
                 <ul className="text-muted-foreground space-y-1">
             <li>• 角色扮演提示词支持变量：<code className="bg-black/20 px-1 rounded">{'{name}'}</code>（角色名）、<code className="bg-black/20 px-1 rounded">{'{user}'}</code>（用户昵称）</li>
                 <li>• 其他变量：<code className="bg-black/20 px-1 rounded">{'{personality}'}</code>、<code className="bg-black/20 px-1 rounded">{'{background}'}</code>、<code className="bg-black/20 px-1 rounded">{'{scenario}'}</code>、<code className="bg-black/20 px-1 rounded">{'{description}'}</code>、<code className="bg-black/20 px-1 rounded">{'{system_prompt}'}</code></li>
+            <li>• 角色状态表格：在角色聊天菜单中开启"显示角色状态"后，系统会自动在提示词末尾追加角色状态表格指令，无需手动添加</li>
             </ul>
               </div>
             </div>

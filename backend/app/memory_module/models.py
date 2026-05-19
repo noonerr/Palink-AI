@@ -76,6 +76,7 @@ class MemoryEntry(BaseModel):
     topics: List[str] = []
     tokens_count: int = 0
     created_at: Optional[datetime] = None
+    embedding: Optional[List[float]] = None
     
     class Config:
         from_attributes = True

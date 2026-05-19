@@ -139,7 +139,6 @@ export interface Translations {
 
 export type Theme = 'light' | 'dark';
 export type Language = 'zh' | 'en';
-export type ViewTab = 'chat' | 'workspace' | 'settings' | 'characters';
 
 export interface Character {
   id: string;
@@ -164,24 +163,6 @@ export interface Character {
   extensions?: Record<string, any>;
   avatar_url?: string;
   greeting?: string;
-}
-
-// Silly Tavern 角色卡格式
-export interface SillyTavernCharacterCard {
-  spec: 'chara_card_v2';
-  spec_version: '2.0';
-  data: {
-    name: string;
-    description: string;
-    scenario: string;
-    first_mes: string;
-    mes_example: string;
-    system_prompt: string;
-    tags: string[];
-    creator: string;
-    character_version: string;
-    extensions: Record<string, any>;
-  };
 }
 
 export interface CharacterChatSession {

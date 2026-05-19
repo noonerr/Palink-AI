@@ -8,6 +8,8 @@ __pycache__/
 # Build outputs
 frontend/dist/
 backend/__pycache__/
+build/
+dist/
 
 # Logs & temp files
 *.log
@@ -15,8 +17,16 @@ backend/__pycache__/
 .x_*.txt
 *.txt.bak
 
-# Environment
+# Environment & secrets
 .env
+env-v2*
+*-Pal.env
+*-Pal.yml
+*.pem
+*.key
+*.crt
+casdoor_app.conf
+fix_casdoor_https.sh
 
 # Large files / backups
 *.zip
@@ -25,30 +35,38 @@ temp_backup/
 temp_extract*/
 backup_*/
 empty_del_*/
+backups/
+temp_backup_*/
 
-# ML model files
-backend/models/
-backend/app/models/
+# ML model files (weights only, not Python source)
 *.gguf
+backend/models/
+
+# Runtime data directories
 data/
+backend/app/data/
+frontend/public/public/
+
+# Test attack payloads (may contain tokens/keys)
+test_attack/
+
+# IDE
+.trae/
+.claude/settings.local.json
+.claude/.mcp.json
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.trae/
-
-# Sensitive files
-*-Pal.env
+# Sensitive scripts & temp files
 *.tmp
 _debug_test.py
 check_settings.py
 create_admin.py
 .tmp_*.json
-*-Pal.yml
-*.pem
-*.key
-*.crt
-backups/
-temp_backup_*/
+fix_*.sh
+fix_*.py
+update_env.sh
+modify_app.py
+fix_app_ratelimit.py

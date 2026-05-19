@@ -96,7 +96,3 @@ export function analyzeError(error: any): ErrorInfo {
     technicalDetails: errorMessage
   };
 }
-
-export function formatErrorForUser(errorInfo: ErrorInfo): string {
-  return `${errorInfo.title}\n\n${errorInfo.description}\n\n建议：${errorInfo.suggestion}`;
-}

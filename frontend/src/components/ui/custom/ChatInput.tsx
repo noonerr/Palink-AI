@@ -1,15 +1,7 @@
-﻿import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { ArrowUp, Paperclip, X, Square, Loader2, AlertCircle, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Model } from '@/types';
-
-interface Attachment {
-  type: 'image' | 'file';
-  name: string;
-  url: string;
-  thumbnail?: string;
-  size?: number;
-}
+import type { Model, Attachment } from '@/types';
 
 interface ChatInputProps {
   value: string;

@@ -136,8 +136,12 @@ async def delete_character(
 ):
     """删除角色"""
     character_service = CharacterService(db)
-    success = character_service.delete_character(character_id, user.id)
-    
+    try:
+        success = character_service.delete_character(character_id, user.id)
+    except Exception as e:
+        logger.error(f"Character deletion failed: {e}")
+        raise HTTPException(500, f"Failed to delete character: {e}")
+
     if not success:
         raise HTTPException(404, "Character not found")
     

@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -12,6 +12,23 @@ import { SmoothOutput } from './SmoothOutput';
 import { ImageThumbnails, FullscreenImageViewer, extractImagesFromContent } from './ImageViewer';
 import { WebSearchResults } from './WebSearchResults';
 import type { Message as MessageType, Model } from '@/types';
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
+
+function MarkdownImg({ onClick, ...props }: any) {
+  return (
+    <img
+      {...props}
+      className="max-w-full h-auto max-h-64 object-contain rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+      loading="lazy"
+      onClick={(e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (props.src && onClick) onClick(props.src);
+      }}
+    />
+  );
+}
 
 const IMAGE_HOSTING_DOMAINS = [
   'imageshack.us', 'imageshack.com',
@@ -44,7 +61,7 @@ function preprocessImageUrls(text: string): string {
     while ((m = imgRefPattern.exec(line)) !== null) {
       existingImageRefs.push(m[1]);
     }
-    const urlPattern = /(?<![(\[])(https?:\/\/[^\s<>\"')\]]+)/g;
+    const urlPattern = /(?<![(\[])(https?:\/\/[^\s<>"')\]]+)/g;
     return line.replace(urlPattern, (url) => {
       if (existingImageRefs.includes(url)) return url;
       if (isImageUrl(url)) {
@@ -142,7 +159,7 @@ function parseContentSegments(displayContent: string, isStreaming: boolean = fal
     });
   }
 
-  const inlineMathRegex = /\$[^\$\n]+?\$/g;
+  const inlineMathRegex = /\$[^$\n]+?\$/g;
   content = content.replace(inlineMathRegex, (match) => {
     protectedBlocks.push(match);
     return `\x00PBLOCK${protectedBlocks.length - 1}\x00`;
@@ -216,9 +233,8 @@ function parseContentSegments(displayContent: string, isStreaming: boolean = fal
     segments.push({ type: 'normal', text: content.trim() });
   }
 
-  const placeholderRegex = /\x00PBLOCK(\d+)\x00/g;
   for (const seg of segments) {
-    seg.text = seg.text.replace(placeholderRegex, (_, idx) => protectedBlocks[parseInt(idx)]);
+    seg.text = seg.text.replace(/\x00PBLOCK(\d+)\x00/g, (_, idx) => protectedBlocks[parseInt(idx)]);
   }
 
   return segments;
@@ -233,8 +249,8 @@ function SegmentBox({ segment, markdownComponents }: {
       <div className="my-1 px-3 py-2 rounded-lg bg-purple-50/80 dark:bg-purple-950/30 border-l-2 border-purple-400 dark:border-purple-600">
         <div className="text-[15px] text-purple-700 dark:text-purple-300 italic leading-relaxed">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
+            remarkPlugins={REMARK_PLUGINS}
+            rehypePlugins={REHYPE_PLUGINS}
             components={markdownComponents}
           >
             {`(${segment.text})`}
@@ -249,8 +265,8 @@ function SegmentBox({ segment, markdownComponents }: {
       <div className="my-1 px-3 py-2 rounded-lg bg-blue-50/80 dark:bg-blue-950/30 border-l-2 border-blue-400 dark:border-blue-600">
         <div className="text-[15px] text-blue-600 dark:text-blue-400 font-semibold leading-relaxed">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
+            remarkPlugins={REMARK_PLUGINS}
+            rehypePlugins={REHYPE_PLUGINS}
             components={markdownComponents}
           >
             {`"${segment.text}"`}
@@ -264,8 +280,8 @@ function SegmentBox({ segment, markdownComponents }: {
     <div className="my-1 px-3 py-2">
       <div className="markdown-content w-full break-words overflow-wrap-anywhere text-[15px] text-slate-900 dark:text-white leading-relaxed">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex]}
+          remarkPlugins={REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
           components={markdownComponents}
         >
           {preprocessImageUrls(segment.text)}
@@ -287,8 +303,8 @@ function FramelessContent({ segments, streaming, markdownComponents }: {
           return (
             <div key={i} className="text-[15px] font-semibold text-blue-600 dark:text-blue-400 leading-relaxed">
               <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
+                remarkPlugins={REMARK_PLUGINS}
+                rehypePlugins={REHYPE_PLUGINS}
                 components={markdownComponents}
                 unwrapDisallowed
                 allowedElements={['p', 'span', 'em', 'strong', 'code', 'math', 'inlineMath']}
@@ -302,8 +318,8 @@ function FramelessContent({ segments, streaming, markdownComponents }: {
           return (
             <div key={i} className="text-[15px] text-purple-600 dark:text-purple-400 italic leading-relaxed">
               <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
+                remarkPlugins={REMARK_PLUGINS}
+                rehypePlugins={REHYPE_PLUGINS}
                 components={markdownComponents}
                 unwrapDisallowed
                 allowedElements={['p', 'span', 'em', 'strong', 'code', 'math', 'inlineMath']}
@@ -402,9 +418,17 @@ function MessageInner({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleFullscreen = useCallback((index: number) => {
-    setFullscreenIndex(index);
-  }, []);
+  const handleFullscreen = useCallback((srcOrIndex: number | string) => {
+    if (typeof srcOrIndex === 'number') {
+      setFullscreenIndex(srcOrIndex);
+    } else {
+      const idx = userImages.findIndex(img => {
+        const imgSrc = typeof img === 'string' ? img : img.url || '';
+        return imgSrc === srcOrIndex;
+      });
+      setFullscreenIndex(idx >= 0 ? idx : 0);
+    }
+  }, [userImages]);
 
   const handleCloseFullscreen = useCallback(() => {
     setFullscreenIndex(null);
@@ -425,39 +449,10 @@ function MessageInner({
     }
   };
 
-  const markdownComponents = {
+  const markdownComponents = useMemo(() => ({
     code: CodeBlock,
-    img: ({ ...props }: any) => (
-      <img
-        {...props}
-        className="max-w-full h-auto max-h-64 object-contain rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-        loading="lazy"
-        onClick={(e: React.MouseEvent) => {
-          e.stopPropagation();
-          if (props.src) {
-            handleFullscreen(0);
-          }
-        }}
-      />
-    )
-  };
-
-  const fullMarkdownComponents = {
-    code: CodeBlock,
-    img: ({ ...props }: any) => (
-      <img
-        {...props}
-        className="max-w-full h-auto max-h-64 object-contain rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-        loading="lazy"
-        onClick={(e: React.MouseEvent) => {
-          e.stopPropagation();
-          if (props.src) {
-            handleFullscreen(0);
-          }
-        }}
-      />
-    )
-  };
+    img: (props: any) => <MarkdownImg {...props} onClick={handleFullscreen} />,
+  }), [handleFullscreen]);
 
   const shouldUseSegments = isCharacterChat && !isUser && contentSegments.length > 0;
 
@@ -553,8 +548,8 @@ function MessageInner({
                   {userTextContent && (
                     <div className="markdown-content w-full break-words overflow-wrap-anywhere">
                       <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
+                        remarkPlugins={REMARK_PLUGINS}
+                        rehypePlugins={REHYPE_PLUGINS}
                         components={markdownComponents}
                       >
                         {preprocessImageUrls(userTextContent)}
@@ -580,9 +575,9 @@ function MessageInner({
               ) : (
                 <div className="markdown-content w-full break-words overflow-wrap-anywhere">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={fullMarkdownComponents}
+                    remarkPlugins={REMARK_PLUGINS}
+                    rehypePlugins={REHYPE_PLUGINS}
+                    components={markdownComponents}
                   >
                     {preprocessImageUrls(displayContent)}
                   </ReactMarkdown>

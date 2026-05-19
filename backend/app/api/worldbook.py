@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..core import get_db
 from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
@@ -90,7 +90,7 @@ async def list_worldbooks(
     db: Session = Depends(get_db),
 ):
     """获取用户的所有世界书"""
-    wbs = db.query(WorldBook).filter(WorldBook.user_id == user.id).order_by(WorldBook.updated_at.desc()).all()
+    wbs = db.query(WorldBook).options(selectinload(WorldBook.entries)).filter(WorldBook.user_id == user.id).order_by(WorldBook.updated_at.desc()).all()
     return [_wb_to_response(wb) for wb in wbs]
 
 

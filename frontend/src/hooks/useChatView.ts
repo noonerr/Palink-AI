@@ -1,25 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { buildMockSuggestions, streamMockAssistantReply } from '@/lib/mockChatStream';
-import type { Message as MessageType, Model, Session } from '@/types';
+import { consumeSseStream } from '@/lib/sseStream';
+import type { Attachment, MemoryStats, Message as MessageType, Model, Session } from '@/types';
 
 type StreamStatus = 'idle' | 'pending' | 'queued' | 'streaming' | 'done' | 'error' | 'cancelled';
-
-export interface MemoryStats {
-  message_count: number;
-  token_count: number;
-  oldest_message_hours: number;
-  compression_needed: boolean;
-  compression_reason: string;
-}
-
-interface Attachment {
-  type: 'image' | 'file';
-  name: string;
-  url: string;
-  thumbnail?: string;
-  size?: number;
-}
 
 export interface UseChatViewParams {
   currentModel: string;
@@ -44,7 +30,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<
-    { type: 'single'; id: string } | { type: 'batch' } | { type: 'message'; messageId: number; messageIndex: number } | null
+    { type: 'single'; id: string } | { type: 'batch' } | { type: 'message'; messageId: string | number; messageIndex: number } | null
   >(null);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showMessageSelect, setShowMessageSelect] = useState(false);
@@ -66,6 +52,10 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   const initialBottomLockUntilRef = useRef(0);
   const lastLoadedSessionIdRef = useRef<string | null>(null);
   const isAtBottomRef = useRef(true);
+  const queueInfoRef = useRef<typeof queueInfo>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  queueInfoRef.current = queueInfo;
   const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   const markStreamActive = useCallback(() => {
@@ -73,14 +63,14 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   }, []);
 
   const handleStopStreaming = useCallback(() => {
-    if (queueInfo?.requestId) {
-      api.post(`/api/chat/queue/cancel/${queueInfo.requestId}`).catch(() => {});
+    if (queueInfoRef.current?.requestId) {
+      api.post(`/api/chat/queue/cancel/${queueInfoRef.current.requestId}`).catch(() => {});
     }
     if (!abortControllerRef.current) return;
     setStreamStatus('cancelled');
     setQueueInfo(null);
     abortControllerRef.current.abort();
-  }, [queueInfo]);
+  }, []);
 
   const loadMemoryStats = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
@@ -131,7 +121,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       await loadMemoryStats(activeSessionId);
     } catch (e) {
       console.error('Manual compress failed:', e);
-      console.error('压缩失败');
+      toast.error('压缩失败');
     } finally {
       setCompressing(false);
     }
@@ -143,6 +133,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setSessions(data);
     } catch (e) {
       console.error('Failed to load sessions:', e);
+      toast.error('加载会话列表失败');
     }
   }, []);
 
@@ -150,7 +141,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     if (!reasoning) {
       return content;
     }
-    return `<<HIDE_THINKING_START>>${reasoning}<<HIDE_THINKING_END>>\n${content}`;
+    return `⋘${reasoning}⋙\n${content}`;
   }, []);
 
   const normalizeAssistantAnswer = useCallback((rawContent: string) => {
@@ -254,6 +245,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       }
     } catch (e) {
       console.error('Failed to load messages:', e);
+      toast.error('加载消息失败');
     }
   }, [currentModel, loadMemoryStats]);
 
@@ -324,6 +316,9 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       const formData = new FormData();
       formData.append('file', file);
       const data = await api.post('/api/upload', formData);
+      if (!data.url) {
+        throw new Error('上传返回数据异常');
+      }
       setAttachments((prev) => [...prev, {
         type,
         name: file.name,
@@ -333,51 +328,18 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       }]);
     } catch (e) {
       console.error('Upload failed:', e);
+      toast.error('文件上传失败');
     } finally {
       setUploading(false);
     }
   };
-
-  const consumeSseStream = useCallback(
-    async (res: Response, onJson: (json: Record<string, unknown>) => void) => {
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('Invalid stream response');
-      const decoder = new TextDecoder();
-      let buffer = '';
-      const processChunk = (chunk: string) => {
-        buffer += chunk;
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-        for (const event of events) {
-          const lines = event.split('\n');
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === '[DONE]') continue;
-            try {
-              onJson(JSON.parse(data));
-            } catch {
-            }
-          }
-        }
-      };
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processChunk(decoder.decode(value, { stream: true }));
-      }
-      const tail = decoder.decode();
-      if (tail) processChunk(tail);
-    },
-    []
-  );
 
   const handleRegenerate = useCallback(async (messageIndex: number) => {
     if (streaming || uploading || messageIndex < 1) return;
     const assistantMessageIndex = messageIndex;
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex < 0) return;
-    const userMessage = messages[userMessageIndex];
+    const userMessage = messagesRef.current[userMessageIndex];
     if (userMessage.role !== 'user') return;
 
     setRegeneratingMessageIndex(assistantMessageIndex);
@@ -448,7 +410,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         files: [],
       }, { signal: abortControllerRef.current.signal });
 
-      await consumeSseStream(res, (json) => {
+      const streamResult = await consumeSseStream(res, (json) => {
         if (json.type === 'queue' && json.request_id) {
           setStreamStatus('queued');
           isQueued = true;
@@ -492,7 +454,9 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       });
 
       setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-      if (fullContent.length > 20) {
+      if (streamResult.cancelled) {
+        streamWasCancelled = true;
+      } else if (fullContent.length > 20) {
         api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
           .then(setSuggestions)
           .catch(() => {});
@@ -504,7 +468,9 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         streamHasError = true;
         setMessages((prev) => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex].content += `\n[Error: ${(e as Error).message}]`;
+          if (assistantMessageIndex >= 0 && assistantMessageIndex < newMessages.length) {
+            newMessages[assistantMessageIndex].content += `\n[Error: ${(e as Error).message}]`;
+          }
           return newMessages;
         });
       }
@@ -521,7 +487,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
-  }, [streaming, uploading, messages, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream]);
+  }, [streaming, uploading, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage]);
 
   const handleSend = useCallback(async (overrideText?: string, webSearchEnabled = false) => {
     const text = typeof overrideText === 'string' ? overrideText : input;
@@ -626,7 +592,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         setTimeout(loadSessions, 1000);
       }
 
-      await consumeSseStream(res, (json) => {
+      const streamResult = await consumeSseStream(res, (json) => {
         if (json.type === 'web_search' && json.results) {
           setMessages((prev) => prev.map((m) => m.id === assistantMessageId ? { ...m, webSearchResults: { query: json.query as string || '', results: json.results as { title: string; snippet: string; url: string }[] } } : m));
           return;
@@ -700,7 +666,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setIsSendingMessage(false);
       abortControllerRef.current = null;
     }
-  }, [input, attachments, streaming, uploading, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, consumeSseStream, loadSessions, ensureDeveloperSession]);
+  }, [input, attachments, streaming, uploading, currentModel, activeSessionId, developerMode, markStreamActive, setAssistantMessageSnapshot, streamMockIntoMessage, loadSessions, ensureDeveloperSession]);
 
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
@@ -739,6 +705,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       }
     } catch (e) {
       console.error('Delete failed:', e);
+      toast.error('删除失败');
     } finally {
       setPendingDelete(null);
       setShowDeleteConfirm(false);
@@ -760,7 +727,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     setShowDeleteConfirm(true);
   };
 
-  const handleDeleteMessage = (messageId: number, messageIndex: number) => {
+  const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
     setPendingDelete({ type: 'message', messageId, messageIndex });
     setShowDeleteConfirm(true);
   };
@@ -786,6 +753,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       setShowMessageSelect(false);
     } catch (e) {
       console.error('Delete messages failed:', e);
+      toast.error('删除消息失败');
     }
   };
 
@@ -805,8 +773,15 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       });
     } catch (e) {
       console.error('Failed to edit message:', e);
+      toast.error('编辑消息失败');
     }
   };
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom < 120;
+  }, []);
 
   return {
     sessions,
@@ -864,7 +839,6 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     handleDeleteSelectedMessages,
     handleEditMessage,
     markStreamActive,
-    consumeSseStream,
     setAssistantMessageSnapshot,
     ensureDeveloperSession,
     streamMockIntoMessage,
@@ -873,5 +847,6 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     pendingInitialBottomLockRef,
     initialBottomLockUntilRef,
     isAtBottomRef,
+    handleScroll,
   };
 }

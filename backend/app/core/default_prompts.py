@@ -75,6 +75,56 @@ ATTRIBUTE_LABELS_EN = {
     "description": "Description: "
 }
 
+CHARACTER_STATUS_TABLE_ZH = """
+
+【角色状态表格】
+你必须在每次回复的最末尾输出一个 Markdown 表格，用于总结当前角色的状态。表格格式如下：
+
+| | |
+|---|---|
+| 🧥 衣着 | （角色当前穿着的详细描述，包括款式、颜色、状态等） |
+| 💖 心情 | （角色当前的情绪状态，附好感度百分比，如：开心 78%） |
+| 🎬 动作 | （角色当前正在做的动作，包含细微动作和神态） |
+| 💭 内心想法 | （角色此刻内心的真实想法，用角色的语气和思维方式表达） |
+| 🎯 想要什么 | （角色此刻内心渴望或追求的事物，体现角色的动机） |
+| 📍 位置 | （角色当前所在位置的简写） |
+
+表格填写规则：
+- 不要输出表头行"属性/状态"，直接输出数据行。
+- 状态内容要贴合角色当前的语言风格和性格，用角色自己的方式描述。例如：傲娇角色的内心想法可以写"才、才不是在等他呢……"，而不是"在等待"。
+- 衣着描述要具体，包含颜色、款式、当前状态（如"白色衬衫微微敞开领口，浅蓝色短裙裙摆随风轻摆"）。
+- 动作描述要包含细微动作和神态（如"双手背在身后，脚尖轻轻点地，眼神闪烁"）。
+- 内心想法要真实反映角色内心，可以与外在表现形成反差。
+- 好感度百分比根据对话进展动态变化，初始值由角色性格决定，范围0%~100%。
+- 每次回复都要根据对话内容更新表格中的所有字段。
+- 表格必须放在回复的最末尾，与正文之间用 --- 分隔。
+- 不要在表格前添加额外说明文字，直接输出表格即可。"""
+
+CHARACTER_STATUS_TABLE_EN = """
+
+[Character Status Table]
+You MUST output a Markdown table at the very end of every response to summarize the character's current status. Format:
+
+| | |
+|---|---|
+| 🧥 Outfit | (Detailed description of current clothing, including style, color, condition) |
+| 💖 Mood | (Current emotional state, with affinity %, e.g.: Happy 78%) |
+| 🎬 Action | (What the character is currently doing, including subtle gestures and expressions) |
+| 💭 Inner Thought | (Character's true inner thought, expressed in the character's own voice and thinking style) |
+| 🎯 Desire | (What the character currently wants or pursues, reflecting their motivation) |
+| 📍 Location | (Brief name of current location) |
+
+Table rules:
+- Do NOT output the header row "Attribute/Status"; output data rows directly.
+- Status content should match the character's current language style and personality. Express it the way the character would. For example, a tsundere character's inner thought could be "I-I wasn't waiting for them or anything..." rather than just "Waiting."
+- Outfit descriptions should be specific, including color, style, and current condition (e.g., "White shirt with collar slightly open, light blue skirt swaying gently in the breeze").
+- Action descriptions should include subtle gestures and expressions (e.g., "Hands behind back, tapping toes, eyes darting around").
+- Inner thoughts should genuinely reflect the character's inner world, potentially contrasting with outward behavior.
+- Affinity percentage changes dynamically based on conversation progress; initial value depends on personality, range 0%~100%.
+- Update ALL fields in every response based on the conversation.
+- The table MUST be placed at the very end of the response, separated from the main text by ---.
+- Do not add any explanatory text before the table; output the table directly."""
+
 
 def build_default_chat_prompt(lang: str = "zh") -> str:
     """构建默认的普通对话提示词"""
@@ -93,7 +143,8 @@ def build_default_character_prompt(
     background: str = "",
     scenario: str = "",
     description: str = "",
-    custom_prompt: str = ""
+    custom_prompt: str = "",
+    show_character_status: bool = False
 ) -> str:
     """构建默认的角色扮演提示词"""
     # 选择语言
@@ -128,5 +179,11 @@ def build_default_character_prompt(
       dialogue_mode=dialogue_text.format(name=char_name),
         attributes=attributes_text
     )
+
+    if show_character_status:
+        if lang == "zh":
+            prompt += CHARACTER_STATUS_TABLE_ZH
+        else:
+            prompt += CHARACTER_STATUS_TABLE_EN
 
     return prompt

@@ -63,15 +63,24 @@ def _settings_path() -> str:
     return os.path.join(settings.DATA_DIR, "web_search.json")
 
 
+_config_cache: dict | None = None
+_config_mtime: float | None = None
+
+
 def _get_raw_config() -> dict:
+    global _config_cache, _config_mtime
     path = _settings_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
+    try:
+        mtime = os.path.getmtime(path)
+        if _config_mtime == mtime and _config_cache is not None:
+            return _config_cache
+        with open(path, "r", encoding="utf-8") as f:
+            _config_cache = json.load(f)
+            _config_mtime = mtime
+            return _config_cache
+    except Exception:
+        pass
+    return _config_cache or {
         "enabled": False,
         "engine": "searxng",
         "searxng_url": SEARXNG_DEFAULT_URL,
@@ -79,6 +88,7 @@ def _get_raw_config() -> dict:
         "baidu_cookie": "",
         "custom_url": "",
         "custom_engine": "searxng",
+        "search_token": "",
     }
 
 
@@ -86,7 +96,7 @@ def get_web_search_config() -> dict:
     return _mask_sensitive_fields(_get_raw_config())
 
 
-_SENSITIVE_KEYS = {"brave_api_key", "baidu_cookie"}
+_SENSITIVE_KEYS = {"brave_api_key", "baidu_cookie", "search_token"}
 
 
 def _mask_sensitive_fields(data: dict) -> dict:
@@ -107,6 +117,7 @@ def save_web_search_config(config: dict) -> dict:
         "enabled", "engine",
         "searxng_url", "brave_api_key",
         "baidu_cookie", "custom_url", "custom_engine",
+        "search_token",
     }
     cleaned = {k: v for k, v in config.items() if k in allowed_keys}
     defaults = _get_raw_config()
@@ -126,7 +137,7 @@ async def search_web(query: str, num_results: int = 5) -> list:
 
     engine = config.get("engine", "searxng")
     # 检查是否启用单引擎轮询模式（默认启用，防止被 ban）
-    use_rotator = config.get("use_single_engine_rotation", True)
+    use_rotator = config.get("use_single_engine_rotation", False)
 
     if use_rotator:
         try:
@@ -174,8 +185,13 @@ async def _search_searxng(query: str, base_url: str, num_results: int) -> list:
         "format": "json",
         "categories": "general",
     }
+    config = _get_raw_config()
+    token = config.get("search_token", "").strip()
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     client = await get_http_client()
-    resp = await client.get(url, params=params)
+    resp = await client.get(url, params=params, headers=headers)
     resp.raise_for_status()
     data = resp.json()
 

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 
 from ..core import get_db, settings
@@ -280,6 +281,10 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
         has_chinese = any('一' <= c <= '鿿' for c in (char.name or "") + (char.description or "")[:100])
         prompt_lang = "zh" if has_chinese else "en"
     
+    show_character_status = False
+    if user_setting and user_setting.show_character_status:
+        show_character_status = True
+
     # Check if user has custom prompts enabled
     if user_setting and user_setting.use_custom_prompts:
         custom_prompt = None
@@ -291,6 +296,9 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
         if custom_prompt:
             # Replace placeholders in custom prompt
             custom_prompt = _replace_placeholders(custom_prompt, user_nickname, char.name or "Character")
+            if show_character_status:
+                from ..core.default_prompts import CHARACTER_STATUS_TABLE_ZH, CHARACTER_STATUS_TABLE_EN
+                custom_prompt += CHARACTER_STATUS_TABLE_ZH if prompt_lang == "zh" else CHARACTER_STATUS_TABLE_EN
             return custom_prompt
     
     # Build system prompt using default config
@@ -304,7 +312,8 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
         background=char.background,
         scenario=char.scenario,
         description=char.description,
-        custom_prompt=char.system_prompt
+        custom_prompt=char.system_prompt,
+        show_character_status=show_character_status
     )
     
     return system_prompt
@@ -335,13 +344,12 @@ async def import_parse_image(
         if not _is_public_http_url(req.image_url):
             raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
         try:
-            opener = urllib.request.build_opener(_NoRedirectHandler())
-            request = urllib.request.Request(
-                req.image_url,
-                headers={"User-Agent": "Palink-AI/1.0"}
-            )
-            with opener.open(request, timeout=15) as r:
-                image_data = _read_with_size_limit(r)
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+                resp = await client.get(req.image_url, headers={"User-Agent": "Palink-AI/1.0"})
+                if len(resp.content) > _MAX_IMAGE_SIZE:
+                    raise ValueError("Image too large")
+                image_data = resp.content
         except ValueError:
             raise HTTPException(status_code=413, detail="Image too large (max 50MB)")
         except Exception as e:
@@ -462,7 +470,7 @@ async def parse_character_card(
 
     if req.image_url:
         try:
-            normalized_url = normalize_image_url(req.image_url, check_size=True)
+            normalized_url = normalize_image_url(req.image_url, check_size=True, user_id=user.id)
 
             if normalized_url.startswith("data:image"):
                 img_data = base64.b64decode(normalized_url.split(",", 1)[1])
@@ -470,17 +478,15 @@ async def parse_character_card(
                 if not _is_public_http_url(normalized_url):
                     raise HTTPException(status_code=400, detail="Only public http(s) image URLs are allowed")
 
-                opener = urllib.request.build_opener(_NoRedirectHandler())
-                request = urllib.request.Request(
-                    normalized_url,
-                    headers={"User-Agent": "Palink-AI/1.0"}
-                )
-
-                with opener.open(request, timeout=10) as r:  # nosec B310
-                    content_type = (r.headers.get("Content-Type") or "").lower()
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                    resp = await client.get(normalized_url, headers={"User-Agent": "Palink-AI/1.0"})
+                    content_type = (resp.headers.get("content-type") or "").lower()
                     if content_type and not content_type.startswith("image/"):
                         raise HTTPException(status_code=415, detail="URL did not return an image")
-                    img_data = _read_with_size_limit(r, max_size=10 * 1024 * 1024)
+                    if len(resp.content) > 10 * 1024 * 1024:
+                        raise ValueError("Image too large")
+                    img_data = resp.content
 
         except ValueError:
             raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
@@ -1130,30 +1136,33 @@ async def check_frozen_branches(
     ).all()
 
     frozen_count = 0
+
+    branch_ids = [b.id for b in branches]
+    if not branch_ids:
+        return {"status": "ok", "frozen_count": 0}
+
+    stats = db.query(
+        CharacterChatMessage.branch_id,
+        func.count(CharacterChatMessage.id).label("msg_count"),
+        func.max(CharacterChatMessage.created_at).label("last_msg_at"),
+    ).filter(
+        CharacterChatMessage.branch_id.in_(branch_ids)
+    ).group_by(CharacterChatMessage.branch_id).all()
+
+    stats_map = {s.branch_id: s for s in stats}
+
     for branch in branches:
-        # 计算该分支的消息数量
-        message_count = db.query(CharacterChatMessage).filter(
-            CharacterChatMessage.branch_id == branch.id
-        ).count()
-
-        # 如果消息数量超过10条，检查最后消息时间
-        if message_count >= 10:
-            # 获取该分支的最后一条消息
-            last_msg = db.query(CharacterChatMessage).filter(
-                CharacterChatMessage.branch_id == branch.id
-            ).order_by(CharacterChatMessage.created_at.desc()).first()
-
-            if last_msg:
-                # 计算距离最后一条消息的对话轮数
-                messages_after = db.query(CharacterChatMessage).filter(
-                    CharacterChatMessage.session_id == session_id,
-                    CharacterChatMessage.created_at > last_msg.created_at
-                ).count()
-
-                # 如果之后有超过10条消息（5轮对话），则冻结
-                if messages_after >= 10 and not branch.is_frozen:
-                    branch.is_frozen = True
-                    frozen_count += 1
+        s = stats_map.get(branch.id)
+        if not s or s.msg_count < 10:
+            continue
+        if s.last_msg_at:
+            messages_after = db.query(CharacterChatMessage).filter(
+                CharacterChatMessage.session_id == session_id,
+                CharacterChatMessage.created_at > s.last_msg_at
+            ).count()
+            if messages_after >= 10 and not branch.is_frozen:
+                branch.is_frozen = True
+                frozen_count += 1
 
     db.commit()
 
@@ -1294,12 +1303,20 @@ async def delete_branch_preview(
         raise HTTPException(status_code=400, detail="Cannot delete the active branch")
 
     def _collect_descendant_branch_ids(bid: str, collected: list):
-        children = db.query(CharacterChatSessionBranch).filter(
-            CharacterChatSessionBranch.parent_branch_id == bid
+        all_branches = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.session_id == session_id
         ).all()
-        for child in children:
-            collected.append(child.id)
-            _collect_descendant_branch_ids(child.id, collected)
+        children_map: dict = {}
+        for b in all_branches:
+            if b.parent_branch_id:
+                children_map.setdefault(b.parent_branch_id, []).append(b.id)
+        stack = [bid]
+        while stack:
+            cur = stack.pop()
+            for child_id in children_map.get(cur, []):
+                if child_id not in collected:
+                    collected.append(child_id)
+                    stack.append(child_id)
 
     branch_ids = [branch_id]
     _collect_descendant_branch_ids(branch_id, branch_ids)
@@ -1339,12 +1356,20 @@ async def delete_branch(
         raise HTTPException(status_code=400, detail="Cannot delete the active branch")
 
     def _collect_descendant_branch_ids(bid: str, collected: list):
-        children = db.query(CharacterChatSessionBranch).filter(
-            CharacterChatSessionBranch.parent_branch_id == bid
+        all_branches = db.query(CharacterChatSessionBranch).filter(
+            CharacterChatSessionBranch.session_id == session_id
         ).all()
-        for child in children:
-            collected.append(child.id)
-            _collect_descendant_branch_ids(child.id, collected)
+        children_map: dict = {}
+        for b in all_branches:
+            if b.parent_branch_id:
+                children_map.setdefault(b.parent_branch_id, []).append(b.id)
+        stack = [bid]
+        while stack:
+            cur = stack.pop()
+            for child_id in children_map.get(cur, []):
+                if child_id not in collected:
+                    collected.append(child_id)
+                    stack.append(child_id)
 
     branch_ids_to_delete = [branch_id]
     _collect_descendant_branch_ids(branch_id, branch_ids_to_delete)
@@ -1661,7 +1686,7 @@ async def _character_chat_impl(
     if req.images:
         content_payload = [{"type": "text", "text": user_content}]
         for img_url in req.images:
-            normalized_img_url = normalize_image_url(img_url, check_size=True)
+            normalized_img_url = normalize_image_url(img_url, check_size=True, user_id=user.id)
             content_payload.append({"type": "image_url", "image_url": {"url": normalized_img_url}})
         user_msg = {"role": "user", "content": content_payload}
     else:
@@ -1764,10 +1789,10 @@ async def _character_chat_impl(
 
         except ServiceError as e:
             logger.exception("Character chat stream service error")
-            yield f"data: {json.dumps({'content': 'Error: Service error', 'error': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'content': f'Error: {e.message}', 'error': True}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("Character chat stream error")
-            yield f"data: {json.dumps({'content': 'Error: Internal error', 'error': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'content': 'Error: 推理过程中发生错误，请稍后重试。', 'error': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

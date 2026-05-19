@@ -20,7 +20,7 @@ from ..services.inference_dispatcher import ensure_model_available, stream_text_
 from ..services.inference_queue import inference_queue
 from ..services.compact_title_service import generate_compact_title
 from ..services.web_search import search_web, format_search_results, get_web_search_config
-from ..services.mcp_service import get_all_tools_openai_format, execute_tool_call
+from ..services.mcp_service import get_all_tools_openai_format
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -152,7 +152,7 @@ async def chat_stream(
     if req.images:
         content_payload = [{"type": "text", "text": user_content}]
         for img_url in req.images:
-            normalized_url = normalize_image_url(img_url)
+            normalized_url = normalize_image_url(img_url, user_id=user.id)
             content_payload.append({"type": "image_url", "image_url": {"url": normalized_url}})
         messages.append({"role": "user", "content": content_payload})
     else:
@@ -310,10 +310,11 @@ async def chat_stream(
             yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("Chat stream error")
+            err_msg = "推理过程中发生错误，请稍后重试。"
             if not result.has_content:
-                result.full_content = f"Error: {str(e)}"
+                result.full_content = f"Error: {err_msg}"
             else:
-                result.full_content += f"\n\n[推理中断: {str(e)}]"
+                result.full_content += f"\n\n[推理中断: {err_msg}]"
             yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
             persist_snapshot(force=True)
         finally:
@@ -351,7 +352,9 @@ async def get_queue_status(
     request_id: str,
     user: User = Depends(get_current_user),
 ):
-    status = inference_queue.get_queue_status(request_id)
+    status = inference_queue.get_queue_status(request_id, user_id=user.id)
+    if status.get("status") == "forbidden":
+        raise HTTPException(status_code=403, detail="Request does not belong to current user")
     return status
 
 
@@ -360,7 +363,7 @@ async def cancel_queue_request(
     request_id: str,
     user: User = Depends(get_current_user),
 ):
-    success = inference_queue.cancel_request(request_id)
+    success = inference_queue.cancel_request(request_id, user_id=user.id)
     if success:
         return {"status": "cancelled", "request_id": request_id}
     return {"status": "not_found", "request_id": request_id}

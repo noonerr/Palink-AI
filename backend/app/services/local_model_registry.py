@@ -413,8 +413,12 @@ def delete_local_model(model_ref: str) -> Dict[str, Any]:
 
     model_path = str(target_model.get("path") or "")
     if model_path and os.path.exists(model_path):
+        models_root = os.path.realpath(_models_dir())
+        real_model_path = os.path.realpath(model_path)
+        if not real_model_path.startswith(models_root + os.sep) and real_model_path != models_root:
+            raise HTTPException(status_code=400, detail="Model path is outside models directory")
         try:
-            os.remove(model_path)
+            os.remove(real_model_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete model file: {exc}")
 

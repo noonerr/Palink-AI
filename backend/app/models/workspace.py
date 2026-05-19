@@ -21,7 +21,7 @@ class UserFile(Base):
     __tablename__ = "user_files"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(Integer, ForeignKey("users.id"))
-    folder_id = Column(String, ForeignKey("user_folders.id"), nullable=True) 
+    folder_id = Column(String, ForeignKey("user_folders.id"), nullable=True, index=True) 
     filename = Column(String)
     file_path = Column(String) 
     file_size = Column(BigInteger)

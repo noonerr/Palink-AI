@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CharacterChat — 聊天视图
  * 从CharacterView提取的子组件
  */
@@ -8,8 +8,11 @@ import {
   Check, ChevronDown, Clock, MoreVertical, Sliders,
   User as UserIcon,
   Map as MapIcon,
+  Table,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/services/api';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -309,6 +312,8 @@ export interface CharacterChatProps {
   // dialogue
   dialogueMode: 'first_person' | 'third_person';
   setDialogueMode: (m: 'first_person' | 'third_person') => void;
+  showCharacterStatus: boolean;
+  setShowCharacterStatus: (v: boolean) => void;
   // sidebar
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (v: boolean) => void;
@@ -448,6 +453,7 @@ export function CharacterChat(props: CharacterChatProps) {
     handleMixedDelete, showDeleteMixedConfirm, setShowDeleteMixedConfirm, confirmDeleteMixed, clearSelection,
     memoryMode, memoryStats, compressing, manualCompressMemory,
     dialogueMode, setDialogueMode,
+    showCharacterStatus, setShowCharacterStatus,
     sidebarCollapsed, setSidebarCollapsed,
     mobileSidebarOpen, setMobileSidebarOpen,
     initializingChat, handleInitiateConversation,
@@ -987,6 +993,46 @@ export function CharacterChat(props: CharacterChatProps) {
                     ? (t.switch_story_mode || '切换故事模式')
                     : (t.switch_first_person || '切换第一人称')}
                 </DropdownMenuItem>
+
+                {/* Character status table toggle */}
+                <div
+                  className="flex items-center justify-between px-2 py-1.5 text-sm cursor-pointer"
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    const newValue = !showCharacterStatus;
+                    setShowCharacterStatus(newValue);
+                    try {
+                      await api.put('/api/users/me/settings', { show_character_status: newValue });
+                      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { showCharacterStatus: newValue } }));
+                      toast.success(newValue ? (t.character_status_enabled || '角色状态表格已开启') : (t.character_status_disabled || '角色状态表格已关闭'));
+                    } catch (e) {
+                      console.error('Failed to update character status setting:', e);
+                      setShowCharacterStatus(!newValue);
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <Table size={14} />
+                    <div className="flex flex-col">
+                      <span>{t.show_character_status || '角色状态'}</span>
+                      <span className="text-[10px] text-muted-foreground leading-tight">{t.character_status_hint || '下次对话生效'}</span>
+                    </div>
+                  </div>
+                  <div
+                    className={cn(
+                      "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors",
+                      showCharacterStatus ? "bg-primary" : "bg-input"
+                    )}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span
+                      className={cn(
+                        "pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                        showCharacterStatus ? "translate-x-[18px]" : "translate-x-[2px]"
+                      )}
+                    />
+                  </div>
+                </div>
 
                 {/* Plot line stage navigation */}
                 {selectedSession && pl.sessionStatus?.active && (

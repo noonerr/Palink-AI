@@ -651,6 +651,45 @@ h6,
   font-weight: 600;
 }
 
+.markdown-content table:has(td[data-character-status]) {
+  border-collapse: collapse;
+}
+
+.markdown-content table:has(td[data-character-status]) thead {
+  display: none;
+}
+
+.markdown-content table:has(td[data-character-status]) th {
+  display: none;
+}
+
+.markdown-content table:has(td[data-character-status]) td {
+  border: none;
+  border-bottom: 1px solid hsl(var(--border) / 0.3);
+  padding: 0.4rem 0.75rem;
+}
+
+.markdown-content table:has(td[data-character-status]) tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown-content table:has(td[data-character-status]) td:first-child {
+  white-space: nowrap;
+  width: 1%;
+  font-size: 0.85rem;
+}
+
+.markdown-content table:has(td[data-character-status]) td:last-child {
+  font-size: 0.85rem;
+}
+
+.markdown-content div:has(> table:has(td[data-character-status])) {
+  overflow: hidden;
+  border-radius: 0.75rem;
+  border: 1px solid hsl(var(--border) / 0.5);
+  background: hsl(var(--muted) / 0.3);
+}
+
 /* ========================================
    Shadcn UI Overrides
    ======================================== */
@@ -1816,5 +1855,18 @@ button,
 @media (min-width: 1024px) {
   .settings-content {
     max-width: 1400px;
+  }
+}
+
+/* ChatSessionList scroll area fixes */
+.chat-session-list [data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+@media (max-width: 768px) {
+  .mobile-padding {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
   }
 }

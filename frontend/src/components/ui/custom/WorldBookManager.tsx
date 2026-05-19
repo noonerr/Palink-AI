@@ -1,4 +1,4 @@
-﻿/**
+/**
  * WorldBookManager — 世界书管理界面（Phase 6B 关键词模式）
  * 列表、创建、编辑、导入、词条预览
  */
@@ -55,7 +55,11 @@ export function WorldBookManager({
   const toggleStage = (stageId: string) => {
     setExpandedStages(prev => {
       const next = new Set(prev);
-      next.has(stageId) ? next.delete(stageId) : next.add(stageId);
+      if (next.has(stageId)) {
+        next.delete(stageId);
+      } else {
+        next.add(stageId);
+      }
       return next;
     });
   };

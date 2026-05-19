@@ -1,6 +1,6 @@
 """
 记忆检索引擎 - 混合检索
-支持语义搜索 + 时间权重 + 重要性权重
+支持语义搜索 + 上下文邻近度 + 重要性权重
 """
 
 from typing import List, Dict, Tuple
@@ -16,6 +16,11 @@ from .config import memory_config
 
 logger = logging.getLogger("MemoryModule")
 
+# 候选集中话题相似度阈值（用于判断两条记忆是否属于同一话题）
+_TOPIC_SIMILARITY_THRESHOLD = 0.6
+# 上下文邻近度衰减系数（gap × 此系数，越大衰减越快）
+_CONTEXT_DECAY_FACTOR = 0.1
+
 
 class MemoryRetriever:
     """记忆检索器 - 混合检索模式"""
@@ -25,10 +30,10 @@ class MemoryRetriever:
     
     def retrieve(self, request: ContextRequest) -> ContextResponse:
         """
-        改进后的双路检索策略：
+        双路检索策略：
         1. 强制包含最近的 N 条记忆（短期记忆 STM）
         2. 用剩余的 token 空间填充语义相关的旧记忆（长期记忆 LTM）
-        3. 对 LTM 进行时间衰减 + 语义相似度加权排序
+        3. 对 LTM 进行上下文邻近度 + 语义相似度加权排序
         """
         try:
             # 1. 获取短期记忆 (STM) - 最近 5 条
@@ -40,7 +45,7 @@ class MemoryRetriever:
                 branch_ids=request.branch_ids
             )
             
-            # 使用列表推导式去重，保留最新
+            # 去重，保留最新
             seen_ids = set()
             unique_stm = []
             for m in stm_memories:
@@ -57,7 +62,6 @@ class MemoryRetriever:
             # 如果 STM 已经占满窗口，直接返回 STM
             if remaining_tokens <= 0:
                 logger.info(f"短期记忆已占满窗口 ({current_tokens} tokens)，跳过长期检索")
-                # 按时间排序确保顺序正确
                 stm_memories.sort(key=lambda x: x.created_at or datetime.min)
                 return ContextResponse(
                     memories=stm_memories,
@@ -68,12 +72,11 @@ class MemoryRetriever:
 
             # 2. 获取长期记忆 (LTM)
             ltm_memories = []
-            # 至少留点空间才去检索，且仅当 query 有意义时
             if remaining_tokens > 100 and request.query and len(request.query.strip()) > 1:
                 query_embedding = embed_text(request.query)
                 query_embedding_list = query_embedding.tolist()[0] if len(query_embedding.shape) > 1 else query_embedding.tolist()
                 
-                # 检索更多候选，以便过滤
+                # 检索候选（含 embedding）
                 semantic_candidates = self.storage.semantic_search(
                     user_id=request.user_id,
                     query_embedding=query_embedding_list,
@@ -84,32 +87,12 @@ class MemoryRetriever:
                 )
                 
                 if semantic_candidates:
-                    now = datetime.now(timezone.utc)
-                    scored_candidates = []
-                    
-                    for memory, similarity in semantic_candidates:
-                        # A. 去重：如果在 STM 中则跳过
-                        if memory.id in stm_ids:
-                            continue
-                            
-                        # B. 评分：语义分 + 时间衰减 + 重要性
-                        # 时间衰减：越近越好，但不会超过 STM
-                        time_decay = self._calculate_time_decay(memory.created_at, now)
-                        importance = memory.importance_score or 0.5
-                        
-                        # 权重分配：语义主导，但兼顾时效
-                        final_score = (
-                            similarity * 0.6 +
-                            time_decay * 0.2 +
-                            importance * 0.2
-                        )
-                        scored_candidates.append((memory, final_score))
+                    scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
                     
                     # 按综合分数排序
                     scored_candidates.sort(key=lambda x: x[1], reverse=True)
                     
                     # 填充 LTM 到剩余空间
-                    # 先做简单的内容去重
                     candidate_memories = [m for m, _ in scored_candidates]
                     deduped_candidates = self._deduplicate_memories(candidate_memories)
                     
@@ -121,7 +104,7 @@ class MemoryRetriever:
                         else:
                             break
             
-            # 4. 合并最终结果 (LTM + STM)
+            # 3. 合并最终结果 (LTM + STM)
             combined_memories = ltm_memories + stm_memories
             
             # 最终去重 (ID)
@@ -156,31 +139,100 @@ class MemoryRetriever:
                 strategy_used="error"
             )
     
-    def _calculate_time_decay(self, created_at: datetime, now: datetime) -> float:
+    def _score_candidates(
+        self,
+        semantic_candidates: List[Tuple[MemoryEntry, float]],
+        stm_ids: set,
+    ) -> List[Tuple[MemoryEntry, float]]:
         """
-        计算时间衰减因子
-        
-        返回值：0-1之间，越近越高
+        对候选记忆评分：similarity × 0.6 + context_proximity × 0.2 + importance × 0.2
         """
-        if not created_at:
-            return 0.5
+        # 过滤掉 STM 中已有的
+        filtered = [(m, s) for m, s in semantic_candidates if m.id not in stm_ids]
+        if not filtered:
+            return []
         
-        try:
-            delta = now - created_at
-            hours = delta.total_seconds() / 3600
-            
-            if hours < 1:
-                return 1.0
-            elif hours < 24:
-                return 0.9
-            elif hours < 168:
-                return 0.7
-            elif hours < 720:
-                return 0.5
+        # 计算上下文邻近度
+        context_scores = self._compute_context_proximity(filtered)
+        
+        scored = []
+        for i, (memory, similarity) in enumerate(filtered):
+            importance = memory.importance_score or 0.5
+            ctx = context_scores[i]
+            final_score = (
+                similarity * 0.6 +
+                ctx * 0.2 +
+                importance * 0.2
+            )
+            scored.append((memory, final_score))
+        
+        return scored
+    
+    def _compute_context_proximity(
+        self,
+        candidates: List[Tuple[MemoryEntry, float]],
+    ) -> List[float]:
+        """
+        计算每条候选的上下文邻近度分数。
+        
+        算法：
+        1. 按 created_at 正序排列（旧 → 新）
+        2. 计算候选集中每对记忆的余弦相似度
+        3. 对每条记忆，找"比它新且与它相似"的最近一条，计算 gap
+        4. 首次提及的话题（无更近的相似记忆）→ proximity = 0
+        5. 旧话题 → proximity = 1 / (1 + gap × decay_factor)
+        """
+        n = len(candidates)
+        if n <= 1:
+            return [0.0]
+        
+        # 按 created_at 正序排列（旧 → 新），记录原始索引
+        indexed = [(i, m, s) for i, (m, s) in enumerate(candidates)]
+        indexed.sort(key=lambda x: x[1].created_at or datetime.min)
+        
+        # 提取 embedding 向量
+        embeddings = []
+        for _, mem, _ in indexed:
+            if mem.embedding:
+                embeddings.append(np.array(mem.embedding, dtype=np.float32))
             else:
-                return 0.3
-        except (TypeError, ValueError):
-            return 0.5
+                embeddings.append(None)
+        
+        # 计算归一化向量（用于余弦相似度）
+        norms = []
+        for emb in embeddings:
+            if emb is not None:
+                norm = np.linalg.norm(emb)
+                norms.append(emb / norm if norm > 0 else emb)
+            else:
+                norms.append(None)
+        
+        # 计算每条记忆的上下文邻近度
+        context_raw = [0.0] * n
+        
+        for i in range(n):
+            # 找比 i 新（j > i）且与 i 相似（余弦 > 阈值）的最近一条
+            nearest_gap = None
+            for j in range(i + 1, n):
+                if norms[i] is None or norms[j] is None:
+                    continue
+                pairwise_sim = float(np.dot(norms[i], norms[j]))
+                if pairwise_sim >= _TOPIC_SIMILARITY_THRESHOLD:
+                    nearest_gap = j - i
+                    break  # 找到最近的就停（j 递增，越后面 gap 越大）
+            
+            if nearest_gap is not None:
+                context_raw[i] = 1.0 / (1.0 + nearest_gap * _CONTEXT_DECAY_FACTOR)
+            else:
+                # 首次提及的话题：proximity = 0
+                context_raw[i] = 0.0
+        
+        # 还原原始顺序
+        result = [0.0] * n
+        for sorted_idx, (orig_idx, _, _) in enumerate(indexed):
+            result[orig_idx] = context_raw[sorted_idx]
+        
+        return result
     
     def _deduplicate_memories(self, memories: List[MemoryEntry]) -> List[MemoryEntry]:
         """去除重复记忆（基于内容相似度）"""

@@ -114,7 +114,10 @@ async def delete_provider_api(provider_id: str, user: User = Depends(get_admin))
 async def get_system_defaults(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     setting = db.query(SystemSetting).filter(SystemSetting.key == "default_model_config").first()
     if setting:
-        return json.loads(setting.value)
+        try:
+            return json.loads(setting.value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupted default_model_config, returning empty")
     return {}
 
 
@@ -244,6 +247,7 @@ async def get_user_chats(user_id: int, user: User = Depends(get_admin), db: Sess
         db.query(ChatSession)
         .filter(ChatSession.user_id == user_id)
         .order_by(ChatSession.updated_at.desc())
+        .limit(500)
         .all()
     )
     return [{"id": s.id, "title": s.title, "type": s.type, "updated_at": s.updated_at} for s in sessions]
@@ -533,6 +537,16 @@ async def test_provider_connection(
 ):
     """Test connectivity to an AI provider by listing its models."""
     try:
+        saved_base_urls = {p.get("base_url", "").rstrip("/") for p in _get_providers() if p.get("base_url")}
+        req_base_url = (req.base_url or "").rstrip("/")
+        is_trusted_url = req_base_url in saved_base_urls
+
+        if _is_env_secret_ref(req.api_key) and not is_trusted_url:
+            raise ValueError(
+                "Cannot resolve environment variable secrets for untrusted base_url. "
+                "Save the provider first, then test with its saved base_url."
+            )
+
         resolved_api_key = resolve_secret_reference(req.api_key)
         if not resolved_api_key:
             raise ValueError("Provider API key is not configured. Use env:VAR_NAME and set the environment variable.")
@@ -659,6 +673,7 @@ class WebSearchConfig(BaseModel):
     baidu_cookie: str = ""
     custom_url: str = ""
     custom_engine: str = "searxng"
+    search_token: str = ""
 
 @router.get("/web-search")
 async def get_web_search_settings(user: User = Depends(get_admin)):
@@ -671,8 +686,9 @@ async def set_web_search_settings(config: WebSearchConfig, user: User = Depends(
         if not _is_safe_search_url(config.custom_url):
             raise HTTPException(status_code=400, detail="Custom URL points to a private/internal address (SSRF protection)")
     if config.engine == "searxng" and config.searxng_url:
-        if not _is_safe_search_url(config.searxng_url):
-            raise HTTPException(status_code=400, detail="SearXNG URL points to a private/internal address (SSRF protection)")
+        from ..core.config import settings as app_settings
+        if app_settings.APP_ENV != "development" and not _is_safe_search_url(config.searxng_url):
+            raise HTTPException(status_code=400, detail="SearXNG URL points to a private/internal address (SSRF protection). In development mode, localhost is allowed.")
     saved = save_web_search_config(config.model_dump())
     return {"status": "ok", "config": saved}
 
