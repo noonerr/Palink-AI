@@ -1473,6 +1473,9 @@ export function CharacterChat(props: CharacterChatProps) {
         if (sid) {
           void api.get(`/api/character-sessions/${sid}/messages?limit=1`)
             .then((res: any) => {
+              const _vk = (res?.variables && typeof res.variables === 'object') ? Object.keys(res.variables) : null;
+              const _sk = (res?.variables?.stat_data && typeof res.variables.stat_data === 'object') ? Object.keys(res.variables.stat_data) : null;
+              console.warn('[VAR-DBG] session-refetch variables keys=', _vk, 'stat_data keys=', _sk);
               if (res?.variables) setSessionVariables(res.variables);
             })
             .catch(() => {});

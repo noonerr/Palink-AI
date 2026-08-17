@@ -548,6 +548,9 @@ ${bootHeader}
     if (!ctxVariables) return base;
     return deepMergeVariablesCompat(base, ctxVariables);
   })();
+  // [VAR-DBG] 启动注入变量调试（排查"插件角色面板不能显示变量"）
+  try { console.warn('[VAR-DBG] boot ctx.variables keys=' + JSON.stringify(ctxVariables ? Object.keys(ctxVariables) : [])); } catch (_vdbgA) {}
+  try { var _sdBoot = chatVariableStore && chatVariableStore.stat_data; console.warn('[VAR-DBG] boot chatVariableStore.stat_data keys=' + JSON.stringify(_sdBoot && typeof _sdBoot === 'object' ? Object.keys(_sdBoot) : [])); } catch (_vdbgB) {}
   // [SINGLE-SOURCE] extension prompts/fields 与 V4 变量同构：不再维护独立副本，
   // 统一存于 chatVariableStore.__extension_prompts / __extension_fields（随会话变量
   // 由 persistVariableStores 持久化到父页面 __palink_chat_variables）。旧独立持久化
@@ -4413,10 +4416,13 @@ ${bootHeader}
     // 合并行为对齐；否则 getVariable()/getAllVariables() 读到的是旧数据。
     if (nextContext.variables && typeof nextContext.variables === 'object') {
       try {
+        console.warn('[VAR-DBG] context-update incoming keys=' + JSON.stringify(Object.keys(nextContext.variables)));
         deepMergeVariablesCompat(chatVariableStore, clone(nextContext.variables));
+        var _sdUpd = chatVariableStore && chatVariableStore.stat_data;
+        console.warn('[VAR-DBG] context-update after merge store.stat_data keys=' + JSON.stringify(_sdUpd && typeof _sdUpd === 'object' ? Object.keys(_sdUpd) : []));
         emitCompatEvent('VARIABLE_UPDATE_ENDED', chatVariableStore);
         emitCompatEvent('CHAT_VARIABLES_UPDATED', chatVariableStore);
-      } catch {}
+      } catch (_vdbgC) {}
     }
     if (Array.isArray(ctx.chatMessages) && ctx.chatMessages.length > 0) {
       compatChat.splice(0, compatChat.length, ...ctx.chatMessages.map(normalizeChatMessage));
@@ -6363,6 +6369,8 @@ ${bootHeader}
           walk(sd);
         }
       } catch (_e) { /* ignore */ }
+      // [VAR-DBG] 读取链路调试（排查"插件角色面板不能显示变量"）
+      try { var _sdRet = (merged && merged.stat_data) || {}; console.warn('[VAR-DBG] getAllVariables stat_data keys=' + JSON.stringify(Object.keys(_sdRet)) + ' sample=' + JSON.stringify(_sdRet).slice(0, 200)); } catch (_vdbgD) {}
       return merged;
     };
 
