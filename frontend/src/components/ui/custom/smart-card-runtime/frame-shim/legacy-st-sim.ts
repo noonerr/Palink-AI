@@ -1162,10 +1162,14 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
     try {
       const result = typeof fn === 'function' ? fn(...args) : undefined;
       if (result && typeof result.catch === 'function') {
-        result.catch((error) => post({ type: 'error', message: String(error?.message || error) }));
+        result.catch((error) => {
+          console.warn('[errorCatched] async error:', error);
+          post({ type: 'error', message: String(error?.message || error) });
+        });
       }
       return result;
     } catch (error) {
+      console.warn('[errorCatched] sync error:', error);
       post({ type: 'error', message: String(error?.message || error) });
       return undefined;
     }

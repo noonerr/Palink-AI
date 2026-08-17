@@ -551,6 +551,19 @@ ${bootHeader}
   // [VAR-DBG] 启动注入变量调试（排查"插件角色面板不能显示变量"）
   try { console.warn('[VAR-DBG] boot ctx.variables keys=' + JSON.stringify(ctxVariables ? Object.keys(ctxVariables) : [])); } catch (_vdbgA) {}
   try { var _sdBoot = chatVariableStore && chatVariableStore.stat_data; console.warn('[VAR-DBG] boot chatVariableStore.stat_data keys=' + JSON.stringify(_sdBoot && typeof _sdBoot === 'object' ? Object.keys(_sdBoot) : [])); } catch (_vdbgB) {}
+  // [PANEL-DBG] 延迟检查面板 DOM 是否真在卡 iframe 文档里（排查"面板脚本与面板 HTML 错位"）
+  try {
+    setTimeout(function () {
+      try {
+        var _ids = ['charAvatar', 'charListContainer', 'worldDate', 'navPrev', 'affectionBar'];
+        var _res = [];
+        for (var _i = 0; _i < _ids.length; _i++) {
+          _res.push(_ids[_i] + '=' + (document.getElementById(_ids[_i]) ? 'yes' : 'NO'));
+        }
+        console.warn('[PANEL-DBG] panel DOM check: ' + _res.join(' '));
+      } catch (_pd) {}
+    }, 1500);
+  } catch (_pd2) {}
   // [SINGLE-SOURCE] extension prompts/fields 与 V4 变量同构：不再维护独立副本，
   // 统一存于 chatVariableStore.__extension_prompts / __extension_fields（随会话变量
   // 由 persistVariableStores 持久化到父页面 __palink_chat_variables）。旧独立持久化
