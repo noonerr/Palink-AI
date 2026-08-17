@@ -223,6 +223,24 @@ export function buildFrameMeasureSegment(initialLoadCount: number, queueDelayMs:
         //    若仍用框底部封顶，面板永远无法展开到完整内容（截断）。此时改用「容器内容底部
         //    （top + scrollHeight）」作为可见底部，让面板能撑开到完整内容。
         let visibleBottom = rect.bottom;
+        // [NESTED-FRAME-HEIGHT] 嵌套同源 iframe（如 BubbleDialogue 的 dcRoot 气泡帧）：
+        // 其元素框高常被 CSS/默认值限制（如 220px），而内部内容文档高度远大于框高。
+        // measure() 扫描 body.querySelectorAll('*') 只能看到 iframe 元素框，看不到 iframe
+        // 文档内部内容，导致面板高度卡在 220px 截断。此处直接读取同源 iframe 的内容文档
+        // 高度，把可见底部延伸至 rect.top + 内容高。contentDocument 跨源不可读时静默跳过，
+        // 不影响既有逻辑（此时退化为只看 iframe 元素框）。
+        if (el.tagName && String(el.tagName).toLowerCase() === 'iframe') {
+          try {
+            const cDoc = el.contentDocument;
+            if (cDoc && cDoc.documentElement) {
+              const cH = cDoc.documentElement.scrollHeight || 0;
+              if (cH > 1) {
+                const cb = (rect.top || 0) + cH;
+                if (cb > visibleBottom) visibleBottom = cb;
+              }
+            }
+          } catch (_) {}
+        }
         let node = el.parentElement;
         while (node && node !== body) {
           if (isClipping(node)) {
@@ -352,5 +370,56 @@ export function buildFrameMeasureSegment(initialLoadCount: number, queueDelayMs:
   prepareQueuedImages();
   setTimeout(() => scheduleMeasure(true), 0);
   setTimeout(() => scheduleMeasure(true), 250);
-  setTimeout(() => scheduleMeasure(true), 1000);`;
+  setTimeout(() => scheduleMeasure(true), 1000);
+  // [NESTED-FRAME-HEIGHT] 嵌套同源 iframe 高度同步：除 measure() 扫描时直接纳入内容高外，
+  // 这里主动把嵌套 iframe 元素高度设为内容高度，使卡片布局与父页面「轮询兜底」直读到的高度
+  // 一致，并在内容变化时重设 + 触发重测。设置高度不改变 iframe 内部内容，故不会造成反馈环；
+  // contentH≈frameH 时阈值守卫跳过，避免抖。跨源 iframe 的 contentDocument 不可读 → 静默跳过。
+  const syncNestedFrameHeight = (frame) => {
+    try {
+      const cDoc = frame.contentDocument;
+      if (!cDoc || !cDoc.documentElement) return;
+      const contentH = cDoc.documentElement.scrollHeight || 0;
+      const frameH = frame.clientHeight || frame.offsetHeight || 0;
+      if (contentH > 0 && Math.abs(contentH - frameH) > 2) {
+        frame.style.height = contentH + 'px';
+        scheduleMeasure(true);
+      }
+    } catch (_) {}
+  };
+  const armNestedFrame = (frame) => {
+    try {
+      if (!frame || frame.dataset.palinkNestedWatched) return;
+      const cDoc = frame.contentDocument;
+      if (!cDoc || !cDoc.documentElement) return;
+      frame.dataset.palinkNestedWatched = '1';
+      try { frame.addEventListener('load', () => { syncNestedFrameHeight(frame); }); } catch (_) {}
+      // 轻量轮询：嵌套帧内容变化（流式文本/样式刷新/重载 srcdoc）时可靠重设高度。
+      // 单帧 400ms 轮询开销可忽略；contentH≈frameH 时阈值守卫跳过，无抖。
+      try { frame._palinkNestedTimer = setInterval(() => syncNestedFrameHeight(frame), 400); } catch (_) {}
+      syncNestedFrameHeight(frame);
+    } catch (_) {}
+  };
+  const scanNestedFrames = () => {
+    try {
+      const frames = document.querySelectorAll('iframe');
+      for (let i = 0; i < frames.length; i++) armNestedFrame(frames[i]);
+    } catch (_) {}
+  };
+  try {
+    new MutationObserver((muts) => {
+      for (let mi = 0; mi < muts.length; mi++) {
+        const added = muts[mi].addedNodes;
+        for (let ni = 0; ni < added.length; ni++) {
+          const n = added[ni];
+          if (n && n.nodeType === 1) {
+            if (n.tagName && String(n.tagName).toLowerCase() === 'iframe') armNestedFrame(n);
+            try { const fs = n.querySelectorAll('iframe'); for (let i = 0; i < fs.length; i++) armNestedFrame(fs[i]); } catch (_) {}
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  } catch (_) {}
+  scanNestedFrames();
+`;
 }
