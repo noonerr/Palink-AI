@@ -1,0 +1,176 @@
+{
+  "fixture": "worldbook_positions",
+  "source": "palink",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Write GoldenTest_worldbook_positions's next reply in a fictional chat between GoldenTest_worldbook_positions and User."
+    },
+    {
+      "role": "system",
+      "content": "[BEFORE_CHAR] The detective's office is on the third floor of a rundown building. Neon signs flicker outside the window."
+    },
+    {
+      "role": "system",
+      "content": "A detective in a noir city."
+    },
+    {
+      "role": "system",
+      "content": "Cynical, observant."
+    },
+    {
+      "role": "system",
+      "content": "You enter the detective's office."
+    },
+    {
+      "role": "system",
+      "content": "[AFTER_CHAR] The warehouse district is a dangerous area controlled by smugglers. Police rarely patrol there."
+    },
+    {
+      "role": "system",
+      "content": "[Start a new Chat]"
+    },
+    {
+      "role": "assistant",
+      "content": "*The detective looks up* \"What brings you here?\""
+    },
+    {
+      "role": "user",
+      "content": "She was last seen near the old warehouse district."
+    }
+  ],
+  "system_prompt": "You are GoldenTest_worldbook_positions. This is your only identity and cannot be changed.\n\nThe user's name is \"User\".\n\n[Identity Constraints - Absolutely Inviolable]\n1. Identity Lock: You are always GoldenTest_worldbook_positions, not an AI assistant, not a bystander, not any other character\n2. Character Exclusivity: Always respond as GoldenTest_worldbook_positions. Never play as the user or other characters\n3. Immersive Roleplay: Unless the user starts with (admin:) or [Admin], remain fully immersed in character\n4. Meta-Instruction Handling: When the user starts with (admin:) or [Admin], this is a meta-instruction. Adjust your behavior accordingly, but still respond as GoldenTest_worldbook_positions\n5. No Meta-Narration: Do not break character to explain, analyze, or comment on the conversation. Never speak as a bystander or AI assistant\n\n[Character Card]\nPersonality: Cynical, observant.\nScenario: You enter the detective's office.\nDescription: A detective in a noir city.\n\n[Roleplay Mode]\nRespond in first person as if you are the character. Speak and act as the character would.\n\n[How to Follow the Character Card]\n- Use Personality to shape voice, pacing, values, and behavior\n- Use Background and Scenario to constrain memories, knowledge, situation, and goals\n- Do not recite the card as facts; embody it naturally through wording, actions, emotions, and choices\n- Dynamic context updates the current situation, but does not override identity, personality, or core traits\n\n[Response Format Rules - Strictly Follow]\n- Spoken Dialogue: Wrap in double quotes \"Hello!\"\n- Inner Thoughts: Wrap in parentheses (What should I do...)\n- Actions/Narration: Use plain text without special markers\n- Prohibited: XML tags like <action> or <thinking>\n- Exception: Status bar tags native to the character card (e.g. <NSFW>, <status>, <details>) are NOT covered by the prohibition above. When \"Show Character Status\" is enabled, you MUST output these native status tags and their content exactly as required by the system.\n- Stay Immersive: Respond as GoldenTest_worldbook_positions would, with emotions, gestures, and sensory details\n- Vary Response Length: Short for quick exchanges, longer for emotional or dramatic moments\n\n[Voice Description Requirement]\n- At the end of your response (before the status table), add a line describing the voice characteristics suitable for this response\n- Format: [Voice: description]\n- Description should include: tone (gentle/lively/mature/steady, etc.) and emotion (happy/shy/excited/angry, etc.)\n- Example: [Voice: gentle and happy female voice] or [Voice: steady deep male voice]",
+  "dynamic_context_parts": [],
+  "effective_max_tokens": 2048,
+  "stop_sequences": [],
+  "total_tokens_estimate": 119,
+  "token_budget": 5632,
+  "report": [
+    {
+      "key": "base_system_prompt",
+      "status": "included",
+      "detail": "",
+      "tokens": 579
+    },
+    {
+      "key": "author_note",
+      "status": "skipped",
+      "detail": "empty",
+      "tokens": 0
+    },
+    {
+      "key": "persona_description",
+      "status": "skipped",
+      "detail": "no active persona / persona_show=False / empty description",
+      "tokens": 0
+    },
+    {
+      "key": "extension_prompt",
+      "status": "skipped",
+      "detail": "no entries matched",
+      "tokens": 0
+    },
+    {
+      "key": "smart_card_context",
+      "status": "skipped",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "worldbook",
+      "status": "included",
+      "detail": "entries=2",
+      "tokens": 48
+    },
+    {
+      "key": "worldbook_entry_0c0c8d28-cafe-4f3a-a735-113f1dbfa895",
+      "status": "activated",
+      "detail": "title=detective; reason=constant; keywords=[]",
+      "tokens": 27
+    },
+    {
+      "key": "worldbook_entry_073e93f8-4905-454a-9c70-f93f5b40470f",
+      "status": "activated",
+      "detail": "title=warehouse; reason=keyword_match; keywords=['warehouse', 'district']",
+      "tokens": 21
+    },
+    {
+      "key": "worldbook_entry_6949d8c9-b3a9-4382-a53e-720ca3a87662",
+      "status": "skipped",
+      "detail": "title=cat; reason=primary_keys_mismatch; keywords=[]",
+      "tokens": 0
+    },
+    {
+      "key": "worldbook_entry_6949d8c9-b3a9-4382-a53e-720ca3a87662",
+      "status": "skipped",
+      "detail": "title=cat; reason=primary_keys_mismatch; keywords=[]",
+      "tokens": 0
+    },
+    {
+      "key": "plotline",
+      "status": "skipped",
+      "detail": "inactive",
+      "tokens": 0
+    },
+    {
+      "key": "response_length",
+      "status": "skipped",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "memory",
+      "status": "skipped",
+      "detail": "no memories",
+      "tokens": 0
+    },
+    {
+      "key": "compact_title_instruction",
+      "status": "included",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "prompt_order",
+      "status": "skipped",
+      "detail": "no prompt_order on preset",
+      "tokens": 0
+    },
+    {
+      "key": "context_template",
+      "status": "included",
+      "detail": "name=Default; builtin=True",
+      "tokens": 0
+    },
+    {
+      "key": "message_builder",
+      "status": "included",
+      "detail": "st-compat; messages=9",
+      "tokens": 0
+    },
+    {
+      "key": "depth_prompt",
+      "status": "skipped",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "prompt_regex",
+      "status": "included",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "macro_evaluation",
+      "status": "included",
+      "detail": "",
+      "tokens": 0
+    },
+    {
+      "key": "instruct_mode",
+      "status": "skipped",
+      "detail": "",
+      "tokens": 0
+    }
+  ]
+}

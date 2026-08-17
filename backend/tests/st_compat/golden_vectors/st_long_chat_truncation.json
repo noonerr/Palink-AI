@@ -1,0 +1,81 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "Write GoldenTest_long_chat_truncation's next reply in a fictional chat between GoldenTest_long_chat_truncation and User."
+    },
+    {
+      "role": "system",
+      "content": "A storyteller who narrates an epic fantasy."
+    },
+    {
+      "role": "system",
+      "content": "Dramatic, verbose."
+    },
+    {
+      "role": "system",
+      "content": "An ongoing adventure story."
+    },
+    {
+      "role": "system",
+      "content": "[Start a new Chat]"
+    },
+    {
+      "role": "assistant",
+      "content": "The tale begins in a land far away..."
+    },
+    {
+      "role": "user",
+      "content": "Message number 29: The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. "
+    }
+  ],
+  "model": "palink-default",
+  "stream": true,
+  "temperature": 1,
+  "top_p": 1,
+  "max_tokens": 300,
+  "full_payload": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Write GoldenTest_long_chat_truncation's next reply in a fictional chat between GoldenTest_long_chat_truncation and User."
+      },
+      {
+        "role": "system",
+        "content": "A storyteller who narrates an epic fantasy."
+      },
+      {
+        "role": "system",
+        "content": "Dramatic, verbose."
+      },
+      {
+        "role": "system",
+        "content": "An ongoing adventure story."
+      },
+      {
+        "role": "system",
+        "content": "[Start a new Chat]"
+      },
+      {
+        "role": "assistant",
+        "content": "The tale begins in a land far away..."
+      },
+      {
+        "role": "user",
+        "content": "Message number 29: The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. The hero ventures deeper into the dungeon, encountering traps and treasures at every turn. "
+      }
+    ],
+    "model": "palink-default",
+    "temperature": 1,
+    "max_tokens": 300,
+    "stream": true,
+    "presence_penalty": 0,
+    "frequency_penalty": 0,
+    "top_p": 1
+  },
+  "scenario_name": "long_chat_truncation",
+  "fixture": "long_chat_truncation",
+  "source": "sillytavern",
+  "st_version": "1.18.0",
+  "timestamp": "2026-07-21T22:08:52Z"
+}

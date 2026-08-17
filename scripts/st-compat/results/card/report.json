@@ -1,0 +1,92 @@
+{
+  "v2": {
+    "st_exit": 0,
+    "checks": {
+      "st_reads_palink": {
+        "ok": true,
+        "diffs": []
+      },
+      "palink_reads_st": {
+        "ok": true,
+        "diffs": []
+      },
+      "st_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      },
+      "palink_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      }
+    },
+    "ok": true
+  },
+  "v3": {
+    "st_exit": 0,
+    "checks": {
+      "st_reads_palink": {
+        "ok": true,
+        "diffs": []
+      },
+      "palink_reads_st": {
+        "ok": true,
+        "diffs": []
+      },
+      "st_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      },
+      "palink_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      }
+    },
+    "ok": true
+  },
+  "v1": {
+    "st_exit": 0,
+    "checks": {
+      "st_reads_palink": {
+        "ok": true,
+        "diffs": []
+      },
+      "palink_reads_st": {
+        "ok": true,
+        "diffs": []
+      },
+      "st_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      },
+      "palink_chunks": {
+        "ok": true,
+        "keywords": [
+          "chara",
+          "ccv3"
+        ],
+        "before_iend": true
+      }
+    },
+    "ok": true
+  }
+}

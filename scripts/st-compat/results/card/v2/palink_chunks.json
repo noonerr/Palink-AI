@@ -1,0 +1,24 @@
+{
+  "chunk_order": [
+    "IHDR",
+    "IDAT",
+    "tEXt",
+    "tEXt",
+    "IEND"
+  ],
+  "text_chunks": [
+    {
+      "keyword": "chara",
+      "text_len": 812
+    },
+    {
+      "keyword": "ccv3",
+      "text_len": 812
+    }
+  ],
+  "iend_index": 4,
+  "text_indexes": [
+    2,
+    3
+  ]
+}

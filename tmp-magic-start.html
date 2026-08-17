@@ -1,0 +1,730 @@
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>魔法少女 - 命运分歧与入职抉择</title>
+<!-- 字体与图标 -->
+<link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700;900&display=swap" rel="stylesheet">
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+<style>
+    /* ================= 魔法少女 × 玛那科技 主题 ================= */
+    :root {
+        --mg-bg-base: #0f0a1c;
+        --mg-bg-accent1: #2d1b4e;
+        --mg-bg-accent2: #1e1136;
+
+        --mg-pink-main: #f472b6;
+        --mg-pink-light: #fbcfe8;
+        --mg-pink-dark: #be185d;
+        --mg-pink-glow: rgba(244, 114, 182, 0.5);
+
+        --mg-mana-gold: #fde047;
+        --mg-mana-glow: rgba(253, 224, 71, 0.5);
+
+        --mg-text-title: #fff0f5;
+        --mg-text-body: #e9d5ff;
+        --mg-text-muted: #a855f7;
+        --mg-glass-bg: rgba(20, 10, 30, 0.7);
+        --mg-glass-border: rgba(244, 114, 182, 0.25);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    .mg-wrapper-reset {
+        font-family: 'Noto Sans SC', sans-serif;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    /* 终端外壳 */
+    .mg-launcher {
+        position: relative;
+        width: 100%;
+        max-width: 1200px;
+        aspect-ratio: 16 / 9;
+        min-height: 550px;
+        max-height: 850px;
+
+        /* 【背景图片设置区域】哥哥可以在这里填入背景图片的链接 */
+        background-color: var(--mg-bg-base);
+        background-image: url('这里填入你的图片链接');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+
+        border-radius: 12px;
+        border: 1px solid var(--mg-glass-border);
+        box-shadow: 0 25px 50px rgba(0,0,0,0.8),
+                    inset 0 0 20px rgba(244, 114, 182, 0.15),
+                    0 0 15px var(--mg-pink-glow);
+        overflow: hidden;
+        color: var(--mg-text-body);
+    }
+
+    .mg-launcher::before {
+        content: '';
+        position: absolute; inset: 0;
+        background: rgba(15, 10, 28, 0.6);
+        pointer-events: none; z-index: 0;
+    }
+
+    .mg-bg-scanline {
+        position: absolute; inset: 0;
+        background: radial-gradient(circle, rgba(253, 224, 71, 0.04) 2px, transparent 2px);
+        background-size: 30px 30px;
+        pointer-events: none; z-index: 1;
+        opacity: 0.5;
+    }
+
+    .mg-bg-shimmer {
+        position: absolute; inset: 0;
+        background: linear-gradient(45deg, transparent 30%, rgba(244, 114, 182, 0.08) 40%, rgba(253, 224, 71, 0.08) 50%, transparent 70%);
+        pointer-events: none; z-index: 1;
+        animation: shimmer-fade 6s ease-in-out infinite alternate;
+    }
+    @keyframes shimmer-fade {
+        0% { opacity: 0.2; transform: scale(1); }
+        100% { opacity: 0.9; transform: scale(1.05); }
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: linear-gradient(to bottom, var(--mg-pink-main), var(--mg-mana-gold)); border-radius: 3px; }
+
+    /* ================= 四角魔法阵导航 ================= */
+    .mg-magic-circle {
+        position: absolute; width: 90px; height: 90px; border-radius: 50%;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        cursor: pointer; z-index: 100; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        background: rgba(15, 10, 28, 0.4); backdrop-filter: blur(4px);
+    }
+    .mg-magic-circle::before {
+        content: ''; position: absolute; inset: -5px; border: 2px dashed var(--mg-pink-main);
+        border-radius: 50%; animation: spin-slow 12s linear infinite; opacity: 0.4; transition: all 0.4s;
+    }
+    .mg-magic-circle::after {
+        content: ''; position: absolute; inset: -12px; border: 1px dotted var(--mg-mana-gold);
+        border-radius: 50%; animation: spin-slow-reverse 18s linear infinite; opacity: 0.2; transition: all 0.4s;
+    }
+    .mg-magic-circle i { font-size: 1.6rem; color: var(--mg-text-muted); margin-bottom: 4px; transition: all 0.4s; }
+    .mg-magic-circle span { font-size: 0.75rem; color: var(--mg-text-muted); font-weight: 900; letter-spacing: 1px; transition: all 0.4s; text-align: center; line-height: 1.1; }
+    .mg-magic-circle:hover { background: rgba(244, 114, 182, 0.1); }
+    .mg-magic-circle:hover::before { animation-duration: 4s; border-color: var(--mg-mana-gold); opacity: 0.8; box-shadow: 0 0 15px var(--mg-mana-glow); inset: -8px; }
+    .mg-magic-circle:hover::after { animation-duration: 6s; opacity: 0.5; inset: -15px; }
+    .mg-magic-circle:hover i { color: var(--mg-pink-light); text-shadow: 0 0 10px var(--mg-pink-glow); transform: scale(1.1); }
+    .mg-magic-circle:hover span { color: var(--mg-pink-light); }
+    .mg-magic-circle.active { background: rgba(253, 224, 71, 0.05); }
+    .mg-magic-circle.active::before { border-style: solid; border-color: var(--mg-mana-gold); opacity: 1; box-shadow: 0 0 20px var(--mg-mana-glow), inset 0 0 10px var(--mg-mana-glow); animation: spin-slow 8s linear infinite; inset: -6px; }
+    .mg-magic-circle.active::after { border: 2px dashed var(--mg-pink-main); opacity: 0.6; animation: spin-slow-reverse 12s linear infinite; inset: -14px; }
+    .mg-magic-circle.active i { color: var(--mg-mana-gold); text-shadow: 0 0 15px var(--mg-mana-glow); transform: scale(1.15); }
+    .mg-magic-circle.active span { color: #fff; text-shadow: 0 0 8px var(--mg-pink-glow); }
+    .pos-tl { top: 35px; left: 35px; } .pos-tr { top: 35px; right: 35px; } .pos-bl { bottom: 35px; left: 35px; } .pos-br { bottom: 35px; right: 35px; }
+    @keyframes spin-slow { 100% { transform: rotate(360deg); } }
+    @keyframes spin-slow-reverse { 100% { transform: rotate(-360deg); } }
+
+    /* ================= 页面通用 ================= */
+    .mg-page { position: absolute; inset: 0; width: 100%; height: 100%; transition: opacity 0.4s ease, transform 0.4s ease, visibility 0.4s; opacity: 0; pointer-events: none; transform: scale(0.95); z-index: 5; visibility: hidden; display: flex; align-items: center; justify-content: center; }
+    .mg-page.show { opacity: 1; pointer-events: auto; transform: scale(1); z-index: 20; visibility: visible; }
+
+    /* ================= 系统登入页 ================= */
+    .mg-start-page { background: radial-gradient(circle at center, transparent 0%, rgba(0,0,0,0.2) 100%); }
+    .mg-title-box { text-align: center; z-index: 2; display: flex; flex-direction: column; align-items: center; background: var(--mg-glass-bg); padding: 50px 70px; border-radius: 16px; border: 1px solid rgba(253, 224, 71, 0.2); backdrop-filter: blur(10px); box-shadow: 0 10px 40px rgba(0,0,0,0.5), inset 0 0 20px rgba(244, 114, 182, 0.1); }
+    .mg-title { font-size: clamp(2.5rem, 5vw, 4.5rem); margin: 0; line-height: 1.3; font-weight: 900; background: linear-gradient(135deg, #ffffff 10%, var(--mg-pink-light) 50%, var(--mg-mana-gold) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 4px 15px var(--mg-pink-glow)); letter-spacing: 2px; }
+
+    /* ================= 档案页 ================= */
+    .mg-intro-box { position: relative; width: 70%; max-width: 800px; max-height: 80%; background: var(--mg-glass-bg); backdrop-filter: blur(10px); border: 1px solid var(--mg-glass-border); border-left: 4px solid var(--mg-pink-main); box-shadow: 0 20px 50px rgba(0,0,0,0.6), 0 0 30px rgba(244, 114, 182, 0.1); padding: 40px; display: flex; flex-direction: column; border-radius: 8px; }
+    .mg-intro-title { font-size: 2rem; color: var(--mg-mana-gold); margin: 0 0 20px 0; border-bottom: 1px solid rgba(253, 224, 71, 0.2); padding-bottom: 15px; text-shadow: 0 0 10px var(--mg-mana-glow); }
+    .mg-intro-content { flex: 1; overflow-y: auto; color: var(--mg-text-body); font-size: 1.05rem; line-height: 1.8; padding-right: 15px; }
+    .mg-intro-content b { color: var(--mg-pink-light); font-weight: 900; text-shadow: 0 0 5px var(--mg-pink-glow); }
+
+    /* ================= 地图页 ================= */
+    .mg-map-page { align-items: center; }
+    .mg-map-grid { padding: 50px 20px; overflow-y: auto; display: flex; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 30px; max-width: 950px; width: 100%; height: 100%; }
+    .mg-loc-card { width: 400px; flex-grow: 0; background: rgba(25, 15, 40, 0.7); border: 1px solid rgba(244, 114, 182, 0.2); border-radius: 8px; padding: 25px; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 12px; backdrop-filter: blur(8px); cursor: pointer; }
+    .mg-loc-card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: linear-gradient(90deg, transparent, var(--mg-mana-gold), transparent); opacity: 0; transition: opacity 0.3s; }
+    .mg-loc-card:hover { border-color: var(--mg-pink-main); transform: translateY(-5px); background: rgba(45, 27, 78, 0.9); box-shadow: 0 10px 25px rgba(0,0,0,0.5), 0 0 15px var(--mg-pink-glow); }
+    .mg-loc-card:hover::before { opacity: 1; }
+    .mg-loc-header { display: flex; align-items: center; gap: 15px; }
+    .mg-loc-icon { width: 45px; height: 45px; background: rgba(0,0,0,0.4); border: 1px solid var(--mg-pink-main); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; color: var(--mg-mana-gold); box-shadow: 0 0 10px var(--mg-pink-glow); }
+    .mg-loc-info h3 { margin: 0; font-size: 1.3rem; color: var(--mg-text-title); letter-spacing: 1px; }
+    .mg-loc-info span { font-size: 0.75rem; color: #fff; background: linear-gradient(90deg, var(--mg-pink-main), var(--mg-pink-dark)); padding: 3px 8px; border-radius: 12px; font-weight: bold; }
+    .mg-loc-desc { font-size: 0.95rem; color: var(--mg-text-body); line-height: 1.6; margin: 0; }
+    .mg-click-hint { position: absolute; bottom: 10px; right: 15px; font-size: 0.8rem; color: var(--mg-mana-gold); opacity: 0; transition: opacity 0.3s; }
+    .mg-loc-card:hover .mg-click-hint { opacity: 1; animation: pulse 1.5s infinite; }
+
+    /* ================= 势力详情模态框 ================= */
+    .mg-modal-overlay { position: absolute; inset: 0; background: rgba(5, 5, 10, 0.6); backdrop-filter: blur(8px); z-index: 200; opacity: 0; pointer-events: none; transition: opacity 0.3s ease; display: flex; align-items: center; justify-content: center; }
+    .mg-modal-overlay.show { opacity: 1; pointer-events: auto; }
+    .mg-modal-box { width: 80%; max-width: 700px; max-height: 85%; background: linear-gradient(145deg, rgba(30, 17, 54, 0.95), rgba(15, 10, 28, 0.98)); border: 1px solid var(--mg-mana-gold); border-radius: 12px; box-shadow: 0 25px 50px rgba(0,0,0,0.8), 0 0 30px var(--mg-mana-glow); display: flex; flex-direction: column; transform: scale(0.9) translateY(20px); opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); position: relative; overflow: hidden; }
+    .mg-modal-overlay.show .mg-modal-box { transform: scale(1) translateY(0); opacity: 1; }
+    .mg-modal-header { padding: 25px 30px 20px; border-bottom: 1px solid rgba(253, 224, 71, 0.2); display: flex; align-items: center; gap: 20px; position: relative; }
+    .mg-modal-icon { font-size: 2.5rem; color: var(--mg-mana-gold); text-shadow: 0 0 15px var(--mg-mana-glow); }
+    .mg-modal-title-group { flex: 1; }
+    .mg-modal-title { font-size: 1.8rem; color: #fff; margin: 0 0 5px 0; font-weight: 900; letter-spacing: 2px; text-shadow: 0 0 10px var(--mg-pink-glow); }
+    .mg-modal-subtitle { font-size: 0.9rem; color: var(--mg-pink-light); background: rgba(244, 114, 182, 0.15); padding: 4px 10px; border-radius: 4px; display: inline-block; }
+    .mg-btn-close { position: absolute; top: 25px; right: 30px; background: none; border: none; color: var(--mg-text-muted); font-size: 1.5rem; cursor: pointer; transition: all 0.3s; }
+    .mg-btn-close:hover { color: var(--mg-pink-main); transform: rotate(90deg); text-shadow: 0 0 10px var(--mg-pink-glow); }
+    .mg-modal-body { padding: 25px 30px; overflow-y: auto; color: var(--mg-text-body); font-size: 1rem; line-height: 1.8; }
+    .mg-modal-body::-webkit-scrollbar { width: 4px; }
+    .mg-modal-body::-webkit-scrollbar-thumb { background: var(--mg-mana-gold); border-radius: 2px; }
+    .mg-info-item { margin-bottom: 15px; }
+    .mg-info-label { color: var(--mg-mana-gold); font-weight: 900; font-size: 1.05rem; margin-right: 8px; display: flex; align-items: center; gap: 8px; }
+    .mg-info-label i { font-size: 0.8rem; color: var(--mg-pink-main); }
+    .mg-info-content { color: var(--mg-text-body); text-align: justify; padding-left: 20px; border-left: 2px solid rgba(244, 114, 182, 0.2); margin-top: 5px; margin-bottom: 15px; }
+
+    /* ================= 轮盘页 ================= */
+    .mg-3d-scene { width: 100%; height: 100%; position: relative; perspective: 1500px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    .mg-carousel-track { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; }
+    .mg-card { position: absolute; width: clamp(260px, 30vw, 340px); height: clamp(380px, 45vw, 500px); left: 50%; top: 50%; transform-origin: center center; cursor: pointer; transform-style: preserve-3d; transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94); user-select: none; }
+    .mg-card-inner { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275); border-radius: 12px; border: 1px solid var(--mg-glass-border); }
+    .mg-card.is-front .mg-card-inner { box-shadow: 0 0 40px var(--mg-pink-glow); border-color: var(--mg-pink-main); }
+    .mg-card.is-flipped .mg-card-inner { transform: rotateY(180deg); border-color: var(--mg-mana-gold); box-shadow: 0 0 40px var(--mg-mana-glow); }
+    .mg-card-face { position: absolute; inset: 0; backface-visibility: hidden; border-radius: 11px; overflow: hidden; background: var(--mg-glass-bg); transform: translateZ(1px); backdrop-filter: blur(10px); }
+    .mg-card-front { display: flex; flex-direction: column; background: linear-gradient(145deg, rgba(45, 27, 78, 0.9), rgba(15, 10, 28, 0.9)); align-items: center; justify-content: center; text-align: center; padding: 20px; }
+    .mg-card-icon { font-size: 4.5rem; color: var(--mg-mana-gold); margin-bottom: 25px; text-shadow: 0 0 20px var(--mg-mana-glow); }
+    .mg-card-name { font-size: 1.8rem; color: #fff; margin: 0 0 10px 0; font-weight: 900; letter-spacing: 2px; text-shadow: 0 0 10px var(--mg-pink-glow); }
+    .mg-card-title { font-size: 1rem; color: var(--mg-pink-light); background: rgba(244, 114, 182, 0.15); padding: 4px 12px; border-radius: 20px; }
+    .mg-flip-hint { position: absolute; top: 20px; right: 20px; color: var(--mg-mana-gold); font-size: 1.1rem; opacity: 0; transition: opacity 0.3s; animation: pulse 2s infinite; text-shadow: 0 0 5px var(--mg-mana-glow); }
+    .mg-card.is-front .mg-flip-hint { opacity: 1; }
+    .mg-card-back { transform: rotateY(180deg) translateZ(1px); background: linear-gradient(180deg, rgba(30, 17, 54, 0.95), rgba(15, 10, 28, 0.98)); padding: 35px 25px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+    .mg-back-title { font-size: 1.5rem; font-weight: 900; color: var(--mg-mana-gold); margin: 0 0 20px 0; border-bottom: 1px solid rgba(253, 224, 71, 0.2); padding-bottom: 15px; width: 100%; text-shadow: 0 0 10px var(--mg-mana-glow); }
+    .mg-back-desc { font-size: 0.95rem; color: var(--mg-text-body); line-height: 1.8; flex: 1; overflow-y: auto; text-align: justify; padding: 0 5px; }
+    .mg-btn-select {
+        margin-top: 25px; width: 100%; padding: 14px 0;
+        background: rgba(253, 224, 71, 0.05);
+        border: 1px solid var(--mg-mana-gold);
+        border-radius: 4px;
+        color: var(--mg-mana-gold);
+        font-weight: 900; font-size: 1.1rem; letter-spacing: 3px;
+        cursor: pointer; transition: all 0.3s; text-transform: uppercase;
+        box-shadow: inset 0 0 10px rgba(253, 224, 71, 0.1), 0 0 10px rgba(253, 224, 71, 0.1);
+        position: relative; overflow: hidden;
+    }
+    .mg-btn-select::before {
+        content: ''; position: absolute; top: 0; left: -100%; width: 50%; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+        transform: skewX(-20deg); transition: all 0.5s;
+    }
+    .mg-btn-select:hover {
+        background: var(--mg-mana-gold); color: #000;
+        box-shadow: 0 0 20px var(--mg-mana-glow); transform: translateY(-2px);
+    }
+    .mg-btn-select:hover::before { left: 150%; }
+
+    .mg-nav-btn { position: absolute; top: 50%; transform: translateY(-50%); width: 55px; height: 55px; background: rgba(15, 10, 28, 0.6); border: 1px solid var(--mg-pink-main); color: var(--mg-pink-light); font-size: 1.5rem; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 100; transition: all 0.3s; border-radius: 50%; backdrop-filter: blur(5px); box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+    .mg-nav-btn:hover { border-color: var(--mg-mana-gold); color: var(--mg-mana-gold); background: rgba(253, 224, 71, 0.1); box-shadow: 0 0 20px var(--mg-mana-glow); }
+    .mg-nav-left { left: 12%; } .mg-nav-right { right: 12%; }
+
+    /* ================= 档案录入表单 ================= */
+    .mg-form-box { width: 70%; max-width: 600px; max-height: 85%; overflow-y: auto; background: var(--mg-glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--mg-glass-border); border-top: 4px solid var(--mg-mana-gold); box-shadow: 0 20px 50px rgba(0,0,0,0.7), 0 0 30px rgba(253, 224, 71, 0.1); padding: 30px 35px; display: flex; flex-direction: column; border-radius: 8px; }
+    .mg-form-box::-webkit-scrollbar { width: 4px; }
+    .mg-form-box::-webkit-scrollbar-thumb { background: var(--mg-mana-gold); border-radius: 2px; }
+    .mg-form-content { display: flex; flex-direction: column; gap: 15px; margin-top: 15px; }
+    .mg-input-group { display: flex; flex-direction: column; gap: 6px; }
+    .mg-input-group label { color: var(--mg-mana-gold); font-size: 0.9rem; font-weight: 900; letter-spacing: 1px; text-shadow: 0 0 5px rgba(253, 224, 71, 0.3); }
+    .mg-input-group input, .mg-input-group textarea { background: rgba(0,0,0,0.4); border: 1px solid rgba(244, 114, 182, 0.3); color: #fff; padding: 10px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; transition: all 0.3s; resize: none; }
+    .mg-input-group input:focus, .mg-input-group textarea:focus { outline: none; border-color: var(--mg-pink-main); box-shadow: 0 0 15px rgba(244, 114, 182, 0.2); background: rgba(244, 114, 182, 0.05); }
+
+    .mg-btn-high {
+        margin-top: 20px; width: 100%; padding: 14px 0; justify-content: center; flex-shrink: 0;
+        background: rgba(253, 224, 71, 0.05);
+        border: 1px solid var(--mg-mana-gold);
+        border-radius: 4px;
+        color: var(--mg-mana-gold);
+        font-weight: 900; font-size: 1.1rem; letter-spacing: 3px;
+        cursor: pointer; transition: all 0.3s; text-transform: uppercase;
+        box-shadow: inset 0 0 10px rgba(253, 224, 71, 0.1), 0 0 10px rgba(253, 224, 71, 0.1);
+        position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px;
+    }
+    .mg-btn-high::before {
+        content: ''; position: absolute; top: 0; left: -100%; width: 50%; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+        transform: skewX(-20deg); transition: all 0.5s;
+    }
+    .mg-btn-high:hover {
+        background: var(--mg-mana-gold); color: #000;
+        box-shadow: 0 0 20px var(--mg-mana-glow); transform: translateY(-2px);
+    }
+    .mg-btn-high:hover::before { left: 150%; }
+
+    .mg-toast { position: absolute; top: 40px; left: 50%; transform: translateX(-50%) translateY(-20px); background: linear-gradient(90deg, rgba(30, 17, 54, 0.95), rgba(45, 27, 78, 0.95)); color: var(--mg-mana-gold); padding: 15px 30px; border-radius: 30px; border: 1px solid var(--mg-mana-gold); z-index: 1000; opacity: 0; pointer-events: none; transition: all 0.3s; font-weight: bold; box-shadow: 0 10px 30px rgba(0,0,0,0.8), 0 0 20px var(--mg-mana-glow); }
+
+    @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+
+    /* ================= 移动端适配 ================= */
+    @media (max-width: 768px) {
+        .mg-launcher {
+            aspect-ratio: auto;
+            height: 100vh;
+            border-radius: 0;
+        }
+
+        /* 导航栏变到底部一排 */
+        .mg-magic-circle {
+            top: auto !important;
+            bottom: 20px !important;
+            width: 65px;
+            height: 65px;
+            transform: translateX(-50%);
+        }
+        /* 重新分配 left 值，居中排列 */
+        .pos-tl { left: 20% !important; }
+        .pos-tr { left: 40% !important; right: auto !important; }
+        .pos-bl { left: 60% !important; }
+        .pos-br { left: 80% !important; right: auto !important; }
+
+        .mg-magic-circle i { font-size: 1.2rem; margin-bottom: 2px; }
+        .mg-magic-circle span { font-size: 0.6rem; }
+
+        .mg-magic-circle::before { inset: -3px; border-width: 1px; }
+        .mg-magic-circle::after { inset: -8px; border-width: 1px; }
+        .mg-magic-circle.active::before { inset: -4px; border-width: 2px; }
+        .mg-magic-circle.active::after { inset: -10px; border-width: 1px; }
+
+        /* 留出底部空间 */
+        .mg-intro-box, .mg-form-box, .mg-map-grid, .mg-3d-scene {
+            padding-bottom: 100px;
+        }
+
+        /* 缩小各模块的宽度和边距 */
+        .mg-intro-box, .mg-form-box { width: 90%; padding: 25px 20px; }
+        .mg-title { font-size: 2.2rem; }
+        .mg-title-box { padding: 30px 20px; width: 90%; }
+
+        .mg-loc-card { width: 100%; }
+
+        .mg-modal-box { width: 95%; max-height: 80%; }
+        .mg-modal-header { padding: 15px 20px; }
+        .mg-modal-title { font-size: 1.4rem; }
+        .mg-modal-body { padding: 15px 20px; }
+
+        /* 轮盘调整 */
+        .mg-card { width: 240px; height: 360px; }
+        .mg-nav-btn { width: 45px; height: 45px; font-size: 1.2rem; }
+        .mg-nav-left { left: 5%; } .mg-nav-right { right: 5%; }
+    }
+</style>
+</head>
+<body>
+
+<div class="mg-wrapper-reset">
+<div id="mg-main-container" class="mg-launcher">
+    <!-- 保留的魔法特效层 -->
+    <div class="mg-bg-scanline"></div>
+    <div class="mg-bg-shimmer"></div>
+
+    <!-- 四个角落的魔法阵导航 -->
+    <div class="mg-magic-circle mg-nav-item pos-tl active" data-target="mg-start-page">
+        <i class="fa-solid fa-wand-magic-sparkles"></i>
+        <span>终端<br>唤醒</span>
+    </div>
+    <div class="mg-magic-circle mg-nav-item pos-tr" data-target="mg-intro-page">
+        <i class="fa-solid fa-book-journal-whills"></i>
+        <span>魔法<br>契约</span>
+    </div>
+    <div class="mg-magic-circle mg-nav-item pos-bl" data-target="mg-map-page">
+        <i class="fa-solid fa-satellite-dish"></i>
+        <span>玛那<br>监控</span>
+    </div>
+    <div class="mg-magic-circle mg-nav-item pos-br" data-target="mg-carousel-page">
+        <i class="fa-solid fa-id-card-clip"></i>
+        <span>入职<br>手续</span>
+    </div>
+
+    <div class="mg-page mg-start-page show" id="mg-start-page">
+        <div class="mg-title-box">
+            <h1 class="mg-title">魔法少女<br>可是受人尊敬的<br>职业好吧！</h1>
+        </div>
+    </div>
+
+    <div class="mg-page mg-intro-page" id="mg-intro-page">
+        <div class="mg-intro-box">
+            <h2 class="mg-intro-title"><i class="fa-solid fa-triangle-exclamation"></i> 用户须知 · 可能是诈骗？</h2>
+            <div class="mg-intro-content">
+                <p><b>【关于玛那与我们】</b></p>
+                <p>玛那，清洁卫生且高效的能源，如淡金色的星光般无处不在，但只有魔法少女可以感知并调动。与玛那同时存在的，是被视为“气象灾害”的魔物。极为俗套地，这是魔法少女和威胁魔法少女的恶势力的斗争的故事。</p>
+                <br>
+                <p><b>【作者的话】</b><br>
+                1. 首先，非常感谢您游玩这张卡，感谢您对本卡的支持。<br>
+                2. 本卡由作者 破破P 在Discord类脑社区独家发布，不允许商用和二次传播，如有二次修改或二次创作意向请联系作者。<br>
+                3. 请关闭小白X插件，安装酒馆助手和提示词模板插件，并确认酒馆助手中角色脚本已经正常打开。<br>
+                4. 如果您在游玩过程中遇到了任何问题或疑惑，可以随时在卡贴留言提问，我将会尽力解答。当然，如果找到了值得分享的故事，也可以在卡贴一叙。<br>
+                5. 最后，希望天气很好，你也很好。</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="mg-page mg-map-page" id="mg-map-page">
+        <div class="mg-map-grid">
+            <div class="mg-loc-card" data-faction="gov">
+                <div class="mg-loc-header"><div class="mg-loc-icon"><i class="fa-solid fa-building-shield"></i></div><div class="mg-loc-info"><h3>国立玛那对策机关</h3><span>星梦市分部 · 地下指挥中枢</span></div></div>
+                <p class="mg-loc-desc">隐藏在玛那供能塔地下的冷酷堡垒。常年亮着偏冷的蓝白光，充满加班的怨气。但这里汇聚了最顶尖的玛那科技与战术支援。</p>
+                <div class="mg-click-hint"><i class="fa-solid fa-magnifying-glass"></i> 点击查看绝密档案</div>
+            </div>
+            <div class="mg-loc-card" data-faction="tea">
+                <div class="mg-loc-header"><div class="mg-loc-icon"><i class="fa-solid fa-school"></i></div><div class="mg-loc-info"><h3>下课茶话会！</h3><span>星梦一中旧教学楼 · 天台</span></div></div>
+                <p class="mg-loc-desc">偏位魔法少女的摸鱼据点。废弃的课桌、没吃完的曲奇、掌机的按键声和永不缺席的八卦，用最日常的方式守护着这片街区。</p>
+                <div class="mg-click-hint"><i class="fa-solid fa-magnifying-glass"></i> 点击查看绝密档案</div>
+            </div>
+            <div class="mg-loc-card" data-faction="witch">
+                <div class="mg-loc-header"><div class="mg-loc-icon"><i class="fa-solid fa-ghost"></i></div><div class="mg-loc-info"><h3>失乐园</h3><span>城市暗面 · 威胁极高</span></div></div>
+                <p class="mg-loc-desc">由堕落魔女构成的反官方阵线。没有固定据点，潜伏在每一个负面情绪滋生、玛那扭曲的阴暗角落，是不可轻易触碰的禁区。</p>
+                <div class="mg-click-hint"><i class="fa-solid fa-magnifying-glass"></i> 点击查看绝密档案</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mg-page mg-carousel-page" id="mg-carousel-page">
+        <div class="mg-3d-scene">
+            <div class="mg-carousel-track" id="mg-track"></div>
+            <div class="mg-nav-btn mg-nav-left" id="btn-prev"><i class="fa-solid fa-chevron-left"></i></div>
+            <div class="mg-nav-btn mg-nav-right" id="btn-next"><i class="fa-solid fa-chevron-right"></i></div>
+        </div>
+    </div>
+
+    <div class="mg-page mg-form-page" id="mg-form-page">
+        <div class="mg-form-box">
+            <h2 class="mg-intro-title" style="font-size:1.6rem; border-bottom:none; margin-bottom:5px;"><i class="fa-solid fa-pen-nib"></i> 缔结魔法契约</h2>
+            <div class="mg-form-content">
+                <div class="mg-input-group">
+                    <label>姓名 / 代号</label>
+                    <input type="text" id="user-name" placeholder="填入你的姓名">
+                </div>
+                <div class="mg-input-group">
+                    <label>年龄</label>
+                    <input type="text" id="user-age" placeholder="例如：18岁">
+                </div>
+                <div class="mg-input-group">
+                    <label>日常外貌特征</label>
+                    <textarea id="user-appearance" rows="2" placeholder="发色、瞳色、穿着等..."></textarea>
+                </div>
+                <div class="mg-input-group">
+                    <label>玛那共感形态</label>
+                    <textarea id="user-transform-appearance" rows="2" placeholder="如果不填则与日常外貌一致..."></textarea>
+                </div>
+                <div class="mg-input-group">
+                    <label>背景故事</label>
+                    <textarea id="user-bg" rows="2" placeholder="你为何会卷入玛那事件..."></textarea>
+                </div>
+                <div class="mg-input-group">
+                    <label>魔法能力 / 战斗特长</label>
+                    <textarea id="user-ability" rows="2" placeholder="如果不填则默认为普通人..."></textarea>
+                </div>
+            </div>
+            <button class="mg-btn-high" id="btn-submit-form">
+                <i class="fa-solid fa-signature"></i> 注入玛那并登入
+            </button>
+        </div>
+    </div>
+
+    <!-- 势力详情模态框 -->
+    <div class="mg-modal-overlay" id="mg-faction-modal">
+        <div class="mg-modal-box">
+            <div class="mg-modal-header">
+                <i class="fa-solid fa-shield-halved mg-modal-icon" id="modal-icon"></i>
+                <div class="mg-modal-title-group">
+                    <h3 class="mg-modal-title" id="modal-title">势力名称</h3>
+                    <div class="mg-modal-subtitle" id="modal-subtitle">副标题</div>
+                </div>
+                <button class="mg-btn-close" id="btn-close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="mg-modal-body" id="modal-body">
+                <!-- 内容动态生成 -->
+            </div>
+        </div>
+    </div>
+
+    <div class="mg-toast" id="mg-toast">
+        <i class="fa-solid fa-spinner fa-spin mg-spin-icon" style="margin-right:8px; display:none;"></i>
+        <span id="mg-toast-text">系统处理中...</span>
+    </div>
+</div>
+</div>
+
+<script>
+    (function() {
+        $('.mg-nav-item').on('click', function() {
+            const targetId = $(this).data('target');
+            $('.mg-nav-item').removeClass('active');
+            $(this).addClass('active');
+            $('.mg-page').removeClass('show');
+            $('#' + targetId).addClass('show');
+
+            if(targetId === 'mg-carousel-page') {
+                setTimeout(updateCarousel, 50);
+            }
+        });
+
+        // 势力详情数据库
+        const factionData = {
+            gov: {
+                title: "国立玛那对策机关", subtitle: "星梦市分部", icon: "fa-building-shield",
+                content: `
+                    <div class="mg-info-label"><i class="fa-solid fa-crosshairs"></i> 定位与职能</div>
+                    <div class="mg-info-content">国家战略级武装力量统筹与指挥机构。结构松散，部门（作战/结界/后勤/情报）间存在严重的信息壁垒与繁琐审批流程。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-users"></i> 核心战力</div>
+                    <div class="mg-info-content">指挥官<b>星象</b>，主攻手<b>不知火明</b>，支援手<b>水星绫</b>，防护手<b>叶千枝</b>。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-location-dot"></i> 聚集地概况</div>
+                    <div class="mg-info-content">玛那供能塔地下中枢。极少闲聊，仅有机械运转声；冷色蓝白光，无自然光源；全息作战沙盘，胶囊休息舱。</div>
+                `
+            },
+            tea: {
+                title: "下课茶话会！", subtitle: "偏位魔法少女互助圈", icon: "fa-school",
+                content: `
+                    <div class="mg-info-label"><i class="fa-solid fa-crosshairs"></i> 定位与职能</div>
+                    <div class="mg-info-content">偏位魔法少女自发组建的民间互助与情报交流圈。极度松散，无领导层级与规章制度。不接官方任务，仅处理生活范围内的突发异常。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-users"></i> 核心成员</div>
+                    <div class="mg-info-content"><b>时梭</b>、<b>苏青芜</b>、<b>雪末</b>。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-location-dot"></i> 聚集地概况</div>
+                    <div class="mg-info-content">星梦一中旧教学楼天台。废弃课桌拼成的长桌，存放零食道具的塑料箱，墙上画着简易地图，充满日常的气息。</div>
+                `
+            },
+            witch: {
+                title: "失乐园", subtitle: "七罪魔女阵线", icon: "fa-ghost",
+                content: `
+                    <div class="mg-info-label"><i class="fa-solid fa-crosshairs"></i> 定位与特征</div>
+                    <div class="mg-info-content">由堕落魔女组成的松散反官方阵线。无固定据点，无严格层级，魔女之间极少合作。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-skull"></i> 七罪魔女</div>
+                    <div class="mg-info-content"><b>怠惰魔女</b>、<b>贪婪魔女</b>、<b>嫉妒魔女</b>、<b>色欲魔女</b>、<b>暴怒魔女</b>、<b>傲慢魔女</b>、<b>暴食魔女</b>。其真实身份与日常伪装目前均处于未知状态。</div>
+                    <div class="mg-info-label"><i class="fa-solid fa-triangle-exclamation"></i> 威胁法则</div>
+                    <div class="mg-info-content">七罪魔女拥有将其极端执念具象化的专属领域。在领域展开范围内，局部的物理法则与玛那流动规则将被强制改写，常规的玛那传导与战术配合会遭到严重干扰甚至被完全切断。遭遇时威胁等级判定为极危。</div>
+                `
+            }
+        };
+
+        // 势力详情点击逻辑
+        $('.mg-loc-card').on('click', function() {
+            const factionId = $(this).data('faction');
+            if(!factionId || !factionData[factionId]) return;
+
+            const data = factionData[factionId];
+            $('#modal-icon').attr('class', `fa-solid ${data.icon} mg-modal-icon`);
+            $('#modal-title').text(data.title);
+            $('#modal-subtitle').text(data.subtitle);
+            $('#modal-body').html(data.content);
+
+            $('#mg-faction-modal').addClass('show');
+        });
+
+        // 关闭模态框
+        $('#btn-close-modal').on('click', function() {
+            $('#mg-faction-modal').removeClass('show');
+        });
+        $('#mg-faction-modal').on('click', function(e) {
+            if (e.target === this) {
+                $(this).removeClass('show');
+            }
+        });
+
+        const routes = [
+            { swipeId: 1, name: "正位魔法少女", title: "【国立机关路线】", icon: "fa-shield-heart", desc: "跳过考公考编的繁琐，你已经成为了一位光荣（？）的公务员——正位魔法少女。提醒一下，这里没有阴阳合同，因为不人道的条款写得清清楚楚——鬼知道怎么通过的。那么，拿好你的工资，和你那些千奇百怪的队友去对付更千奇百怪的委托吧。顺带一提，五险一金自己交。" },
+            { swipeId: 2, name: "偏位魔法少女", title: "【下课茶话会路线】", icon: "fa-mug-hot", desc: "白天是学生努力学习，晚上化身魔法少女打击罪恶！话虽这么说，究竟是谁在过青春校园恋爱喜剧的生活啊！给我留个渠道呗？总之，跟这几个高中生一起厮混，你们的日常除了对付老师和作业，可能还得找找李大婶的猫，修修王小弟的皮球，顺手打打出现在街区里的魔物。" },
+            { swipeId: 3, name: "我是魔法少女？", title: "【路人视角路线】", icon: "fa-eye", desc: "你只是一个看热闹的路人，感觉在第一现场目睹魔法少女的镇压行动真是值回票价，但在这之后，你突然发现空气中出现了金色微粒，你知道那玩意是教科书里的玛那，一般来讲，看见它的人距离变身也不远了。那么，不管你准没准备好，新世界的大门已经敞开。" }
+        ];
+
+        const $track = $('#mg-track');
+        const total = routes.length;
+        const angleStep = 360 / total;
+        const radius = 250;
+
+        let currentAngle = 0;
+        let frontIndex = 0;
+        let isAnimating = false;
+
+        let selectedSwipeId = null;
+        let selectedRouteName = "";
+
+        routes.forEach((route, index) => {
+            const html = `
+                <div class="mg-card" data-index="${index}" data-swipe="${route.swipeId}">
+                    <div class="mg-card-inner">
+                        <div class="mg-card-face mg-card-front">
+                            <i class="fa-solid ${route.icon} mg-card-icon"></i>
+                            <h3 class="mg-card-name">${route.name}</h3>
+                            <div class="mg-card-title">${route.title}</div>
+                            <div class="mg-flip-hint"><i class="fa-solid fa-arrows-rotate"></i> 翻转档案</div>
+                        </div>
+                        <div class="mg-card-face mg-card-back">
+                            <h3 class="mg-back-title">${route.name}</h3>
+                            <div class="mg-back-desc">${route.desc}</div>
+                            <button class="mg-btn-select" data-swipe="${route.swipeId}"><i class="fa-solid fa-check"></i> 确认阵营</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            $track.append(html);
+        });
+
+        const $cards = $('.mg-card');
+
+        function updateCarousel() {
+            $cards.each(function(index) {
+                let angle = currentAngle + (index * angleStep);
+                let rad = angle * (Math.PI / 180);
+                let x = Math.sin(rad) * radius;
+                let z = Math.cos(rad) * radius - radius;
+                let normalizedAngle = Math.round(angle % 360);
+                if (normalizedAngle < 0) normalizedAngle += 360;
+                let isFront = (normalizedAngle === 0);
+                let scale = isFront ? 1.1 : 0.8;
+                let opacity = isFront ? 1 : 0.4;
+
+                $(this).css({
+                    'transform': `translate(-50%, -50%) translateX(${x}px) translateZ(${z}px) scale(${scale})`,
+                    'z-index': Math.round(z + radius),
+                    'opacity': opacity
+                });
+
+                if (isFront) { $(this).addClass('is-front'); frontIndex = index; }
+                else { $(this).removeClass('is-front is-flipped'); }
+            });
+        }
+
+        setTimeout(updateCarousel, 50);
+
+        $cards.on('click', function(e) {
+            if (isAnimating) return;
+            if ($(e.target).hasClass('mg-btn-select') || $(e.target).closest('.mg-btn-select').length > 0) return;
+            const clickedIndex = $(this).data('index');
+            if (clickedIndex === frontIndex) { $(this).toggleClass('is-flipped'); }
+            else {
+                isAnimating = true;
+                let diff = frontIndex - clickedIndex;
+                if (diff > total / 2) diff -= total;
+                if (diff < -total / 2) diff += total;
+                currentAngle += diff * angleStep;
+                updateCarousel();
+                setTimeout(() => { isAnimating = false; }, 500);
+            }
+        });
+
+        $('#btn-prev').on('click', function() { if (isAnimating) return; isAnimating = true; currentAngle += angleStep; updateCarousel(); setTimeout(() => { isAnimating = false; }, 500); });
+        $('#btn-next').on('click', function() { if (isAnimating) return; isAnimating = true; currentAngle -= angleStep; updateCarousel(); setTimeout(() => { isAnimating = false; }, 500); });
+
+        function showToast(text, isLoading = false) {
+            const toast = document.getElementById('mg-toast');
+            const toastText = document.getElementById('mg-toast-text');
+            const spinIcon = toast.querySelector('.mg-spin-icon');
+            toastText.innerText = text;
+            spinIcon.style.display = isLoading ? 'inline-block' : 'none';
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(-50%) translateY(0)';
+            if (!isLoading) {
+                setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateX(-50%) translateY(-20px)'; }, 2500);
+            }
+        }
+
+        $('.mg-btn-select').on('click', function(e) {
+            e.stopPropagation();
+            selectedSwipeId = $(this).data('swipe');
+            selectedRouteName = routes.find(r => r.swipeId === selectedSwipeId).name;
+
+            $('.mg-nav-item').removeClass('active');
+            $('.mg-page').removeClass('show');
+            $('#mg-form-page').addClass('show');
+        });
+
+        $('#btn-submit-form').on('click', async function() {
+            const name = $('#user-name').val().trim() || "皮";
+            const age = $('#user-age').val().trim() || "未知";
+            const appearance = $('#user-appearance').val().trim() || "普通，没有特殊特征";
+            const transformAppearance = $('#user-transform-appearance').val().trim() || "与日常外貌一致";
+            const bg = $('#user-bg').val().trim() || "因意外卷入玛那事件的普通人";
+            const ability = $('#user-ability').val().trim() || "无特殊能力";
+
+            const userProfile = `USER档案:
+  基本信息:
+    姓名: ${name}
+    年龄: ${age}
+    身份路线: ${selectedRouteName}
+  设定:
+    日常外貌: ${appearance}
+    玛那共感形态: ${transformAppearance}
+    背景故事: ${bg}
+    战斗能力: ${ability}`;
+
+            showToast(`正在验证【${name}】的玛那波长...`, true);
+
+            try {
+                if (typeof getChatMessages !== 'function') {
+                    throw new Error('未连接到玛那终端 (需在SillyTavern内运行)');
+                }
+
+                const charWb = await getCharWorldbookNames('current');
+                const targetWb = charWb.primary || (charWb.additional && charWb.additional[0]);
+
+                if (targetWb) {
+                    await deleteWorldbookEntries(targetWb, e => e.name === 'USER档案');
+                    await createWorldbookEntries(targetWb, [{
+                        name: 'USER档案',
+                        content: `<user_setting>\n${userProfile}\n</user_setting>`,
+                        enabled: true,
+                        strategy: { type: 'constant' },
+                        position: { type: 'before_character_definition', order: 10 }
+                    }]);
+                } else {
+                    await createOrReplaceWorldbook('玩家自定义档案', [{
+                        name: 'USER档案',
+                        content: `<user_setting>\n${userProfile}\n</user_setting>`,
+                        enabled: true,
+                        strategy: { type: 'constant' },
+                        position: { type: 'before_character_definition', order: 10 }
+                    }]);
+                    await rebindChatWorldbook('current', '玩家自定义档案');
+                }
+
+                const messages = await getChatMessages(0, { include_swipe: true });
+                const firstMsg = messages[0];
+
+                if (!firstMsg || !firstMsg.swipes || firstMsg.swipes.length <= selectedSwipeId) {
+                    throw new Error(`找不到对应的命运分歧 (请确保开场白至少有 ${selectedSwipeId + 1} 个滑动版本)`);
+                }
+
+                await setChatMessage(firstMsg.swipes[selectedSwipeId], 0, {
+                    swipe_id: selectedSwipeId,
+                    refresh: 'display_and_render_current'
+                });
+
+                showToast(`契约成立！正在接入星梦市...`);
+
+                // ================= 新增功能：自动预填系统指令 =================
+                if (ability && ability !== "无特殊能力") {
+                    const sysPrompt = `\n\n[系统指令：检测到玩家已觉醒特殊能力。请在本次回复的末尾，根据USER档案中的<q>“战斗能力”</q>描述，自行分析并提炼出1~2个具体的技能，以 JSONPatch 的格式将其写入 \`/玩家/技能表\` 变量中。
+注意技能表的值必须是一个完整对象，格式为：
+{
+  "技能名": {
+    "描述": "技能的具体效果",
+    "等级": 1
+  }
+}
+请使用 "op": "replace" 或是 "insert" 进行写入。]`;
+
+                    // 使用 jQuery 直接操作酒馆的聊天输入框，触发 input 事件让酒馆识别到文字
+                    const $textarea = $('#send_textarea');
+                    if ($textarea.length) {
+                        const currentVal = $textarea.val();
+                        $textarea.val(currentVal + sysPrompt).trigger('input');
+                    }
+                }
+                // ==========================================================
+
+
+                setTimeout(() => {
+                    $('#mg-main-container').fadeOut(600);
+                }, 1200);
+
+            } catch (err) {
+                showToast(err.message);
+            }
+        });
+
+    })();
+</script>
+</body>
+</html>
+```

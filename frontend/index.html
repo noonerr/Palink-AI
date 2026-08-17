@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Palink AI v0.21.2</title>
+    
+    <link rel="manifest" href="/manifest.json" />
+    <!-- theme-color 必须与 manifest.json 的 theme_color 一致，避免启动阶段颜色跳变 -->
+    <meta name="theme-color" content="#1a1a2e" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Palink AI - 智能对话助手" />
+    <meta name="application-name" content="Palink AI" />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Palink" />
+    <script>
+      try {
+        const launchTheme = localStorage.getItem('theme') === 'dark' ? 'dark' : 'light';
+        const launchBackground = launchTheme === 'dark' ? '#1a1a2e' : '#f5f5f5';
+        document.documentElement.style.backgroundColor = launchBackground;
+        document.documentElement.style.colorScheme = launchTheme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', launchBackground);
+      } catch {
+        // Storage can be unavailable in hardened browsing modes.
+      }
+    </script>
+    
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png" />
+    <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-192x192.png" />
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
+    <link rel="apple-touch-icon" sizes="120x120" href="/icons/icon-128x128.png" />
+    
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/icons/icon-48x48.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512x512.png" />
+    
+    <meta name="msapplication-TileColor" content="#3b82f6" />
+    <meta name="msapplication-tap-highlight" content="no" />
+    <!-- 禁止iOS自动识别电话号码、邮箱，避免样式错乱 -->
+    <meta name="format-detection" content="telephone=no, email=no" />
+    <!-- KaTeX 公式样式：仅在消息含数学公式时由 MarkdownRenderer.ensureKatexCss 动态注入；
+         这里静态引用只为保证 CSS 已就绪时公式立即有样式，改为异步加载避免阻塞首屏渲染
+         （与下方 Font Awesome 同款 media=print 切换模式）。 -->
+    <link rel="stylesheet" href="/katex.min.css" media="print" onload="this.media='all'" />
+    <!-- ST 插件（如酒馆助手 Galgame 组件）依赖 Font Awesome 图标字体；
+         窄视口下按钮文本被媒体查询隐藏，只剩 <i class="fa-solid"> 图标，
+         不加载图标库会导致按钮空白。
+         异步加载（media=print 切换）：不阻塞首屏渲染，CSS 到达后图标自行补上。 -->
+    <link rel="stylesheet" href="/st/css/fontawesome.min.css" media="print" onload="this.media='all'" />
+    <link rel="stylesheet" href="/st/css/solid.min.css" media="print" onload="this.media='all'" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/bootstrap.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

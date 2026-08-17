@@ -1,0 +1,97 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "Write GoldenTest_worldbook_positions's next reply in a fictional chat between GoldenTest_worldbook_positions and User."
+    },
+    {
+      "role": "system",
+      "content": "[BEFORE_CHAR] The detective's office is on the third floor of a rundown building. Neon signs flicker outside the window."
+    },
+    {
+      "role": "system",
+      "content": "A detective in a noir city."
+    },
+    {
+      "role": "system",
+      "content": "Cynical, observant."
+    },
+    {
+      "role": "system",
+      "content": "You enter the detective's office."
+    },
+    {
+      "role": "system",
+      "content": "[AFTER_CHAR] The warehouse district is a dangerous area controlled by smugglers. Police rarely patrol there."
+    },
+    {
+      "role": "system",
+      "content": "[Start a new Chat]"
+    },
+    {
+      "role": "assistant",
+      "content": "*The detective looks up* \"What brings you here?\""
+    },
+    {
+      "role": "user",
+      "content": "She was last seen near the old warehouse district."
+    }
+  ],
+  "model": "palink-default",
+  "stream": true,
+  "temperature": 1,
+  "top_p": 1,
+  "max_tokens": 300,
+  "full_payload": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Write GoldenTest_worldbook_positions's next reply in a fictional chat between GoldenTest_worldbook_positions and User."
+      },
+      {
+        "role": "system",
+        "content": "[BEFORE_CHAR] The detective's office is on the third floor of a rundown building. Neon signs flicker outside the window."
+      },
+      {
+        "role": "system",
+        "content": "A detective in a noir city."
+      },
+      {
+        "role": "system",
+        "content": "Cynical, observant."
+      },
+      {
+        "role": "system",
+        "content": "You enter the detective's office."
+      },
+      {
+        "role": "system",
+        "content": "[AFTER_CHAR] The warehouse district is a dangerous area controlled by smugglers. Police rarely patrol there."
+      },
+      {
+        "role": "system",
+        "content": "[Start a new Chat]"
+      },
+      {
+        "role": "assistant",
+        "content": "*The detective looks up* \"What brings you here?\""
+      },
+      {
+        "role": "user",
+        "content": "She was last seen near the old warehouse district."
+      }
+    ],
+    "model": "palink-default",
+    "temperature": 1,
+    "max_tokens": 300,
+    "stream": true,
+    "presence_penalty": 0,
+    "frequency_penalty": 0,
+    "top_p": 1
+  },
+  "scenario_name": "worldbook_positions",
+  "fixture": "worldbook_positions",
+  "source": "sillytavern",
+  "st_version": "1.18.0",
+  "timestamp": "2026-07-21T22:45:15Z"
+}

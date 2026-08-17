@@ -1,0 +1,110 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>测试 parseContent 函数</title>
+</head>
+<body>
+  <h1>parseContent 函数测试</h1>
+  <div id="results"></div>
+  <script>
+    const parseContent = (content) => {
+      const parts = [];
+      let remaining = content;
+
+      for (let i = 0; i < 3; i++) {
+        remaining = remaining
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'");
+      }
+
+      const tags = [
+        { type: 'action', start: '<|a|>', end: '</|a|>' },
+        { type: 'new_thinking', start: '<|t|>', end: '</|t|>' },
+        { type: 'model_reasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
+        { type: 'thinking', start: '<thinking>', end: '</thinking>' },
+        { type: 'thinking', start: '<think>', end: '</think>' },
+        { type: 'action', start: '<action>', end: '</action>' },
+        { type: 'action', start: '[action]', end: '[/action]' }
+      ];
+
+      while (remaining.length > 0) {
+        let foundTag = false;
+        
+        for (const tag of tags) {
+          const startIdx = remaining.indexOf(tag.start);
+          if (startIdx !== -1) {
+            const endIdx = remaining.indexOf(tag.end, startIdx + tag.start.length);
+            if (endIdx !== -1) {
+              if (startIdx > 0) {
+                const beforeText = remaining.substring(0, startIdx);
+                if (beforeText.trim()) {
+                  parts.push({ type: 'content', content: beforeText });
+                }
+              }
+              
+              const tagContent = remaining.substring(startIdx + tag.start.length, endIdx).trim();
+              parts.push({ type: tag.type, content: tagContent });
+              
+              remaining = remaining.substring(endIdx + tag.end.length);
+              foundTag = true;
+              break;
+            }
+          }
+        }
+        
+        if (!foundTag) {
+          if (remaining.trim()) {
+            parts.push({ type: 'content', content: remaining });
+          }
+          break;
+        }
+      }
+
+      return parts;
+    };
+
+    const resultsDiv = document.getElementById('results');
+    
+    const tests = [
+      {
+        name: '测试1: 简单的<|a|>标签',
+        input: '普通对话内容<|a|>这是动作内容</|a|>'
+      },
+      {
+        name: '测试2: <|a|>和<|t|>标签混合',
+        input: '开始对话<|a|>动作一</|a|>中间内容<|t|>思考内容</|t|>结束'
+      },
+      {
+        name: '测试3: HTML实体转义的标签',
+        input: '转义后的标签 &lt;|a|&gt;这是转义的动作&lt;/|a|&gt;'
+      },
+      {
+        name: '测试4: 用户实际例子',
+        input: '<|a|>我猛地向前跨了一大步</|a|> "你觉得这很好笑，是吗？" <|t|>够了。真的够了。</|t|>'
+      }
+    ];
+
+    tests.forEach(test => {
+      const result = parseContent(test.input);
+      const div = document.createElement('div');
+      div.style.margin = '20px 0';
+      div.style.padding = '15px';
+      div.style.border = '1px solid #ccc';
+      div.innerHTML = `
+        <h3>${test.name}</h3>
+        <p><strong>输入:</strong> ${test.input.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+        <p><strong>结果:</strong></p>
+        <pre style="background: #f5f5f5; padding: 10px;">${JSON.stringify(result, null, 2)}</pre>
+      `;
+      resultsDiv.appendChild(div);
+    });
+
+    console.log('所有测试完成，请在页面查看结果');
+  </script>
+</body>
+</html>

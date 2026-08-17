@@ -1,0 +1,10 @@
+{
+  "display_name": "Palink 轻插件范本",
+  "name": "palink-sample-extension",
+  "version": "1.0.0",
+  "author": "Palink",
+  "description": "ST 扩展兼容性范本：演示多文件模块加载 + extension_settings 读写 + jQuery 注入设置面板。用于验证 Palink 原生 UI 的轻插件适配链路。深插件（小白X/酒馆助手）不在此范围，走 opt-in st-native 逃生舱。",
+  "js": "index.js",
+  "css": "style.css",
+  "loading_order": 10
+}

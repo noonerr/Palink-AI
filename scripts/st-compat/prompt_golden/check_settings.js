@@ -1,0 +1,13 @@
+const fs = require('fs');
+const path = '/home/node/app/data/default-user/settings.json';
+const s = JSON.parse(fs.readFileSync(path, 'utf8'));
+const oai = s.oai_settings || {};
+console.log('oai_settings keys:', Object.keys(oai).slice(0, 30));
+console.log('chat_completion_source:', oai.chat_completion_source);
+console.log('custom_url:', oai.custom_url);
+console.log('custom_model:', oai.custom_model);
+console.log('max_context:', oai.max_context);
+console.log('main_api:', s.main_api);
+console.log('pin_examples:', s.power_user?.pin_examples);
+console.log('prompts:', oai.prompts ? oai.prompts.length + ' prompts' : 'none');
+console.log('prompt_order:', oai.prompt_order ? Object.keys(oai.prompt_order) : 'none');

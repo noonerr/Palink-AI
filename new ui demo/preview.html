@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Palink-AI Preview</title>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background: #000; color: #fff; }
+
+    .app { height: 100%; display: flex; }
+    .sidebar { width: 72px; background: #0f0f0f; border-right: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; align-items: center; padding: 16px 0; gap: 8px; }
+    .logo { width: 48px; height: 48px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border-radius: 14px; display: flex; align-items: center; justify-center; font-weight: bold; font-size: 20px; margin-bottom: 16px; }
+    .nav-btn { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-center; cursor: pointer; transition: all 0.2s; color: #71717a; background: transparent; border: none; }
+    .nav-btn:hover { background: rgba(255,255,255,0.05); }
+    .nav-btn.active { background: #3b82f6; color: #fff; box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
+    .nav-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .header { padding: 24px 24px 16px; background: linear-gradient(to bottom, #000, transparent); }
+    .header-top { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
+    .title { font-size: 24px; font-weight: 900; }
+    .subtitle { font-size: 14px; color: #71717a; margin-top: 2px; }
+    .select-btn { font-size: 14px; font-weight: 700; padding: 8px 16px; border-radius: 9999px; cursor: pointer; border: none; background: rgba(59,130,246,0.1); color: #3b82f6; transition: all 0.2s; }
+    .select-btn.cancel { background: rgba(239,68,68,0.1); color: #ef4444; }
+
+    .grid { flex: 1; overflow-y: auto; padding: 0 16px 120px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .card { position: relative; border-radius: 24px; overflow: hidden; cursor: pointer; aspect-ratio: 3/4; transition: transform 0.15s; }
+    .card:active { transform: scale(0.97); }
+    .card.selected { outline: 4px solid #3b82f6; outline-offset: 0; }
+    .card-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .card-overlay { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.2) 50%, transparent 100%); }
+    .card-content { position: absolute; bottom: 16px; left: 16px; right: 16px; }
+    .card-name { color: #fff; font-size: 18px; font-weight: 700; }
+    .card-desc { color: rgba(255,255,255,0.6); font-size: 12px; margin-top: 4px; }
+    .card-check { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.3); backdrop-filter: blur(8px); }
+    .card-check.checked { background: #3b82f6; border-color: #3b82f6; }
+
+    .action-bar { position: fixed; bottom: 96px; left: 16px; right: 16px; background: rgba(15,15,15,0.9); backdrop-filter: blur(20px); border-radius: 24px; padding: 16px; display: flex; align-items: center; justify-content: space-between; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .action-avatars { display: flex; }
+    .action-avatar { width: 36px; height: 36px; border-radius: 50%; border: 2px solid #0f0f0f; object-fit: cover; margin-left: -8px; }
+    .action-avatar:first-child { margin-left: 0; }
+    .action-count { font-size: 14px; font-weight: 700; margin-left: 12px; }
+    .action-btn { background: #3b82f6; color: #fff; border: none; padding: 10px 20px; border-radius: 12px; font-weight: 600; cursor: pointer; }
+
+    /* Chat View */
+    .chat-view { height: 100%; display: flex; flex-direction: column; background: #f5f5f5; }
+    .chat-header { height: 64px; background: rgba(255,255,255,0.7); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(0,0,0,0.1); display: flex; align-items: center; padding: 0 16px; gap: 12px; }
+    .chat-back { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #71717a; }
+    .chat-avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #fff; }
+    .chat-name { font-size: 14px; font-weight: 700; }
+    .chat-status { font-size: 12px; color: #22c55e; }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+    .message { display: flex; flex-direction: column; align-items: flex-start; }
+    .message-label { font-size: 10px; color: #71717a; margin-left: 4px; margin-bottom: 4px; text-transform: uppercase; font-weight: 700; }
+    .message-bubble { max-width: 80%; padding: 16px; border-radius: 20px; font-size: 15px; line-height: 1.5; }
+    .message.ai .message-bubble { background: #fff; border-top-left-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .message.user { align-items: flex-end; }
+    .message.user .message-bubble { background: #3b82f6; color: #fff; border-top-right-radius: 4px; }
+
+    .chat-input-area { padding: 16px 16px 32px; background: linear-gradient(to top, #f5f5f5, transparent); }
+    .chat-input-wrap { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 9999px; padding: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+    .chat-input { flex: 1; background: transparent; border: none; outline: none; padding: 8px 12px; font-size: 14px; }
+    .chat-send { width: 44px; height: 44px; background: #3b82f6; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; cursor: pointer; border: none; }
+
+    /* Mobile */
+    .mobile-nav { position: fixed; bottom: 8px; left: 8px; right: 8px; height: 64px; background: rgba(15,15,15,0.9); backdrop-filter: blur(20px); border-radius: 24px; display: flex; align-items: center; justify-content: around; border: 1px solid rgba(255,255,255,0.1); z-index: 50; }
+    .mobile-nav-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #71717a; font-size: 11px; font-weight: 500; cursor: pointer; }
+    .mobile-nav-item.active { color: #3b82f6; }
+    .mobile-nav-item svg { margin-bottom: 4px; }
+
+    .hidden { display: none !important; }
+
+    /* Theme */
+    .light .app { background: #f5f5f5; }
+    .light .sidebar { background: #fff; border-color: rgba(0,0,0,0.1); }
+    .light .nav-btn { color: #71717a; }
+    .light .nav-btn:hover { background: rgba(0,0,0,0.05); }
+    .light .action-bar { background: rgba(255,255,255,0.9); border-color: rgba(0,0,0,0.1); }
+    .light .chat-view { background: #f5f5f5; }
+    .light .chat-header { background: rgba(255,255,255,0.9); border-color: rgba(0,0,0,0.1); }
+    .light .mobile-nav { background: rgba(255,255,255,0.9); border-color: rgba(0,0,0,0.1); }
+    .light .card-check { background: rgba(0,0,0,0.2); }
+
+    /* Model Section */
+    .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+    .card-hover { transition: all 0.3s ease; }
+    .card-hover:hover { transform: translateY(-2px); }
+    .border-border\/50 { border-color: rgba(255,255,255,0.5); }
+    .text-muted-foreground { color: rgba(255,255,255,0.6); }
+    .bg-primary\/10 { background: rgba(59,130,246,0.1); }
+    .bg-secondary { background: rgba(15,15,15,0.5); }
+    .bg-secondary-foreground { color: rgba(255,255,255,0.8); }
+    .text-destructive { color: #ef4444; }
+    .bg-destructive\/10 { background: rgba(239,68,68,0.1); }
+    .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+    .transition-all { transition: all 0.3s ease; }
+    .group:hover .hover\:shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+    .group:hover .hover\:bg-accent { background: rgba(255,255,255,0.05); }
+    .group:hover .hover\:text-accent-foreground { color: rgba(255,255,255,0.8); }
+    .dark .hover\:bg-accent\/50:hover { background: rgba(255,255,255,0.05); }
+    .dark .border-gray-700 { border-color: rgba(255,255,255,0.1); }
+  </style>
+</head>
+<body class="dark">
+  <div id="app" class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="logo">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="48" height="48" style="background: radial-gradient(circle at 50% 50%, #2d2d44 0%, #1a1a2e 100%);">
+          <defs>
+            <linearGradient id="palinkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#a8c8ff"/>
+              <stop offset="100%" stop-color="#4b6cb7"/>
+            </linearGradient>
+            <linearGradient id="accentGrad" x1="100%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#ffffff"/>
+              <stop offset="100%" stop-color="#a8c8ff"/>
+            </linearGradient>
+            <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="5" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+
+          <!-- 左侧：代表 P 的主干与神经元节点 -->
+          <rect x="130" y="110" width="26" height="120" rx="13" fill="url(#palinkGrad)" filter="url(#glow)"/>
+          
+          <!-- 右侧：代表 Link 的环形，与 P 组成无穷大/互联意象 -->
+          <path d="M 143 140 H 220 A 45 45 0 0 1 265 185 A 45 45 0 0 1 220 230 H 170" 
+                fill="none" stroke="url(#palinkGrad)" stroke-width="26" stroke-linecap="round" filter="url(#glow)"/>
+
+          <!-- AI 标志：右上角的闪耀星芒 -->
+          <path d="M260 100 Q 280 100 280 80 Q 280 100 300 100 Q 280 100 280 120 Q 280 100 260 100" fill="url(#accentGrad)" filter="url(#glow)"/>
+        </svg>
+      </div>
+      <div class="nav-items" style="display:flex;flex-direction:column;gap:8px;flex:1">
+        <button class="nav-btn" onclick="setTab('chat')">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </button>
+        <button class="nav-btn" onclick="setTab('workspace')">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+        <button class="nav-btn active" id="nav-characters" onclick="setTab('characters')">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 8V4"/><path d="M15 8V4"/><path d="M18 8v2c0 1.1-.9 2-2 2h-1"/></svg>
+        </button>
+      </div>
+      <div class="nav-bottom">
+        <button class="nav-btn" onclick="toggleTheme()">
+          <svg id="theme-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </button>
+        <button class="nav-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main" id="main-view">
+      <header class="header">
+        <div class="header-top">
+          <div>
+            <h1 class="title">角色大厅</h1>
+            <p class="subtitle">SillyTavern 兼容模式</p>
+          </div>
+          <button class="select-btn" id="select-btn" onclick="toggleSelectMode()">选择</button>
+        </div>
+      </header>
+
+      <div class="flex items-center gap-2 border-b border-border/50 pb-4 shrink-0 px-16">
+        <button class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all text-muted-foreground hover:bg-secondary hover:text-foreground">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path><path d="M20 2v4"></path><path d="M22 4h-4"></path><circle cx="4" cy="20" r="2"></circle></svg>
+          语言模型
+        </button>
+        <button class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-primary text-primary-foreground shadow-lg shadow-primary/20">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>
+          本地模型
+        </button>
+      </div>
+
+      <div class="grid" id="character-grid">
+        <!-- Cards injected by JS -->
+      </div>
+
+      <div class="p-16">
+        <div class="flex justify-between items-center mb-8">
+          <h3 class="text-2xl font-semibold">本地模型</h3>
+          <div class="flex gap-2">
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 has-[&>svg]:px-3">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>
+              刷新模型列表
+            </button>
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 has-[&>svg]:px-3">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2"><path d="M12 13v8"></path><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="m8 17 4-4 4 4"></path></svg>
+              上传模型
+            </button>
+            <input id="model-upload-input" class="hidden" accept=".gguf,.ggml,.bin,.safetensors" type="file">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div class="glass rounded-2xl card-hover p-4 sm:p-5 hover:shadow-lg transition-all group">
+            <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="w-2.5 h-2.5 rounded-full bg-gray-400 " title="未测试"></div>
+                  <h4 class="font-semibold truncate text-sm sm:text-base">Ollama Local</h4>
+                  <span class="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">1 个启用模型</span>
+                </div>
+                <p class="text-xs text-muted-foreground font-mono truncate mb-2">ollama:11434</p>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-xs bg-secondary text-secondary-foreground px-2 py-1 rounded-full">Qwen2.5 0.5B (L...)</span>
+                </div>
+              </div>
+              <div class="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                <button data-slot="button" data-variant="ghost" data-size="sm" class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 rounded-md gap-1.5 px-3 has-[&>svg]:px-2.5 h-8 text-xs">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-cw mr-1" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>
+                  测试
+                </button>
+                <button data-slot="button" data-variant="ghost" data-size="sm" class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 rounded-md gap-1.5 px-3 has-[&>svg]:px-2.5 h-8 text-xs">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line mr-1" aria-hidden="true"><path d="M13 21h8"></path><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path></svg>
+                  编辑
+                </button>
+                <button data-slot="button" data-variant="ghost" data-size="icon" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:text-accent-foreground dark:hover:bg-accent/50 size-9 h-8 w-8 text-destructive hover:bg-destructive/10">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2 lucide-trash-2" aria-hidden="true"><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="action-bar hidden" id="action-bar">
+        <div style="display:flex;align-items:center">
+          <div class="action-avatars" id="action-avatars"></div>
+          <span class="action-count" id="action-count">已选 0 人</span>
+        </div>
+        <button class="action-btn" onclick="startChat()">开始对话</button>
+      </div>
+    </main>
+
+    <!-- Chat View (hidden by default) -->
+    <main class="chat-view hidden" id="chat-view">
+      <header class="chat-header">
+        <div class="chat-back" onclick="closeChat()">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </div>
+        <img class="chat-avatar" id="chat-avatar" src="" alt="">
+        <div>
+          <div class="chat-name" id="chat-name"></div>
+          <div class="chat-status">在线</div>
+        </div>
+      </header>
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" style="padding:8px"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          <input type="text" class="chat-input" placeholder="输入消息..." id="chat-input">
+          <button class="chat-send" onclick="sendMessage()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Mobile Nav -->
+    <nav class="mobile-nav hidden" id="mobile-nav">
+      <div class="mobile-nav-item active" onclick="setTab('chat')">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>对话</span>
+      </div>
+      <div class="mobile-nav-item" onclick="setTab('workspace')">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>
+        <span>空间</span>
+      </div>
+      <div class="mobile-nav-item" onclick="setTab('characters')">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 8V4"/><path d="M15 8V4"/><path d="M18 8v2c0 1.1-.9 2-2 2h-1"/></svg>
+        <span>角色</span>
+      </div>
+      <div class="mobile-nav-item" onclick="setTab('settings')">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>设置</span>
+      </div>
+    </nav>
+  </div>
+
+  <script>
+    const characters = [
+      { id: '1', name: '猫娘执事', desc: '有点小脾气的温柔男仆', avatar: 'https://i.pravatar.cc/150?u=1' },
+      { id: '2', name: '冰山女皇', desc: '掌控极北之地的统治者', avatar: 'https://i.pravatar.cc/150?u=2' },
+      { id: '3', name: '流浪武士', desc: '在樱花树下饮酒的浪子', avatar: 'https://i.pravatar.cc/150?u=3' },
+      { id: '4', name: '黑客艾薇', desc: '潜伏在数据流中的幽灵', avatar: 'https://i.pravatar.cc/150?u=4' },
+    ];
+
+    let isDark = true;
+    let isSelectMode = false;
+    let selectedIds = [];
+    let currentChar = null;
+
+    function init() {
+      renderCards();
+      checkMobile();
+      window.addEventListener('resize', checkMobile);
+    }
+
+    function checkMobile() {
+      const isMobile = window.innerWidth < 768;
+      document.getElementById('mobile-nav').classList.toggle('hidden', !isMobile);
+      document.querySelector('.sidebar').classList.toggle('hidden', isMobile);
+    }
+
+    function renderCards() {
+      const grid = document.getElementById('character-grid');
+      grid.innerHTML = characters.map(char => `
+        <div class="card ${selectedIds.includes(char.id) ? 'selected' : ''}" 
+             onclick="handleCardClick('${char.id}')"
+             style="${selectedIds.includes(char.id) ? 'box-shadow: 0 0 0 4px #3b82f6' : ''}">
+          <img class="card-img" src="${char.avatar}" alt="${char.name}">
+          <div class="card-overlay"></div>
+          ${isSelectMode ? `
+            <div class="card-check ${selectedIds.includes(char.id) ? 'checked' : ''}">
+              ${selectedIds.includes(char.id) ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>' : ''}
+            </div>
+          ` : ''}
+          <div class="card-content">
+            <h3 class="card-name">${char.name}</h3>
+            <p class="card-desc">${char.desc}</p>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function handleCardClick(id) {
+      if (isSelectMode) {
+        toggleSelect(id);
+      } else {
+        selectedIds = [id];
+        const char = characters.find(c => c.id === id);
+        openChat(char);
+      }
+    }
+
+    function toggleSelectMode() {
+      isSelectMode = !isSelectMode;
+      if (!isSelectMode) selectedIds = [];
+      const btn = document.getElementById('select-btn');
+      btn.textContent = isSelectMode ? '取消' : '选择';
+      btn.classList.toggle('cancel', isSelectMode);
+      document.getElementById('action-bar').classList.toggle('hidden', !isSelectMode || selectedIds.length === 0);
+      renderCards();
+    }
+
+    function toggleSelect(id) {
+      if (selectedIds.includes(id)) {
+        selectedIds = selectedIds.filter(i => i !== id);
+      } else {
+        selectedIds.push(id);
+      }
+      updateActionBar();
+      renderCards();
+    }
+
+    function updateActionBar() {
+      const bar = document.getElementById('action-bar');
+      bar.classList.toggle('hidden', !isSelectMode || selectedIds.length === 0);
+      document.getElementById('action-count').textContent = `已选 ${selectedIds.length} 人`;
+      document.getElementById('action-avatars').innerHTML = selectedIds.slice(0, 3).map(id => {
+        const char = characters.find(c => c.id === id);
+        return `<img class="action-avatar" src="${char.avatar}" alt="">`;
+      }).join('');
+    }
+
+    function startChat() {
+      if (selectedIds.length > 0) {
+        const char = characters.find(c => c.id === selectedIds[0]);
+        openChat(char);
+      }
+    }
+
+    function openChat(char) {
+      currentChar = char;
+      document.getElementById('main-view').classList.add('hidden');
+      document.getElementById('chat-view').classList.remove('hidden');
+      document.getElementById('chat-avatar').src = char.avatar;
+      document.getElementById('chat-name').textContent = char.name;
+
+      const messages = document.getElementById('chat-messages');
+      messages.innerHTML = `
+        <div class="message ai">
+          <span class="message-label">${char.name}</span>
+          <div class="message-bubble">${char.desc}</div>
+        </div>
+      `;
+    }
+
+    function closeChat() {
+      document.getElementById('main-view').classList.remove('hidden');
+      document.getElementById('chat-view').classList.add('hidden');
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const messages = document.getElementById('chat-messages');
+      messages.innerHTML += `
+        <div class="message user">
+          <div class="message-bubble">${text}</div>
+        </div>
+      `;
+      input.value = '';
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function setTab(tab) {
+      document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+      document.getElementById('nav-' + tab)?.classList.add('active');
+    }
+
+    function toggleTheme() {
+      isDark = !isDark;
+      document.body.classList.toggle('dark', isDark);
+      document.body.classList.toggle('light', !isDark);
+    }
+
+    init();
+  </script>
+</body>
+</html>

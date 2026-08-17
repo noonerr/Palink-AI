@@ -1,0 +1,209 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build outputs
+frontend/dist/
+frontend/dist_new/
+frontend/dist_new_*/
+frontend/dist_broken_*/
+frontend/dist_fix_*/
+backend/__pycache__/
+build/
+dist/
+
+# Logs & temp files
+*.log
+.docker_*.txt
+.x_*.txt
+*.txt.bak
+
+# Environment & secrets
+.env
+env-v2*
+*-Pal.env
+*-Pal.yml
+*.pem
+*.key
+*.crt
+casdoor_app.conf
+
+# Large files / backups
+*.zip
+*.tar.gz
+*.mp4
+temp_backup/
+temp_extract*/
+backup_*/
+empty_del_*/
+backups/
+temp_backup_*/
+
+# ML model files (weights only, not Python source)
+*.gguf
+backend/models/
+
+# Runtime data directories
+data/
+backend/app/data/
+frontend/public/public/
+
+# Test attack payloads (may contain tokens/keys)
+test_attack/
+
+# IDE
+.trae/
+.claude/settings.local.json
+.claude/.mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sensitive scripts & temp files
+*.tmp
+*.bak
+*.backup
+*.backup_*
+*.backup2
+*.backup3
+*.backup4
+*.backup5
+*.docx
+_debug_test.py
+check_settings.py
+create_admin.py
+.tmp_*.json
+fix_*.sh
+fix_*.py
+update_env.sh
+modify_app.py
+
+# Root-level temp/legacy files (not part of app)
+/app.py
+/app_backup.py
+/app_build.py
+/build_app.py
+/database.py
+/main.py
+/update_starters.py
+/_fix_routes.py
+/auth_casdoor_with_token.py
+/casdoor_client_fixed.py
+/check_syntax.py
+/test_login.py
+/test_register.py
+/frp-client-gui.py
+/frp-memory-protection.service
+/frp-platform-nginx*.conf
+/nginx_https*.conf
+/docker-compose-v2*.yml
+/index-fixed.html
+/mobile-settings-*.html
+/test_websearch_sse.html
+/apply_protection_now.sh
+/check_*.sh
+/copy_certs_*.sh
+/optimize-static.sh
+/sync-static.sh
+COMMIT_MESSAGE.md
+DELIVERY_PACKAGE.md
+MOBILE_OPTIMIZATION_ROADMAP.md
+MOBILE_OPTIMIZATION_COMPLETE_REPORT.md
+
+# Debug / temp screenshots & captures
+/test-screenshots/
+/screenshots/
+/图片/
+characters-page.png
+homepage-after-rebuild.png
+roleplay-*.png
+rp-*.png
+st_native_*.png
+*.png.bak
+
+# Temp scripts & data dumps (root level)
+tmp_*.py
+tmp_*.json
+tmp_*.txt
+tmp_*.js
+tmp-*.py
+tmp-*.json
+tmp-*.txt
+tmp-*.js
+tmp_extract_regex*.py
+tmp_query.py
+tmp_repl.py
+tmp_verify.py
+tmp_view_lm.py
+inspect_regex.py
+regex-scripts.json
+snap_list.yaml
+init_chat.json
+create_test_*.sql
+update_*.sql
+update_plugin_config.sql
+update_test_password.sql
+compact-docker-vhdx.bat
+
+# Backend temp scripts
+backend/tmp_*.py
+
+# Accidental shell-redirect junk files
+/'
+/'scriptName'
+
+# Build artifacts accidentally written to root
+/CharacterView-*.js
+/MarkdownRenderer-*.js
+
+# Backup folders inside specs (state preserved via git tags instead)
+specs/**/_backup_*/
+
+# Local tooling / agent profile dirs
+.codebuddy/
+.playwright-cli/
+.workbuddy/
+.tmp_old_ui/
+.agents/
+.backups/
+.codex-browser-profile-*/
+.uploads/
+.claude/worktrees/
+.trae - 副本/
+
+# Editor backup files
+frontend/index.html.bak.*
+
+# 2026-08-16 安全分批提交：在途工作排除项（agent 调试垃圾文件 / 大体积 vendored 目录 / 验证产物）
+nul
+ext_dump.txt
+regex_scripts_dump.txt
+tmp_statusbar.html
+tmp_probe.cjs
+scripts/check-*.js
+scripts/s1.js
+scripts/s2.js
+scripts/s3.js
+scripts/s4.js
+scripts/s5.js
+scripts/s6.js
+scripts/chara.json
+scripts/chara-decoded.json
+scripts/dbchar.py
+scripts/render_script.txt
+community-st-forks/zhaiiker-SillyTavernMOD/
+tavern_resource/
+st-plugins/third-party/
+tmp-js-slash-runner/
+shots/
+scripts/shots/
+frontend/dev/
+frontend/.shim-baseline/
+frontend/.shim_current.txt
+frontend/dist_*/
+frontend/dist.prev/
+frontend/src_bak_*/

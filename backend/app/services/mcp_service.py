@@ -1,0 +1,546 @@
+import logging
+import json
+import os
+import ipaddress
+import socket
+import uuid
+import hashlib
+import re
+from datetime import datetime, timezone
+from contextlib import AsyncExitStack
+from typing import Optional
+from urllib.parse import urlparse
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+MCP_CONFIG_FILE = "mcp_servers.json"
+LOBE_MCP_API = "https://mcp.lobehub.com/api/mcp"
+MCP_REGISTRY_API = "https://registry.modelcontextprotocol.io"
+
+ALLOWED_ENV_KEYS = {
+    "API_KEY", "MODEL_NAME", "BASE_URL",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "PORT", "HOST", "DEBUG", "LOG_LEVEL",
+    "TEMPERATURE", "MAX_TOKENS",
+}
+
+ALLOWED_MCP_COMMANDS = {
+    "npx", "node", "python", "python3", "uvx", "uv",
+}
+
+ALLOWED_COMMAND_PATH_PREFIXES = (
+    "/usr/local/bin/",
+    "/usr/bin/",
+    "/opt/",
+)
+
+_active_connections: dict = {}
+_connection_errors: dict[str, str] = {}
+_tool_name_registry: dict[str, tuple[str, str]] = {}
+_tool_name_reverse_registry: dict[tuple[str, str], str] = {}
+_OPENAI_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_OPENAI_TOOL_NAME_MAX_LENGTH = 64
+
+
+def _safe_tool_name_fragment(value: str, fallback: str) -> str:
+    safe = _OPENAI_TOOL_NAME_RE.sub("_", value or "").strip("_")
+    return safe or fallback
+
+
+def _build_openai_tool_name(server_id: str, actual_tool_name: str, digest_length: int = 12) -> str:
+    digest = hashlib.sha1(f"{server_id}\0{actual_tool_name}".encode("utf-8")).hexdigest()[:digest_length]
+    server_part = _safe_tool_name_fragment(server_id, "server")[:8].strip("_-") or "server"
+    tool_part = _safe_tool_name_fragment(actual_tool_name, "tool")
+
+    prefix = f"mcp_{server_part}_"
+    suffix = f"_{digest}"
+    max_tool_length = _OPENAI_TOOL_NAME_MAX_LENGTH - len(prefix) - len(suffix)
+    if max_tool_length < 1:
+        prefix = "mcp_"
+        max_tool_length = _OPENAI_TOOL_NAME_MAX_LENGTH - len(prefix) - len(suffix)
+
+    truncated_tool = tool_part[:max_tool_length].rstrip("_-") or "tool"
+    return f"{prefix}{truncated_tool}{suffix}"
+
+
+def _register_openai_tool_name(server_id: str, actual_tool_name: str) -> str:
+    mapping_key = (server_id, actual_tool_name)
+    existing_name = _tool_name_reverse_registry.get(mapping_key)
+    if existing_name and _tool_name_registry.get(existing_name) == mapping_key:
+        return existing_name
+
+    digest = hashlib.sha1(f"{server_id}\0{actual_tool_name}".encode("utf-8")).hexdigest()
+    for digest_length in (12, 16, 20, 24, 32, 40):
+        candidate = _build_openai_tool_name(server_id, actual_tool_name, digest_length)
+        owner = _tool_name_registry.get(candidate)
+        if owner is None or owner == mapping_key:
+            _tool_name_registry[candidate] = mapping_key
+            _tool_name_reverse_registry[mapping_key] = candidate
+            return candidate
+
+    candidate = f"mcp_{digest[:60]}"
+    owner = _tool_name_registry.get(candidate)
+    if owner is not None and owner != mapping_key:
+        raise RuntimeError(f"MCP tool name collision for {server_id}:{actual_tool_name}")
+    _tool_name_registry[candidate] = mapping_key
+    _tool_name_reverse_registry[mapping_key] = candidate
+    return candidate
+
+
+def _resolve_legacy_tool_name(tool_name: str) -> Optional[tuple[str, str]]:
+    parts = tool_name.split("__", 2)
+    if len(parts) == 3 and parts[0] == "mcp":
+        return parts[1], parts[2]
+    return None
+
+
+def _allow_private_urls_in_development() -> bool:
+    try:
+        from ..core.config import settings
+        return settings.APP_ENV == "development"
+    except Exception:
+        return False
+
+
+def _import_mcp_client_session():
+    try:
+        from mcp.client.session import ClientSession
+        return ClientSession
+    except ModuleNotFoundError:
+        from mcp import ClientSession
+        return ClientSession
+
+
+def _import_mcp_stdio():
+    try:
+        from mcp.client.stdio import stdio_client, StdioServerParameters
+    except ModuleNotFoundError:
+        from mcp import StdioServerParameters
+        from mcp.client.stdio import stdio_client
+    return stdio_client, StdioServerParameters
+
+
+def _is_safe_mcp_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    if _allow_private_urls_in_development():
+        return True
+    lowered = host.lower()
+    if lowered in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::]", "0:0:0:0:0:0:0:1", "0:0:0:0:0:0:0:0"} or lowered.endswith(".local"):
+        return False
+
+    def _is_private_ip(ip_str: str) -> bool:
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+            return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_unspecified
+        except ValueError:
+            return False
+
+    if _is_private_ip(host):
+        return False
+    try:
+        addr_info = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+    for info in addr_info:
+        if _is_private_ip(info[4][0]):
+            return False
+    return True
+
+
+def _validate_mcp_command(command: str) -> bool:
+    base_name = os.path.basename(command)
+    stem, ext = os.path.splitext(base_name)
+    if base_name in ALLOWED_MCP_COMMANDS or (stem in ALLOWED_MCP_COMMANDS and ext.lower() in {".exe", ".cmd", ".bat"}):
+        return True
+    if os.path.isabs(command):
+        for prefix in ALLOWED_COMMAND_PATH_PREFIXES:
+            if command.startswith(prefix):
+                return True
+        try:
+            project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            if command.startswith(project_dir + os.sep):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _validate_mcp_cwd(cwd: str) -> bool:
+    if not cwd:
+        return True
+    try:
+        real_cwd = os.path.realpath(cwd)
+    except Exception:
+        return False
+    normalized = os.path.normpath(real_cwd)
+    if ".." in normalized.split(os.sep):
+        return False
+    if real_cwd != normalized:
+        return False
+    return True
+
+
+def _config_path() -> str:
+    from ..core.config import settings
+    return os.path.join(settings.DATA_DIR, MCP_CONFIG_FILE)
+
+
+def get_mcp_servers() -> list:
+    path = _config_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("servers", [])
+        except Exception:
+            pass
+    return []
+
+
+def save_mcp_servers(servers: list) -> None:
+    path = _config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"servers": servers}, f, ensure_ascii=False, indent=2)
+
+
+def add_server(server_data: dict) -> dict:
+    servers = get_mcp_servers()
+    entry = {
+        "id": server_data.get("id") or str(uuid.uuid4()),
+        "name": server_data.get("name", ""),
+        "description": server_data.get("description", ""),
+        "type": server_data.get("type", "sse"),
+        "url": server_data.get("url", ""),
+        "command": server_data.get("command", ""),
+        "args": server_data.get("args", []),
+        "cwd": server_data.get("cwd", ""),
+        "env": server_data.get("env", {}),
+        "headers": server_data.get("headers", {}),
+        "enabled": server_data.get("enabled", True),
+        "identifier": server_data.get("identifier", ""),
+        "author": server_data.get("author", ""),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    servers.append(entry)
+    save_mcp_servers(servers)
+    return entry
+
+
+def update_server(server_id: str, updates: dict) -> Optional[dict]:
+    servers = get_mcp_servers()
+    for server in servers:
+        if server.get("id") == server_id:
+            allowed_keys = {"name", "description", "type", "url", "command", "args", "cwd", "env", "headers", "enabled", "identifier", "author"}
+            for key in allowed_keys:
+                if key in updates:
+                    server[key] = updates[key]
+            save_mcp_servers(servers)
+            return server
+    return None
+
+
+def remove_server(server_id: str) -> Optional[dict]:
+    servers = get_mcp_servers()
+    for i, server in enumerate(servers):
+        if server.get("id") == server_id:
+            removed = servers.pop(i)
+            save_mcp_servers(servers)
+            return removed
+    return None
+
+
+async def connect_server(server: dict) -> dict:
+    server_id = server.get("id")
+    transport_type = server.get("type", "sse")
+    url = server.get("url", "")
+    headers = server.get("headers", {}) or {}
+
+    if server_id in _active_connections:
+        await disconnect_server(server_id)
+
+    if transport_type == "stdio":
+        return await _connect_stdio(server)
+
+    if url and not _is_safe_mcp_url(url):
+        raise ValueError(f"MCP server URL blocked (SSRF protection): {url}")
+
+    exit_stack = AsyncExitStack()
+    try:
+        ClientSession = _import_mcp_client_session()
+        if transport_type == "streamable-http":
+            from mcp.client.streamable_http import streamablehttp_client
+            transport = await exit_stack.enter_async_context(
+                streamablehttp_client(url, headers=headers)
+            )
+            read_stream, write_stream = transport[0], transport[1]
+        else:
+            from mcp.client.sse import sse_client
+            transport = await exit_stack.enter_async_context(
+                sse_client(url, headers=headers)
+            )
+            read_stream, write_stream = transport[0], transport[1]
+
+        session = await exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await session.initialize()
+
+        _active_connections[server_id] = {
+            "session": session,
+            "exit_stack": exit_stack,
+            "config": server,
+        }
+        _connection_errors.pop(server_id, None)
+        logger.info(f"MCP server connected: {server.get('name', server_id)}")
+        return {"status": "connected", "server_id": server_id}
+    except Exception as e:
+        try:
+            await exit_stack.aclose()
+        except Exception:
+            pass
+        _connection_errors[server_id] = str(e)
+        logger.error(f"Failed to connect MCP server {server_id}: {e}")
+        raise
+
+
+async def _connect_stdio(server: dict) -> dict:
+    server_id = server.get("id")
+    command = server.get("command", "")
+    args = server.get("args", [])
+    env = server.get("env", {})
+    cwd = server.get("cwd", "")
+
+    if not command:
+        raise ValueError("stdio server requires 'command' field")
+
+    if not _validate_mcp_command(command):
+        logger.warning(f"MCP stdio command blocked by security policy: {command}")
+        raise ValueError(f"Command not allowed by security policy: {command}")
+
+    if cwd and not _validate_mcp_cwd(cwd):
+        logger.warning(f"MCP stdio cwd blocked by security policy: {cwd}")
+        raise ValueError(f"Working directory not allowed by security policy: {cwd}")
+
+    filtered_env = {k: v for k, v in env.items() if k in ALLOWED_ENV_KEYS}
+    process_env = {**os.environ, **filtered_env}
+
+    exit_stack = AsyncExitStack()
+    try:
+        ClientSession = _import_mcp_client_session()
+        stdio_client, StdioServerParameters = _import_mcp_stdio()
+
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=process_env if env else None,
+            cwd=cwd or None,
+        )
+
+        transport = await exit_stack.enter_async_context(stdio_client(server_params))
+        read_stream, write_stream = transport[0], transport[1]
+
+        session = await exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await session.initialize()
+
+        _active_connections[server_id] = {
+            "session": session,
+            "exit_stack": exit_stack,
+            "config": server,
+        }
+        _connection_errors.pop(server_id, None)
+        logger.info(f"MCP stdio server connected: {server.get('name', server_id)}")
+        return {"status": "connected", "server_id": server_id}
+    except Exception as e:
+        try:
+            await exit_stack.aclose()
+        except Exception:
+            pass
+        _connection_errors[server_id] = str(e)
+        logger.error(f"Failed to connect MCP stdio server {server_id}: {e}")
+        raise
+
+
+async def disconnect_server(server_id: str) -> dict:
+    conn = _active_connections.pop(server_id, None)
+    _connection_errors.pop(server_id, None)
+    if conn:
+        try:
+            await conn["exit_stack"].aclose()
+            logger.info(f"MCP server disconnected: {server_id}")
+        except Exception as e:
+            logger.error(f"Error disconnecting MCP server {server_id}: {e}")
+        return {"status": "disconnected", "server_id": server_id}
+    return {"status": "not_found", "server_id": server_id}
+
+
+async def list_server_tools(server_id: str) -> list:
+    conn = _active_connections.get(server_id)
+    if not conn:
+        raise ValueError(f"MCP server not connected: {server_id}")
+    session = conn["session"]
+    server_name = conn["config"].get("name", server_id)
+
+    result = await session.list_tools()
+    tools = []
+    for tool in result.tools:
+        openai_name = _register_openai_tool_name(server_id, tool.name)
+        tools.append({
+            "type": "mcp",
+            "identifier": f"{server_id}__{tool.name}",
+            "serverId": server_id,
+            "serverName": server_name,
+            "name": tool.name,
+            "openaiName": openai_name,
+            "description": tool.description or "",
+            "inputSchema": tool.inputSchema if hasattr(tool, "inputSchema") else {},
+        })
+    return tools
+
+
+async def ensure_server_connected(server: dict) -> bool:
+    server_id = server.get("id")
+    if not server_id:
+        return False
+    if server_id in _active_connections:
+        return True
+    try:
+        await connect_server(server)
+        return True
+    except Exception as e:
+        _connection_errors[server_id] = str(e)
+        logger.warning("MCP server %s is enabled but could not connect: %s", server_id, e)
+        return False
+
+
+async def call_server_tool(server_id: str, tool_name: str, args: dict = None) -> dict:
+    conn = _active_connections.get(server_id)
+    if not conn:
+        raise ValueError(f"MCP server not connected: {server_id}")
+    session = conn["session"]
+    result = await session.call_tool(tool_name, arguments=args or {})
+
+    content_parts = []
+    for item in result.content:
+        if hasattr(item, "text"):
+            content_parts.append(item.text)
+        elif hasattr(item, "data"):
+            content_parts.append(f"[image: {getattr(item, 'mimeType', 'unknown')}]")
+        elif hasattr(item, "resource"):
+            content_parts.append(str(item.resource))
+
+    return {
+        "content": "\n".join(content_parts),
+        "isError": result.isError if hasattr(result, "isError") else False,
+    }
+
+
+async def get_all_tools_openai_format() -> list:
+    servers = get_mcp_servers()
+    all_tools = []
+    for server in servers:
+        if not server.get("enabled", True):
+            continue
+        server_id = server.get("id")
+        if not await ensure_server_connected(server):
+            continue
+        try:
+            mcp_tools = await list_server_tools(server_id)
+            for tool in mcp_tools:
+                openai_name = tool.get("openaiName") or _register_openai_tool_name(server_id, tool["name"])
+                openai_tool = {
+                    "type": "function",
+                    "function": {
+                        "name": openai_name,
+                        "description": tool["description"],
+                        "parameters": tool.get("inputSchema", {}),
+                    }
+                }
+                all_tools.append(openai_tool)
+        except Exception as e:
+            _connection_errors[server_id] = str(e)
+            logger.error(f"Failed to get tools from server {server_id}: {e}")
+    return all_tools
+
+
+async def execute_tool_call(tool_name: str, arguments: dict) -> dict:
+    resolved = _tool_name_registry.get(tool_name) or _resolve_legacy_tool_name(tool_name)
+    if not resolved:
+        raise ValueError(f"Invalid MCP tool name format: {tool_name}")
+
+    server_id, actual_tool_name = resolved
+
+    if server_id not in _active_connections:
+        config = None
+        for s in get_mcp_servers():
+            if s.get("id") == server_id:
+                config = s
+                break
+        if config:
+            await connect_server(config)
+        else:
+            raise ValueError(f"MCP server not found: {server_id}")
+
+    return await call_server_tool(server_id, actual_tool_name, arguments)
+
+
+def is_connected(server_id: str) -> bool:
+    return server_id in _active_connections
+
+
+def get_connected_ids() -> list:
+    return list(_active_connections.keys())
+
+
+def get_connection_errors() -> dict:
+    return dict(_connection_errors)
+
+
+async def search_marketplace(query: str, limit: int = 20) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{LOBE_MCP_API}/search", params={"q": query, "limit": limit})
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"LobeHub marketplace search failed: {e}")
+        return {"items": [], "error": str(e)}
+
+
+async def get_marketplace_detail(identifier: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{LOBE_MCP_API}/plugins/{identifier}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"LobeHub marketplace detail failed: {e}")
+        return {"error": str(e)}
+
+
+async def list_marketplace(category: str = "", cursor: str = "", limit: int = 20) -> dict:
+    try:
+        params = {"limit": limit}
+        if category:
+            params["category"] = category
+        if cursor:
+            params["cursor"] = cursor
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{LOBE_MCP_API}/list", params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"LobeHub marketplace list failed: {e}")
+        return {"items": [], "error": str(e)}

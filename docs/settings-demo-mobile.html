@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Palink-AI 设置 Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Palink-AI Design System */
+    :root {
+      --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+
+      /* Light Mode */
+      --background: 0 0% 100%;
+      --foreground: 240 10% 3.9%;
+      --primary: 217 91% 60%;
+      --border: 240 5.9% 90%;
+      --glass-bg: rgba(255, 255, 255, 0.9);
+      --glass-border: rgba(0, 0, 0, 0.08);
+
+      /* Aurora Background */
+      --aurora-1: #3b82f6;
+      --aurora-2: #8b5cf6;
+      --aurora-3: #06b6d4;
+    }
+
+    .dark {
+      --background: 240 10% 3.9%;
+      --foreground: 0 0% 100%;
+      --border: 240 3.7% 15.9%;
+      --glass-bg: rgba(31, 34, 51, 0.9);
+      --glass-border: rgba(255, 255, 255, 0.1);
+    }
+
+    * {
+      font-family: var(--font-sans);
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Glass Effect */
+    .glass {
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+    }
+
+    .glass-strong {
+      background: var(--glass-bg);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      border: 1px solid var(--glass-border);
+    }
+
+    /* Aurora Background */
+    .aurora-bg {
+      background: radial-gradient(circle at 50% 50%, #f5f5f5 0%, #e0e0e0 100%);
+    }
+
+    .dark .aurora-bg {
+      background: radial-gradient(circle at 50% 50%, #2d2d44 0%, #1a1a2e 100%);
+    }
+
+    /* Smooth transitions */
+    * {
+      transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+    }
+
+    /* Hide scrollbar */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    /* Safe area */
+    .pb-safe {
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+
+    /* Animations */
+    @keyframes fade-in {
+      from {
+        opacity: 0;
+      transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .animate-fade-in {
+      animation: fade-in 0.3s ease-out;
+    }
+
+    /* Active state */
+    .setting-item:active {
+      transform: scale(0.98);
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="h-screen w-screen overflow-hidden aurora-bg">
+    <!-- Mobile View -->
+    <div id="mobile-view" class="h-full flex flex-col">
+      <!-- Header -->
+      <div class="glass-strong border-b flex items-center justify-between px-4 h-14 shrink-0">
+      <button onclick="goBack()" class="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+          <span class="font-semibold text-sm">设置</span>
+        </button>
+        <button onclick="toggleTheme()" class="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5">
+          <svg id="theme-icon-light" class="w-5 h-5 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+          </svg>
+          <svg id="theme-icon-dark" class="w-5 h-5 text-slate-200 hidden" fill="none" stroke="currentColor" viewBox="0 24 24">
+       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 overflow-y-auto no-scrollbar pb-safe">
+        <!-- Settings List -->
+        <div id="settings-list" class="p-4 space-y-3 animate-fade-in">
+          <!-- Basic Settings Group -->
+          <div class="glass rounded-2xl p-4 space-y-2">
+            <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 px-2 mb-3">基础设置</div>
+
+         <button onclick="openSetting('profile')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center">
+              <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                  </svg>
+                </div>
+            <div class="text-left">
+               <div class="font-medium text-slate-800 dark:text-slate-100">个人资料</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">头像、用户名、密码</div>
+                </div>
+              </div>
+              <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+
+            <button onclick="openSetting('appearance')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center">
+                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/>
+                  </svg>
+          </div>
+                <div class="text-left">
+                  <div class="font-medium text-slate-800 dark:text-slate-100">外观</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">主题、显示模式</div>
+              </div>
+           </div>
+              <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+
+            <button onclick="openSetting('language')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+         <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+       </svg>
+           </div>
+                <div class="text-left">
+              <div class="font-medium text-slate-800 dark:text-slate-100">语言</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">界面语言、提示词语言</div>
+              </div>
+        </div>
+      <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+           </svg>
+            </button>
+          </div>
+
+          <!-- AI Settings Group -->
+       <div class="glass rounded-2xl p-4 space-y-2">
+            <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 px-2 mb-3">AI 设置</div>
+
+       <button onclick="openSetting('prompts')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center">
+             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+               </svg>
+              </div>
+                <div class="text-left">
+                <div class="font-medium text-slate-800 dark:text-slate-100">提示词</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">自定义 AI 提示词</div>
+                </div>
+              </div>
+            <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+          </button>
+
+         <button onclick="openSetting('models')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+              <div class="flex items-center gap-3">
+             <div class="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+               </svg>
+              </div>
+                <div class="text-left">
+                  <div class="font-medium text-slate-800 dark:text-slate-100">模型管理</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">配置 AI 模型</div>
+             </div>
+         </div>
+              <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+            </button>
+
+            <button onclick="openSetting('memory')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+          <div class="flex items-center gap-3">
+             <div class="w-10 h-10 rounded-full bg-gradient-to-br from-pink-400 to-pink-600 flex items-center justify-center">
+             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/>
+                  </svg>
+                </div>
+           <div class="text-left">
+                  <div class="font-medium text-slate-800 dark:text-slate-100">记忆系统</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">对话记忆设置</div>
+                </div>
+           </div>
+       <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+         </svg>
+          </button>
+          </div>
+
+      <!-- About Group -->
+        <div class="glass rounded-2xl p-4 space-y-2">
+            <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 px-2 mb-3">其他</div>
+
+        <button onclick="openSetting('about')" class="setting-item w-full flex items-center justify-between p-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-all">
+              <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-gradient-to-br from-slate-400 to-slate-600 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              </div>
+              <div class="text-left">
+                  <div class="font-medium text-slate-800 dark:text-slate-100">关于</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">版本信息</div>
+              </div>
+              </div>
+              <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Setting Detail (Hidden by default) -->
+        <div id="setting-detail" class="hidden p-4 space-y-4 animate-fade-in">
+          <div class="glass rounded-2xl p-6">
+            <h2 id="detail-title" class="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">设置详情</h2>
+            <p id="detail-content" class="text-slate-600 dark:text-slate-400">这里是设置的详细内容...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Theme toggle
+    function toggleTheme() {
+      const html = document.documentElement;
+      const isDark = html.classList.toggle('dark');
+      document.getElementById('theme-icon-light').classList.toggle('hidden', isDark);
+      document.getElementById('theme-icon-dark').classList.toggle('hidden', !isDark);
+    }
+
+    // Navigation
+    let currentView = 'list';
+
+    function goBack() {
+      if (currentView === 'detail') {
+        document.getElementById('settings-list').classList.remove('hidden');
+        document.getElementById('setting-detail').classList.add('hidden');
+        currentView = 'list';
+  } else {
+        // In real app, this would navigate back to main view
+     alert('返回主界面');
+      }
+    }
+
+    function openSetting(type) {
+      const titles = {
+        profile: '个人资料',
+    appearance: '外观',
+        language: '语言',
+        prompts: '提示词',
+        models: '模型管理',
+        memory: '记忆系统',
+        about: '关于'
+      };
+
+      const contents = {
+        profile: '在这里可以修改头像、用户名和密码',
+        appearance: '在这里可以切换主题、调整显示模式',
+        language: '在这里可以设置界面语言和提示词语言',
+        prompts: '在这里可以自定义 AI 的系统提示词',
+        models: '在这里可以配置和管理 AI 模型',
+        memory: '在这里可以设置对话记忆功能',
+        about: 'Palink-AI v1.0.0\n一个现代化的 AI 对话平台'
+      };
+
+      document.getElementById('detail-title').textContent = titles[type];
+      document.getElementById('detail-content').textContent = contents[type];
+
+      document.getElementById('settings-list').classList.add('hidden');
+      document.getElementById('setting-detail').classList.remove('hidden');
+    currentView = 'detail';
+    }
+
+    // Detect system theme on load
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      toggleTheme();
+    }
+  </script>
+</body>
+</html>

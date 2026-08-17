@@ -1,0 +1,10 @@
+# ST 1.18.0 Golden Vector 存放目录（spec 3.9）
+#
+# 本目录存放从 ST 1.18.0 浏览器端真实捕获的 golden vector JSON。
+# 文件命名: {scenario_name}.json（如 01_single_char_jailbreak.json）
+#
+# 捕获方法（必须用真实 ST 输出，不能用 Palink 自身预期当 golden）:
+#   python scripts/extract_st_golden_vector.py --all
+#
+# 每个 JSON 需包含元数据: scenario_name / st_version / extracted_at / messages
+# test_st_compat_golden_vector.py 会自动发现本目录下的 golden vector 并对比。

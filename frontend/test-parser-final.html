@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>标签解析器测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .test-case {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .test-input {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .result {
+            margin-top: 10px;
+        }
+        .part {
+            margin: 8px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .part-content {
+            background: #e8f4fd;
+            border-left: 4px solid #2196F3;
+        }
+        .part-action {
+            background: #fff3e0;
+            border-left: 4px solid #FF9800;
+        }
+        .part-new_thinking {
+            background: #f3e5f5;
+            border-left: 4px solid #9C27B0;
+        }
+        .part-thinking {
+            background: #f5f5f5;
+            border-left: 4px solid #9E9E9E;
+        }
+        .part-model_reasoning {
+            background: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <h1>标签解析器测试</h1>
+
+    <div class="test-case">
+        <h3>测试1: 完整的 new_thinking 标签 + 后续内容</h3>
+        <div class="test-input" id="input1"></div>
+        <div class="result" id="result1"></div>
+    </div>
+
+    <div class="test-case">
+        <h3>测试2: 混合标签</h3>
+        <div class="test-input" id="input2"></div>
+        <div class="result" id="result2"></div>
+    </div>
+
+    <script>
+        function parseContent(content) {
+            const parts = [];
+            let remaining = content;
+
+            for (let i = 0; i < 3; i++) {
+                remaining = remaining
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'");
+            }
+
+            const allTags = [
+                { type: 'action', start: '<|a|>', end: '</|a|>' },
+                { type: 'new_thinking', start: '<|t|>', end: '</|t|>' },
+                { type: 'action', start: '<|a|>', end: '<|/a|>' },
+                { type: 'new_thinking', start: '<|t|>', end: '<|/t|>' },
+                { type: 'model_reasoning', start: '<model_reasoning>', end: '</model_reasoning>' },
+                { type: 'thinking', start: '<thinking>', end: '</thinking>' },
+                { type: 'thinking', start: '<think>', end: '</think>' },
+                { type: 'action', start: '<action>', end: '</action>' },
+                { type: 'action', start: '[action]', end: '[/action]' }
+            ];
+
+            while (remaining.length > 0) {
+                let bestMatch = null;
+
+                for (const tag of allTags) {
+                    const startIdx = remaining.indexOf(tag.start);
+                    if (startIdx !== -1) {
+                        const endIdx = remaining.indexOf(tag.end, startIdx + tag.start.length);
+                        if (endIdx !== -1) {
+                            if (!bestMatch || startIdx < bestMatch.startIdx) {
+                                bestMatch = { tag, startIdx, endIdx };
+                            }
+                        }
+                    }
+                }
+
+                if (bestMatch) {
+                    if (bestMatch.startIdx > 0) {
+                        const beforeText = remaining.substring(0, bestMatch.startIdx);
+                        if (beforeText.trim()) {
+                            parts.push({ type: 'content', content: beforeText });
+                        }
+                    }
+
+                    const tagContent = remaining.substring(
+                        bestMatch.startIdx + bestMatch.tag.start.length,
+                        bestMatch.endIdx
+                    ).trim();
+                    parts.push({ type: bestMatch.tag.type, content: tagContent });
+
+                    remaining = remaining.substring(bestMatch.endIdx + bestMatch.tag.end.length);
+                } else {
+                    if (remaining.trim()) {
+                        parts.push({ type: 'content', content: remaining });
+                    }
+                    break;
+                }
+            }
+
+            return parts;
+        }
+
+        function renderResult(parts, containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+
+            parts.forEach((part, idx) => {
+                const div = document.createElement('div');
+                div.className = `part part-${part.type}`;
+                div.innerHTML = `<strong>[${part.type}]</strong> ${part.content}`;
+                container.appendChild(div);
+            });
+        }
+
+        const test1 = `<|t|>一次是偶然，两次是挑衅，三次……这就是战争了。他在把我当什么？一个只会对着屏幕发呆的白痴？还是某种只要输入指令就会做出反应的廉价程序？这种被彻底无视、被当作笑话一样对待的感觉，像是一把生锈的钝刀，在我的神经上来回拉扯。愤怒？不，那太简单了。这是一种更深层的、冰冷的荒谬感。既然他想玩数字游戏，既然他想看我失控，那我就让他看看，当一只被逼到死角的猫决定亮出爪子时，可不仅仅是"666"那么简单。</|t|> 空气里那股炖肉的香气突然变得令人作呕，像是某种腐烂前的最后挣扎。我没有再吼叫，也没有再摔东西。相反，我发出了一声极轻、极冷的笑声，那声音在死寂的客厅里显得格外刺耳。`;
+
+        const test2 = `<|t|>这是思考内容</|t|> 普通对话内容 <|a|>这是动作内容</|a|> 更多对话`;
+
+        document.getElementById('input1').textContent = test1;
+        document.getElementById('input2').textContent = test2;
+
+        renderResult(parseContent(test1), 'result1');
+        renderResult(parseContent(test2), 'result2');
+    </script>
+</body>
+</html>

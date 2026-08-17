@@ -1,0 +1,171 @@
+/*
+ * TavernHelperPanel.css
+ * 酒馆助手兼容「好感度/状态面板」样式（高保真复刻其标志性外观）。
+ * 通过 import 引入（Vite 打包为外部样式表），避免 JSX <style> 内联注入在本项目渲染管线中不生效。
+ * 所有类以 .palink-th-panel 前缀，避免污染全局。
+ *
+ * 设计要点（对齐酒馆助手状态栏观感）：
+ *   - 卡片有配色与质感（渐变描边、阴影、半透明底），不再"啥都没有"。
+ *   - 数值进度条按值变色（红→橙→黄→绿，由内联渐变 + 辉光实现），非单一固定色。
+ *   - 每个分组带强调色竖条 + 圆点，区分不同角色。
+ *   - 头像字段渲染为圆角缩略图。
+ *
+ * 主题自适应：浅色主题为默认（深色文字 + 浅色卡片）；深色主题由 html.dark 祖先类覆盖为浅色文字。
+ * 本项目在 <html> 上切换 .dark 类（App.tsx），故用 .dark .palink-th-panel 覆盖即可双向适配。
+ */
+
+.palink-th-panel {
+  --th-bg: rgba(255, 255, 255, 0.86);
+  --th-border: rgba(124, 92, 255, 0.22);
+  --th-text: rgba(28, 28, 46, 0.94);
+  --th-sub: rgba(90, 90, 120, 0.82);
+  --th-track: rgba(20, 20, 40, 0.1);
+  --th-group-bg: rgba(124, 92, 255, 0.05);
+  /* 布局安全：永不撑爆聊天容器 */
+  flex: 0 0 auto;
+  max-height: 42vh;
+  overflow-y: auto;
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--th-border);
+  border-radius: 14px;
+  background: var(--th-bg);
+  box-shadow: 0 4px 18px rgba(80, 60, 160, 0.12);
+  backdrop-filter: blur(10px);
+  color: var(--th-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 深色主题覆盖（<html class="dark"> 由 App.tsx 切换） */
+.dark .palink-th-panel {
+  --th-bg: rgba(26, 28, 48, 0.62);
+  --th-border: rgba(160, 140, 255, 0.28);
+  --th-text: rgba(236, 236, 248, 0.94);
+  --th-sub: rgba(200, 200, 224, 0.68);
+  --th-track: rgba(255, 255, 255, 0.12);
+  --th-group-bg: rgba(160, 140, 255, 0.08);
+  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.45);
+}
+
+.palink-th-panel__title {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--th-border);
+  color: var(--th-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  background: transparent;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+.palink-th-panel__title svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+.palink-th-panel__title-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.palink-th-panel__body {
+  margin-top: 4px;
+}
+
+.palink-th-panel__group {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--th-group-bg);
+}
+.palink-th-panel__group:last-child {
+  margin-bottom: 0;
+}
+.palink-th-panel__group-name {
+  font-weight: 700;
+  color: var(--th-text);
+  margin-bottom: 6px;
+  padding-left: 8px;
+  border-left: 3px solid var(--th-border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.palink-th-panel__group-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 6px currentColor;
+}
+.palink-th-panel__group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.palink-th-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.palink-th-panel__row--text {
+  align-items: baseline;
+}
+.palink-th-panel__key {
+  flex: 0 0 84px;
+  color: var(--th-sub);
+  font-size: 12px;
+}
+.palink-th-panel__val {
+  flex: 1 1 auto;
+  color: var(--th-text);
+  word-break: break-word;
+}
+.palink-th-panel__bar {
+  flex: 1 1 auto;
+  height: 9px;
+  border-radius: 6px;
+  background: var(--th-track);
+  overflow: hidden;
+}
+.palink-th-panel__bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.35s ease;
+}
+.palink-th-panel__bar-num {
+  flex: 0 0 38px;
+  text-align: right;
+  color: var(--th-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* 头像缩略图 */
+.palink-th-panel__avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.palink-th-panel__avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--th-border);
+  flex: 0 0 auto;
+}

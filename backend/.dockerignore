@@ -1,0 +1,65 @@
+# 排除模型文件目录（所有子目录中的models，除了app/models）
+**/models/
+!app/models/
+models/
+
+# 排除模型文件（所有目录）
+**/*.gguf
+**/*.ggml
+**/*.bin
+**/*.safetensors
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+
+# 排除 Python 缓存
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 排除虚拟环境
+venv/
+env/
+ENV/
+
+# 排除数据目录
+data/
+**/data/
+app/data/
+uploads/
+**/uploads/
+
+# 排除日志
+*.log
+**/*.log
+
+# 排除 IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 排除环境变量文件
+.env
+.env.*
+!.env.example
+
+# 排除 Git
+.git/
+.gitignore
+
+# 排除测试文件
+tests/
+test/
+
+# 排除文档
+docs/
+*.md
+
+# 排除备份文件
+*.bak
+**/*.bak

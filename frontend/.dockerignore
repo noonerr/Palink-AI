@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+*.md
+.env*
+.vscode
+.idea
+*.backup
+*.bak
+*.tmp
+*.jsx
+src/**/*.backup
+src/**/*.bak
+src/**/*.tmp

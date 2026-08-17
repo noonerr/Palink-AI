@@ -1,0 +1,5 @@
+# Optional heavy ML dependencies for SentenceTransformer embedding backend.
+# Install this file only when MEMORY_EMBEDDING_PROVIDER=sentencetransformer.
+torch>=2.0.0
+transformers>=4.30.0
+sentence-transformers>=2.2.0

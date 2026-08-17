@@ -1,0 +1,1202 @@
+```
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>猫娘现代 · 状态栏</title>
+    <style>
+        /* ========== Galgame · 双色主题 ========== */
+        :root {
+            --bg: #faf5f7;
+            --white: #ffffff;
+            --card-alt: #fffafc;
+            --love-pink: #e8879a;
+            --love-pink-deep: #d4687e;
+            --love-pink-light: #f5c6d0;
+            --border: #f0e0e8;
+            --border-soft: #f8eef3;
+            --border-accent: rgba(232, 135, 154, 0.3);
+            --text: #5c4755;
+            --text-soft: #8c7385;
+            --text-muted: #b8a3b0;
+            --text-dark: #3d2a38;
+            --progress-bg: #f8eef3;
+            --card-hover-bg: linear-gradient(175deg, #fef5f8, #fdf0f3);
+            --btn-bg: linear-gradient(135deg, #fff, #fef5f7);
+            --btn-hover-shadow: 0 4px 14px rgba(232, 135, 154, 0.28);
+            --app-bg: linear-gradient(175deg, #fffafc 0%, #fdf6f8 30%, #fef9fb 60%, #fffafd 100%);
+            --world-bg: linear-gradient(135deg, #fffafc, #fef5f8);
+            --info-bg: linear-gradient(160deg, #fffafc, #fff);
+            --box-bg: linear-gradient(160deg, #fffafc, #fef5f8);
+            --char-card-bg: linear-gradient(175deg, #fff, #fffafc);
+            --char-card-active-bg: linear-gradient(175deg, #fef5f8, #fdf0f3);
+            --avatar-placeholder-bg: linear-gradient(160deg, #fef5f8, #fff0f3);
+            --tag-bg: linear-gradient(135deg, var(--love-pink-light), #f8d8e2);
+            --status-tag-bg: linear-gradient(135deg, #fef5f8, #fdf0f3);
+            --status-tag-active-bg: linear-gradient(135deg, var(--love-pink-light), #f5c6d0);
+            --shadow-sm: 0 2px 12px rgba(200, 160, 180, 0.18);
+            --shadow: 0 4px 20px rgba(200, 160, 180, 0.22);
+            --shadow-lg: 0 8px 32px rgba(200, 160, 180, 0.28);
+            --avatar-shadow: 0 0 0 6px rgba(255, 255, 255, 0.7), 0 0 0 8px #f8eef3, 0 8px 28px rgba(200, 160, 180, 0.2);
+            --avatar-shadow-hover: 0 0 0 6px rgba(255, 255, 255, 0.8), 0 0 0 8px #f5c6d0, 0 14px 36px rgba(232, 135, 154, 0.2);
+            --lightbox-bg: rgba(60, 30, 40, 0.65);
+            --glow-color: rgba(232, 135, 154, 0.2);
+            --radius-sm: 14px;
+            --radius: 20px;
+            --radius-lg: 28px;
+            --transition: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* ========== 深色主题 ========== */
+        [data-theme="dark"] {
+            --bg: #1a141a;
+            --white: #221b22;
+            --card-alt: #271f28;
+            --love-pink: #d48596;
+            --love-pink-deep: #e09aab;
+            --love-pink-light: #b0687a;
+            --border: #322830;
+            --border-soft: #2c222a;
+            --border-accent: rgba(212, 133, 150, 0.22);
+            --text: #d4c8d2;
+            --text-soft: #a894a4;
+            --text-muted: #7a6878;
+            --text-dark: #e8dce6;
+            --progress-bg: rgba(255,255,255,0.05);
+            --card-hover-bg: linear-gradient(175deg, #2a1f26, #241b22);
+            --btn-bg: linear-gradient(135deg, #2a222a, #241c24);
+            --btn-hover-shadow: 0 4px 14px rgba(212, 133, 150, 0.25);
+            --app-bg: linear-gradient(175deg, #241c24 0%, #211a22 30%, #231c24 60%, #251d25 100%);
+            --world-bg: linear-gradient(135deg, #1f181f, #1c151c);
+            --info-bg: linear-gradient(160deg, #251d25, #221b22);
+            --box-bg: linear-gradient(160deg, #241c24, #1f181f);
+            --char-card-bg: linear-gradient(175deg, #251d25, #1f181f);
+            --char-card-active-bg: linear-gradient(175deg, #2a1f26, #241b22);
+            --avatar-placeholder-bg: linear-gradient(160deg, #221a22, #1d141c);
+            --tag-bg: rgba(212, 133, 150, 0.12);
+            --status-tag-bg: rgba(255,255,255,0.03);
+            --status-tag-active-bg: rgba(212, 133, 150, 0.18);
+            --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.25);
+            --shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.35);
+            --avatar-shadow: 0 0 0 6px rgba(34, 27, 34, 0.7), 0 0 0 8px #2c222a, 0 8px 28px rgba(0, 0, 0, 0.35);
+            --avatar-shadow-hover: 0 0 0 6px rgba(34, 27, 34, 0.8), 0 0 0 8px rgba(212,133,150,0.25), 0 14px 36px rgba(0,0,0,0.4);
+            --lightbox-bg: rgba(15, 10, 15, 0.82);
+            --glow-color: rgba(212, 133, 150, 0.12);
+        }
+
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+        body {
+            background: transparent;
+            color: var(--text);
+            font-family: 'MaokenAssortedSans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            padding: 10px;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .app-container {
+            width: 100%;
+            max-width: 1300px;
+            background: var(--app-bg);
+            border-radius: var(--radius);
+            padding: 24px 28px 28px 28px;
+            border: 1.5px solid var(--border-accent);
+            box-shadow:
+                0 0 0 1px rgba(232, 135, 154, 0.06),
+                0 4px 24px rgba(0,0,0,0.08),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+            position: relative;
+        }
+        .app-container::after {
+            content: '';
+            position: absolute;
+            top: -8px;
+            right: 24px;
+            width: 36px;
+            height: 36px;
+            background: radial-gradient(circle, rgba(212,133,150,0.25) 0%, rgba(212,133,150,0.04) 100%);
+            border-radius: 50%;
+            opacity: 0.5;
+            pointer-events: none;
+            filter: blur(4px);
+        }
+
+        /* ========== 主题切换按钮 ========== */
+        .theme-toggle {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            border: 1.5px solid var(--border-accent);
+            background: var(--btn-bg);
+            color: var(--love-pink);
+            font-size: 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: var(--transition);
+            flex-shrink: 0;
+            touch-action: manipulation;
+            line-height: 1;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        .theme-toggle:hover {
+            background: linear-gradient(135deg, var(--love-pink), var(--love-pink-light));
+            color: #fff;
+            border-color: var(--love-pink);
+            box-shadow: var(--btn-hover-shadow);
+            transform: scale(1.06);
+        }
+
+        .collapse-toggle {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            border: 1.5px solid var(--border-accent);
+            background: var(--btn-bg);
+            color: var(--love-pink);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: var(--transition);
+            flex-shrink: 0;
+            touch-action: manipulation;
+            line-height: 1;
+            font-family: 'MaokenAssortedSans', 'PingFang SC', sans-serif;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        .collapse-toggle:hover {
+            background: linear-gradient(135deg, var(--love-pink), var(--love-pink-light));
+            color: #fff;
+            border-color: var(--love-pink);
+            box-shadow: var(--btn-hover-shadow);
+            transform: scale(1.06);
+        }
+        .collapse-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            font-size: 16px;
+            line-height: 1;
+        }
+        .collapsed .collapse-toggle .arrow {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease;
+            max-height: 3000px;
+            opacity: 1;
+        }
+        .collapsed .collapsible-content {
+            max-height: 0;
+            opacity: 0;
+        }
+
+        .world-bar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--world-bg);
+            padding: 14px 26px;
+            border-radius: 40px;
+            margin-bottom: 22px;
+            border: 1.5px solid var(--border);
+            font-size: 14px;
+            color: var(--text);
+            gap: 12px;
+            box-shadow: var(--shadow-sm);
+        }
+        .world-item { display: flex; align-items: center; gap: 8px; }
+        .world-item svg { flex-shrink: 0; opacity: 0.5; }
+        .world-time {
+            font-weight: 600;
+            color: var(--love-pink-deep);
+            font-size: 15px;
+            letter-spacing: 0.5px;
+        }
+        .world-tag {
+            background: var(--tag-bg);
+            border-radius: 14px;
+            padding: 3px 14px;
+            font-size: 12px;
+            color: var(--love-pink-deep);
+            font-weight: 500;
+        }
+
+        .character-main {
+            display: flex;
+            gap: 22px;
+            margin-bottom: 22px;
+            min-height: 500px;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        .character-main.fade-out { opacity: 0; transform: translateY(6px); }
+
+        .avatar-section {
+            flex: 0 0 35%;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            position: relative;
+            padding-top: 8px;
+        }
+        .avatar-frame {
+            position: relative;
+            width: 100%;
+            max-width: 380px;
+            aspect-ratio: 1 / 1.15;
+            border-radius: var(--radius-lg);
+            background: var(--bg);
+            border: 2px solid var(--border);
+            box-shadow: var(--avatar-shadow);
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: transform 0.4s ease, box-shadow 0.4s ease;
+            cursor: pointer;
+        }
+        .avatar-frame::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 40%, rgba(212,133,150,0.05) 100%);
+            pointer-events: none;
+            z-index: 1;
+        }
+        .avatar-frame:hover {
+            transform: scale(1.03);
+            box-shadow: var(--avatar-shadow-hover);
+        }
+        .avatar-frame .avatar-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: opacity 0.5s ease;
+        }
+        .avatar-frame .avatar-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: var(--avatar-placeholder-bg);
+            color: var(--love-pink);
+            gap: 10px;
+        }
+        .avatar-placeholder .initial {
+            font-size: 68px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            color: var(--love-pink-deep);
+        }
+        .avatar-placeholder .breed-tag {
+            font-size: 13px;
+            color: var(--love-pink);
+            background: rgba(255,255,255,0.04);
+            padding: 4px 16px;
+            border-radius: 20px;
+            border: 1px solid var(--border-accent);
+        }
+        .zoom-icon {
+            position: absolute;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(34,27,34,0.85);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--love-pink);
+            font-size: 16px;
+            border: 1px solid var(--border-accent);
+            cursor: pointer;
+            transition: 0.25s;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+            z-index: 2;
+        }
+        .zoom-icon:hover {
+            background: var(--love-pink);
+            color: #fff;
+            border-color: var(--love-pink);
+            box-shadow: 0 6px 18px var(--glow-color);
+        }
+
+        .lightbox-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--lightbox-bg);
+            z-index: 99999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.35s ease;
+        }
+        .lightbox-overlay.active { opacity: 1; pointer-events: auto; }
+        .lightbox-overlay img {
+            max-width: 65vw;
+            max-height: 75vh;
+            border-radius: var(--radius);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+        }
+        .lightbox-close {
+            position: absolute;
+            top: 24px;
+            right: 24px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            font-size: 22px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: 0.2s;
+        }
+        .lightbox-close:hover { background: rgba(255,255,255,0.25); }
+
+        .info-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .info-grid {
+            background: var(--info-bg);
+            border-radius: var(--radius);
+            padding: 22px 28px;
+            border: 1.5px solid var(--border-soft);
+            box-shadow: var(--shadow-sm);
+            position: relative;
+        }
+        .info-grid::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 28px;
+            right: 28px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(212,133,150,0.2), transparent);
+            opacity: 0.5;
+        }
+
+        .row-name {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .row-name-left { display: flex; align-items: baseline; gap: 12px; }
+        .row-name h2 {
+            font-size: 34px;
+            color: var(--text-dark);
+            font-weight: 500;
+            letter-spacing: 2px;
+            position: relative;
+            font-family: 'MaokenAssortedSans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        }
+        .row-name h2::after {
+            content: "";
+            position: absolute;
+            bottom: -6px;
+            left: 0;
+            width: 28px;
+            height: 3px;
+            background: linear-gradient(90deg, var(--love-pink), rgba(212,133,150,0.3));
+            border-radius: 10px;
+        }
+        .row-name .subtitle {
+            font-size: 14px;
+            color: var(--text-soft);
+            font-weight: 400;
+        }
+        .nav-arrows { display: flex; gap: 8px; }
+        .nav-arrow {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 1.5px solid var(--border-accent);
+            background: var(--btn-bg);
+            color: var(--love-pink);
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: 0.25s;
+            touch-action: manipulation;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        .nav-arrow:hover {
+            background: linear-gradient(135deg, var(--love-pink), var(--love-pink-light));
+            color: #fff;
+            border-color: var(--love-pink);
+            box-shadow: var(--btn-hover-shadow);
+            transform: scale(1.08);
+        }
+        .nav-arrow:active { transform: scale(0.94); }
+
+        .attr-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px 40px;
+            margin-top: 4px;
+        }
+        .attr-item { display: flex; flex-direction: column; gap: 6px; }
+        .attr-label {
+            font-size: 12px;
+            color: var(--text-soft);
+            font-weight: 500;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .attr-label svg { flex-shrink: 0; opacity: 0.45; }
+        .attr-value-wrap { display: flex; align-items: center; gap: 10px; }
+        .progress-bg {
+            flex: 1;
+            height: 7px;
+            background: var(--progress-bg);
+            border-radius: 20px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 20px;
+            background: linear-gradient(90deg, var(--love-pink-light), var(--love-pink), var(--love-pink-deep));
+            transition: width 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
+            box-shadow: 0 1px 4px rgba(212, 133, 150, 0.2);
+        }
+        .attr-value-text {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--love-pink-deep);
+            min-width: 46px;
+            text-align: right;
+        }
+        .attr-sub-text {
+            font-size: 11px;
+            color: var(--love-pink);
+            margin-left: 2px;
+            font-weight: 500;
+        }
+        .relation-text { font-weight: 500; color: var(--love-pink-deep); font-size: 13px; }
+
+        .quote-line {
+            margin-top: 14px;
+            color: var(--text-soft);
+            border-left: 3px solid rgba(212, 133, 150, 0.3);
+            padding-left: 14px;
+            font-size: 14px;
+            line-height: 1.7;
+            min-height: 26px;
+        }
+
+        .dual-cards {
+            display: grid;
+            grid-template-columns: 1fr 1.2fr;
+            gap: 15px;
+        }
+        .box-card {
+            background: var(--box-bg);
+            border-radius: var(--radius);
+            padding: 18px 22px;
+            border: 1.5px solid var(--border-soft);
+            box-shadow: var(--shadow-sm);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .box-card:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow);
+        }
+        .box-card h4 {
+            font-size: 13px;
+            color: var(--love-pink-deep);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+        }
+        .box-card h4 svg { flex-shrink: 0; opacity: 0.45; }
+        .box-card .card-content {
+            font-size: 13px;
+            line-height: 1.7;
+            color: var(--text);
+            max-height: 130px;
+            overflow-y: auto;
+            padding-right: 6px;
+            scroll-behavior: smooth;
+        }
+        .box-card .card-content::-webkit-scrollbar { width: 4px; }
+        .box-card .card-content::-webkit-scrollbar-thumb {
+            background: rgba(212, 133, 150, 0.2);
+            border-radius: 10px;
+        }
+        .inner-thought .card-content { font-style: italic; color: var(--text-soft); }
+
+        .character-list-section {
+            margin-top: 8px;
+            padding-top: 18px;
+            border-top: 1.5px solid var(--border-soft);
+            position: relative;
+        }
+        .character-list-section::before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: 0;
+            width: 60px;
+            height: 2px;
+            background: linear-gradient(90deg, var(--love-pink), rgba(212,133,150,0.2));
+            border-radius: 2px;
+        }
+        .list-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .list-title {
+            font-size: 14px;
+            color: var(--love-pink-deep);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 0.5px;
+        }
+        .list-title svg { opacity: 0.45; }
+        .list-hint { font-size: 12px; color: var(--text-muted); }
+        .card-scroll {
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 8px;
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+        }
+        .card-scroll::-webkit-scrollbar { height: 5px; }
+        .card-scroll::-webkit-scrollbar-thumb {
+            background: rgba(212, 133, 150, 0.18);
+            border-radius: 20px;
+        }
+
+        .char-card {
+            flex: 0 0 140px;
+            background: var(--char-card-bg);
+            border-radius: 18px;
+            padding: 14px 10px 12px;
+            border: 1.5px solid var(--border-soft);
+            box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            text-align: center;
+            touch-action: manipulation;
+            min-height: 44px;
+        }
+        .char-card.active {
+            border-color: rgba(212, 133, 150, 0.35);
+            background: var(--card-hover-bg);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+        }
+        .char-card:hover {
+            transform: translateY(-5px);
+            box-shadow: var(--shadow);
+        }
+        .char-card .card-avatar {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            margin: 0 auto 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            font-weight: 300;
+            color: var(--love-pink);
+            border: 2px solid rgba(212, 133, 150, 0.2);
+            overflow: hidden;
+            background: var(--bg);
+        }
+        .char-card .card-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .char-card.active .card-avatar {
+            border-color: var(--love-pink);
+            box-shadow: 0 0 16px var(--glow-color);
+        }
+        .char-card .cname {
+            font-weight: 500;
+            color: var(--text-dark);
+            font-size: 14px;
+            letter-spacing: 0.5px;
+        }
+        .char-card .caff { font-size: 12px; color: var(--love-pink); margin-top: 2px; }
+        .char-card .status-tag {
+            font-size: 10px;
+            background: var(--status-tag-bg);
+            color: var(--love-pink);
+            padding: 2px 12px;
+            border-radius: 20px;
+            display: inline-block;
+            margin-top: 4px;
+            border: 1px solid var(--border-soft);
+        }
+        .char-card.active .status-tag {
+            background: var(--status-tag-active-bg);
+            color: #fff;
+        }
+
+        .swipe-hint {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--text-muted);
+            display: none;
+        }
+
+        @media (max-width: 1024px) {
+            .dual-cards { grid-template-columns: 1fr; }
+            .attr-grid { grid-template-columns: 1fr; gap: 12px; }
+            .avatar-section { flex: 0 0 32%; }
+            .avatar-frame { max-width: 300px; }
+            .row-name h2 { font-size: 28px; }
+        }
+        @media (max-width: 768px) {
+            .app-container { padding: 16px; border-radius: 16px; }
+            .world-bar { flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px 20px; border-radius: 22px; font-size: 13px; }
+            .character-main { flex-direction: column; gap: 18px; }
+            .avatar-section { flex: 1; }
+            .avatar-frame { max-width: 260px; margin: 0 auto; }
+            .info-section { gap: 12px; }
+            .row-name h2 { font-size: 24px; }
+            .char-card { flex: 0 0 110px; padding: 12px 8px; }
+            .char-card .card-avatar { width: 60px; height: 60px; font-size: 20px; }
+            .nav-arrows { display: flex; }
+            .swipe-hint { display: block; }
+            .list-hint { display: none; }
+        }
+        @media (max-width: 480px) {
+            .avatar-frame { max-width: 220px; }
+            .row-name h2 { font-size: 20px; }
+            .char-card { flex: 0 0 95px; padding: 10px 6px; }
+            .char-card .card-avatar { width: 50px; height: 50px; font-size: 16px; }
+            .char-card .cname { font-size: 12px; }
+            .info-grid { padding: 16px; }
+            .box-card { padding: 14px 16px; }
+        }
+        @media (max-height: 480px) and (orientation: landscape) {
+            .character-main { flex-direction: row; min-height: auto; }
+            .avatar-frame { max-width: 200px; }
+            .dual-cards { grid-template-columns: 1fr 1fr; }
+            .world-bar { margin-bottom: 12px; padding: 10px 20px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="https://fontsapi.zeoseven.com/382/main/result.css">
+</head>
+<body>
+
+<div class="app-container" id="app">
+
+    <!-- ===== 1. 世界信息栏 ===== -->
+    <div class="world-bar">
+        <div class="world-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <span class="world-time" id="worldDate">----年--月--日 ---</span>
+            
+        </div>
+        <div class="world-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/></svg>
+            <span id="worldWeather">---</span>
+            <span class="world-tag" id="worldWind">---</span>
+        </div>
+        <div class="world-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span id="worldLoc">---</span>
+        
+        <button class="theme-toggle" id="themeToggle" title="切换主题">&#x25D0;</button>
+        <button class="collapse-toggle" id="collapseBtn" title="折叠/展开">
+            <span class="arrow">&#9660;</span>
+        </button>
+
+    </div>
+    </div>
+
+    <div class="collapsible-content" id="collapsibleContent">
+
+    <!-- ===== 2. 主角色展示区 ===== -->
+    <div class="character-main" id="characterMain">
+
+        <!-- 2.1 头像框 -->
+        <div class="avatar-section">
+            <div class="avatar-frame" id="avatarFrame" onclick="openLightbox()">
+                <img class="avatar-img" id="charAvatar" src="" alt="角色头像" style="display:none;">
+                <div class="avatar-placeholder" id="avatarPlaceholder">
+                    <span class="initial" id="avatarInitial">桃汐</span>
+                    <span class="breed-tag" id="avatarBreed">布偶猫</span>
+                </div>
+                <div class="zoom-icon" onclick="event.stopPropagation(); openLightbox();">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2.2 信息区 -->
+        <div class="info-section" id="infoSection">
+            <div class="info-grid">
+                <div class="row-name">
+                    <div class="row-name-left">
+                        <h2 id="charName">桃汐</h2>
+                        <span class="subtitle" id="charSubtitle">20岁 · 南方联合大学 · 教育学</span>
+                    </div>
+                    <div class="nav-arrows">
+                        <button class="nav-arrow" id="navPrev" title="上一个角色">&#8249;</button>
+                        <button class="nav-arrow" id="navNext" title="下一个角色">&#8250;</button>
+                    </div>
+                </div>
+                <div class="attr-grid">
+                    <div class="attr-item">
+                        <span class="attr-label">
+                            <svg viewBox="0 0 24 24" fill="var(--pink)" stroke="none" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                            好感度
+                        </span>
+                        <div class="attr-value-wrap">
+                            <div class="progress-bg"><div class="progress-fill" id="affectionBar" style="width: 0%;"></div></div>
+                            <span class="attr-value-text" id="affectionText">0/100</span>
+                            <span class="attr-sub-text" id="affectionStatus">---</span>
+                        </div>
+                    </div>
+                    <div class="attr-item">
+                        <span class="attr-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                            关系
+                        </span>
+                        <div class="attr-value-wrap">
+                            <span class="relation-text" id="relationText">---</span>
+                        </div>
+                    </div>
+                    <div class="attr-item">
+                        <span class="attr-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="16" height="16"><path d="M12 2c-1.5 0-3 .5-4 2-2.5 3-2.5 8 0 12 1 1.5 2.5 2 4 2s3-.5 4-2c2.5-4 2.5-9 0-12-1-1.5-2.5-2-4-2z"/></svg>
+                            性欲值
+                        </span>
+                        <div class="attr-value-wrap">
+                            <div class="progress-bg"><div class="progress-fill" id="libidoBar" style="width: 0%;"></div></div>
+                            <span class="attr-value-text" id="libidoText">0/100</span>
+                            <span class="attr-sub-text" id="libidoStatus">---</span>
+                        </div>
+                    </div>
+                    <div class="attr-item">
+                        <span class="attr-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            发情期
+                        </span>
+                        <span class="relation-text" id="heatPeriod">---</span>
+                    </div>
+                </div>
+                <div class="quote-line" id="quoteText">---</div>
+            </div>
+
+            <!-- 服饰 & 内心想法 -->
+            <div class="dual-cards">
+                <div class="box-card clothing-desc">
+                    <h4>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                        服饰
+                    </h4>
+                    <div class="card-content" id="clothingDesc">---</div>
+                </div>
+                <div class="box-card inner-thought">
+                    <h4>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                        内心想法
+                    </h4>
+                    <div class="card-content" id="innerThought">---</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== 3. 角色名单 ===== -->
+    <div class="character-list-section">
+        <div class="list-header">
+            <span class="list-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="1.5" width="18" height="18"><circle cx="12" cy="12" r="10"/><polygon points="12 6 12 12 16 14" fill="var(--pink)" opacity="0.3"/></svg>
+                角色名单
+            </span>
+            <span class="list-hint">点击卡片切换</span>
+            <span class="swipe-hint">点击卡片切换</span>
+        </div>
+        <div class="card-scroll" id="charListContainer"></div>
+    </div>
+</div>
+
+    </div>
+
+    <div class="lightbox-overlay" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">&#10005;</button>
+    <img id="lightboxImg" src="" alt="角色大图">
+</div>
+
+<script type="module">
+    // ===========================================
+    // 静态角色元数据
+    // ===========================================
+    var charMeta = [
+        { id: 0, key: "桃汐", name: "桃汐", subtitle: "20岁 · 南方联合大学 · 教育学", breed: "布偶猫", breedColor: "#ffeef2", initial: "桃汐", quote: "喵喵喵？", statusColor: "#e88ca5" },
+        { id: 1, key: "苏小兰", name: "苏小兰", subtitle: "21岁 · 云溪大学 · 汉语言文学", breed: "英国短毛猫", breedColor: "#dce8f5", initial: "小兰", quote: "喵...", statusColor: "#7eb8da" },
+        { id: 2, key: "阮萌萌", name: "阮萌萌", subtitle: "14岁 · 城西初中 · 初二", breed: "西伯利亚森林猫", breedColor: "#f0ebe0", initial: "萌萌", quote: "喵呜？", statusColor: "#c9a86c" },
+        { id: 3, key: "夜琉", name: "夜琉", subtitle: "30岁 · 画廊「疏影」主理人", breed: "俄罗斯蓝猫", breedColor: "#e8e8f0", initial: "夜琉", quote: "嗯？", statusColor: "#8a80a0" },
+        { id: 4, key: "青相宜", name: "青相宜", subtitle: "20岁 · 南方联合大学 · 应用心理学", breed: "布偶猫", breedColor: "#e8f5ec", initial: "相宜", quote: "喵...不可以咬哦？", statusColor: "#8a7eb8" },
+        { id: 5, key: "北奈", name: "北奈", subtitle: "19岁 · 南方联合大学 · 汉语言文学", breed: "玄猫", breedColor: "#e8e8f0", initial: "北奈", quote: "懒得理你喵。", statusColor: "#808898" }
+    ];
+
+    // 运行时角色数据（MVU 填充）
+    var characters = [];
+
+    function getAffectionStatus(v) {
+        if (v >= 90) return '依恋'; if (v >= 70) return '心动';
+        if (v >= 50) return '亲近'; if (v >= 30) return '友好';
+        if (v >= 20) return '初识'; return '陌生';
+    }
+    function getLibidoStatus(v) {
+        if (v >= 80) return '渴求'; if (v >= 60) return '强烈';
+        if (v >= 30) return '微妙'; return '平静';
+    }
+    function pickAvatar(lib, av0, av1, av2) {
+        if (lib >= 85 && av2) return av2;
+        if (lib >= 70 && av1) return av1;
+        return av0;
+    }
+
+    // ===========================================
+    // 从 MVU 拉取所有动态值
+    // ===========================================
+    // ===========================================
+    // 主题切换
+    // ===========================================
+    (function() {
+        var toggle = document.getElementById('themeToggle');
+        if (!toggle) return;
+        var saved = null;
+        try { saved = localStorage.getItem('nekogo_theme'); } catch(e) {}
+        if (saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            toggle.innerHTML = '&#x2600;';
+        }
+        toggle.addEventListener('click', function() {
+            var cur = document.documentElement.getAttribute('data-theme');
+            if (cur === 'dark') {
+                document.documentElement.removeAttribute('data-theme');
+                toggle.innerHTML = '&#x25D0;';
+                try { localStorage.setItem('nekogo_theme', 'light'); } catch(e) {}
+            } else {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                toggle.innerHTML = '&#x2600;';
+                try { localStorage.setItem('nekogo_theme', 'dark'); } catch(e) {}
+            }
+        });
+    })();
+
+    // ===========================================
+    // 折叠切换
+    // ===========================================
+    var isCollapsed = false;
+    (function() {
+        var btn = document.getElementById('collapseBtn');
+        var app = document.getElementById('app');
+        if (!btn || !app) return;
+
+        // Restore saved state
+        try {
+            if (localStorage.getItem('nekogo_collapsed') === '1') {
+                isCollapsed = true;
+                app.classList.add('collapsed');
+            }
+        } catch(e) {}
+
+        btn.addEventListener('click', function() {
+            isCollapsed = !isCollapsed;
+            if (isCollapsed) {
+                app.classList.add('collapsed');
+            } else {
+                app.classList.remove('collapsed');
+            }
+            try { localStorage.setItem('nekogo_collapsed', isCollapsed ? '1' : '0'); } catch(e) {}
+        });
+    })();
+
+    function refreshFromMVU() {
+
+        var vars = getAllVariables();
+        var stats = _.get(vars, 'stat_data', {});
+
+        // 世界信息
+        worldData.date    = _.get(stats, '世界信息.日期时间', '');
+        worldData.weather = _.get(stats, '世界信息.天气', '');
+        worldData.wind    = _.get(stats, '世界信息.风力', '');
+        worldData.loc     = _.get(stats, '世界信息.地点', '');
+
+        // 4 角色
+        characters = charMeta.map(function(meta) {
+            var k = meta.key;
+            var lib   = _.get(stats, k + '.性欲值', 0);
+            var av0   = _.get(stats, k + '.头像通常', '');
+            var av1   = _.get(stats, k + '.头像羞恥', '');
+            var av2   = _.get(stats, k + '.头像発情', '');
+            return {
+                id: meta.id,
+                name: meta.name,
+                subtitle: meta.subtitle,
+                breed: meta.breed,
+                breedColor: meta.breedColor,
+                initial: meta.initial,
+                quote: meta.quote,
+                statusColor: meta.statusColor,
+                affection:    _.get(stats, k + '.好感度', 0),
+                relationship: _.get(stats, k + '.关系', ''),
+                libido:       lib,
+                clothing:     _.get(stats, k + '.服饰', ''),
+                innerThought: _.get(stats, k + '.内心想法', ''),
+                heatPeriod:   _.get(stats, k + '.发情期', ''),
+                avatar:       pickAvatar(lib, av0, av1, av2)
+            };
+        });
+
+        // Auto-switch to character whose variables changed
+        var prev = window._nekogoPrevChars;
+        if (prev && prev.length === characters.length) {
+            for (var ci = 0; ci < characters.length; ci++) {
+                var p = prev[ci];
+                var cur = characters[ci];
+                if (p.affection !== cur.affection ||
+                    p.libido !== cur.libido ||
+                    p.clothing !== cur.clothing ||
+                    p.innerThought !== cur.innerThought ||
+                    p.relationship !== cur.relationship) {
+                    if (ci !== currentIndex) {
+                        currentIndex = ci;
+                        try { localStorage.setItem('nekogo_charIndex', ci); } catch(e) {}
+                    }
+                    break;
+                }
+            }
+        }
+        window._nekogoPrevChars = characters.map(function(c) { return {
+            affection: c.affection, libido: c.libido,
+            clothing: c.clothing, innerThought: c.innerThought,
+            relationship: c.relationship
+        };});
+
+        renderCharacterList();
+        if (currentIndex >= characters.length) currentIndex = 0;
+        updateDisplay(characters[currentIndex] || characters[0]);
+        updateWorldBar();
+    }
+
+    // ===========================================
+    // DOM refs
+    // ===========================================
+    var currentIndex = (function() {
+        try { var v = localStorage.getItem('nekogo_charIndex'); return v !== null ? parseInt(v) : 0; } catch(e) { return 0; }
+    })(), isTransitioning = false;
+    var charAvatar = document.getElementById('charAvatar');
+    var avatarPlaceholder = document.getElementById('avatarPlaceholder');
+    var avatarInitial = document.getElementById('avatarInitial');
+    var avatarBreed = document.getElementById('avatarBreed');
+    var charName = document.getElementById('charName');
+    var charSubtitle = document.getElementById('charSubtitle');
+    var affectionBar = document.getElementById('affectionBar');
+    var affectionText = document.getElementById('affectionText');
+    var affectionStatus = document.getElementById('affectionStatus');
+    var relationText = document.getElementById('relationText');
+    var libidoBar = document.getElementById('libidoBar');
+    var libidoText = document.getElementById('libidoText');
+    var libidoStatus = document.getElementById('libidoStatus');
+    var heatPeriod = document.getElementById('heatPeriod');
+    var quoteText = document.getElementById('quoteText');
+    var clothingDesc = document.getElementById('clothingDesc');
+    var innerThought = document.getElementById('innerThought');
+    var characterMain = document.getElementById('characterMain');
+    var listContainer = document.getElementById('charListContainer');
+
+    // ===========================================
+    // 渲染
+    // ===========================================
+    function renderCharacterList() {
+        listContainer.innerHTML = '';
+        for (var i = 0; i < characters.length; i++) {
+            (function(index) {
+                var ch = characters[index];
+                var card = document.createElement('div');
+                card.className = 'char-card' + (index === currentIndex ? ' active' : '');
+                card.onclick = function() { switchCharacter(index); };
+
+                var avDiv = document.createElement('div');
+                avDiv.className = 'card-avatar';
+                if (ch.avatar) {
+                    avDiv.innerHTML = '<img src="' + ch.avatar + '" alt="' + ch.name + '">';
+                } else {
+                    avDiv.style.background = 'linear-gradient(160deg, ' + ch.breedColor + ', rgba(255,255,255,0.2))';
+                    avDiv.textContent = ch.initial;
+                }
+
+                var nm = document.createElement('div'); nm.className = 'cname'; nm.textContent = ch.name;
+                var af = document.createElement('div'); af.className = 'caff'; af.textContent = '❤ ' + ch.affection;
+                var tg = document.createElement('div'); tg.className = 'status-tag'; tg.textContent = getAffectionStatus(ch.affection);
+
+                card.appendChild(avDiv); card.appendChild(nm); card.appendChild(af); card.appendChild(tg);
+                listContainer.appendChild(card);
+            })(i);
+        }
+    }
+
+    function switchCharacter(index) {
+        if (index === currentIndex || isTransitioning) return;
+        if (index < 0 || index >= characters.length) return;
+        isTransitioning = true;
+        characterMain.classList.add('fade-out');
+        setTimeout(function() {
+            currentIndex = index;
+            try { localStorage.setItem('nekogo_charIndex', index); } catch(e) {}
+            updateDisplay(characters[index]);
+            characterMain.classList.remove('fade-out');
+            isTransitioning = false;
+        }, 300);
+    }
+
+    function updateDisplay(ch) {
+        if (!ch) return;
+        if (ch.avatar) {
+            charAvatar.src = ch.avatar; charAvatar.style.display = ''; avatarPlaceholder.style.display = 'none';
+        } else {
+            charAvatar.style.display = 'none'; avatarPlaceholder.style.display = 'flex';
+            avatarPlaceholder.style.background = 'linear-gradient(160deg, ' + ch.breedColor + ', rgba(255,255,255,0.2))';
+            avatarInitial.textContent = ch.initial; avatarBreed.textContent = ch.breed;
+        }
+        charName.textContent = ch.name;
+        charSubtitle.textContent = ch.subtitle;
+        affectionBar.style.width = ch.affection + '%';
+        affectionText.textContent = ch.affection + '/100';
+        affectionStatus.textContent = getAffectionStatus(ch.affection);
+        relationText.textContent = ch.relationship || '---';
+        libidoBar.style.width = ch.libido + '%';
+        libidoText.textContent = ch.libido + '/100';
+        libidoStatus.textContent = getLibidoStatus(ch.libido);
+        quoteText.textContent = ch.quote;
+        clothingDesc.textContent = ch.clothing || '---';
+        innerThought.textContent = ch.innerThought || '---';
+        heatPeriod.textContent = ch.heatPeriod || '---';
+
+        var cards = document.querySelectorAll('.char-card');
+        for (var i = 0; i < cards.length; i++) cards[i].classList.toggle('active', i === currentIndex);
+        if (cards[currentIndex]) {
+            var scrollContainer = document.getElementById('charListContainer');
+            var card = cards[currentIndex];
+            var containerLeft = scrollContainer.getBoundingClientRect().left;
+            var cardLeft = card.getBoundingClientRect().left;
+            var offset = cardLeft - containerLeft + scrollContainer.scrollLeft - (scrollContainer.clientWidth - card.offsetWidth) / 2;
+            scrollContainer.scrollTo({ left: offset, behavior: 'smooth' });
+        }
+    }
+
+    function navigateChar(d) {
+        var n = currentIndex + d;
+        if (n < 0) n = characters.length - 1;
+        if (n >= characters.length) n = 0;
+        switchCharacter(n);
+    }
+
+    // ===========================================
+    // 图片放大
+    // ===========================================
+    function openLightbox() {
+        var img = document.getElementById('charAvatar');
+        if (!img || !img.src || img.style.display === 'none') return;
+        document.getElementById('lightboxImg').src = img.src;
+        document.getElementById('lightbox').classList.add('active');
+    }
+    function closeLightbox() {
+        document.getElementById('lightbox').classList.remove('active');
+    }
+
+    // ===========================================
+    // 键盘 & 触控
+    // ===========================================
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape')     { closeLightbox(); }
+    });
+    
+
+    // ===========================================
+    // 世界时钟
+    // ===========================================
+    var worldData = { date: '', weather: '', wind: '', loc: '' };
+    function updateWorldBar() {
+        document.getElementById('worldDate').textContent = worldData.date || '----年--月--日';
+        document.getElementById('worldWeather').textContent = worldData.weather || '---';
+        document.getElementById('worldWind').textContent = worldData.wind || '---';
+        document.getElementById('worldLoc').textContent = worldData.loc || '---';
+    }
+
+    // ===========================================
+    // MVU 初始化 + 事件监听
+    // ===========================================
+    async function init() {
+        await waitGlobalInitialized('Mvu');
+        refreshFromMVU();
+        eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, function() {
+            refreshFromMVU();
+        });
+        // Bind lightbox handlers
+        document.getElementById('navPrev').addEventListener('click', function() { navigateChar(-1); });
+        document.getElementById('navNext').addEventListener('click', function() { navigateChar(1); });
+        var af = document.getElementById('avatarFrame');
+        if (af) af.addEventListener('click', function(e) { e.stopPropagation(); openLightbox(); });
+        var zi = document.querySelector('.zoom-icon');
+        if (zi) zi.addEventListener('click', function(e) { e.stopPropagation(); openLightbox(); });
+        var lb = document.getElementById('lightbox');
+        var lbClose = document.querySelector('.lightbox-close');
+        if (lb) lb.addEventListener('click', function(e) { if (e.target === lb) closeLightbox(); });
+        if (lbClose) lbClose.addEventListener('click', function(e) { e.stopPropagation(); closeLightbox(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeLightbox(); });
+    }
+    $(errorCatched(init));
+</script>
+
+
+
+</body>
+</html>
+
+```

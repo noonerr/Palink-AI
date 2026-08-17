@@ -1,0 +1,201 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      # 前端端口固定为 3000（此前的 Windows 动态端口排除问题已不存在，实测可正常绑定）
+      - "127.0.0.1:3000:8080"
+      # 9001 落入 Windows 保留端口段(8958-9057)，docker 无法绑定，临时改到 9061（空闲段）
+      - "127.0.0.1:9061:8081"
+    depends_on:
+      backend:
+        condition: service_healthy
+      sillytavern:
+        condition: service_started
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  sillytavern:
+    build: ./SillyTavern-1.18.0/SillyTavern-1.18.0
+    expose:
+      - "8000"
+    volumes:
+      - sillytavern_config:/home/node/app/config
+      - sillytavern_data:/home/node/app/data
+      - sillytavern_plugins:/home/node/app/plugins
+      - sillytavern_extensions:/home/node/app/public/scripts/extensions/third-party
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+      - SILLYTAVERN_DATAROOT=/home/node/app/data
+      - SILLYTAVERN_PORT=8000
+      - SILLYTAVERN_LISTEN=true
+      - SILLYTAVERN_WHITELISTMODE=false
+      - SILLYTAVERN_SECURITYOVERRIDE=true
+      - SILLYTAVERN_BROWSERLAUNCH_ENABLED=false
+      - SILLYTAVERN_HEARTBEATINTERVAL=30
+      - SILLYTAVERN_EXTENSIONS_ENABLED=true
+      - SILLYTAVERN_EXTENSIONS_AUTOUPDATE=true
+      - SILLYTAVERN_PRIVATEADDRESSWHITELIST_ENABLED=false
+      - PALINK_ST_NATIVE_USER_HEADER_ENABLED=${PALINK_ST_NATIVE_USER_HEADER_ENABLED:-true}
+      - ST_NATIVE_PALINK_OPENAI_URL=http://backend:8000/api/openai/v1
+      - ST_NATIVE_DEFAULT_MODEL=${ST_NATIVE_DEFAULT_MODEL:-palink-default}
+      - ST_NATIVE_SERVICE_KEY=${ST_NATIVE_SERVICE_KEY:-}
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "node src/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  backend:
+    build: ./backend
+    # --- DNS 配置 ---
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
+    command: sh /app/start-server.sh
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/models:/app/models
+      - ./backend/tests:/app/tests
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-ai_user}:${DB_PASSWORD:?请在.env中设置DB_PASSWORD}@db:5432/${DB_NAME:-ai_hub}
+      - HF_ENDPOINT=https://hf-mirror.com
+      - HF_HUB_DISABLE_XET=1
+      - MEMORY_EMBEDDING_PROVIDER=fastembed
+      - MEMORY_VECTOR_DIMENSION=512
+      - RUN_MIGRATIONS_ON_STARTUP=false
+      - MIGRATIONS_FAIL_FAST=true
+      - PROVIDER_SECRET_CHECK_STRICT=false
+      - CHAT_HISTORY_LIMIT=24
+      - CHARACTER_CHAT_HISTORY_LIMIT=24
+      - WORKSPACE_ANALYZE_MAX_CHARS=12000
+      - UVICORN_TIMEOUT=600
+      - UVICORN_KEEPALIVE_TIMEOUT=600
+      - APP_PERFORMANCE_PROFILE=eco
+      - APP_MIN_WORKERS=1
+      - APP_MAX_WORKERS=1
+      - UVICORN_WORKERS_MAX=1
+      - APP_MEMORY_RESERVE_MB=1536
+      - APP_MEMORY_PER_WORKER_MB=900
+      - APP_CPU_THREADS_PER_WORKER_MAX=4
+      - DB_POOL_AUTO_TUNE=true
+      - DB_CONNECTION_BUDGET=40
+      - DB_POOL_RECYCLE_SECONDS=1800
+      - SEARXNG_PROXY_API_KEY=${SEARXNG_PROXY_API_KEY:-}
+      - ST_NATIVE_URL=${ST_NATIVE_URL:-}
+      - ST_NATIVE_PUBLIC_PORT=${ST_NATIVE_PUBLIC_PORT:-8000}
+      - ST_NATIVE_SERVICE_URL=http://sillytavern:8000
+      - ST_NATIVE_SERVICE_KEY=${ST_NATIVE_SERVICE_KEY:-}
+      - ST_NATIVE_PALINK_OPENAI_URL=http://backend:8000/api/openai/v1
+      - ST_NATIVE_DEFAULT_MODEL=${ST_NATIVE_DEFAULT_MODEL:-palink-default}
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # -----------------------------------
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 180s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+      - backend-db
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  db:
+    image: pgvector/pgvector:pg15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${DB_USER:-ai_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?请在.env中设置DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME:-ai_hub}
+    expose:
+      - "5432"
+    # --- 关键修改：添加数据库健康检查 ---
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ai_user} -d ${DB_NAME:-ai_hub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ---------------------------------
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - backend-db
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          memory: 256M
+
+volumes:
+  postgres_data:
+  sillytavern_config:
+  sillytavern_data:
+  sillytavern_plugins:
+  sillytavern_extensions:
+
+networks:
+  frontend-backend:
+  backend-db:

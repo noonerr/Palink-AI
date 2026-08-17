@@ -1,0 +1,106 @@
+:root[data-palink-tavern-theme="palink"] {
+  --palink-bg: hsl(222 28% 7%);
+  --palink-panel: rgb(15 23 42 / 0.72);
+  --palink-panel-strong: rgb(15 23 42 / 0.9);
+  --palink-border: rgb(148 163 184 / 0.18);
+  --palink-text: hsl(210 40% 96%);
+  --palink-muted: hsl(215 20% 65%);
+  --palink-primary: hsl(217 91% 60%);
+  --palink-primary-strong: hsl(222 84% 54%);
+  --palink-radius: 8px;
+  --palink-shadow: 0 16px 45px rgb(0 0 0 / 0.35);
+  --SmartThemeBodyColor: var(--palink-text);
+  --SmartThemeEmColor: hsl(215 20% 70%);
+  --SmartThemeBlurTintColor: rgb(15 23 42 / 0.9);
+  --SmartThemeChatTintColor: rgb(2 6 23 / 0.82);
+  --SmartThemeUserMesBlurTintColor: rgb(15 23 42 / 0.72);
+  --SmartThemeBotMesBlurTintColor: rgb(30 41 59 / 0.68);
+  --SmartThemeBorderColor: var(--palink-border);
+  --SmartThemeShadowColor: rgb(0 0 0 / 0.55);
+}
+
+:root[data-palink-tavern-theme="palink"] body {
+  color: var(--palink-text);
+  background:
+    radial-gradient(circle at 18% 12%, rgb(59 130 246 / 0.12), transparent 26rem),
+    radial-gradient(circle at 88% 8%, rgb(20 184 166 / 0.12), transparent 24rem),
+    var(--palink-bg);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+:root[data-palink-tavern-theme="palink"] #top-bar,
+:root[data-palink-tavern-theme="palink"] #chat,
+:root[data-palink-tavern-theme="palink"] #left-nav-panel,
+:root[data-palink-tavern-theme="palink"] #right-nav-panel,
+:root[data-palink-tavern-theme="palink"] .drawer-content,
+:root[data-palink-tavern-theme="palink"] .popup,
+:root[data-palink-tavern-theme="palink"] .menu,
+:root[data-palink-tavern-theme="palink"] .inline-drawer,
+:root[data-palink-tavern-theme="palink"] .mes {
+  border-color: var(--palink-border) !important;
+}
+
+:root[data-palink-tavern-theme="palink"] #top-bar,
+:root[data-palink-tavern-theme="palink"] #left-nav-panel,
+:root[data-palink-tavern-theme="palink"] #right-nav-panel,
+:root[data-palink-tavern-theme="palink"] .drawer-content,
+:root[data-palink-tavern-theme="palink"] .popup,
+:root[data-palink-tavern-theme="palink"] .menu,
+:root[data-palink-tavern-theme="palink"] .inline-drawer {
+  background: var(--palink-panel-strong) !important;
+  backdrop-filter: blur(18px);
+  box-shadow: var(--palink-shadow);
+}
+
+:root[data-palink-tavern-theme="palink"] .mes {
+  background: var(--palink-panel) !important;
+  border-radius: var(--palink-radius) !important;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 0.08);
+}
+
+:root[data-palink-tavern-theme="palink"] textarea,
+:root[data-palink-tavern-theme="palink"] input,
+:root[data-palink-tavern-theme="palink"] select,
+:root[data-palink-tavern-theme="palink"] .text_pole {
+  color: var(--palink-text) !important;
+  background: rgb(15 23 42 / 0.8) !important;
+  border: 1px solid var(--palink-border) !important;
+  border-radius: var(--palink-radius) !important;
+}
+
+:root[data-palink-tavern-theme="palink"] button,
+:root[data-palink-tavern-theme="palink"] .menu_button,
+:root[data-palink-tavern-theme="palink"] .drawer-toggle,
+:root[data-palink-tavern-theme="palink"] .fa-button {
+  border-radius: var(--palink-radius) !important;
+}
+
+:root[data-palink-tavern-theme="palink"] .menu_button:hover,
+:root[data-palink-tavern-theme="palink"] button:hover {
+  border-color: rgb(59 130 246 / 0.45) !important;
+}
+
+:root[data-palink-tavern-theme="palink"] a,
+:root[data-palink-tavern-theme="palink"] .clickable,
+:root[data-palink-tavern-theme="palink"] .interactable {
+  color: var(--palink-primary-strong);
+}
+
+.palink-tavern-return {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 10000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgb(255 255 255 / 0.45);
+  border-radius: 8px;
+  color: #fff !important;
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 0.22);
+  font: 600 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  text-decoration: none !important;
+}

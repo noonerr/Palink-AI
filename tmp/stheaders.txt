@@ -1,0 +1,30 @@
+HTTP/1.1 302 Found
+Server: nginx
+Date: Mon, 15 Jun 2026 17:15:58 GMT
+Content-Length: 0
+Connection: keep-alive
+location: /
+set-cookie: palink_st_native=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwidXNlcm5hbWUiOiJhZG1pbiIsInNjb3BlIjoic3QtbmF0aXZlIiwiaWF0IjoxNzgxNTQzNzU4LCJleHAiOjE3ODE1ODY5NTgsImNoYXJhY3Rlcl9pZCI6ImJmYmM4NTI4LThkNzgtNGNjYS04NjI3LTMwZTBjZTYzMDFiZiIsInNlc3Npb25faWQiOiJiMjdjNzdhNC1jNGE1LTQ2YmYtYWYxMi1jMDg2YzE2YzgzNTMiLCJicmFuY2hfaWQiOiI5ZmNhZmVhMy0yMjFhLTQxYTUtYjMxNy03NDlkYjUyMWVjYTIiLCJtb2RlbCI6ImRlZXBzZWVrLXY0LXBybyJ9.H8PoXuYdZpiVIX9ZJnhSWme_PaFnS9h2PCD8Q3DPgCM; HttpOnly; Max-Age=43200; Path=/; SameSite=lax
+x-request-id: 9be1f7923e8e4937
+
+HTTP/1.1 200 OK
+Server: nginx
+Date: Mon, 15 Jun 2026 17:15:58 GMT
+Content-Type: text/html; charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+Origin-Agent-Cluster: ?1
+Referrer-Policy: no-referrer
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-DNS-Prefetch-Control: off
+X-Download-Options: noopen
+X-Permitted-Cross-Domain-Policies: none
+X-XSS-Protection: 0
+Vary: Origin, Accept-Encoding
+Accept-Ranges: bytes
+Cache-Control: public, max-age=0
+X-Response-Time: 6.671ms
+

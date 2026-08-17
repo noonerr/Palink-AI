@@ -1,0 +1,58 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.js:/app/vite.config.js
+    ports:
+      - "3000:8080"
+    environment:
+      - DOCKER_DEV=1
+    command: npm run dev -- --host 0.0.0.0 --port 8080
+    networks:
+      - palink-ai_frontend-backend
+
+  sillytavern:
+    build:
+      context: ./SillyTavern-1.18.0/SillyTavern-1.18.0
+    ports:
+      - "8001:8000"
+    volumes:
+      - sillytavern_config:/home/node/app/config
+      - sillytavern_data:/home/node/app/data
+      - sillytavern_plugins:/home/node/app/plugins
+      - sillytavern_extensions:/home/node/app/public/scripts/extensions/third-party
+    environment:
+      - NODE_ENV=development
+      - FORCE_COLOR=1
+      - SILLYTAVERN_DATAROOT=/home/node/app/data
+      - SILLYTAVERN_PORT=8000
+      - SILLYTAVERN_LISTEN=true
+      - SILLYTAVERN_WHITELISTMODE=false
+      - SILLYTAVERN_SECURITYOVERRIDE=true
+      - SILLYTAVERN_BROWSERLAUNCH_ENABLED=false
+      - SILLYTAVERN_HEARTBEATINTERVAL=30
+      - SILLYTAVERN_EXTENSIONS_ENABLED=true
+      - SILLYTAVERN_EXTENSIONS_AUTOUPDATE=true
+      - SILLYTAVERN_HOSTWHITELIST_ENABLED=false
+      - SILLYTAVERN_PRIVATEADDRESSWHITELIST_ENABLED=false
+      - PALINK_ST_NATIVE_USER_HEADER_ENABLED=true
+      - ST_NATIVE_PALINK_OPENAI_URL=http://host.docker.internal:8000/api/openai/v1
+      - ST_NATIVE_DEFAULT_MODEL=palink-default
+      - ST_NATIVE_SERVICE_KEY=${ST_NATIVE_SERVICE_KEY:-}
+    networks:
+      - palink-ai_frontend-backend
+
+volumes:
+  sillytavern_config:
+  sillytavern_data:
+  sillytavern_plugins:
+  sillytavern_extensions:
+
+networks:
+  palink-ai_frontend-backend:
+    external: true

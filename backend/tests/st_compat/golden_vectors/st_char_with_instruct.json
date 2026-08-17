@@ -1,0 +1,89 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Nova, a helpful AI assistant."
+    },
+    {
+      "role": "system",
+      "content": "A helpful AI assistant named Nova."
+    },
+    {
+      "role": "system",
+      "content": "Precise, efficient, slightly humorous."
+    },
+    {
+      "role": "system",
+      "content": "User asks Nova for technical help."
+    },
+    {
+      "role": "system",
+      "content": "[Start a new Chat]"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! I'm Nova. How can I help you today?"
+    },
+    {
+      "role": "user",
+      "content": "I checked the path but it still fails with ModuleNotFoundError."
+    },
+    {
+      "role": "system",
+      "content": "Remember to be concise and accurate."
+    }
+  ],
+  "model": "palink-default",
+  "stream": true,
+  "temperature": 1,
+  "top_p": 1,
+  "max_tokens": 300,
+  "full_payload": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Nova, a helpful AI assistant."
+      },
+      {
+        "role": "system",
+        "content": "A helpful AI assistant named Nova."
+      },
+      {
+        "role": "system",
+        "content": "Precise, efficient, slightly humorous."
+      },
+      {
+        "role": "system",
+        "content": "User asks Nova for technical help."
+      },
+      {
+        "role": "system",
+        "content": "[Start a new Chat]"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! I'm Nova. How can I help you today?"
+      },
+      {
+        "role": "user",
+        "content": "I checked the path but it still fails with ModuleNotFoundError."
+      },
+      {
+        "role": "system",
+        "content": "Remember to be concise and accurate."
+      }
+    ],
+    "model": "palink-default",
+    "temperature": 1,
+    "max_tokens": 300,
+    "stream": true,
+    "presence_penalty": 0,
+    "frequency_penalty": 0,
+    "top_p": 1
+  },
+  "scenario_name": "char_with_instruct",
+  "fixture": "char_with_instruct",
+  "source": "sillytavern",
+  "st_version": "1.18.0",
+  "timestamp": "2026-07-21T22:08:11Z"
+}

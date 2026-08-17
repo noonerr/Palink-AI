@@ -1,0 +1,33 @@
+# 依赖版本锁定（MED-1，2026-08-11）：以下版本为容器内实际验证通过的版本，
+# 升级需在容器内重新验证。核心运行时（fastapi/uvicorn/sqlalchemy/httpx/websockets）
+# 以 == 精确锁定，避免无约束升级引入不兼容。
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+websockets==16.1.1
+sqlalchemy==2.0.51
+alembic==1.19.1
+psycopg2-binary==2.9.12
+pgvector==0.5.0
+python-multipart==0.0.32
+openai==2.53.0
+edge-tts==7.2.8
+pydantic-settings==2.15.0
+PyJWT[crypto]==2.13.0
+cryptography==50.0.0
+ecdsa==0.19.2
+pyasn1==0.6.4
+bcrypt==5.0.0
+llama-cpp-python==0.3.34
+psutil==7.2.2
+numpy==2.2.6
+Pillow==12.3.0
+fastembed==0.8.0
+httpx==0.28.1
+beautifulsoup4==4.15.0
+mcp[cli]==2.0.0
+faster-whisper==1.2.1
+pytest==9.1.1
+tiktoken==0.13.0
+sentencepiece==0.2.2
+tokenizers==0.23.1
+PyYAML==6.0.3

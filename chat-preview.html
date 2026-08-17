@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palink AI - 角色扮演对话渲染预览</title>
+<style>
+  /* ===== 基础重置 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    background: #f3f4f6;
+    color: #1f2937;
+  }
+
+  /* ===== 主题变量 ===== */
+  .roleplay-container {
+    --rp-color-main-text: #1f2937;
+    --rp-color-italics-text: #4b5563;
+    --rp-color-chat-bg: #ffffff;
+    --rp-color-ui-bg: #f3f4f6;
+    --rp-color-ui-border: #e5e7eb;
+    --rp-color-bot-msg: #f9fafb;
+    --rp-color-user-msg: #eff6ff;
+    --rp-color-timestamps: #9ca3af;
+  }
+  .roleplay-container.dark {
+    --rp-color-main-text: #e5e7eb;
+    --rp-color-italics-text: #9ca3af;
+    --rp-color-chat-bg: #111827;
+    --rp-color-ui-bg: #1f2937;
+    --rp-color-ui-border: #374151;
+    --rp-color-bot-msg: #1f2937;
+    --rp-color-user-msg: #1e3a5f;
+    --rp-color-timestamps: #6b7280;
+  }
+
+  /* ===== 布局 ===== */
+  .chat-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    background: var(--rp-color-chat-bg);
+    min-height: 100vh;
+  }
+
+  /* ===== 消息行 ===== */
+  .message-row {
+    display: flex;
+    margin-bottom: 16px;
+    gap: 8px;
+  }
+  .message-row.user { justify-content: flex-end; }
+  .message-row.ai { justify-content: flex-start; }
+
+  /* ===== 气泡 ===== */
+  .bubble {
+    max-width: 70%;
+    border-radius: 16px;
+    padding: 12px 16px;
+    position: relative;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .bubble.user {
+    background: var(--rp-color-user-msg);
+    color: #fff;
+  }
+  .bubble.ai {
+    background: var(--rp-color-bot-msg);
+    color: var(--rp-color-main-text);
+  }
+  .bubble.ai.card-html {
+    width: 100%;
+    max-width: 100%;
+    background: transparent;
+    padding: 0;
+  }
+
+  .sender-name {
+    font-size: 12px;
+    opacity: 0.7;
+    margin-bottom: 4px;
+  }
+
+  /* ===== Markdown 内容 ===== */
+  .markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 {
+    font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.75rem;
+  }
+  .markdown-content h1 { font-size: 1.5rem; }
+  .markdown-content h2 { font-size: 1.25rem; }
+  .markdown-content h3 { font-size: 1.125rem; }
+  .markdown-content p { margin-bottom: 0.25rem; line-height: 1.6; }
+  .markdown-content p:last-child { margin-bottom: 0; }
+  .markdown-content ul, .markdown-content ol { margin-left: 1.5rem; margin-bottom: 0.75rem; }
+  .markdown-content li { margin-bottom: 0.25rem; }
+  .markdown-content code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: 0.875em; font-family: 'SF Mono', Monaco, monospace; }
+  .markdown-content blockquote { border-left: 3px solid #d1d5db; padding-left: 1rem; color: #6b7280; }
+  .markdown-content em { color: var(--rp-color-italics-text); }
+
+  /* ===== 分隔标签 ===== */
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #9ca3af;
+    margin: 24px 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  /* ===== 主题切换 ===== */
+  .theme-toggle {
+    position: fixed; top: 12px; right: 12px; z-index: 100;
+    padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db;
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .dark .theme-toggle { background: #1f2937; color: #e5e7eb; border-color: #374151; }
+
+  /* ===== DOMPurify 模拟效果标记 ===== */
+  .dompurify-note {
+    font-size: 11px;
+    color: #ef4444;
+    margin-top: 4px;
+    font-style: italic;
+  }
+  .dompurify-note.ok { color: #22c55e; }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" onclick="toggleTheme()">切换暗色/亮色</button>
+
+<div class="roleplay-container chat-container" id="chatContainer">
+
+  <h2 style="text-align:center; margin-bottom:20px; font-size:18px; color:var(--rp-color-main-text);">
+    角色扮演对话渲染预览
+  </h2>
+
+  <!-- ==================== 1. 纯文本消息 ==================== -->
+  <div class="section-label">1. 纯文本消息（Markdown）</div>
+
+  <div class="message-row user">
+    <div class="bubble user">
+      <div class="sender-name">用户</div>
+      <div class="markdown-content">
+        <p>你好，请介绍一下你自己。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div class="markdown-content">
+        <p>你好呀！我是<em>艾莉娜</em>，一个来自北方的旅行法师。</p>
+        <p>我擅长<code>冰系魔法</code>和<code>治愈术</code>，在旅途中帮助过很多人。</p>
+        <blockquote>「真正的力量不在于破坏，而在于守护。」</blockquote>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 2. HTML 片段 - 样式框 ==================== -->
+  <div class="section-label">2. HTML 片段 — 样式框（角色卡常见）</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div class="markdown-content">
+        <!-- 原始 HTML 片段 -->
+        <div style="background: linear-gradient(135deg, #1a1a2e, #16213e); border-radius: 12px; padding: 16px; color: #e0e0e0; margin-bottom: 8px; border: 1px solid #0f3460;">
+          <div style="font-size: 16px; font-weight: bold; color: #e94560; margin-bottom: 8px;">⚔️ 战斗状态</div>
+          <div style="display: flex; gap: 16px;">
+            <div style="flex:1;">
+              <div style="font-size: 12px; color: #9ca3af;">生命值</div>
+              <div style="background: #374151; border-radius: 4px; height: 8px; margin-top: 4px;">
+                <div style="background: #22c55e; border-radius: 4px; height: 8px; width: 75%;"></div>
+              </div>
+              <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">75/100</div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size: 12px; color: #9ca3af;">魔力值</div>
+              <div style="background: #374151; border-radius: 4px; height: 8px; margin-top: 4px;">
+                <div style="background: #3b82f6; border-radius: 4px; height: 8px; width: 45%;"></div>
+              </div>
+              <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">45/100</div>
+            </div>
+          </div>
+        </div>
+        <p>我受了点伤，但还能继续战斗！</p>
+      </div>
+      <div class="dompurify-note ok">✅ skipCssScoping=true: class名和CSS保持原样</div>
+    </div>
+  </div>
+
+  <!-- ==================== 3. HTML 片段 - DOMPurify 破坏效果模拟 ==================== -->
+  <div class="section-label">3. 同一 HTML 片段 — DOMPurify 破坏效果模拟（旧版行为）</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div class="markdown-content">
+        <!-- DOMPurify 破坏后的效果：class 被 custom- 前缀化，CSS 被 .mes_text 作用域化 -->
+        <div style="background: linear-gradient(135deg, #1a1a2e, #16213e); border-radius: 12px; padding: 16px; color: #e0e0e0; margin-bottom: 8px; border: 1px solid #0f3460;">
+          <div style="font-size: 16px; font-weight: bold; color: #e94560; margin-bottom: 8px;">⚔️ 战斗状态</div>
+          <div style="display: flex; gap: 16px;">
+            <div style="flex:1;">
+              <div style="font-size: 12px; color: #9ca3af;">生命值</div>
+              <div style="background: #374151; border-radius: 4px; height: 8px; margin-top: 4px;">
+                <div style="background: #22c55e; border-radius: 4px; height: 8px; width: 75%;"></div>
+              </div>
+              <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">75/100</div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size: 12px; color: #9ca3af;">魔力值</div>
+              <div style="background: #374151; border-radius: 4px; height: 8px; margin-top: 4px;">
+                <div style="background: #3b82f6; border-radius: 4px; height: 8px; width: 45%;"></div>
+              </div>
+              <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">45/100</div>
+            </div>
+          </div>
+        </div>
+        <p style="color: var(--rp-color-main-text);">我受了点伤，但还能继续战斗！</p>
+      </div>
+      <div class="dompurify-note">❌ 旧版 MESSAGE_SANITIZE=true: inline style 保留但 CSS 作用域化可能覆盖颜色</div>
+    </div>
+  </div>
+
+  <!-- ==================== 4. HTML 片段 - 带 class 的样式框 ==================== -->
+  <div class="section-label">4. HTML 片段 — 带 class 的样式框（DOMPurify class 前缀化问题）</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div>
+        <style>
+          .char-card { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); border-radius: 12px; padding: 16px; color: #fff; font-family: sans-serif; }
+          .char-card .name { font-size: 18px; font-weight: bold; color: #ffd700; }
+          .char-card .desc { font-size: 13px; color: #b0b0b0; margin-top: 8px; }
+          .char-card .tag { display: inline-block; background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 10px; font-size: 11px; margin: 2px; color: #a0a0ff; }
+        </style>
+        <div class="char-card">
+          <div class="name">✨ 艾莉娜 · 冰霜法师</div>
+          <div class="desc">来自北境的旅行法师，擅长冰系魔法与治愈术。性格温柔但战斗时果断。</div>
+          <div style="margin-top:8px;">
+            <span class="tag">冰系魔法</span>
+            <span class="tag">治愈术</span>
+            <span class="tag">北方</span>
+            <span class="tag">旅行者</span>
+          </div>
+        </div>
+      </div>
+      <div class="dompurify-note ok">✅ skipCssScoping=true: .char-card 等 class 不被前缀化，&lt;style&gt; 选择器正常匹配</div>
+    </div>
+  </div>
+
+  <!-- ==================== 5. 同上 — DOMPurify 前缀化破坏 ==================== -->
+  <div class="section-label">5. 同上 — DOMPurify custom- 前缀化破坏效果</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div>
+        <style>
+          .custom-char-card { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); border-radius: 12px; padding: 16px; color: #fff; font-family: sans-serif; }
+          .custom-char-card .custom-name { font-size: 18px; font-weight: bold; color: #ffd700; }
+          .custom-char-card .custom-desc { font-size: 13px; color: #b0b0b0; margin-top: 8px; }
+          .custom-char-card .custom-tag { display: inline-block; background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 10px; font-size: 11px; margin: 2px; color: #a0a0ff; }
+        </style>
+        <div class="custom-char-card">
+          <div class="custom-name">✨ 艾莉娜 · 冰霜法师</div>
+          <div class="custom-desc">来自北境的旅行法师，擅长冰系魔法与治愈术。性格温柔但战斗时果断。</div>
+          <div style="margin-top:8px;">
+            <span class="custom-tag">冰系魔法</span>
+            <span class="custom-tag">治愈术</span>
+            <span class="custom-tag">北方</span>
+            <span class="custom-tag">旅行者</span>
+          </div>
+        </div>
+      </div>
+      <div class="dompurify-note">❌ 旧版: .char-card → .custom-char-card，但 &lt;style&gt; 中选择器也被前缀化 → 双重前缀 .custom-custom-char-card → 样式完全失效</div>
+    </div>
+  </div>
+
+  <!-- ==================== 6. 完整角色卡 HTML ==================== -->
+  <div class="section-label">6. 完整角色卡 HTML（CharacterCardRenderer iframe 沙箱渲染）</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai card-html">
+      <iframe srcdoc='
+<!DOCTYPE html>
+<html>
+<head><style>
+  body { margin: 0; font-family: sans-serif; background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #fff; padding: 20px; }
+  .card { max-width: 500px; margin: 0 auto; }
+  .card h1 { font-size: 22px; color: #ffd700; margin-bottom: 4px; }
+  .card .subtitle { font-size: 13px; color: #a0a0ff; margin-bottom: 16px; }
+  .card .section { background: rgba(255,255,255,0.05); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .card .section h2 { font-size: 14px; color: #e94560; margin-bottom: 8px; }
+  .card .section p { font-size: 13px; line-height: 1.6; color: #d1d5db; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px; text-align: center; }
+  .stat .val { font-size: 20px; font-weight: bold; color: #60a5fa; }
+  .stat .label { font-size: 11px; color: #9ca3af; }
+  .bar { height: 6px; background: #374151; border-radius: 3px; margin-top: 4px; }
+  .bar-fill { height: 6px; border-radius: 3px; }
+</style></head>
+<body>
+<div class="card">
+  <h1>⚔️ 艾莉娜 · 冰霜法师</h1>
+  <div class="subtitle">Lv.42 | 北境旅行法师 | 混乱善良</div>
+  <div class="stats">
+    <div class="stat"><div class="val">75</div><div class="label">HP</div><div class="bar"><div class="bar-fill" style="width:75%;background:#22c55e;"></div></div></div>
+    <div class="stat"><div class="val">45</div><div class="label">MP</div><div class="bar"><div class="bar-fill" style="width:45%;background:#3b82f6;"></div></div></div>
+    <div class="stat"><div class="val">28</div><div class="label">ATK</div><div class="bar"><div class="bar-fill" style="width:56%;background:#f59e0b;"></div></div></div>
+    <div class="stat"><div class="val">35</div><div class="label">DEF</div><div class="bar"><div class="bar-fill" style="width:70%;background:#8b5cf6;"></div></div></div>
+  </div>
+  <div class="section">
+    <h2>📜 背景</h2>
+    <p>出生于北境永冻之地的艾莉娜，自幼便展现出对冰元素的亲和力。在经历了一场毁灭性的战争后，她踏上了旅途，寻找治愈这片受伤大陆的方法。</p>
+  </div>
+  <div class="section">
+    <h2>✨ 技能</h2>
+    <p>❄️ 冰霜新星 — 范围冰系攻击<br>💚 治愈之光 — 恢复友方生命<br>🛡️ 冰甲术 — 提升防御力<br>⚡ 暴风雪 — 终极冰系魔法</p>
+  </div>
+</div>
+</body></html>
+      ' style="width:100%; height:420px; border:none; border-radius:12px;"></iframe>
+      <div class="dompurify-note ok">✅ skipSanitize=true: 完全跳过 DOMPurify，iframe 沙箱自行消毒</div>
+    </div>
+  </div>
+
+  <!-- ==================== 7. Markdown + HTML 混合 ==================== -->
+  <div class="section-label">7. Markdown + HTML 混合消息</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">艾莉娜</div>
+      <div class="markdown-content">
+        <p>我来到了一座古老的图书馆，书架上摆满了尘封已久的魔法典籍。</p>
+        <div style="background: #1e293b; border-left: 3px solid #f59e0b; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 8px 0; color: #fbbf24; font-size: 13px;">
+          📖 <strong>系统提示</strong>：你发现了一本<em>禁忌魔法书</em>，是否翻阅？
+        </div>
+        <p>这本书散发着奇异的光芒...我要打开它吗？</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 8. 复杂 HTML 卡片 ==================== -->
+  <div class="section-label">8. 复杂 HTML 卡片（带交互按钮样式）</div>
+
+  <div class="message-row ai">
+    <div class="bubble ai">
+      <div class="sender-name">系统</div>
+      <div>
+        <style>
+          .quest-panel { background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%); border: 1px solid #e94560; border-radius: 12px; padding: 16px; color: #e0e0e0; font-family: sans-serif; }
+          .quest-panel .quest-title { font-size: 16px; font-weight: bold; color: #e94560; margin-bottom: 4px; }
+          .quest-panel .quest-diff { font-size: 11px; color: #f59e0b; margin-bottom: 12px; }
+          .quest-panel .quest-desc { font-size: 13px; color: #b0b0b0; line-height: 1.6; margin-bottom: 12px; }
+          .quest-panel .quest-rewards { display: flex; gap: 8px; margin-bottom: 12px; }
+          .quest-panel .reward { background: rgba(255,255,255,0.08); border-radius: 6px; padding: 4px 10px; font-size: 12px; }
+          .quest-panel .quest-actions { display: flex; gap: 8px; }
+          .quest-panel .btn { padding: 6px 16px; border-radius: 6px; border: none; font-size: 13px; cursor: pointer; font-weight: 600; }
+          .quest-panel .btn-accept { background: #22c55e; color: #fff; }
+          .quest-panel .btn-decline { background: #374151; color: #9ca3af; }
+        </style>
+        <div class="quest-panel">
+          <div class="quest-title">🗡️ 新任务：冰霜之塔</div>
+          <div class="quest-diff">难度：★★★☆☆ | 推荐等级：40+</div>
+          <div class="quest-desc">北方的冰霜之塔中封印着远古的冰龙，最近塔内的封印开始松动，冰龙的咆哮声传遍了整个北境。前往冰霜之塔，加固封印或击败冰龙。</div>
+          <div class="quest-rewards">
+            <span class="reward">🪙 500 金币</span>
+            <span class="reward">❄️ 冰龙之息（传说材料）</span>
+            <span class="reward">⭐ 5000 经验值</span>
+          </div>
+          <div class="quest-actions">
+            <span class="btn btn-accept">接受任务</span>
+            <span class="btn btn-decline">稍后再说</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 9. 颜色可读性测试 ==================== -->
+  <div class="section-label">9. 颜色可读性测试</div>
+
+  <div class="message-row user">
+    <div class="bubble user" style="background: var(--rp-color-user-msg); color: var(--rp-color-main-text);">
+      <div class="sender-name" style="color: var(--rp-color-main-text); opacity:0.7;">用户</div>
+      <div class="markdown-content" style="color: var(--rp-color-main-text);">
+        <p>这是用户消息，背景色 var(--rp-color-user-msg)，文字色 var(--rp-color-main-text)</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="message-row ai">
+    <div class="bubble ai" style="background: var(--rp-color-bot-msg); color: var(--rp-color-main-text);">
+      <div class="sender-name">AI</div>
+      <div class="markdown-content" style="color: var(--rp-color-main-text);">
+        <p>这是 AI 消息，背景色 var(--rp-color-bot-msg)，文字色 var(--rp-color-main-text)</p>
+        <p>浅色主题：背景 #f9fafb，文字 #1f2937 — 对比度足够</p>
+        <p>暗色主题：背景 #1f2937，文字 #e5e7eb — 对比度足够</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function toggleTheme() {
+  const container = document.getElementById('chatContainer');
+  container.classList.toggle('dark');
+  document.body.style.background = container.classList.contains('dark') ? '#111827' : '#f3f4f6';
+  document.body.style.color = container.classList.contains('dark') ? '#e5e7eb' : '#1f2937';
+}
+</script>
+</body>
+</html>

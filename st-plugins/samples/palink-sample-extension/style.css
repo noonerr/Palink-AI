@@ -1,0 +1,12 @@
+/* Palink 轻插件范本样式 —— 仅作用于本插件注入的设置面板 */
+#palink-sample-extension_container {
+  padding: 8px 10px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 8px;
+  margin: 6px 0;
+  background: var(--card, #fafafa);
+}
+#palink-sample-extension_container h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}

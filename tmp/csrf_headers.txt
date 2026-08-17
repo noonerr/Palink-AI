@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Mon, 15 Jun 2026 17:16:22 GMT
+Content-Type: application/json
+Content-Length: 23
+Connection: keep-alive
+x-request-id: bba4c128faba401d
+
