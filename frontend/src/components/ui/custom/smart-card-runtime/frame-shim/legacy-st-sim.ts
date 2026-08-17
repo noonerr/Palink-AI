@@ -236,7 +236,12 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
         get: function () { return _imgSrcDesc.get.call(this); },
         set: function (v) {
           var s = String(v || '');
-          var m = s.match(/^([a-z][a-z0-9+.-]*:\/\/[^/]+\/[^/]+\/[^/]+)\/.+%5C([^?#]+)/i);
+          // [TEMPLATE-ESCAPE-FIX] 本段是模板字符串常量：正则字面量里的 \/ 会被模板求值吞成 /，
+          // 生成非法正则 /^([a-z][a-z0-9+.-]*://.../ 导致整个 shim 脚本解析失败（SyntaxError:
+          // Unterminated group）→ PARENT-ALIAS/IDB 垫片/measure() 全部不运行（面板 220px 卡死、
+          // IDB denied、parent.jQuery 跨源报错都是它的连锁反应）。改用 new RegExp('字符串')，
+          // 模式内斜杠无需转义，模板求值不再破坏。
+          var m = s.match(new RegExp('^([a-z][a-z0-9+.-]*://[^/]+/[^/]+/[^/]+)/.+%5C([^?#]+)', 'i'));
           if (m) {
             try { s = m[1] + '/' + m[2]; } catch (e2) {}
           }
