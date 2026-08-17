@@ -6390,11 +6390,28 @@ ${bootHeader}
     window.Mvu = window.Mvu || {};
     window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
     setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
+    // [GALGAME-COMPAT] Galgame 界面插件（数据库界面插件）通过 Mvu.getMvuData(option)
+    // 读取 stat_data（MVU_SCOPE_OPTIONS: {type:'message'|'chat'|'character'|'global'}）。
+    // shim 此前未提供 → TypeError → 插件 try/catch 吞掉 → 角色面板不显示变量。
+    // 与 getAllVariables 同源（merged 含 stat_data）；插件只读 .stat_data，
+    // 直接返回 merged 即可（option 忽略）。
+    if (typeof window.Mvu.getMvuData !== 'function') {
+      window.Mvu.getMvuData = function (option) {
+        try { return mvuGetAllVariablesFinal(); } catch (_e) { return {}; }
+      };
+      setCompatFunction('getMvuData', window.Mvu.getMvuData);
+    }
     // 插件脚本若异步再次覆盖，延时再保险一次
     setTimeout(() => {
       try {
         window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
         setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
+        if (typeof window.Mvu.getMvuData !== 'function') {
+          window.Mvu.getMvuData = function (option) {
+            try { return mvuGetAllVariablesFinal(); } catch (_e2) { return {}; }
+          };
+          setCompatFunction('getMvuData', window.Mvu.getMvuData);
+        }
       } catch (_e) { /* ignore */ }
     }, 0);
   } catch (_e) { /* ignore */ }
