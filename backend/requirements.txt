@@ -31,3 +31,7 @@ tiktoken==0.13.0
 sentencepiece==0.2.2
 tokenizers==0.23.1
 PyYAML==6.0.3
+# 注：向量引擎统一走 Ollama + bge-m3（NAS 部署，见 TODOS.md）。本开发机无 Ollama 时
+# 由 OllamaEmbedder 自动降级 fastembed，无需 sentence-transformers/torch。
+# 此前误加的 sentence-transformers==6.0.0 / torch==2.13.0 / transformers==5.15.0
+# 版本不存在且容器 Python 3.10 无法安装，已移除（2026-08-18）。

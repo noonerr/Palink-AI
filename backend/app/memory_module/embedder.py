@@ -139,14 +139,16 @@ class FastEmbedEmbedder(BaseEmbedder):
 class SentenceTransformerEmbedder(BaseEmbedder):
     """
     SentenceTransformer 嵌入模型
-    使用sentence-transformers加载BGE-Large-zh-v1.5
+    使用sentence-transformers加载 BAAI/bge-m3（1024维，中文强，与另一项目统一语义基准）
+    注：本环境无法安装 Ollama（GitHub 被封锁、docker.io 不可达），故改用 SentenceTransformer
+    直接加载 bge-m3，产出与 Ollama+bge-m3 同维度(1024)的向量。模型经 HF_ENDPOINT 镜像拉取。
     """
-    
+
     def __init__(self):
         try:
             from sentence_transformers import SentenceTransformer
-            
-            model_name = "BAAI/bge-large-zh-v1.5"
+
+            model_name = "BAAI/bge-m3"
             
             cache_dir = "/app/models/sentence_transformers"
             os.makedirs(cache_dir, exist_ok=True)
@@ -213,8 +215,62 @@ class OpenAIEmbedder(BaseEmbedder):
         return self._dimension
 
 
+class OllamaEmbedder(BaseEmbedder):
+    """
+    Ollama 嵌入模型（与另一个项目统一向量引擎，2026-08-18）
+
+    通过 Ollama 的 /api/embed 接口调用 bge-m3（1024 维，中文强）。
+    复用已有 httpx 依赖，无新增第三方库。
+
+    运行时降级：Ollama 不可达/报错时自动回退 fastembed（bge-small-zh），
+    保证记忆功能不因 Ollama 故障而崩溃（语义基准暂时不一致，但可用）。
+    """
+
+    def __init__(self):
+        import httpx
+        self._client = httpx.Client(timeout=memory_config.OLLAMA_TIMEOUT)
+        self._host = memory_config.OLLAMA_HOST.rstrip("/")
+        self._model = memory_config.OLLAMA_MODEL
+        self._dimension = 1024  # bge-m3 固定 1024 维
+        self._fallback = None  # 惰性创建 fastembed 兜底
+        logger.info(f"Ollama 嵌入器初始化: host={self._host} model={self._model} 维度: {self._dimension}")
+
+    def _get_fallback(self) -> BaseEmbedder:
+        if self._fallback is None:
+            try:
+                self._fallback = FastEmbedEmbedder()
+            except Exception as e:
+                logger.warning(f"Ollama 降级 fastembed 创建失败: {e}")
+                self._fallback = SimpleHashEmbedder()
+        return self._fallback
+
+    def embed(self, text: Union[str, List[str]]) -> np.ndarray:
+        if isinstance(text, str):
+            text = [text]
+        if not text:
+            return np.zeros((0, self._dimension), dtype=np.float32)
+        try:
+            resp = self._client.post(
+                f"{self._host}/api/embed",
+                json={"model": self._model, "input": text},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            embeddings = data.get("embeddings") or []
+            if not embeddings:
+                raise ValueError("Ollama 返回空 embeddings")
+            return np.array(embeddings, dtype=np.float32)
+        except Exception as e:
+            logger.warning(f"Ollama 嵌入失败，降级 fastembed: {e}")
+            return self._get_fallback().embed(text)
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+
 class EmbedderFactory:
-    """嵌入模型工厂 - 优先级: SimpleHash > SentenceTransformer > FastEmbed > OpenAI"""
+    """嵌入模型工厂 - 优先级: Ollama > SimpleHash > SentenceTransformer > FastEmbed > OpenAI"""
     
     _instance: BaseEmbedder = None
     _lock = threading.Lock()
@@ -230,7 +286,13 @@ class EmbedderFactory:
     
     @classmethod
     def _create_embedder(cls) -> BaseEmbedder:
-        """创建嵌入器 - 优先使用简单哈希，无需外部依赖"""
+        """创建嵌入器 - 优先使用 Ollama（统一向量引擎），失败降级 fastembed，最后简单哈希"""
+        
+        if memory_config.EMBEDDING_PROVIDER == "ollama":
+            try:
+                return OllamaEmbedder()
+            except Exception as e:
+                logger.warning(f"Ollama 嵌入器创建失败: {e}，降级 fastembed")
         
         if memory_config.EMBEDDING_PROVIDER == "openai":
             if memory_config.validate():

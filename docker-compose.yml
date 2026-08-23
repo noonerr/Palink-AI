@@ -3,9 +3,9 @@ services:
     build: ./frontend
     ports:
       # 前端端口固定为 3000（此前的 Windows 动态端口排除问题已不存在，实测可正常绑定）
-      - "127.0.0.1:3000:8080"
+      - "3000:8080"
       # 9001 落入 Windows 保留端口段(8958-9057)，docker 无法绑定，临时改到 9061（空闲段）
-      - "127.0.0.1:9061:8081"
+      - "9061:8081"
     depends_on:
       backend:
         condition: service_healthy
@@ -83,12 +83,47 @@ services:
         reservations:
           memory: 256M
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: palink-ollama
+    ports:
+      # 映射到宿主机便于调试（backend 走服务名 ollama:11434 直连，不依赖此映射）
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=24h
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          memory: 512M
+
   backend:
     build: ./backend
     # --- DNS 配置 ---
     dns:
       - 223.5.5.5
       - 8.8.8.8
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: sh /app/start-server.sh
     volumes:
       - ./backend/data:/app/data
@@ -100,8 +135,12 @@ services:
       - DATABASE_URL=postgresql://${DB_USER:-ai_user}:${DB_PASSWORD:?请在.env中设置DB_PASSWORD}@db:5432/${DB_NAME:-ai_hub}
       - HF_ENDPOINT=https://hf-mirror.com
       - HF_HUB_DISABLE_XET=1
-      - MEMORY_EMBEDDING_PROVIDER=fastembed
-      - MEMORY_VECTOR_DIMENSION=512
+      # 向量引擎统一走 Ollama + bge-m3（同 compose 网络内服务名直连，见 TODOS.md）；
+      # Ollama 不可达时 OllamaEmbedder 自动降级 fastembed，无需 sentence-transformers。
+      - MEMORY_EMBEDDING_PROVIDER=ollama
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=bge-m3
+      - MEMORY_VECTOR_DIMENSION=1024
       - RUN_MIGRATIONS_ON_STARTUP=false
       - MIGRATIONS_FAIL_FAST=true
       - PROVIDER_SECRET_CHECK_STRICT=false
@@ -131,6 +170,8 @@ services:
       - "8000"
     depends_on:
       db:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     # -----------------------------------
     restart: always
@@ -191,6 +232,7 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:
   sillytavern_config:
   sillytavern_data:
   sillytavern_plugins:

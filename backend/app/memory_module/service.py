@@ -65,21 +65,50 @@ class MemoryService:
     ) -> Optional[int]:
         """
         存储对话记忆
-        
+
+        assistant 长回复（≥ CHUNK_TRIGGER_CHARS 且总开关开启）会先经
+        semantic_split 按话题断点切成语义块，再批量入库（方案 B，2026-08-22）。
+
         Args:
             user_id: 用户ID
             session_id: 会话ID
             role: 角色 ('user' | 'assistant')
             content: 内容
             **metadata: 额外元数据 (importance_score, topics等)
-        
+
         Returns:
-            memory_id: 记忆ID
+            memory_id: 记忆ID（多块时为首块 ID）；失败返回 None
         """
         if not self.is_available():
             return None
-        
+
         try:
+            # 方案 B：assistant 长回复语义切分（user 消息保持整条）
+            if (
+                role == "assistant"
+                and memory_config.SEMANTIC_CHUNKING
+                and content
+                and len(content) >= memory_config.CHUNK_TRIGGER_CHARS
+            ):
+                try:
+                    from .semantic_chunker import semantic_split
+
+                    chunks = semantic_split(content)
+                    if len(chunks) > 1:
+                        ids = self.storage.store_chunks(
+                            user_id=user_id,
+                            session_id=session_id,
+                            role=role,
+                            chunks=chunks,
+                            branch_id=branch_id,
+                            importance_score=metadata.get('importance_score', 0.5),
+                        )
+                        if ids:
+                            return ids[0]
+                        # store_chunks 整体失败（含降级路径内部已处理）→ 落到底部单条存储
+                except Exception as chunk_exc:
+                    logger.warning(f"语义切分入库失败，回退整条存储: {chunk_exc}")
+
             return self.storage.store(
                 user_id=user_id,
                 session_id=session_id,
@@ -137,6 +166,10 @@ class MemoryService:
 
             result = await asyncio.to_thread(self.retriever.retrieve, request)
 
+            # 方案 B：命中语义块时自动携带前后相邻块（预算内），保证上下文完整
+            if memory_config.NEIGHBOR_EXPAND and result.memories:
+                result = self._expand_chunk_neighbors(result, request.max_tokens)
+
             if self.enable_cache:
                 await self._set_cache(cache_key, result, ttl=60)
 
@@ -151,6 +184,52 @@ class MemoryService:
                 total_tokens=0,
                 strategy_used="error"
             )
+
+    def _expand_chunk_neighbors(self, result: ContextResponse, max_tokens: int) -> ContextResponse:
+        """对命中的语义块做邻居扩展（idx±1，同 turn_hash），受 token 预算约束。"""
+        try:
+            from .storage import _parse_chunk_meta
+
+            has_chunk = any(_parse_chunk_meta(m.topics) for m in result.memories)
+            if not has_chunk:
+                return result
+
+            ids = {m.id for m in result.memories}
+            total = result.total_tokens or sum(
+                m.tokens_count or (len(m.content) // 2) for m in result.memories
+            )
+            additions: Dict[int, Any] = {}
+            for mem in list(result.memories):
+                if _parse_chunk_meta(mem.topics) is None:
+                    continue
+                for nb in self.storage.get_adjacent_chunks(mem):
+                    if nb.id in ids or nb.id in additions:
+                        continue
+                    t = nb.tokens_count or (len(nb.content) // 2)
+                    if max_tokens and total + t > max_tokens:
+                        continue
+                    additions[nb.id] = nb
+                    ids.add(nb.id)
+                    total += t
+            if not additions:
+                return result
+
+            merged = sorted(
+                list(result.memories) + list(additions.values()),
+                key=lambda x: (x.created_at or datetime.min, x.id),
+            )
+            logger.info(
+                f"记忆邻居扩展: +{len(additions)} 块, total_tokens={total}"
+            )
+            return ContextResponse(
+                memories=merged,
+                user_profile=result.user_profile,
+                total_tokens=total,
+                strategy_used=result.strategy_used + "+neighbors",
+            )
+        except Exception as e:
+            logger.warning(f"邻居扩展失败（忽略，返回原结果）: {e}")
+            return result
     
     def get_user_profile(self, user_id: int) -> Optional[UserProfile]:
         """获取用户画像"""

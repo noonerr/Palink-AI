@@ -9,6 +9,7 @@ from sqlalchemy import text, desc, bindparam
 from datetime import datetime, timedelta
 import numpy as np
 import asyncio
+import hashlib
 import logging
 import json
 import threading
@@ -18,6 +19,36 @@ from .embedder import get_embedder, embed_text
 from .config import memory_config
 
 logger = logging.getLogger("MemoryModule")
+
+
+def _chunk_topics(turn_hash: str, idx: int, total: int) -> List[str]:
+    """语义块元数据编码（写入 topics JSON 列，免 schema 迁移）。"""
+    return ["#chunk", f"#turn:{turn_hash}", f"#idx:{idx}", f"#total:{total}"]
+
+
+def _parse_chunk_meta(topics) -> Optional[Tuple[str, int, int]]:
+    """从 topics 解析块元数据。返回 (turn_hash, idx, total)；非块返回 None。"""
+    try:
+        items = json.loads(topics) if isinstance(topics, str) else (topics or [])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(items, list) or "#chunk" not in items:
+        return None
+    turn_hash = None
+    idx = -1
+    total = 0
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        if item.startswith("#turn:"):
+            turn_hash = item[len("#turn:"):]
+        elif item.startswith("#idx:"):
+            idx = int(item[len("#idx:"):])
+        elif item.startswith("#total:"):
+            total = int(item[len("#total:"):])
+    if not turn_hash or idx < 0:
+        return None
+    return turn_hash, idx, total
 
 
 _tables_initialized = False
@@ -266,7 +297,150 @@ class MemoryStorage:
             logger.error(f"存储记忆失败: {e}")
             self.db.rollback()
             return None
-    
+
+    def store_chunks(
+        self,
+        user_id: int,
+        session_id: str,
+        role: str,
+        chunks: List[str],
+        branch_id: Optional[str] = None,
+        importance_score: float = 0.5,
+    ) -> List[int]:
+        """批量存储语义块（方案 B）：一次批量嵌入 + 单事务插入，embedding 直写。
+
+        Returns:
+            各块 memory_id 列表（顺序与 chunks 一致）；整体失败返回 []
+        """
+        if not chunks:
+            return []
+        turn_hash = hashlib.blake2b(
+            (chunks[0][:64] + datetime.utcnow().isoformat()).encode("utf-8"),
+            digest_size=8,
+        ).hexdigest()[:12]
+        total = len(chunks)
+        try:
+            embeddings = embed_text(chunks)  # 批量：单次调用出全部向量
+        except Exception as e:
+            # 嵌入失败 → 逐条走现有 store()（NULL embedding + 后台重试），行不丢
+            logger.warning(f"store_chunks 批量嵌入失败，降级逐条存储: {e}")
+            ids = []
+            for i, chunk in enumerate(chunks):
+                mid = self.store(
+                    user_id=user_id,
+                    session_id=session_id,
+                    role=role,
+                    content=chunk,
+                    importance_score=importance_score,
+                    topics=_chunk_topics(turn_hash, i, total),
+                    branch_id=branch_id,
+                )
+                if mid is not None:
+                    ids.append(mid)
+            return ids
+
+        try:
+            ids: List[int] = []
+            for i, chunk in enumerate(chunks):
+                emb_list = embeddings[i].tolist()
+                topics_json = json.dumps(_chunk_topics(turn_hash, i, total))
+                sql = text("""
+                    INSERT INTO conversation_memories
+                    (user_id, session_id, branch_id, role, content, embedding,
+                     importance_score, topics, tokens_count, created_at)
+                    VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
+                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                """)
+                params = {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "branch_id": branch_id,
+                    "role": role,
+                    "content": chunk,
+                    "embedding": json.dumps(emb_list),
+                    "importance_score": importance_score,
+                    "topics": topics_json,
+                    "tokens_count": len(chunk) // 2,
+                }
+                if self.is_postgres:
+                    sql = text("""
+                        INSERT INTO conversation_memories
+                        (user_id, session_id, branch_id, role, content, embedding,
+                         importance_score, topics, tokens_count, created_at)
+                        VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
+                                :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                        RETURNING id
+                    """)
+                    result = self.db.execute(sql, params)
+                    ids.append(result.scalar())
+                else:
+                    result = self.db.execute(sql, params)
+                    ids.append(result.lastrowid)
+            self.db.commit()
+            logger.debug(f"语义块批量存储成功: turn={turn_hash} blocks={len(ids)}")
+            return ids
+        except Exception as e:
+            logger.error(f"store_chunks 批量插入失败: {e}")
+            self.db.rollback()
+            return []
+
+    def get_adjacent_chunks(self, mem: MemoryEntry) -> List[MemoryEntry]:
+        """取同轮(turn_hash)中 idx±1 的相邻块（缺失侧静默跳过）。"""
+        meta = _parse_chunk_meta(mem.topics)
+        if meta is None:
+            return []
+        turn_hash, idx, _total = meta
+        target_idxs = {idx - 1, idx + 1}
+        like_pat = f'%"#turn:{turn_hash}"%'
+        try:
+            if self.is_postgres:
+                sql = text("""
+                    SELECT id, user_id, session_id, branch_id, role, content,
+                           importance_score, topics, tokens_count, created_at, embedding
+                    FROM conversation_memories
+                    WHERE user_id = :user_id AND session_id = :session_id
+                      AND topics::text LIKE :pat AND id != :id
+                    ORDER BY id
+                """)
+            else:
+                sql = text("""
+                    SELECT id, user_id, session_id, branch_id, role, content,
+                           importance_score, topics, tokens_count, created_at, embedding
+                    FROM conversation_memories
+                    WHERE user_id = :user_id AND session_id = :session_id
+                      AND topics LIKE :pat AND id != :id
+                    ORDER BY id
+                """)
+            result = self.db.execute(sql, {
+                "user_id": mem.user_id,
+                "session_id": mem.session_id,
+                "pat": like_pat,
+                "id": mem.id,
+            })
+            out: List[MemoryEntry] = []
+            for row in result:
+                row_meta = _parse_chunk_meta(row.topics)
+                if row_meta is None or row_meta[1] not in target_idxs:
+                    continue
+                emb_list = json.loads(row.embedding) if row.embedding else None
+                out.append(MemoryEntry(
+                    id=row.id,
+                    user_id=row.user_id,
+                    session_id=row.session_id,
+                    branch_id=row.branch_id,
+                    role=row.role,
+                    content=row.content,
+                    importance_score=row.importance_score,
+                    topics=json.loads(row.topics) if row.topics else [],
+                    tokens_count=row.tokens_count or 0,
+                    created_at=row.created_at,
+                    embedding=emb_list,
+                ))
+            return out
+        except Exception as e:
+            logger.warning(f"查询相邻块失败: {e}")
+            return []
+
     async def _async_update_embedding(self, memory_id: int, content: str):
         """后台异步计算并更新 embedding，带重试"""
         max_retries = 3
