@@ -1,4 +1,4 @@
-"""Unified roleplay prompt assembly service.
+﻿"""Unified roleplay prompt assembly service.
 
 This module is the backend seam for Palink's ST-compatible roleplay runtime.
 It intentionally preserves the existing prompt behavior while making the
@@ -41,7 +41,7 @@ from ..services.character_message_builder import build_character_chat_messages, 
 from ..services.plotline_service import build_plotline_context
 from ..services.worldbook_service import build_worldbook_context, WorldbookContextResult
 from ..services.macro_service import MacroEnv, evaluate_macros, evaluate_macros_in_messages
-from ..utils import build_memory_context, normalize_image_url
+from ..utils import build_memory_context, balance_custom_tags, normalize_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,47 @@ ST_COMPAT_MODES = {"st-compat", "compat"}
 
 def _is_st_compat_mode(st_mode: Optional[str]) -> bool:
     return (st_mode or "").strip().lower() in ST_COMPAT_MODES
+
+
+# ── ST 1.18.0 depth 注入统一队列（palink-native 专属） ─────────────────
+# 对齐 ST 的三级确定序（openai.js populationInjectionPrompts L801-866 +
+# script.js getExtensionPrompt L3242-3270 + doChatInject L5569-5617）：
+#   1. depth        — 从最新消息往回数的插入深度
+#   2. order        — injection_order，ST 默认 100（openai.js L825）；时间序内
+#                     低 order 靠前、高 order 靠近最新消息（降序分桶后整体 reverse）
+#   3. role         — 同桶内 system 最靠近最新消息（roles [system,user,assistant]
+#                     正序入块 → reverse 后 assistant,user,system）
+#   4. sort_key     — ST 扩展注册表按 key 字母序合并（getExtensionPrompt
+#                     Object.keys(extension_prompts).sort()）；AN/世界书/角色深度
+#                     提示词在 ST 中均经 setExtensionPrompt 进入该注册表，
+#                     key 前缀数字即官方排序手段（authors-note.js L26 注释明证）
+_INJECTION_ORDER_DEFAULT = 100  # ST Prompt.injection_order 默认值（openai.js L825）
+
+# ST 扩展注册表 key 等价物（ASCII 序：'0_'<'1_'<'2_'<'D'<'c'<小写字母）
+_KEY_PALINK_INJECT = "0_palink_injection"   # Palink /inject —— 类比 ST prompt-manager 条目（同 role join 时先于扩展内容）
+_KEY_PERSONA_DEPTH = "1_persona_description"  # Palink 特有映射（ST persona 走 prompt-order 固定槽）
+_KEY_AN_DEPTH = "2_floating_prompt"          # ST authors-note.js L26 原样
+_KEY_CHAR_DEPTH_PROMPT = "DEPTH_PROMPT"      # ST constants.js L50 原样
+_KEY_WI_DEPTH_FMT = "customDepthWI_{depth}_{role}"  # ST constants.js L53 原样格式
+
+# 同 (depth, order) 内的时间序 role 排列：assistant→user→system（对齐 ST reverse 后语义）
+_ROLE_MERGE_RANK = {2: 0, 1: 1, 0: 2}
+_ROLE_NAME_TO_INT = {"system": 0, "user": 1, "assistant": 2}
+_ROLE_INT_TO_NAME = {0: "system", 1: "user", 2: "assistant"}
+
+
+@dataclass
+class DepthInjection:
+    """统一 depth 注入记录 —— palink-native 全部动态注入的唯一队列条目。"""
+    depth: int
+    content: str
+    role: int  # 0=system 1=user 2=assistant（ST extension_prompt_roles）
+    source: str  # report 来源标识（author_note/persona_description/worldbook_depth/extension_prompt/palink_injection/depth_prompt）
+    sort_key: str = ""  # ST 注册表 key 等价物；同 (depth, order, role) 内按字母序
+    order: int = _INJECTION_ORDER_DEFAULT
+    # 入队时已写过 report 的来源（AN/persona//inject/插件）置 False，
+    # 避免插入阶段重复上报（worldbook_depth/depth_prompt 历史上在插入时报告）
+    report_on_insert: bool = False
 
 
 def _load_context_template(db: Session, name: Optional[str]) -> Optional[ContextTemplate]:
@@ -1661,6 +1702,29 @@ def _normalize_ep_role(role_val) -> str:
     return val
 
 
+# 裸闭合 XML 标签行（整行仅一个 </tag>，如 "</content>" / "</now_plot>"）
+_BARE_CLOSE_TAG_LINE_RE = re.compile(r"^\s*</[A-Za-z][\w:-]*\s*>\s*$")
+
+
+def _strip_trailing_bare_close_tags(content: str) -> str:
+    """剥离结尾连续的裸闭合标签行（如 "</content>\\n</now_plot>"）。
+
+    背景（2026-08-19 实证）：前端插件（对话渲染系统 v7.1）通过 in_chat depth=0
+    把格式规则注入到 prompt 最末尾（紧贴模型续写位置）。当注入文本以裸闭合标签
+    </now_plot> 结尾时，推理模型（deepseek-v4-flash）会认为"正文已闭合、输出
+    已完成"，直接停止生成（实测 completion_tokens=1 → 空响应 → 三次重试全失败，
+    用户侧表现为第二次对话 100% 思维链复述规则/乱码且正文不输出）。
+    剥离结尾裸闭合标签行后模型恢复正常输出，且不影响其按 <now_plot><content>
+    结构组织正文（对照实验：同位置注入、仅去掉结尾闭合标签 → 正常输出且格式
+    遵循完好；depth=1 注入带闭合标签 → 亦正常，佐证触发条件为
+    「最末尾位置 + 裸闭合标签结尾」的组合）。
+    """
+    lines = content.rstrip().split("\n")
+    while lines and _BARE_CLOSE_TAG_LINE_RE.match(lines[-1]):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
 def _collect_extension_prompts(
     req: "PromptAssemblyRequest",
 ) -> list[dict[str, Any]]:
@@ -1767,8 +1831,32 @@ def _collect_extension_prompts(
     sess_id = str(req.session_id) if req.session_id else ""
     result: list[dict[str, Any]] = []
     for entry in merged.values():
-        if _ext_filter_allows(entry.get("filter") or {}, char_id, sess_id):
-            result.append(entry)
+        if not _ext_filter_allows(entry.get("filter") or {}, char_id, sess_id):
+            continue
+        # [INJ-CLOSE-TAG-GUARD] in_chat depth=0 注入的空响应防护（2026-08-19 实证）：
+        # depth=0 会把注入放到 messages 最末尾（紧贴模型续写位置）。deepseek-v4-flash
+        # 等（推理）模型在「最后一条消息是 system 注入」时高概率立即停止生成
+        # （5 次采样 3 次空响应：completion_tokens=1 直接 EOS，或 reasoning 写完
+        # 不写正文），若注入内容再以裸闭合标签 </now_plot> 结尾则 100% 停止。
+        # 双重防护：① depth 0 → 1（插到最后一条消息之前，5 次采样全部正常，
+        # 位置语义仍紧贴最新消息）；② 剥离结尾裸闭合标签行。
+        if (
+            entry.get("position") == EXTENSION_PROMPT_POSITION_IN_CHAT
+            and entry.get("depth") == 0
+        ):
+            original = entry.get("content") or ""
+            cleaned = _strip_trailing_bare_close_tags(original)
+            if not cleaned.strip():
+                continue  # 全部是闭合标签行，无有效内容，跳过该条
+            stripped = cleaned != original
+            logger.info(
+                "[INJ-CLOSE-TAG-GUARD] in_chat depth=0 extension prompt guarded: "
+                "depth 0→1%s (identifier=%s)",
+                ", trailing bare close tags stripped" if stripped else "",
+                entry.get("identifier"),
+            )
+            entry = {**entry, "depth": 1, "content": cleaned}
+        result.append(entry)
     return result
 
 
@@ -3062,7 +3150,7 @@ async def _assemble_roleplay_prompt_impl(
 
     # author_note depth entry — populated when position_int == 1 (IN_CHAT);
     # appended to depth_entries before _insert_depth_prompt runs.
-    author_note_depth_entry: Optional[tuple[int, str, int]] = None  # G6: (depth, content, role)
+    author_note_depth_entry: Optional[DepthInjection] = None
 
     if not author_note_text:
         report.append(PromptAssemblyReportItem("author_note", "skipped", "empty"))
@@ -3101,8 +3189,15 @@ async def _assemble_roleplay_prompt_impl(
             note_text = deps.replace_placeholders(author_note_text, user_nickname, req.char.name or "")
             if author_note_position_int == 1:
                 # IN_CHAT: queue for depth insertion into message history.
-                # G6 修复: 三元组 (depth, content, role=0/system)
-                author_note_depth_entry = (author_note_depth, note_text, 0)
+                # ST 对齐: AN 在 ST 经 setExtensionPrompt('2_floating_prompt') 进注册表
+                # （authors-note.js L26），order=100 扩展桶
+                author_note_depth_entry = DepthInjection(
+                    depth=author_note_depth,
+                    content=note_text,
+                    role=_ROLE_NAME_TO_INT["system"],
+                    source="author_note",
+                    sort_key=_KEY_AN_DEPTH,
+                )
                 report.append(PromptAssemblyReportItem(
                     "author_note",
                     "included",
@@ -3141,7 +3236,7 @@ async def _assemble_roleplay_prompt_impl(
     #   1 = after post-history (append to system_prompt)
     #   2 = last in chat (append as final system message)
     #   3 = inactive (skip)
-    persona_depth_entry: Optional[tuple[int, str, int]] = None  # G6: (depth, content, role)
+    persona_depth_entry: Optional[DepthInjection] = None
     persona_last_message: Optional[str] = None
     persona_full_text: Optional[str] = None  # st-compat 用: 完整 persona 文本 (ST 固定 Index 2)
     try:
@@ -3169,8 +3264,16 @@ async def _assemble_roleplay_prompt_impl(
                     "inactive (position=3)",
                 ))
             elif persona_position == 0:
-                # G6 修复: 三元组 (depth, content, role=0/system)
-                persona_depth_entry = (4, persona_text, 0)
+                # ST 对齐: 统一队列记录（depth=4, order=100）
+                # Palink 特有映射: ST persona 走 prompt-order 固定槽，此处按
+                # 数字前缀 key 置于 AN 之前（背景设定先于指令性内容）
+                persona_depth_entry = DepthInjection(
+                    depth=4,
+                    content=persona_text,
+                    role=_ROLE_NAME_TO_INT["system"],
+                    source="persona_description",
+                    sort_key=_KEY_PERSONA_DEPTH,
+                )
                 persona_full_text = persona_text
                 report.append(PromptAssemblyReportItem(
                     "persona_description",
@@ -3223,7 +3326,7 @@ async def _assemble_roleplay_prompt_impl(
     #   position 2 = before author note   → appended at end of chat (Palink
     #              extension; ST alignment removed the old "last in chat"
     #              author-note target, so these now trail chat history)
-    palink_injection_depth_entries: list[tuple[int, str, int]] = []  # G6 修复: (depth, content, role)
+    palink_injection_depth_entries: list[DepthInjection] = []
     palink_injection_before_author_note: list[str] = []
     try:
         palink_session = db.query(CharacterChatSession).filter(
@@ -3243,6 +3346,7 @@ async def _assemble_roleplay_prompt_impl(
                         inj_content = str(inj.get("content") or "").strip()
                         if not inj_content:
                             continue
+                        inj_content = balance_custom_tags(inj_content)
                         try:
                             inj_position = int(inj.get("position", 0))
                         except (TypeError, ValueError):
@@ -3269,8 +3373,14 @@ async def _assemble_roleplay_prompt_impl(
                             ))
                         else:
                             # position 0 (in-chat at depth) — default
-                            # G6 修复: 三元组 (depth, content, role=0/system)
-                            palink_injection_depth_entries.append((inj_depth, inj_content, 0))
+                            # ST 对齐: 类比 prompt-manager 条目（order=100，key 前缀使其先于扩展源）
+                            palink_injection_depth_entries.append(DepthInjection(
+                                depth=inj_depth,
+                                content=inj_content,
+                                role=_ROLE_NAME_TO_INT["system"],
+                                source="palink_injection",
+                                sort_key=_KEY_PALINK_INJECT,
+                            ))
                             report.append(PromptAssemblyReportItem(
                                 "palink_injection",
                                 "included",
@@ -3290,12 +3400,12 @@ async def _assemble_roleplay_prompt_impl(
     # ExtensionPrompt 记录，按 filter 过滤后按 position 分类（ST script.js:491-496）：
     #   BEFORE_PROMPT(2) → 立即 prepend 到 system_prompt（在 build_character_chat_messages 之前）
     #   IN_PROMPT(0)     → 排队为 ext_in_prompt_entries，等 system_prompt 构建完成后追加末尾（不按 depth）
-    #   IN_CHAT(1)       → 排队为 ext_depth_entries，按 depth 注入 chat history
+    #   IN_CHAT(1)       → 排队为 ext_depth_entries（统一队列），按 ST 三级序注入 chat history
     #   NONE(-1)         → 跳过（已在 _collect_extension_prompts 中过滤）
     # 注意：st-compat 路径使用 char_system_prompt（不是 system_prompt），所以
     #       prepend/append 到 system_prompt 对 st-compat 无效；st-compat 的
     #       IN_PROMPT/BEFORE_PROMPT 在 build_st_compat_messages 内部处理。
-    ext_depth_entries: list[tuple[int, str, str]] = []  # (depth, content, role) — IN_CHAT(1) 用
+    ext_depth_entries: list[DepthInjection] = []  # IN_CHAT(1) 用 —— ST 对齐: 与世界书/AN/persona 统一队列
     ext_chat_messages: list[dict[str, str]] = []  # {"role": str, "content": str} — 保留以兼容引用，IN_CHAT 改走 ext_depth_entries
     ext_in_prompt_entries: list[tuple[str, str]] = []  # (content, role) for IN_PROMPT(0)
     ext_before_prompt_entries: list[tuple[str, str]] = []  # (content, role) for BEFORE_PROMPT(2)
@@ -3349,7 +3459,15 @@ async def _assemble_roleplay_prompt_impl(
                 ))
             elif pos == EXTENSION_PROMPT_POSITION_IN_CHAT:
                 # 按 depth 注入到 chat history（暂存，等 messages 构建后插入）
-                ext_depth_entries.append((max(0, depth), content, role))
+                # ST 对齐: order=100（扩展通道固定桶）+ identifier 作注册表 key
+                # （ST getExtensionPrompt 按 Object.keys().sort() 字母序合并）
+                ext_depth_entries.append(DepthInjection(
+                    depth=max(0, depth),
+                    content=content,
+                    role=_ROLE_NAME_TO_INT.get(str(role).lower(), 0),
+                    source="extension_prompt",
+                    sort_key=identifier or "zzz_ext",
+                ))
                 report.append(PromptAssemblyReportItem(
                     "extension_prompt",
                     "included",
@@ -3387,7 +3505,7 @@ async def _assemble_roleplay_prompt_impl(
     dynamic_context_part_keys: list[str] = []
 
     if req.smart_card_trigger and req.smart_card_context:
-        smart_card_part = "[Smart card selected start context]\n" + str(req.smart_card_context)
+        smart_card_part = "[Smart card selected start context]\n" + balance_custom_tags(str(req.smart_card_context))
         dynamic_context_parts.append(smart_card_part)
         dynamic_context_part_keys.append("smart_card_context")
         report.append(
@@ -3400,7 +3518,7 @@ async def _assemble_roleplay_prompt_impl(
     else:
         report.append(PromptAssemblyReportItem("smart_card_context", "skipped"))
 
-    depth_entries: list[tuple[int, str, int]] = []  # G6 修复: (depth, content, role)
+    depth_entries: list[DepthInjection] = []  # ST 对齐统一队列（世界书/AN/persona//inject/插件）
     # ST 1.18.0 对齐: 收集世界书 position 5/6/7 条目，传给 MacroEnv 供
     # {{mesExamples}} 和 {{outlet::name}} 宏注入
     wb_em_top_entries: list[str] = []
@@ -3567,12 +3685,13 @@ async def _assemble_roleplay_prompt_impl(
                 )
             )
 
-    # ST 1.18.0 extension_prompts IN_PROMPT(0): 追加到 messages 末尾作为独立消息（保留 role）
-    # ST 真实行为（openai.js:1136-1138, 1445-1456, 3954）：IN_PROMPT 条目以独立消息形式
-    # 插入到 main prompt 集合末尾（position='end'），保留各自 role。
-    # 注意：此追加在 messages 构建之后执行（下方 build_character_chat_messages 之后），
+    # ST 1.18.0 extension_prompts IN_PROMPT(0): 追加到 system prompt（messages[0]）
+    # 文本末尾，对齐 ST openai.js 的 position='end'（system prompt 末尾）语义。
+    # 注意：[INJ-CLOSE-TAG-GUARD] 2026-08-19 修复——此前误实现为"append 独立消息
+    # 到 messages 末尾"（prompt 最后一条 = system 注入），导致推理模型 100% 空响应，
+    # 详见下方 IN_PROMPT 注入处的修复注释。
     # st-compat 路径在 build_st_compat_messages 内部已处理，并在分支内 clear() 此列表。
-    # palink-native 路径在下方 messages 构建完成后追加（见 line ~3420 之后）。
+    # palink-native 路径在下方 messages 构建完成后注入（见 line ~3990 处）。
 
     # ST 1.18.0 extension_prompts BEFORE_PROMPT(2): 一次性 prepend 到 system_prompt 之前
     # 多条目按原序拼接（与 st-compat 路径的 "\n\n".join 行为一致），避免逐条 prepend 导致逆序。
@@ -3900,28 +4019,13 @@ async def _assemble_roleplay_prompt_impl(
     # inserted at their configured depth alongside other depth entries.
     if palink_injection_depth_entries:
         depth_entries.extend(palink_injection_depth_entries)
+    # ST 对齐: 插件 extension_prompts IN_CHAT(1) 并入统一队列 —— ST 中所有动态源
+    # （AN/世界书 atDepth/角色深度提示词/插件）都汇入同一扩展注册表按 key 字母序合并，
+    # 不存在独立第二管线。
+    if ext_depth_entries:
+        depth_entries.extend(ext_depth_entries)
 
     messages = _insert_depth_prompt(messages, req, deps, depth_entries, report)
-
-    # ── ST 1.18.0 extension_prompts IN_CHAT(1) 注入 ───────────────
-    # 按 depth 注入到 chat history（messages 数组从末尾数第 depth 条之前），支持自定义 role。
-    # 与 _insert_depth_prompt 中 worldbook / palink depth entries 行为一致，
-    # 但这里允许 role 为 system/user/assistant（_insert_depth_prompt 硬编码 system）。
-    # 排序：depth 降序，避免浅插入导致索引偏移（与 worldbook depth 行为一致）。
-    # 注意：ext_depth_entries 仅服务 extension_prompts IN_CHAT(1)；worldbook depth 走
-    # depth_entries（_insert_depth_prompt 处理）。st-compat 路径已 clear。
-    if ext_depth_entries:
-        for depth, content, role in sorted(ext_depth_entries, key=lambda x: x[0], reverse=True):
-            insert_index = max(0, len(messages) - depth)
-            messages.insert(insert_index, {"role": role, "content": content})
-            report.append(
-                PromptAssemblyReportItem(
-                    "extension_prompt_depth",
-                    "included",
-                    detail=f"depth={depth}; role={role}",
-                    tokens_estimate=_estimate_tokens(content),
-                )
-            )
 
     # ── ST 1.18.0 extension_prompts IN_CHAT 旧追加分支（保留兼容） ───
     # 任务 4.2 后 IN_CHAT(1) 改走 ext_depth_entries（按 depth 插入），
@@ -3939,16 +4043,34 @@ async def _assemble_roleplay_prompt_impl(
         )
 
     # ── ST 1.18.0 extension_prompts IN_PROMPT(0) palink-native 注入 ──
-    # 作为独立消息追加到 messages 末尾（保留 role），对齐 ST openai.js:1136-1138 的
-    # 'end' position 行为。st-compat 路径已 clear() 此列表，不会重复注入。
+    # 对齐 ST openai.js position='end'（system prompt 末尾）语义：追加到
+    # messages[0]（system 消息）文本末尾。st-compat 路径已 clear() 此列表，
+    # 不会重复注入。
+    # [INJ-CLOSE-TAG-GUARD] 修复（2026-08-19 实证）：此前实现是"作为独立消息
+    # append 到 messages 末尾"，把 system 注入放到 prompt 最后一条（紧贴模型
+    # 续写位置）。前端插件（对话渲染系统 v7.1）经 setExtensionPrompt(position=0)
+    # 注入格式规则即走此路径，实测 deepseek-v4-flash 100% 空响应（立刻 EOS
+    # completion_tokens=1，或把剧情正文写进 reasoning 不写 content，用户侧表现
+    # 为第二轮对话 100% 思维链乱码且正文不输出）。对照实验（各 3 次）：
+    # append 末尾 0/3，追加到 system prompt 末尾 3/3 正常。
     if ext_in_prompt_entries:
         for _ep_content, _ep_role in ext_in_prompt_entries:
-            messages.append({"role": _ep_role, "content": _ep_content})
+            _inserted = False
+            if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+                messages[0] = {
+                    **messages[0],
+                    "content": (messages[0].get("content") or "") + "\n\n" + _ep_content,
+                }
+                _inserted = True
+            if not _inserted:
+                # messages[0] 非 system 或 content 非 str（多模态）：插到最前，
+                # 仍避免落到 prompt 末尾（末尾 system 注入会诱发空响应）。
+                messages.insert(0, {"role": _ep_role, "content": _ep_content})
             report.append(
                 PromptAssemblyReportItem(
                     "extension_prompt_in_prompt",
                     "included",
-                    detail=f"role={_ep_role}",
+                    detail=f"appended to system prompt (role={_ep_role})",
                     tokens_estimate=_estimate_tokens(_ep_content),
                 )
             )
@@ -3970,60 +4092,59 @@ async def _assemble_roleplay_prompt_impl(
     else:
         report.append(PromptAssemblyReportItem("prompt_regex", "skipped"))
 
-    # ── 状态栏指令：追加到最后一条 user 消息末尾 ──
-    # G10 修复: st-compat 不应包含任何 Palink 特有内容（无状态栏探测）
-    if not _is_st_compat_mode(st_mode):
-        # MVU 兼容: 角色卡自带 MVU 正则脚本（含 <UpdateVariable> 或 <StatusPlaceHolderImpl/>）时，
-        # 跳过 Palink 原生状态栏指令注入——卡片的世界书已包含自己的格式指令，
-        # Palink 的 <status>...</status> 指令会冲突/覆盖卡片的 <UpdateVariable> 格式。
-        _has_mvu_scripts = False
-        try:
-            _ext_raw = getattr(req.char, "extensions", None)
-            if _ext_raw:
-                _ext = json.loads(_ext_raw) if isinstance(_ext_raw, str) else _ext_raw
-                if isinstance(_ext, dict):
-                    for _rs in (_ext.get("regex_scripts") or []):
-                        if isinstance(_rs, dict):
-                            _fr = str(_rs.get("findRegex", ""))
-                            if "UpdateVariable" in _fr or "StatusPlaceHolderImpl" in _fr:
-                                _has_mvu_scripts = True
-                                break
-        except Exception:
-            pass
+    # ── 状态栏指令已整体移除（2026-08-18）──
+    # Palink 原生 <status> 状态栏指令注入（含 user tail / system prompt / 探测保存）
+    # 已全部删除：与 MVU 卡的 <UpdateVariable> 指令冲突，导致 AI 输出 <status>
+    # 而 MVU 引擎不认 → stat_data 永不更新。保留 status_bar_detector 的剥离函数
+    # （strip_and_parse_status_marker）仅作历史残留标签清理，不再注入任何指令。
 
-        if not _has_mvu_scripts:
-            # 推理模型（R1 类）对长 system prompt 末尾的格式指令遵循度低，但在 <think>
-            # 阶段会回看最近的用户输入，因此把状态栏指令贴到 user 消息末尾能显著提升
-            # 「每条回复输出状态栏」的遵循率（与角色卡首条自带状态栏的成功路径同构）。
-            try:
-                from .status_bar_detector import build_status_instruction as _bsi
-                # 注入条件：角色卡已检测到自带状态栏（has_status_bar=true，沿用卡内格式，
-                # 不受 show_character_status 开关限制），或用户显式开启了状态栏开关（强制
-                # 默认 emoji 表）。build_status_instruction 在「未检测」或「无状态栏且未开
-                # 关」时返回空串，因此直接以返回值非空作为注入判据即可。
-                # 注意：默认 show_character_status=False，不能据此跳过卡自带状态栏的沿用，
-                # 否则绝大多数自带状态栏的卡在第 2 轮起会丢失面板（R1 模型不遵守 system 末尾指令）。
-                _lang = prompt_lang
-                if _lang == "auto":
-                    _lang = "zh" if any('\u4e00' <= c <= '\u9fff' for c in (req.char.name or "")) else "en"
-                _tail = _bsi(req.char, _lang, True)
-                if _tail:
-                    _tail = _tail.replace("{{name}}", req.char.name or "Character").replace("{{user}}", user_nickname)
-                    for _m in reversed(messages):
-                        if _m.get("role") == "user":
-                            if isinstance(_m.get("content"), str):
-                                _m["content"] = _m["content"].rstrip() + _tail
-                            elif isinstance(_m.get("content"), list):
-                                for _b in reversed(_m["content"]):
-                                    if isinstance(_b, dict) and _b.get("type") == "text":
-                                        _b["text"] = _b.get("text", "").rstrip() + _tail
-                                        break
-                            break
-                    report.append(PromptAssemblyReportItem("status_bar_user_tail", "included", tokens_estimate=_estimate_tokens(_tail)))
-            except Exception as _e:
-                logger.warning("status_bar user tail injection failed: %s", _e)
+    # ── MVU 变量更新指令（user tail 注入，2026-08-18）──
+    # MVU 卡（酒馆助手体系）的"变量输出格式"指令位于 worldbook 拼接消息的中间
+    # 偏后（实测：13KB 消息 @8813，其后还有 ~4.7KB 场景描述），模型注意力常无法
+    # 覆盖 → AI 不输出 <UpdateVariable> → stat_data 永不更新 → 面板恒显示初始值。
+    # 参考此前 status_bar_user_tail 验证过的策略：推理模型对最近一条 user 消息
+    # 末尾的指令遵循度最高，因此把精简的变量更新指令贴到最后一条 user 消息末尾
+    # （仅 MVU 卡注入；格式与 worldbook 的 <UpdateVariable> 一致，双保险不冲突）。
+    try:
+        from ..services.status_bar_detector import _card_has_mvu_scripts
+        if _card_has_mvu_scripts(req.char):
+            _mvu_instr = (
+                "\n\n【变量更新指令 - 强制，不可省略】\n"
+                "本卡使用 <UpdateVariable> 变量系统。你必须在【每条回复的最末尾】"
+                "用 <UpdateVariable> 标签输出本次剧情引起的变量变化，格式：\n"
+                "<UpdateVariable>\n"
+                "<Analysis>（英文，80 词以内：时间流逝计算、是否允许戏剧性更新、"
+                "逐字段对照 check 规则分析）</Analysis>\n"
+                "<JSONPatch>\n"
+                '[{"op":"delta","path":"/桃汐/好感度","value":5},'
+                '{"op":"replace","path":"/世界信息/日期时间","value":"2026年08月18日 09:00"}]\n'
+                "</JSONPatch>\n"
+                "</UpdateVariable>\n"
+                "规则：\n"
+                "- 支持操作：replace / delta / insert / remove / move（RFC 6902）\n"
+                "- path 格式：/角色名/字段名（如 /桃汐/好感度、/世界信息/日期时间）\n"
+                "- 以 _ 开头的字段为只读，禁止更新；未变化的字段不要输出\n"
+                "- 【必须完整】所有因本回合剧情而变化的字段都要输出——包括角色的"
+                "好感度、关系、性欲值、服饰、内心想法、发情期等，不能只更新世界信息\n"
+                "- 【严格禁止】把变量状态（日期时间、天气、数值等）写进回复正文，"
+                "正文只写剧情对话；变量只通过 <UpdateVariable> 输出\n"
+                "- 此标签不受「禁止 XML 标签」规则限制\n"
+            )
+            for _m in reversed(messages):
+                if _m.get("role") == "user":
+                    if isinstance(_m.get("content"), str):
+                        _m["content"] = _m["content"].rstrip() + _mvu_instr
+                    elif isinstance(_m.get("content"), list):
+                        for _b in reversed(_m["content"]):
+                            if isinstance(_b, dict) and _b.get("type") == "text":
+                                _b["text"] = _b.get("text", "").rstrip() + _mvu_instr
+                                break
+                    break
+            report.append(PromptAssemblyReportItem("mvu_user_tail", "included", tokens_estimate=_estimate_tokens(_mvu_instr)))
         else:
-            report.append(PromptAssemblyReportItem("status_bar_user_tail", "skipped", "MVU scripts detected, using card's own format"))
+            report.append(PromptAssemblyReportItem("mvu_user_tail", "skipped", "not an MVU card"))
+    except Exception as _mvu_e:
+        logger.warning("mvu user tail injection failed: %s", _mvu_e)
 
     # Macro evaluation (Phase 3) — Task 1.12 角色卡宏补全
     #
@@ -4313,7 +4434,7 @@ def _append_worldbook_context(
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
     dynamic_context_parts: list[str],
-    depth_entries: list[tuple[int, str, int]],  # G6 修复: (depth, content, role)
+    depth_entries: list[DepthInjection],  # ST 对齐统一队列（atDepth 条目包装为 DepthInjection）
     report: list[PromptAssemblyReportItem],
     em_top_entries: Optional[list[str]] = None,
     em_bottom_entries: Optional[list[str]] = None,
@@ -4479,40 +4600,62 @@ def _append_worldbook_context(
             if st_wi_before_parts is not None:
                 for content in wb_result.entries_by_position.get(0, []):
                     st_wi_before_parts.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             if st_wi_after_parts is not None:
                 for content in wb_result.entries_by_position.get(1, []):
                     st_wi_after_parts.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             # G4 修复: 分离 ANTop (pos=2) 和 ANBottom (pos=3)
             if st_wi_an_top_parts is not None:
                 for content in wb_result.entries_by_position.get(2, []):
                     st_wi_an_top_parts.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             if st_wi_an_bottom_parts is not None:
                 for content in wb_result.entries_by_position.get(3, []):
                     st_wi_an_bottom_parts.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             # Collect depth entries from worldbook
-            # G6 修复: depth_entries 现为三元组 (depth, content, role)
-            for depth, content, role in wb_result.depth_entries:
-                depth_entries.append((depth, deps.replace_placeholders(content, user_nickname, req.char.name or ""), role))
+            # ST 对齐: 包装为统一队列记录，key 对齐 ST customDepthWI_{depth}_{role}
+            # （constants.js L53）；同 key 多条按收集序稳定排列
+            for wb_depth, wb_content, wb_role in wb_result.depth_entries:
+                depth_entries.append(DepthInjection(
+                    depth=wb_depth,
+                    content=balance_custom_tags(
+                        deps.replace_placeholders(wb_content, user_nickname, req.char.name or "")
+                    ),
+                    role=wb_role if isinstance(wb_role, int) else _ROLE_NAME_TO_INT.get(str(wb_role).lower(), 0),
+                    source="worldbook_depth",
+                    sort_key=_KEY_WI_DEPTH_FMT.format(depth=wb_depth, role=wb_role),
+                    report_on_insert=True,
+                ))
             # ST 1.18.0 对齐: 把 EMTop/EMBottom/outlet 条目传递给 MacroEnv
             # 通过 {{mesExamples}} 和 {{outlet::name}} 宏注入到 prompt 中
             # 注意: 这些条目也需要经过 replace_placeholders 处理 {{user}}/{{char}}
             if em_top_entries is not None:
                 for content in wb_result.em_top_entries:
                     em_top_entries.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             if em_bottom_entries is not None:
                 for content in wb_result.em_bottom_entries:
                     em_bottom_entries.append(
-                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        balance_custom_tags(
+                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                        )
                     )
             if outlet_entries is not None:
                 for outlet_name, contents in wb_result.outlet_entries.items():
@@ -4520,7 +4663,9 @@ def _append_worldbook_context(
                         outlet_entries[outlet_name] = []
                     for content in contents:
                         outlet_entries[outlet_name].append(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                            balance_custom_tags(
+                                deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                            )
                         )
         else:
             report.append(PromptAssemblyReportItem("worldbook", "skipped", "no matched entries"))
@@ -4654,7 +4799,7 @@ async def _append_memory_context(
                 memory_mode=memory_mode,
             )
             if mem_ctx and mem_ctx.memories:
-                memory_text = build_memory_context(mem_ctx)
+                memory_text = build_memory_context(mem_ctx, max_tokens=1500)
                 if memory_text:
                     memory_text = deps.replace_placeholders(memory_text, user_nickname, req.char.name or "")
                     dynamic_context_parts.append(memory_text)
@@ -4690,14 +4835,26 @@ def _insert_depth_prompt(
     messages: list[dict[str, Any]],
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
-    depth_entries: list[tuple[int, str, int]],  # G6 修复: (depth, content, role)
+    depth_entries: list[DepthInjection],
     report: list[PromptAssemblyReportItem],
 ) -> list[dict[str, Any]]:
+    """ST 1.18.0 对齐的 depth 统一注入（palink-native）。
+
+    把角色卡 depth_prompt + 世界书 atDepth + AN(IN_CHAT) + persona(pos=0) +
+    /inject + 插件 IN_CHAT 全部按三级确定序插入 chat history：
+        depth 降序 → order 升序 → role(assistant→user→system) → key 字母序
+    同 (depth, order, role) 的多条合并为单条消息 join('\\n')。
+    语义对齐 ST openai.js populationInjectionPrompts / script.js doChatInject /
+    getExtensionPrompt（详见 DepthInjection 处常量区注释）。
+    """
     user_nickname = req.user_nickname or req.user.username or "User"
     next_messages = list(messages)
     inserted_any = False
 
-    # Character depth prompt
+    records: list[DepthInjection] = list(depth_entries or [])
+
+    # Character depth prompt —— ST 中经 setExtensionPrompt('DEPTH_PROMPT') 进注册表
+    # （script.js L4426），此处并入统一队列参与同一三级排序
     if req.char.extensions:
         try:
             ext_data = json.loads(req.char.extensions) if isinstance(req.char.extensions, str) else req.char.extensions
@@ -4707,43 +4864,57 @@ def _insert_depth_prompt(
         if isinstance(depth_prompt, dict) and depth_prompt.get("prompt", "").strip():
             dp_text = deps.replace_placeholders(depth_prompt["prompt"], user_nickname, req.char.name or "")
             dp_depth = depth_prompt.get("depth", 4)
-            dp_role = depth_prompt.get("role", "system")
+            dp_role_raw = depth_prompt.get("role", "system")
             try:
                 dp_depth = int(dp_depth)
             except (TypeError, ValueError):
                 dp_depth = 4
-            insert_index = max(0, len(next_messages) - dp_depth)
-            next_messages.insert(insert_index, {"role": dp_role, "content": dp_text})
-            inserted_any = True
-            report.append(
-                PromptAssemblyReportItem(
-                    "depth_prompt",
-                    "included",
-                    detail=f"depth={dp_depth}; role={dp_role}",
-                    tokens_estimate=_estimate_tokens(dp_text),
-                )
-            )
+            records.append(DepthInjection(
+                depth=dp_depth,
+                content=dp_text,
+                role=_ROLE_NAME_TO_INT.get(str(dp_role_raw).lower(), 0),
+                source="depth_prompt",
+                sort_key=_KEY_CHAR_DEPTH_PROMPT,
+                report_on_insert=True,
+            ))
 
-    # Worldbook depth entries
-    if depth_entries:
-        # Sort by depth descending so deeper entries are inserted first
-        # (avoids index shift issues for shallower insertions)
-        sorted_entries = sorted(depth_entries, key=lambda x: x[0], reverse=True)
-        # G6 修复: 使用条目的 role (0=system, 1=user, 2=assistant)
-        _ROLE_MAP = {0: "system", 1: "user", 2: "assistant"}
-        for depth, content, role_int in sorted_entries:
-            insert_index = max(0, len(next_messages) - depth)
-            role_str = _ROLE_MAP.get(role_int, "system")
-            next_messages.insert(insert_index, {"role": role_str, "content": content})
+    # ── ST 1.18.0 三级确定序 ──────────────────────────────────────
+    # 执行序 = 时间序（chronological 数组从后往前插，同 depth 后插者靠后）：
+    #   1. depth 降序（深的先插）
+    #   2. order 升序（低 order 靠前/远离最新消息；高 order 靠近最新消息）
+    #   3. 同 (depth, order) 内 role: assistant→user→system（system 最贴近最新消息，
+    #      对齐 ST roles [system,user,assistant] 正序入块 + 整体 reverse 的净效果）
+    #   4. 同 (depth, order, role) 内 sort_key 字母序（对齐 ST getExtensionPrompt
+    #      Object.keys().sort()），并合并为单条消息 join('\n')（ST 扩展通道语义）
+    if records:
+        records.sort(key=lambda r: (-r.depth, r.order, _ROLE_MERGE_RANK.get(r.role, 2), r.sort_key))
+        i = 0
+        while i < len(records):
+            head = records[i]
+            j = i
+            merged_parts: list[str] = []
+            while (
+                j < len(records)
+                and records[j].depth == head.depth
+                and records[j].order == head.order
+                and records[j].role == head.role
+            ):
+                merged_parts.append(records[j].content)
+                if records[j].report_on_insert:
+                    report.append(
+                        PromptAssemblyReportItem(
+                            head.source,
+                            "included",
+                            detail=f"depth={head.depth}; order={head.order}; role={_ROLE_INT_TO_NAME.get(head.role, 'system')}; key={records[j].sort_key}",
+                            tokens_estimate=_estimate_tokens(records[j].content),
+                        )
+                    )
+                j += 1
+            merged_content = "\n".join(p for p in merged_parts if p)
+            insert_index = max(0, len(next_messages) - head.depth)
+            next_messages.insert(insert_index, {"role": _ROLE_INT_TO_NAME.get(head.role, "system"), "content": merged_content})
             inserted_any = True
-            report.append(
-                PromptAssemblyReportItem(
-                    "worldbook_depth",
-                    "included",
-                    detail=f"depth={depth}; role={role_str}",
-                    tokens_estimate=_estimate_tokens(content),
-                )
-            )
+            i = j
 
     if not inserted_any:
         report.append(PromptAssemblyReportItem("depth_prompt", "skipped"))

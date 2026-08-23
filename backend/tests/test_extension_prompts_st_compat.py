@@ -5,9 +5,14 @@
 
 position 枚举（与 ST 1.18.0 extension_prompt_types script.js:491-496 完全一致）：
     -1 = NONE         (跳过)
-     0 = IN_PROMPT    (追加到 messages 末尾作为 system prompt end；不按 depth)
+     0 = IN_PROMPT    (并入 system prompt（messages[0]）文本末尾；不按 depth)
      1 = IN_CHAT      (按 depth 插入到 history_messages；depth=0 追加到末尾)
      2 = BEFORE_PROMPT (作为最前的 system 消息；author_note 优先时排在 [1])
+
+[INJ-CLOSE-TAG-GUARD] 2026-08-19 行为变更：IN_PROMPT(0) 此前是"追加为 messages
+末尾独立消息"，会把 system 注入放到 prompt 最后一条（紧贴模型续写位置），实测导致
+推理模型 100% 空响应（立刻 EOS 或正文写进 reasoning）。现对齐 ST 1.18.0
+getPromptPosition(IN_PROMPT)='end'（system prompt 末尾）语义，并入 messages[0] 文本。
 
 注意：author_note_position 用的是 ST 枚举（-1/0/1/2），与 extension_prompts
 的 position 共用同一套枚举（都是 ST 1.18.0 extension_prompt_types）。
@@ -170,36 +175,38 @@ class TestEPPosition2BeforePrompt:
 # Position 0: IN_PROMPT
 # ---------------------------------------------------------------------------
 class TestEPPosition0InPrompt:
-    """position=0 (IN_PROMPT): 追加到 messages 末尾（不按 depth）。"""
+    """position=0 (IN_PROMPT): 并入 system prompt（messages[0]）文本末尾。"""
 
-    def test_ep_appended_to_messages_end(self):
-        """position=0, depth=4 → 应追加到 messages 末尾（忽略 depth）。"""
+    def test_ep_merged_into_system_prompt(self):
+        """position=0, depth=4 → 注入文本并入 messages[0]（忽略 depth）。"""
         msgs = _build(extension_prompts=[
             {"identifier": "t1", "content": "EP_IN_PROMPT_END", "position": 0,
              "depth": 4, "role": "system"}
         ])
         assert len(msgs) > 0
-        assert "EP_IN_PROMPT_END" in msgs[-1]["content"], \
-            f"IN_PROMPT 应追加到末尾, got[-1]={msgs[-1].get('content')!r}"
+        assert msgs[0]["role"] == "system"
+        assert "EP_IN_PROMPT_END" in msgs[0]["content"], \
+            f"IN_PROMPT 应并入 messages[0], got[0]={msgs[0].get('content')!r}"
 
-    def test_ep_depth_ignored_appended_to_end(self):
-        """depth=2 时仍应追加到末尾（IN_PROMPT 不按 depth）。"""
+    def test_ep_depth_ignored_merged_into_system_prompt(self):
+        """depth=2 时仍并入 system prompt（IN_PROMPT 不按 depth）。"""
         msgs = _build(extension_prompts=[
             {"identifier": "t1", "content": "EP_IN_PROMPT_D_IGNORE", "position": 0,
              "depth": 2, "role": "system"}
         ])
         idx = _find_idx(msgs, "EP_IN_PROMPT_D_IGNORE")
-        assert idx == len(msgs) - 1, \
-            f"IN_PROMPT 不按 depth, 应在 messages 末尾, idx={idx}, len={len(msgs)}"
+        assert idx == 0, \
+            f"IN_PROMPT 不按 depth, 应并入 messages[0], idx={idx}"
 
-    def test_ep_in_prompt_role_user(self):
-        """IN_PROMPT ep role=user → 注入的 message role 为 user。"""
+    def test_ep_in_prompt_never_at_messages_end(self):
+        """IN_PROMPT 注入不得出现在 messages 末尾（防空响应回归）。"""
         msgs = _build(extension_prompts=[
             {"identifier": "t1", "content": "EP_ROLE_USER", "position": 0,
              "depth": 0, "role": "user"}
         ])
-        assert msgs[-1]["role"] == "user"
-        assert "EP_ROLE_USER" in msgs[-1]["content"]
+        assert "EP_ROLE_USER" in msgs[0]["content"]
+        assert "EP_ROLE_USER" not in str(msgs[-1].get("content", "")), \
+            f"IN_PROMPT 注入不得落在末尾, got[-1]={msgs[-1].get('content')!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -266,49 +273,61 @@ class TestEPPositionNone1:
 # Role 变体
 # ---------------------------------------------------------------------------
 class TestEPRoleVariants:
-    """role 字段兼容：字符串 / int 值。"""
+    """role 字段兼容：字符串 / int 值。
+
+    注：IN_PROMPT(0) 注入并入 system prompt 文本，role 不生效（2026-08-19
+    行为变更，见文件头注释）；role 归一化在 IN_CHAT(1) 注入的消息上验证。
+    """
 
     def test_role_user_creates_user_message(self):
         msgs = _build(extension_prompts=[
-            {"identifier": "t1", "content": "EP_RV_USER", "position": 0,
+            {"identifier": "t1", "content": "EP_RV_USER", "position": 1,
              "depth": 0, "role": "user"}
         ])
-        assert msgs[-1]["role"] == "user"
+        idx = _find_idx(msgs, "EP_RV_USER")
+        assert idx >= 0
+        assert msgs[idx]["role"] == "user"
 
     def test_role_assistant_creates_assistant_message(self):
         msgs = _build(extension_prompts=[
-            {"identifier": "t1", "content": "EP_RV_ASST", "position": 0,
+            {"identifier": "t1", "content": "EP_RV_ASST", "position": 1,
              "depth": 0, "role": "assistant"}
         ])
-        assert msgs[-1]["role"] == "assistant"
+        idx = _find_idx(msgs, "EP_RV_ASST")
+        assert idx >= 0
+        assert msgs[idx]["role"] == "assistant"
 
     def test_role_int_values_normalized(self):
         """role 为 int 时应归一化：0→system, 1→user, 2→assistant。"""
         msgs = _build(extension_prompts=[
-            {"identifier": "t1", "content": "EP_RV_INT0", "position": 0,
+            {"identifier": "t1", "content": "EP_RV_INT0", "position": 1,
              "depth": 0, "role": 0},
         ])
-        assert msgs[-1]["role"] == "system"
+        idx = _find_idx(msgs, "EP_RV_INT0")
+        assert idx >= 0 and msgs[idx]["role"] == "system"
 
         msgs = _build(extension_prompts=[
-            {"identifier": "t2", "content": "EP_RV_INT1", "position": 0,
+            {"identifier": "t2", "content": "EP_RV_INT1", "position": 1,
              "depth": 0, "role": 1},
         ])
-        assert msgs[-1]["role"] == "user"
+        idx = _find_idx(msgs, "EP_RV_INT1")
+        assert idx >= 0 and msgs[idx]["role"] == "user"
 
         msgs = _build(extension_prompts=[
-            {"identifier": "t3", "content": "EP_RV_INT2", "position": 0,
+            {"identifier": "t3", "content": "EP_RV_INT2", "position": 1,
              "depth": 0, "role": 2},
         ])
-        assert msgs[-1]["role"] == "assistant"
+        idx = _find_idx(msgs, "EP_RV_INT2")
+        assert idx >= 0 and msgs[idx]["role"] == "assistant"
 
     def test_role_invalid_string_falls_back_to_system(self):
         """role 为非法字符串时应回退为 system。"""
         msgs = _build(extension_prompts=[
-            {"identifier": "t1", "content": "EP_RV_INVALID", "position": 0,
+            {"identifier": "t1", "content": "EP_RV_INVALID", "position": 1,
              "depth": 0, "role": "narrator"}
         ])
-        assert msgs[-1]["role"] == "system"
+        idx = _find_idx(msgs, "EP_RV_INVALID")
+        assert idx >= 0 and msgs[idx]["role"] == "system"
 
 
 # ---------------------------------------------------------------------------
@@ -414,20 +433,19 @@ class TestEPMultipleEntries:
             f"d3={idx_d3}, d1={idx_d1}, user={user_idx}"
 
     def test_multiple_in_prompt_appended_in_order(self):
-        """两条 IN_PROMPT ep: 都追加到 messages 末尾，按发送顺序。"""
+        """两条 IN_PROMPT ep: 都并入 system prompt，按发送顺序。"""
         msgs = _build(extension_prompts=[
             {"identifier": "t1", "content": "EP_IP_FIRST", "position": 0,
              "depth": 4, "role": "system"},
             {"identifier": "t2", "content": "EP_IP_SECOND", "position": 0,
              "depth": 4, "role": "system"},
         ])
-        idx_first = _find_idx(msgs, "EP_IP_FIRST")
-        idx_second = _find_idx(msgs, "EP_IP_SECOND")
-        assert idx_first >= 0 and idx_second >= 0, "两条 ep 都应注入"
-        # 都在末尾，且 first 在 second 之前
-        assert idx_first < idx_second, \
-            f"期望 first 在 second 之前, first={idx_first}, second={idx_second}"
-        assert idx_second == len(msgs) - 1, "second 应是最后一条"
+        assert msgs[0]["role"] == "system"
+        c0 = msgs[0]["content"]
+        assert "EP_IP_FIRST" in c0 and "EP_IP_SECOND" in c0, "两条 ep 都应并入 messages[0]"
+        # 并入 system prompt 文本，first 在 second 之前
+        assert c0.index("EP_IP_FIRST") < c0.index("EP_IP_SECOND"), \
+            f"期望 first 在 second 之前, content={c0!r}"
 
 
 # ---------------------------------------------------------------------------

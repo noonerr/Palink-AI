@@ -12,11 +12,6 @@ from sqlalchemy.orm import Session
 
 from ..models import Character, CharacterChatMessage, UserSetting
 from ..core import settings
-from ..services.status_bar_detector import (
-    get_status_config,
-    build_detect_instruction,
-    build_status_reminder,
-)
 
 
 def parse_system_commands(text: str) -> Tuple[str, List[str]]:
@@ -214,7 +209,7 @@ def build_character_chat_messages(
                 })
             continue
         if m.role == "assistant":
-            msg_content = re.sub(r"<think[\s\S]*?</think\s*>", "", msg_content, flags=re.IGNORECASE).strip()
+            msg_content = strip_inline_think(msg_content).strip()
             msg_content = clean_display_markup_for_prompt(msg_content)
             if not msg_content:
                 msg_content = m.content
@@ -282,15 +277,8 @@ def build_character_chat_messages(
 1. Respond only as {char.name or 'the character'}, never as an AI or assistant
 2. Do not recite the character card; embody it through wording, actions, emotions, and choices"""
 
-    # 状态栏探测 / 提醒分支
-    show_status = bool(user_setting and user_setting.show_character_status)
-    lang_code = "zh" if is_zh else "en"
-    if not get_status_config(char):
-        # 未检测 → 追加探测指令（不追加 emoji 表，避免与探测冲突）
-        final_reminder += build_detect_instruction(lang_code)
-    else:
-        # 已检测 → 追加简短提醒（卡内格式或 emoji 表）
-        final_reminder += build_status_reminder(char, lang_code, show_status)
+    # 状态栏探测 / 提醒分支已整体移除（2026-08-18）：Palink 原生 <status> 状态栏
+    # 系统删除，不再注入探测指令与状态栏提醒（与 MVU 卡 <UpdateVariable> 冲突）。
 
     messages.append({"role": "system", "content": final_reminder})
 
@@ -722,7 +710,9 @@ def build_st_compat_messages(
 
     # ── ST 1.18.0 extension_prompts 四态注入 (与 author_note 独立) ──
     # position 枚举（ST script.js:491-496）: -1=NONE 0=IN_PROMPT 1=IN_CHAT 2=BEFORE_PROMPT
-    #   IN_PROMPT(0) → 追加到 messages 末尾作为 system prompt end（不按 depth）
+    #   IN_PROMPT(0) → 并入 system prompt（messages[0]）文本末尾（对齐 ST
+    #                  getPromptPosition(IN_PROMPT)='end' 语义；2026-08-19 修复，
+    #                  见下方 IN_PROMPT 注入处注释，不再 append 到 messages 末尾）
     #   IN_CHAT(1)   → 按 depth 插入到 history_messages
     #   BEFORE_PROMPT(2) → 插入到 messages[0] 作为 system prompt start（不按 depth）
     ep_before_prompt: List[str] = []
@@ -989,12 +979,28 @@ def build_st_compat_messages(
         # A-11: 见 nudge 处注释
         messages.append({"role": "system", "content": an_content, "_st_trailing_guard": True})
 
-    # extension_prompts IN_PROMPT(0): 追加到 messages 末尾作为 system prompt end（不按 depth）
-    # ST 1.18.0 openai.js:1136-1138 getPromptPosition(IN_PROMPT)='end'
+    # extension_prompts IN_PROMPT(0): 追加到 system prompt（messages[0]）文本末尾
+    # ST 1.18.0 openai.js getPromptPosition(IN_PROMPT)='end'（system prompt 末尾）。
+    # [INJ-CLOSE-TAG-GUARD] 2026-08-19 修复：此前误实现为 append 到 messages 末尾
+    # （在 jailbreak 之后 = prompt 最后一条 system 注入，紧贴模型续写位置），实测
+    # deepseek-v4-flash 100% 空响应（立刻 EOS completion_tokens=1，或把剧情正文
+    # 写进 reasoning 不写 content，用户侧表现为第二轮对话 100% 思维链乱码且正文
+    # 不输出——前端"对话渲染系统 v7.1"插件 setExtensionPrompt(position=0) 即走
+    # 此路径）。对照实验（各 3 次真实调用）：append 末尾 0/3，追加到 system
+    # prompt 末尾 3/3 正常。
     if ep_in_prompt:
         for _ep_content, _ep_role in ep_in_prompt:
-            # A-11: 见 nudge 处注释
-            messages.append({"role": _ep_role, "content": _ep_content, "_st_trailing_guard": True})
+            _inserted = False
+            if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+                messages[0] = {
+                    **messages[0],
+                    "content": (messages[0].get("content") or "") + "\n\n" + _ep_content,
+                }
+                _inserted = True
+            if not _inserted:
+                # messages[0] 非 system 或 content 非 str（多模态）：插到最前，
+                # 仍避免落到 prompt 末尾（末尾 system 注入会诱发空响应）。
+                messages.insert(0, {"role": _ep_role, "content": _ep_content})
 
     # extension_prompts BEFORE_PROMPT(2): 作为最前的 system 消息 (author_note 优先)
     # author_note_position 已是 ST 枚举（-1/0/1/2），== 2 即 BEFORE_PROMPT。

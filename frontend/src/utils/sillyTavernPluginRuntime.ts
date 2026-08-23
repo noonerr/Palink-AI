@@ -18,6 +18,8 @@ interface RuntimePlugin {
   id: string;
   name: string;
   plugin_type: string;
+  /** 插件来源：'character_card_extension' = 从角色卡导入的卡内脚本（ST 语义下只应随对应卡运行，禁止全局执行） */
+  source_type?: string;
   resources?: {
     css?: RuntimePluginResource[];
     js?: RuntimePluginResource[];
@@ -945,8 +947,14 @@ export class SillyTavernPluginRuntime {
 
     if (!this.config) return;
 
+    // [CARD-EXT-SCOPE-GUARD] 卡内扩展来源（character_card_extension）的插件禁止全局执行。
+    // ST 生态语义：这类脚本（如 BubbleDialogue「对话渲染系统」）随角色卡分发，只在对应卡的
+    // 酒馆助手 iframe 里运行；其注入的格式规则与渲染正则同卡配套。若提升为全局执行，
+    // 会出现"注入常驻、渲染缺失"的分裂态——模型对任何卡都输出 @bubble 等标记却无人渲染，
+    // 原始标记直接漏进正文（2026-08-21 实测泄漏源：plugins 表「酒馆助手」插件）。
     const extensions = this.config.plugins.filter(
-      (p) => p.plugin_type === 'sillytavern_extension' || p.plugin_type === 'tavern_helper'
+      (p) => (p.plugin_type === 'sillytavern_extension' || p.plugin_type === 'tavern_helper')
+        && p.source_type !== 'character_card_extension'
     );
 
     for (const plugin of extensions) {

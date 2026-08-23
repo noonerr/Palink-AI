@@ -1101,6 +1101,18 @@ def _build_sillytavern_runtime_config(db: Session) -> dict:
     extension_settings: dict[str, Any] = {}
 
     for plugin in plugins:
+        # [CARD-EXT-SCOPE-GUARD] 卡内扩展来源插件禁止下发至前端全局运行时。
+        # ST 对照（frontend/public/st/）：ST 核心不存在"卡内脚本提升为全局扩展"的路径
+        # ——卡内 tavern_helper 脚本由酒馆助手随卡执行；卡内正则走 GLOBAL/SCOPED/PRESET
+        # 三层挂载且 scoped 默认拒绝、需按角色显式授权（regex/engine.js getScriptsByType
+        # 的 allowedOnly + character_allowed_regex 白名单）。Palink 的"导入卡内扩展为
+        # 全局插件"缺少这条作用域边界：2026-08-21 实测泄漏——「酒馆助手」插件
+        # （source_type=character_card_extension）将 BubbleDialogue 注入脚本常驻下发至
+        # 所有角色，模型对无配套渲染正则的卡输出 @bubble 原始标记。复用现成三重判定
+        # 函数（source_type / config 标记 / regex_scripts 命名模式）拦截，置于循环首位，
+        # 优先于下方 tavern_helper 的 global_runtime 绕过逻辑。
+        if _is_character_card_extension_plugin(plugin):
+            continue
         config = _plugin_config(plugin)
         # tavern_helper 类型绑定角色卡扩展，不走 global_runtime 开关，
         # 它的脚本需要在角色扮演时下发到前端沙箱执行（否则酒馆助手脚本永远不生效）。

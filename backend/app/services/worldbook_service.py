@@ -272,8 +272,14 @@ class TimedEffectsManager:
                 and (not state.cooldown_remaining or state.cooldown_remaining <= 0)
                 and (not state.delay_remaining or state.delay_remaining <= 0)
             ):
-                self.db.delete(state)
-                expired_keys.append(state.entry_id)
+                # [WB-STATE-FIX] 过期状态行不再删除：同一事务内对相同
+                # (session_id, entry_id) 先 delete 后 insert 时，SQLAlchemy 的
+                # flush 顺序是 insert 先于 delete → INSERT 撞上未删除的旧行 →
+                # UniqueViolation → build_worldbook_context 抛异常 → 世界书注入
+                # 失败 → 提示词缺世界书 → 模型空响应/思维链重复/变量输出不全
+                # （2026-08-18 实锤：第二次对话起每次生成必挂 uq_session_entry_state）。
+                # remaining 全 0 的过期行保留不影响语义（can_activate 判定可激活）。
+                continue
         for key in expired_keys:
             self._load_all_states().pop(key, None)
 
