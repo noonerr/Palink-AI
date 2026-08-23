@@ -9,8 +9,6 @@ from typing import Optional, Set, Dict, Any
 
 from fastapi import WebSocket
 
-from ..core.database import SessionLocal
-from ..models import ChatMessage, CharacterChatMessage
 from ..services.stream_builder import StreamResult
 
 logger = logging.getLogger(__name__)
@@ -337,82 +335,6 @@ class WebSocketManager:
     def clear_tool_response_queue(self, session_id: str) -> None:
         """生成结束时清理队列，避免内存泄漏。"""
         self._pending_tool_responses.pop(session_id, None)
-
-    async def save_stream_to_db(self, session_id: str, model: str, is_character: bool = False):
-        async with self._stream_lock:
-            ss = self.stream_sessions.get(session_id)
-        if not ss:
-            return
-
-        async with ss._lock:
-            content = ss.full_content
-            reasoning = ss.full_reasoning
-            ss.last_saved_content_len = len(content)
-            ss.last_saved_reasoning_len = len(reasoning)
-
-        db = SessionLocal()
-        try:
-            if is_character:
-                msg = CharacterChatMessage(
-                    session_id=session_id,
-                    role="assistant",
-                    content=content,
-                    model=model,
-                )
-            else:
-                msg = ChatMessage(
-                    session_id=session_id,
-                    role="assistant",
-                    content=content,
-                    model=model,
-                )
-            db.add(msg)
-            db.commit()
-            db.refresh(msg)
-            ss.assistant_message_id = msg.id
-            logger.info("Saved stream to DB: session=%s msg_id=%s", session_id, msg.id)
-        except Exception as exc:
-            db.rollback()
-            logger.error("Failed to save stream to DB: %s", exc)
-        finally:
-            db.close()
-
-    async def update_stream_in_db(self, session_id: str, model: str, is_character: bool = False):
-        async with self._stream_lock:
-            ss = self.stream_sessions.get(session_id)
-        if not ss:
-            return
-
-        async with ss._lock:
-            content = ss.full_content
-            reasoning = ss.full_reasoning
-            msg_id = ss.assistant_message_id
-            ss.last_saved_content_len = len(content)
-            ss.last_saved_reasoning_len = len(reasoning)
-
-        if not msg_id:
-            await self.save_stream_to_db(session_id, model, is_character)
-            return
-
-        db = SessionLocal()
-        try:
-            if is_character:
-                msg = db.query(CharacterChatMessage).filter(
-                    CharacterChatMessage.id == msg_id
-                ).first()
-            else:
-                msg = db.query(ChatMessage).filter(
-                    ChatMessage.id == msg_id
-                ).first()
-
-            if msg:
-                msg.content = content
-                db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.error("Failed to update stream in DB: %s", exc)
-        finally:
-            db.close()
 
     def start_heartbeat(self):
         if self._heartbeat_task and not self._heartbeat_task.done():

@@ -22,7 +22,7 @@ import { CharacterCardRenderer, looksLikeRenderableCardHtml, looksLikeSmartCardH
 import { normalizeRegexScriptList } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { getCachedGlobalRegexScripts } from '@/utils/sillyTavernDisplayPipeline';
-import { formatMessage } from '@/lib/sillytavern/formatting';
+import { formatMessage, extractReasoningTags } from '@/lib/sillytavern/formatting';
 import { chatShortcutManager } from '@/lib/shortcuts';
 import { PushToTalkButton } from '@/components/ui/PushToTalkButton';
 import { QrBar } from '../st-plugin-ui-host/QrBar';
@@ -57,19 +57,29 @@ interface DisplayMessage {
   isStreaming: boolean;
 }
 
+// [REASONING-SEPARATE] 插件边界适配：传给 ST 兼容层的 mes 预剥离思考块，
+// 思考走 extra.reasoning 独立字段（对齐 ST 五层体系；源码不可改的随卡插件靠此保兼容）
 function toStMessages(messages: CharacterChatMessage[]): ChatMessage[] {
-  return messages.map((msg, idx) => ({
-    id: String(msg.id ?? idx),
-    name: msg.name || (msg.is_user ? 'User' : 'Assistant'),
-    mes: msg.content || '',
-    is_user: !!msg.is_user,
-    is_system: !!msg.is_system,
-    send_date: msg.created_at || new Date().toISOString(),
-    swipes: Array.isArray(msg.swipes) ? msg.swipes : [msg.content || ''],
-    swipe_id: msg.swipe_id ?? 0,
-    swipe_info: msg.swipe_info || [{ send_date: msg.created_at || new Date().toISOString(), extra: {} }],
-    extra: msg.extra || {},
-  }));
+  return messages.map((msg, idx) => {
+    const { content: cleanMes, reasoning } = extractReasoningTags(msg.content || '');
+    const baseExtra = (msg.extra && typeof msg.extra === 'object') ? msg.extra : {};
+    const mergedExtra = reasoning && !(typeof baseExtra.reasoning === 'string' && baseExtra.reasoning.trim())
+      ? { ...baseExtra, reasoning }
+      : baseExtra;
+    const stripSwipe = (s: string) => extractReasoningTags(s || '').content;
+    return {
+      id: String(msg.id ?? idx),
+      name: msg.name || (msg.is_user ? 'User' : 'Assistant'),
+      mes: cleanMes,
+      is_user: !!msg.is_user,
+      is_system: !!msg.is_system,
+      send_date: msg.created_at || new Date().toISOString(),
+      swipes: Array.isArray(msg.swipes) ? msg.swipes.map(stripSwipe) : [cleanMes],
+      swipe_id: msg.swipe_id ?? 0,
+      swipe_info: msg.swipe_info || [{ send_date: msg.created_at || new Date().toISOString(), extra: {} }],
+      extra: mergedExtra,
+    };
+  });
 }
 
 export function NativeRoleplayChat({

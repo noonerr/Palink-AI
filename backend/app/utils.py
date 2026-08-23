@@ -1,5 +1,6 @@
 import base64
 import ipaddress
+import json
 import logging
 import mimetypes
 import os
@@ -144,15 +145,246 @@ def _is_public_http_url(url: str) -> bool:
     return True
 
 
-def build_memory_context(memory_ctx) -> str:
+def clean_memory_content(text: Optional[str]) -> str:
+    """清洗记忆入库文本：剥离功能标签与思维链块，只保留剧情正文。
+
+    背景：此前 assistant 回复的 full_content 未经清洗直接写入向量记忆库，
+    <UpdateVariable>（及其内嵌 <Analysis>/<JSONPatch>）大 XML 功能块、以及可能的
+    <thinking> 思维链块会整块进入记忆；注入 prompt 时又被 content[:200] 硬截断，
+    切出残缺的半截标签，推理模型在思维链中反复自我审查这些标签 → 第二轮死循环。
+    因此入库前先剥离功能块/思维链块，只存剧情正文。
+    """
+    if not text:
+        return ""
+    s = str(text)
+    # 1) 剥离完整 <UpdateVariable> 功能块（含内嵌 <Analysis>/<JSONPatch>，跨行）
+    s = re.sub(r"<UpdateVariable(?:\s[^>]*)?[\s\S]*?</UpdateVariable\s*>", "", s, flags=re.IGNORECASE)
+    # 2) 剥离思维链块（推理模型常见的 <thinking> 或 <think>）
+    s = re.sub(r"<(?:think|thinking)(?:\s[^>]*)?[\s\S]*?</(?:think|thinking)\s*>", "", s, flags=re.IGNORECASE)
+    # 3) 清扫因截断而残留的孤立功能标签（防止残缺标签进入记忆）
+    s = re.sub(r"</?(?:UpdateVariable|Analysis|JSONPatch|Patch|think|thinking)\b[^>]*>", "", s, flags=re.IGNORECASE)
+    # 4) 折叠多余空行
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+_SENTENCE_BOUNDARY = "。！？；!?;…"
+_TERMINAL_BOUNDARY = "。！？!?…"
+
+# HTML void 元素（自闭合，无需配对）；按小写精确比较
+_VOID_HTML_TAGS = {
+    "br", "hr", "img", "input", "meta", "link", "area", "base",
+    "col", "embed", "source", "track", "wbr",
+}
+_OPEN_TAG_RE = re.compile(r"<([A-Za-z\u4e00-\u9fff][^\s<>/!]*)(?:\s[^<>]*)?>")
+_CLOSE_TAG_RE = re.compile(r"</\s*([A-Za-z\u4e00-\u9fff][^\s<>/!]*)\s*>")
+
+# [TAG-BALANCE-GUARD] 注入文本标签平衡守卫（2026-08-22）。
+# 背景：角色卡世界书/插件注入常带不平衡的自定义标签（实测「猫娘」卡：
+# 「猫神说话格式」条目 <猫神> 开标签无配对闭合、「角色总览」裸 <user>；
+# 推理模型 deepseek-v4-flash 遇到未闭合标签会把全部输出写进 <think>
+# 并复读尾部指令 → 正文为空，用户侧表现为"一直在思考"）。
+# 策略：开>闭的标签在文末补齐闭合；闭>开的孤立闭合标签剥离。
+
+
+def balance_custom_tags(text: Optional[str]) -> str:
+    """让注入文本中的自定义/HTML 标签开闭平衡。
+
+    - 开 > 闭：在文本末尾按出现顺序补齐缺失的闭合标签
+    - 闭 > 开：剥离孤立的闭合标签
+    - HTML void 元素（br/hr/img/input 等）不参与配对
+    - 已平衡的文本原样返回
+    """
+    if not text:
+        return text or ""
+    if "<" not in text:
+        return text
+
+    opens_counter: dict = {}
+    closes_counter: dict = {}
+    for m in _OPEN_TAG_RE.finditer(text):
+        tag = m.group(1)
+        if tag.lower() in _VOID_HTML_TAGS:
+            continue
+        opens_counter[tag] = opens_counter.get(tag, 0) + 1
+    close_spans = [(m.span(), m.group(1)) for m in _CLOSE_TAG_RE.finditer(text)]
+    for _, tag in close_spans:
+        closes_counter[tag] = closes_counter.get(tag, 0) + 1
+
+    needs_fix = any(
+        opens_counter.get(t, 0) != closes_counter.get(t, 0)
+        for t in set(opens_counter) | set(closes_counter)
+    )
+    if not needs_fix:
+        return text
+
+    result = text
+    # 1) 剥离孤立闭合标签（该标签闭数量超过开数量的部分）
+    orphan_closes = {
+        t: closes_counter[t] - opens_counter.get(t, 0)
+        for t in closes_counter
+        if closes_counter[t] > opens_counter.get(t, 0)
+    }
+    for tag, excess in orphan_closes.items():
+        pattern = re.compile(r"</\s*" + re.escape(tag) + r"\s*>")
+        result = pattern.sub("", result, count=excess)
+
+    # 2) 文末补齐缺失的闭合标签（后开的先闭，尽量保持嵌套合理）
+    missing_closes = [
+        t for t in opens_counter
+        if opens_counter[t] > closes_counter.get(t, 0)
+    ]
+    if missing_closes:
+        # 嵌套正确性无法完全保证，但推理模型只需看到结构闭合即可停止"补关"行为
+        result = result + "".join(f"</{t}>" for t in reversed(missing_closes))
+    return result
+
+
+# [REASONING-PARSE] 内联 <think> 统一解析器（2026-08-22，spec: separate-reasoning-pipeline）
+# 与 character_message_builder 历史清洗保持同一匹配语义（<think...>...</think>，忽略大小写）。
+_THINK_STRIP_RE = re.compile(r"<think[\s\S]*?</think\s*>", re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think(?:\s[^>]*)?>", re.IGNORECASE)
+
+
+def split_inline_think(text: Optional[str]):
+    """从文本中提取首个内联 <think> 块。
+
+    Returns:
+        (reasoning, content) 二元组：
+        - 无 think 块 → ("", 原文)
+        - 未闭合 <think>（无 </think>）→ 全部剩余文本视为思考，content 为空串
+        - 正常 → (思考内容, 首块前后拼接的正文)
+    """
+    if not text:
+        return "", text or ""
+    open_m = _THINK_OPEN_RE.search(text)
+    if not open_m:
+        return "", text
+    close_match = re.search(r"</think\s*>", text[open_m.end():], flags=re.IGNORECASE)
+    if not close_match:
+        return text[open_m.end():].strip(), ""
+    reasoning = text[open_m.end():open_m.end() + close_match.start()].strip()
+    content = (text[:open_m.start()] + text[open_m.end() + close_match.end():]).strip()
+    return reasoning, content
+
+
+def strip_inline_think(text: Optional[str]) -> str:
+    """剥离文本中全部 <think>...</think> 块（与历史清洗正则语义一致，未闭合不动）。"""
+    if not text:
+        return text or ""
+    return _THINK_STRIP_RE.sub("", text)
+
+
+def strip_inline_think_full(text: Optional[str]) -> str:
+    """[REASONING-SEPARATE] 全量剥离：全部闭合块 + 残留未闭合开标签截尾。
+
+    与 get_display_content 同语义的文本级版本（供迁移脚本等无消息对象的场景使用）。
+    """
+    if not text:
+        return text or ""
+    if not _THINK_OPEN_RE.search(text):
+        return text
+    stripped = _THINK_STRIP_RE.sub("", text)
+    leftover_open = _THINK_OPEN_RE.search(stripped)
+    if leftover_open:
+        stripped = stripped[: leftover_open.start()]
+    return stripped.strip()
+
+
+# [REASONING-ACCESSOR] 分离存储访问器（2026-08-23，思考/正文分离存储 Step 1）
+# 兼容三形态：新格式行（extra.reasoning=思考、content=纯正文）、存量混存行
+# （content 含内联块）、普通行（无思考）。存量双写行以 extra.reasoning 为权威。
+def get_message_extra(msg) -> dict:
+    """安全解析消息 extra 字段（Text 列存 JSON 字符串）为 dict；None/非法输入返回空 dict。"""
+    raw = msg.get("extra") if isinstance(msg, dict) else getattr(msg, "extra", None)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def get_message_reasoning(msg) -> str:
+    """取消息思维链：优先 extra.reasoning（权威），否则从 content 内联块拆出（存量单写行兜底）。"""
+    reasoning = get_message_extra(msg).get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
+    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    if content and _THINK_OPEN_RE.search(content):
+        return split_inline_think(content)[0]
+    return ""
+
+
+def get_display_content(msg) -> str:
+    """取消息展示正文：无内联块原样返回；有块时全量剥离（含未闭合尾截断）。"""
+    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    return strip_inline_think_full(content)
+
+
+def apply_message_extra_patch(msg, patch: dict) -> None:
+    """[REASONING-SEPARATE] 把 patch 合并进消息 extra（Text 列 JSON 字符串），空 patch 不动。"""
+    if not patch:
+        return
+    current = get_message_extra(msg)
+    current.update(patch)
+    msg.extra = json.dumps(current, ensure_ascii=False)
+
+
+def _truncate_by_sentence(text: str, max_len: int) -> str:
+    """在 max_len 内按句子边界安全截断，避免切断句子或残留脏标签。
+
+    优先回退到最近的句末边界（句号/叹号/问号/省略号），找不到再用次弱的分号边界，
+    仍找不到才硬截断并追加省略号（入库前已清洗，正常不会残留半截标签）。
+    """
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    head = text[:max_len]
+    # 先找句末边界（.。！！？？!?...），后找分号，保证语义完整性优先
+    for boundary, append in ((_TERMINAL_BOUNDARY, ""), (_SENTENCE_BOUNDARY, "")):
+        for i in range(len(head) - 1, -1, -1):
+            if head[i] in boundary:
+                return head[: i + 1]
+    return head + "…"
+
+
+def build_memory_context(memory_ctx, max_tokens: Optional[int] = None) -> str:
+    """把检索到的记忆格式化为注入文本（方案 B，2026-08-22）。
+
+    变更：废除每条 200 字砍头 —— 语义块命中即完整注入；
+    预算（max_tokens，估算口径 len//2 与 retriever 一致）不足时
+    按"整条跳过"处理而非截断文本。
+    兜底：无 #chunk 标记的超长遗留条目仍按句边界截到 CHUNK_MAX_CHARS，
+    防止存量整段巨物撑爆预算（随迁移脚本重切后自然消失）。
+    """
+    from .memory_module.config import memory_config as _mem_cfg
+
     parts = []
     if memory_ctx.user_profile and memory_ctx.user_profile.summary:
         parts.append(f"[User Profile]\n{memory_ctx.user_profile.summary}")
     if memory_ctx.memories:
         mem_lines = []
+        used = 0
+        max_chars = _mem_cfg.CHUNK_MAX_CHARS
         for mem in memory_ctx.memories:
+            text = clean_memory_content(mem.content)
+            if not text:
+                continue
+            is_chunk = "#chunk" in (mem.topics or [])
+            if not is_chunk and len(text) > max_chars:
+                # 存量遗留整段条目兜底截断（新写入不会产生此类条目）
+                text = _truncate_by_sentence(text, max_chars)
+            # [TAG-BALANCE-GUARD] 记忆块可能从标签中间切开，注入前修平
+            text = balance_custom_tags(text)
+            cost = len(text) // 2
+            if max_tokens is not None and used + cost > max_tokens and mem_lines:
+                continue  # 预算不足：整条跳过，不制造残缺片段
             prefix = "User" if mem.role == "user" else "Assistant"
-            mem_lines.append(f"- {prefix}: {mem.content[:200]}")
+            mem_lines.append(f"- {prefix}: {text}")
+            used += cost
         if mem_lines:
             parts.append("[Relevant Memories]\n" + "\n".join(mem_lines))
     return "\n\n".join(parts)

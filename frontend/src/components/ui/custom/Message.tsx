@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 import { CodeBlock } from './CodeBlock';
 import { ThinkingProcess } from './ThinkingProcess';
 import { SmoothOutput } from './SmoothOutput';
@@ -149,6 +150,10 @@ interface MessageProps {
   totalMessages?: number;
   chatMessages?: Array<Record<string, unknown>>;
   onSmartCardAction?: (action: SmartCardAction) => void;
+  /** 手动触发副 AI 变量更新（全手动模式）：以本条消息剧情为源解析变量 */
+  onManualMvuSecondary?: (messageId?: string | number) => void;
+  /** 副 AI 是否正在手动触发中（按钮 loading 态） */
+  mvuSecondaryRunning?: boolean;
 }
 
 type ContentSegment = {
@@ -642,6 +647,8 @@ function MessageInner({
   totalMessages: _totalMessages,
   chatMessages: _chatMessages,
   onSmartCardAction,
+  onManualMvuSecondary,
+  mvuSecondaryRunning = false,
 }: MessageProps) {
   const [copied, setCopied] = useState(false);
   const [fullscreenIndex, setFullscreenIndex] = useState<number | null>(null);
@@ -717,6 +724,15 @@ function MessageInner({
   const { thinkingContent, displayContent, userTextContent, userImages, statusBars } = useMemo(() => {
     const content = message.content || '';
     const { thinkingContent: parsedThinking, mainContent: rawMainContent } = parseThinkingContent(content);
+    // [REASONING-SEPARATE] 分离存储：content 无内联思考块时直读 extra.reasoning
+    // （旧混合行走 parse 路径不变；新格式行/流式态走 extra 兜底）
+    let effectiveThinking = parsedThinking;
+    if (!effectiveThinking && !isUser) {
+      const extraReasoning = (message.extra as any)?.reasoning;
+      if (typeof extraReasoning === 'string' && extraReasoning.trim()) {
+        effectiveThinking = extraReasoning;
+      }
+    }
     // 前端双保险：移除 palink-status 标记（后端已剥离，此处防御遗漏）
     let mainContent = rawMainContent.replace(/<palink-status>[\s\S]*?<\/palink-status>/gi, '');
     // 角色助手消息：剥离 <UpdateVariable> 指令块（stat_data 更新指令，非对话内容；
@@ -740,7 +756,7 @@ function MessageInner({
     const cleanContent = extracted.clean;
 
     // 角色扮演模式下，只有当 showModelReasoning 为 false 时才丢弃推理内容
-    if (isCharacterChat && !isUser && parsedThinking && !showModelReasoning) {
+    if (isCharacterChat && !isUser && effectiveThinking && !showModelReasoning) {
       return {
         thinkingContent: null,
         displayContent: cleanContent,
@@ -751,13 +767,13 @@ function MessageInner({
     }
 
     return {
-      thinkingContent: parsedThinking,
+      thinkingContent: effectiveThinking,
       displayContent: cleanContent,
       userTextContent: textContent,
       userImages: images,
       statusBars: extracted.bars,
     };
-  }, [message.content, isCharacterChat, isUser, showModelReasoning]);
+  }, [message.content, message.extra, isCharacterChat, isUser, showModelReasoning]);
 
   const hasDisplayContent = !isUser && !!displayContent;
 
@@ -1171,21 +1187,18 @@ function MessageInner({
               messageId={message.id}
               />
             )}
-            {/* ST 兼容：角色 AI 消息显示角色名（ch_name > name_text），对齐原版 ST 默认消息样式 */}
-            {!isUser && isCharacterChat && (
-              <div className="ch_name flex-container justifySpaceBetween">
-                <div className="flex-container flex1 alignitemscenter">
-                  <div className="flex-container alignItemsBaseline">
-                    <span className="name_text">{characterName}</span>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* [UI-2026-08-19] 角色名 div 不再显示（用户要求：与 ST 保持一致，角色名由
+                插件/角色卡特效渲染或省略，Palink 不额外显示角色名行） */}
             {(!isUser && displayContent) || isUser ? (
             <div
               ref={contentContainerRef}
               onClick={handleMessageClick}
+              style={{ fontFamily: "var(--mainFontFamily, 'Noto Sans', sans-serif)" }}
               className={cn(
+              // [UI-2026-08-19] 正文对齐 ST：字体用 ST 原版 Noto Sans，颜色用
+              // --rp-color-main-text（= --SmartThemeBodyColor），与 ST 默认消息一致。
+              // 有 @bubble 等特效时由插件/角色卡渲染，Palink 不干预。
+              // 字体用内联 style 设置（Tailwind 任意值无法安全解析 var() 逗号）。
               "text-[15px] leading-relaxed w-full max-w-full break-words overflow-hidden relative",
               isUser
                 ? chatStyle === 'bubbles'
@@ -1312,7 +1325,7 @@ function MessageInner({
                 <div className="markdown-content mes_text w-full break-words overflow-wrap-anywhere">
                   <ReactMarkdown
                     remarkPlugins={REMARK_PLUGINS}
-                    rehypePlugins={REHYPE_PLUGINS}
+                    rehypePlugins={[...REHYPE_PLUGINS, rehypeRaw]}
                     components={markdownComponents}
                   >
                     {preprocessImageUrls(pipelineResult?.content || displayContent)}
@@ -1359,24 +1372,61 @@ function MessageInner({
             )}
           </div>
 
+          {/* [UI-2026-08-19] 消息底部信息栏重构：左侧 = tokens + 模型名（一个框架），
+              右侧 = 操作按钮组（一个框架，按钮缩小）。布局对齐 ST 消息底部信息条。 */}
           {!isUser && (
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 max-w-full">
-              <div className="flex items-center gap-0.5 bg-muted/30 rounded px-1 py-0.5 shrink-0">
+            <div className="mt-1.5 flex flex-nowrap items-center justify-between gap-1.5 max-w-full">
+              {/* 左侧框架：tokens 计数 + 模型名（可收缩，防止窄视口溢出） */}
+              <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm flex-1 min-w-0 overflow-hidden">
+                {tokens !== undefined && tokens > 0 && (
+                  <div className="flex items-center gap-0.5 text-muted-foreground">
+                    <span className="font-mono tabular-nums">{tokens.toLocaleString()}</span>
+                    <span className="text-muted-foreground/70">tokens</span>
+                  </div>
+                )}
+
+                {isCharacterChat && messageModel && messageIndex !== 0 && (
+                  <span className="text-xs text-muted-foreground/50 font-mono truncate max-w-[100px]" title={messageModel.id}>
+                    {messageModel.alias || messageModel.id?.split('/').pop()}
+                  </span>
+                )}
+              </div>
+
+              {/* 右侧框架：操作按钮组（缩小、圆形按钮） */}
+              <div className="flex items-center gap-0.5 bg-muted/30 rounded-full px-0.5 py-0 shrink-0">
+                {!isUser && onManualMvuSecondary && (
+                  <button
+                    onClick={() => onManualMvuSecondary(message.id)}
+                    disabled={mvuSecondaryRunning}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    title="手动更新变量（副 AI 解析本条剧情）"
+                  >
+                    {mvuSecondaryRunning ? (
+                      <svg className="h-2 w-2 animate-spin text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    ) : (
+                      <Database size={8} />
+                    )}
+                  </button>
+                )}
+
                 <button
                   onClick={handleCopy}
-                  className="palink-mes-action-btn p-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                  className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
                   title="Copy"
                 >
-                  {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                  {copied ? <Check size={8} className="text-green-500" /> : <Copy size={8} />}
                 </button>
 
                 {canRegenerate && onRegenerate && (
                   <button
                     onClick={() => onRegenerate(message.id)}
-                    className="palink-mes-action-btn p-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
                     title="重新生成"
                   >
-                    <RefreshCw size={12} />
+                    <RefreshCw size={8} />
                   </button>
                 )}
 
@@ -1385,7 +1435,7 @@ function MessageInner({
                     onClick={onCompress}
                     disabled={compressing || memoryStats.message_count < 5}
                     className={cn(
-                      "palink-mes-action-btn p-1 rounded-sm transition-colors flex items-center gap-0.5 text-[10px] font-medium",
+                      "palink-mes-action-btn p-0 rounded-full transition-colors flex items-center gap-0.5 text-[9px] font-medium",
                       compressing || memoryStats.message_count < 5
                         ? "opacity-40 cursor-not-allowed text-muted-foreground"
                         : memoryStats.compression_needed
@@ -1394,7 +1444,7 @@ function MessageInner({
                     )}
                     title={memoryStats.message_count < 5 ? '记忆太少，无需压缩' : '压缩记忆'}
                   >
-                    <Zap size={12} />
+                    <Zap size={8} />
                     <span className="hidden sm:inline">{compressing ? '...' : '压缩'}</span>
                   </button>
                 )}
@@ -1402,27 +1452,13 @@ function MessageInner({
                 {onDelete && (
                   <button
                     onClick={onDelete}
-                    className="palink-mes-action-btn p-1 rounded-sm text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                     title="删除消息"
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={8} />
                   </button>
                 )}
               </div>
-
-              {isCharacterChat && messageModel && (
-                <span className="text-[10px] text-muted-foreground/50 font-mono truncate max-w-[100px]" title={messageModel.id}>
-                  {messageModel.alias || messageModel.id?.split('/').pop()}
-                </span>
-              )}
-
-              <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs shrink-0">
-                {tokens !== undefined && tokens > 0 && (
-                  <div className="flex items-center gap-0.5 text-muted-foreground">
-                    <span className="font-mono tabular-nums">{tokens.toLocaleString()}</span>
-                    <span className="text-muted-foreground/70">tokens</span>
-                  </div>
-                )}
 
                 {memoryMode !== 'vector' && memoryStats && (
                   <div
@@ -1485,7 +1521,6 @@ function MessageInner({
                   </div>
                 )}
               </div>
-            </div>
           )}
         </div>
       </div>
@@ -1548,6 +1583,8 @@ export const Message = React.memo(MessageInner, (prev, next) => {
   if (prev.onSelectAllPartsInMessage !== next.onSelectAllPartsInMessage) return false;
   if (prev.onGenerateImage !== next.onGenerateImage) return false;
   if (prev.onSmartCardAction !== next.onSmartCardAction) return false;
+  if (prev.onManualMvuSecondary !== next.onManualMvuSecondary) return false;
+  if (prev.mvuSecondaryRunning !== next.mvuSecondaryRunning) return false;
   const msgId = String(prev.message.id);
   if (prev.selectedItems?.has(msgId) !== next.selectedItems?.has(msgId)) return false;
   const idx = prev.messageIndex;

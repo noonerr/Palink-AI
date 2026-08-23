@@ -14,6 +14,7 @@ from ..core import get_db, settings
 from ..core.database import SessionLocal
 from ..core.rate_limit import enforce_rate_limit
 from ..core.exceptions import ServiceError
+from ..utils import apply_message_extra_patch
 from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting, ChatSession
 from ..memory_module.service import MemoryService
@@ -125,7 +126,7 @@ async def chat_stream(
                     max_tokens=2000,
                     memory_mode=memory_mode
                 )
-                memory_text = build_memory_context(mem_ctx)
+                memory_text = build_memory_context(mem_ctx, max_tokens=2000)
         except Exception as e:
             logger.warning(f"Memory context retrieval failed: {e}")
 
@@ -228,9 +229,11 @@ async def chat_stream(
                 if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
                     return
 
-            final = result.final_text()
+            # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
+            final = result.full_content
             token_count = result.token_count()
             ws_json = json.dumps({"query": req.message, "results": web_search_results}, ensure_ascii=False) if web_search_results else None
+            extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
 
             try:
                 if assistant_message_id is None:
@@ -243,6 +246,7 @@ async def chat_stream(
                         prompt_tokens=result.prompt_tokens,
                         reasoning_tokens=result.effective_reasoning_tokens(),
                         web_search_results=ws_json,
+                        extra=extra_payload,
                     )
                     save_db.add(msg)
                     save_db.commit()
@@ -260,6 +264,7 @@ async def chat_stream(
                             prompt_tokens=result.prompt_tokens,
                             reasoning_tokens=result.effective_reasoning_tokens(),
                             web_search_results=ws_json,
+                            extra=extra_payload,
                         )
                         save_db.add(msg)
                         save_db.commit()
@@ -273,6 +278,8 @@ async def chat_stream(
                         msg.reasoning_tokens = result.effective_reasoning_tokens()
                         if ws_json is not None:
                             msg.web_search_results = ws_json
+                        # [REASONING-SEPARATE] 快照更新同步刷新 extra.reasoning
+                        apply_message_extra_patch(msg, {"reasoning": result.full_reasoning} if result.full_reasoning else {})
                         save_db.commit()
 
                 last_saved_content_len = len(result.full_content)

@@ -118,9 +118,11 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
       const next = [...prev];
       const idx = messageIndexMapRef.current.get(messageId) ?? next.findIndex(msg => msg.id === messageId);
       if (idx >= 0) {
-        next[idx] = { 
-          ...next[idx], 
-          content: reasoning ? `<think>${reasoning}</think>\n${content}` : content,
+        // [REASONING-SEPARATE] 正文与思考分离持有，不再拼接包裹体
+        next[idx] = {
+          ...next[idx],
+          content,
+          ...(reasoning ? { extra: { ...(next[idx].extra || {}), reasoning } } : {}),
         };
       }
       return next;

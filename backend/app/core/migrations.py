@@ -110,6 +110,8 @@ _RUNTIME_COMPAT_COLUMNS = (
     ("themes", "config_json", sa.Text()),
     ("themes", "is_active", sa.Boolean()),
     ("themes", "created_at", sa.DateTime()),
+    # [REASONING-SEPARATE] 分离存储：messages 表 assistant 思考独立持久化列
+    ("messages", "extra", sa.Text()),
 )
 
 

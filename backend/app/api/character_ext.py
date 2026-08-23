@@ -37,7 +37,7 @@ from ..character_card import create_png_with_chara_card, convert_character_to_ch
 from ..services.character_import_service import CharacterImportService, PngCharacterCardParser
 from ..memory_module.service import MemoryService
 from ..schemas.character import character_to_dict
-from ..utils import normalize_image_url, get_default_ai_model, _is_public_http_url
+from ..utils import normalize_image_url, get_default_ai_model, _is_public_http_url, clean_memory_content
 from ..services.inference_dispatcher import (
     complete_text_completion,
     ensure_model_available,
@@ -576,6 +576,12 @@ def _get_full_branch_history(db: Session, session_id: str, branch_id: str, limit
     for m in all_msgs:
         if m.id not in seen:
             seen.add(m.id)
+            # [EMPTY-RESP-FIX] 过滤历史中的错误占位消息：模型空响应时曾把
+            # "Error: 模型未返回..." 存成 assistant 消息（2026-08-18 前行为），
+            # 若注入提示词会诱导模型继续空响应（恶性循环）。历史残留一律跳过。
+            _mc = (m.content or "").strip()
+            if _mc.startswith("Error:"):
+                continue
             deduped.append(m)
     return deduped[-limit:]
 
@@ -1679,15 +1685,8 @@ def _apply_persist_regex_to_display_text(
     if not text:
         return text
     # ST 1.18.0: 当用户在 power_user.disabledExtensions 中禁用 regex 扩展时，
-    # 跳过所有正则脚本的应用（仅保留 status_bar 兜底，不影响正则流程）。
+    # 跳过所有正则脚本的应用（不影响正则流程）。
     regex_globally_disabled = _is_regex_globally_disabled(db, getattr(char, "user_id", None))
-    # 防御性兜底：角色卡自带状态栏但模型漏写 <NSFW> 包裹标签、直接输出裸
-    # `|` 分隔状态栏时，自动补上原生触发标签，避免前端显示成未渲染的纯文本。
-    try:
-        from ..services.status_bar_detector import wrap_bare_status_bar
-        text = wrap_bare_status_bar(text, char)
-    except Exception as _e:
-        logger.warning("wrap_bare_status_bar failed: %s", _e)
     if regex_globally_disabled:
         return text
     result = _apply_plugin_regex_scripts(
@@ -2035,10 +2034,6 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
                 character_card_block = _build_character_card_block(char, prompt_lang)
                 if character_card_block:
                     custom_prompt += "\n\n" + character_card_block
-            from ..services.status_bar_detector import build_status_instruction
-            status_instr = build_status_instruction(char, prompt_lang, show_character_status)
-            if status_instr:
-                custom_prompt += status_instr
             # 注入预设提示词
             custom_prompt = _inject_preset_into_prompt(char, custom_prompt, user_nickname)
             return custom_prompt
@@ -4530,7 +4525,15 @@ async def _character_chat_impl(
                 if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
                     return
 
-            final_raw = result.final_text()
+            # [THINK-DEDUP] full_content 而非 final_text()（final_text 自带 think 前缀，
+            # 与下方 4572 行的再拼接形成双  thinking，见 websocket.py 同名修复）
+            final_raw = result.full_content
+            # [THINK-IN-CONTENT-FIX] 同 websocket.py：模型可能把思维链直接写进 content
+            # （reasoning 字段为空，content 里带  thinking... response 块），在拼
+            # reasoning 前缀之前剥离，避免污染入库正文。剥离后为空时保留原始。
+            _clean_raw = re.sub(r"<think[\s\S]*?</think\s*>", "", final_raw, flags=re.IGNORECASE).strip()
+            if _clean_raw:
+                final_raw = _clean_raw
             final = _apply_persist_regex_to_display_text(
                 final_raw,
                 save_db,
@@ -4574,7 +4577,7 @@ async def _character_chat_impl(
                         user_name=user_nickname,
                         char_name=char.name or "Character",
                     )
-                final = "<think>" + regexed_reasoning + "</think>\n" + final
+                # [REASONING-SEPARATE] 思考不再内联包裹进 content，仅经 msg_extra.reasoning 持久化
             token_count = result.token_count()
 
             # Phase 3 extra 字段: reasoning 双写 + gen_id + per-swipe 元数据
@@ -4827,11 +4830,12 @@ async def _character_chat_impl(
                                         content=req.message,
                                         branch_id=branch_id,
                                     )
+                                # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
                                 mem_svc.store_memory(
                                     user_id=user.id,
                                     session_id=session_id,
                                     role="assistant",
-                                    content=result.full_content,
+                                    content=clean_memory_content(result.full_content),
                                     branch_id=branch_id,
                                 )
                                 save_db.commit()
@@ -5296,6 +5300,14 @@ class SwipeRequest(_ActionRequest):
     message_id: int
 
 
+class MvuSecondaryRequest(BaseModel):
+    """手动触发副 AI 变量更新请求。
+
+    message_id 可选：不传时默认取当前分支最后一条 assistant 消息作为剧情源。
+    """
+    message_id: Optional[int] = None
+
+
 class SwipeSwitchRequest(BaseModel):
     swipe_id: int
 
@@ -5357,8 +5369,48 @@ def _load_context_template_name(db: Session, user: User, preset_id: Optional[int
     return None
 
 
-def _apply_reasoning_regex(final_raw: str, result, db: Session, char: Character, user_nickname: str) -> str:
-    """Apply persist regex + reasoning wrapping (mirrors _character_chat_impl persist_snapshot)."""
+def _regexed_reasoning(result, db: Session, char: Character, user_nickname: str) -> str:
+    """[REASONING-SEPARATE] 思考三段正则链（插件 → GLOBAL/SCOPED → PRESET）；无思考返回空串。"""
+    if not result.full_reasoning:
+        return ""
+    regexed_reasoning = _apply_plugin_regex_scripts(
+        result.full_reasoning,
+        db,
+        placement=REGEX_PLACEMENT_REASONING,
+        is_markdown=False,
+        is_prompt=False,
+        depth=0,
+        skip_extensions=char.extensions,
+        user_name=user_nickname,
+        char_name=char.name or "Character",
+    )
+    regexed_reasoning = _apply_regex_scripts(
+        regexed_reasoning,
+        char.extensions,
+        placement=REGEX_PLACEMENT_REASONING,
+        is_markdown=False,
+        is_prompt=False,
+        depth=0,
+        user_name=user_nickname,
+        char_name=char.name or "Character",
+    )
+    preset_scripts = _extract_preset_regex_scripts_from_character(char)
+    if preset_scripts:
+        regexed_reasoning = _apply_regex_scripts(
+            regexed_reasoning,
+            {"regex_scripts": preset_scripts},
+            placement=REGEX_PLACEMENT_REASONING,
+            is_markdown=False,
+            is_prompt=False,
+            depth=0,
+            user_name=user_nickname,
+            char_name=char.name or "Character",
+        )
+    return regexed_reasoning
+
+
+def _apply_reasoning_regex(final_raw: str, result, db: Session, char: Character, user_nickname: str) -> tuple:
+    """[REASONING-SEPARATE] 返回 (纯正文, 正则化思考)；思考不再内联包裹进正文。"""
     final = _apply_persist_regex_to_display_text(
         final_raw,
         db,
@@ -5367,42 +5419,7 @@ def _apply_reasoning_regex(final_raw: str, result, db: Session, char: Character,
         placement=REGEX_PLACEMENT_AI_OUTPUT,
         depth=0,
     )
-    if result.full_reasoning:
-        regexed_reasoning = _apply_plugin_regex_scripts(
-            result.full_reasoning,
-            db,
-            placement=REGEX_PLACEMENT_REASONING,
-            is_markdown=False,
-            is_prompt=False,
-            depth=0,
-            skip_extensions=char.extensions,
-            user_name=user_nickname,
-            char_name=char.name or "Character",
-        )
-        regexed_reasoning = _apply_regex_scripts(
-            regexed_reasoning,
-            char.extensions,
-            placement=REGEX_PLACEMENT_REASONING,
-            is_markdown=False,
-            is_prompt=False,
-            depth=0,
-            user_name=user_nickname,
-            char_name=char.name or "Character",
-        )
-        preset_scripts = _extract_preset_regex_scripts_from_character(char)
-        if preset_scripts:
-            regexed_reasoning = _apply_regex_scripts(
-                regexed_reasoning,
-                {"regex_scripts": preset_scripts},
-                placement=REGEX_PLACEMENT_REASONING,
-                is_markdown=False,
-                is_prompt=False,
-                depth=0,
-                user_name=user_nickname,
-                char_name=char.name or "Character",
-            )
-        final = "<think>" + regexed_reasoning + "</think>\n" + final
-    return final
+    return final, _regexed_reasoning(result, db, char, user_nickname)
 
 
 async def _run_action_stream(
@@ -5591,7 +5608,8 @@ async def continue_session(
     last_assistant_id = last_assistant.id
 
     def persist_fn(save_db, result):
-        final = _apply_reasoning_regex(result.final_text(), result, save_db, char, user_nickname)
+        # [REASONING-SEPARATE] 续写正文追加到原消息；续写产生的思考追加进 extra.reasoning（不再内联包裹）
+        _, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == last_assistant_id).first()
         if msg is None:
             return None, None
@@ -5606,6 +5624,12 @@ async def continue_session(
         )
         combined = (msg.content or "") + new_part
         _sync_message_content_to_active_swipe(msg, combined)
+        if regexed_reasoning:
+            patched_extra = _message_extra(msg)
+            prev_reasoning = patched_extra.get("reasoning")
+            patched_extra["reasoning"] = ((prev_reasoning + "\n") if prev_reasoning else "") + regexed_reasoning
+            patched_extra.setdefault("reasoning_type", "thinking")
+            msg.extra = _json_dump_or_none(patched_extra)
         msg.model = model
         msg.tokens = result.token_count()
         msg.prompt_tokens = result.prompt_tokens
@@ -5703,7 +5727,8 @@ async def regenerate_message(
     target_msg_id = target_msg.id
 
     def persist_fn(save_db, result):
-        final = _apply_reasoning_regex(result.final_text(), result, save_db, char, user_nickname)
+        # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
+        final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None
@@ -5717,6 +5742,9 @@ async def regenerate_message(
         msg.swipe_id = new_swipe_id
         msg.swipes = _json_dump_or_none(current_swipes)
         current_extra = _message_extra(msg)
+        if regexed_reasoning:
+            current_extra["reasoning"] = regexed_reasoning
+            current_extra["reasoning_type"] = "thinking"
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,
@@ -5747,6 +5775,132 @@ async def regenerate_message(
         media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router_sessions.post("/{session_id}/mvu-secondary")
+async def trigger_mvu_secondary(
+    session_id: str,
+    req: MvuSecondaryRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """手动触发副 AI 变量更新（全手动模式）。
+
+    以指定消息（或当前分支最后一条 assistant 消息）的剧情为源，
+    调用副模型解析并生成 <UpdateVariable> patches，应用到会话 stat_data。
+    返回应用后的变量与日志；副 AI 未配置/失败时返回空结果（不抛异常）。
+    """
+    session, char, branch_id = _resolve_session_for_action(db, session_id, user)
+
+    # 定位剧情源消息：优先 req.message_id，否则取当前分支最后一条 assistant
+    target_msg = None
+    if req.message_id is not None:
+        target_msg = db.query(CharacterChatMessage).filter(
+            CharacterChatMessage.id == req.message_id,
+            CharacterChatMessage.session_id == session_id,
+        ).first()
+        if target_msg is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+    else:
+        target_msg = db.query(CharacterChatMessage).filter(
+            CharacterChatMessage.session_id == session_id,
+            _branch_filter_expr(branch_id),
+            CharacterChatMessage.role == "assistant",
+        ).order_by(CharacterChatMessage.id.desc()).first()
+        if target_msg is None:
+            raise HTTPException(status_code=400, detail="No assistant message to analyze")
+
+    story_text = target_msg.content or ""
+
+    # 角色卡 extensions + character_book 合并（对齐 websocket.py persist_snapshot 逻辑）
+    from sqlalchemy.orm import selectinload
+    _mvu_char = (
+        db.query(Character)
+        .options(selectinload(Character.world_books).selectinload(WorldBook.entries))
+        .filter(Character.id == char.id)
+        .first()
+    )
+    char_ext_raw: dict = {}
+    if _mvu_char is not None and getattr(_mvu_char, "extensions", None):
+        try:
+            raw_ext = _mvu_char.extensions
+            char_ext_raw = json.loads(raw_ext) if isinstance(raw_ext, str) else (raw_ext if isinstance(raw_ext, dict) else {})
+        except (json.JSONDecodeError, TypeError):
+            pass
+    from app.services.mvu_engine import merge_character_book_entries
+    wb_entries = [
+        str(stage.content or "")
+        for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
+        if getattr(wb, "type", "") == "character_book"
+        for stage in (wb.entries or [])
+    ]
+    char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
+
+    # 当前会话 stat_data（chat_metadata.variables）
+    cur_vars: dict = {}
+    if session.chat_metadata:
+        try:
+            cur_meta = json.loads(session.chat_metadata)
+            if isinstance(cur_meta, dict):
+                cur_vars = cur_meta.get("variables") or {}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if not isinstance(cur_vars, dict) or not cur_vars.get("stat_data"):
+        from app.services.mvu_engine import MvuEngine
+        cur_vars = MvuEngine.init_session_variables(char_ext_raw)
+
+    # 副 AI 配置检查（未开启/未配置模型 → 返回空结果）
+    from app.models.system import UserSetting
+    us = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if us is None or not us.mvu_secondary_enabled:
+        return {"applied": False, "reason": "secondary_disabled", "variables": cur_vars, "logs": []}
+    sec_model = (us.mvu_secondary_model or "").strip()
+    if not sec_model:
+        return {"applied": False, "reason": "secondary_model_missing", "variables": cur_vars, "logs": []}
+
+    # 调用副模型生成 patches
+    from app.services.mvu_engine import extract_schema_defaults, apply_patches
+    from app.services.mvu_secondary import run_secondary_mvu
+    schema_defaults = extract_schema_defaults(
+        char_ext_raw.get("tavern_helper") if isinstance(char_ext_raw, dict) else None
+    )
+    if not schema_defaults:
+        return {"applied": False, "reason": "no_schema", "variables": cur_vars, "logs": []}
+
+    try:
+        patches, logs = await run_secondary_mvu(
+            secondary_model=sec_model,
+            stat_data=cur_vars,
+            story_text=story_text,
+            schema_defaults=schema_defaults,
+        )
+    except Exception as exc:
+        logger.warning("MVU secondary manual trigger failed: %s", exc)
+        return {"applied": False, "reason": "call_failed", "variables": cur_vars, "logs": []}
+
+    if not patches:
+        return {"applied": False, "reason": "no_patches", "variables": cur_vars, "logs": logs}
+
+    new_vars, applied = apply_patches(cur_vars, patches)
+    if applied:
+        # 持久化到会话 chat_metadata.variables
+        cur_meta = {}
+        if session.chat_metadata:
+            try:
+                cur_meta = json.loads(session.chat_metadata)
+                if not isinstance(cur_meta, dict):
+                    cur_meta = {}
+            except (json.JSONDecodeError, TypeError):
+                pass
+        cur_meta["variables"] = new_vars
+        session.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
+        db.commit()
+        logger.info(
+            "MVU secondary manual applied %d patches: %s",
+            len(patches), "; ".join(logs[:8]),
+        )
+
+    return {"applied": bool(applied), "reason": "ok" if applied else "no_change", "variables": new_vars, "logs": logs}
 
 
 @router_sessions.post("/{session_id}/swipe")
@@ -5816,7 +5970,8 @@ async def swipe_message(
     target_msg_id = target_msg.id
 
     def persist_fn(save_db, result):
-        final = _apply_reasoning_regex(result.final_text(), result, save_db, char, user_nickname)
+        # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
+        final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None
@@ -5829,6 +5984,9 @@ async def swipe_message(
         msg.swipe_id = new_swipe_id
         msg.swipes = _json_dump_or_none(current_swipes)
         current_extra = _message_extra(msg)
+        if regexed_reasoning:
+            current_extra["reasoning"] = regexed_reasoning
+            current_extra["reasoning_type"] = "thinking"
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,

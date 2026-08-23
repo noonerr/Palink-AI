@@ -23,6 +23,7 @@ from ..models import (
     CharacterChatSession,
     CharacterChatMessage,
     CharacterChatSessionBranch,
+    WorldBook,
 )
 from ..models.system import GenerationPreset
 from ..services.websocket_manager import ws_manager, Connection, ChatRoom, StreamSessionBusyError
@@ -37,7 +38,6 @@ from ..services.character_message_builder import build_character_chat_messages, 
 from ..services.status_bar_detector import (
     StreamingStatusStripper,
     strip_and_parse_status_marker,
-    save_status_config,
 )
 from ..services.image_generation_service import image_result_to_dict, maybe_generate_image_for_message
 from ..services.roleplay_prompt_assembly import (
@@ -66,7 +66,7 @@ from ..api.character_ext import (
     REGEX_PLACEMENT_WORLD_INFO,
 )
 from ..memory_module.service import MemoryService
-from ..utils import normalize_image_url, build_memory_context
+from ..utils import normalize_image_url, build_memory_context, clean_memory_content, apply_message_extra_patch
 
 router = APIRouter(tags=["websocket"])
 logger = logging.getLogger(__name__)
@@ -198,8 +198,10 @@ async def run_chat_generation(
             if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
                 return
 
-        final = result.final_text()
+        # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
+        final = result.full_content
         token_count = result.token_count()
+        extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
 
         try:
             if assistant_message_id is None:
@@ -211,6 +213,7 @@ async def run_chat_generation(
                     tokens=token_count,
                     prompt_tokens=result.prompt_tokens,
                     reasoning_tokens=result.effective_reasoning_tokens(),
+                    extra=extra_payload,
                 )
                 save_db.add(msg)
                 save_db.commit()
@@ -227,6 +230,7 @@ async def run_chat_generation(
                         tokens=token_count,
                         prompt_tokens=result.prompt_tokens,
                         reasoning_tokens=result.effective_reasoning_tokens(),
+                        extra=extra_payload,
                     )
                     save_db.add(msg)
                     save_db.commit()
@@ -238,6 +242,8 @@ async def run_chat_generation(
                     msg.tokens = token_count
                     msg.prompt_tokens = result.prompt_tokens
                     msg.reasoning_tokens = result.effective_reasoning_tokens()
+                    # [REASONING-SEPARATE] 快照更新同步刷新 extra.reasoning
+                    apply_message_extra_patch(msg, {"reasoning": result.full_reasoning} if result.full_reasoning else {})
                     save_db.commit()
 
             last_saved_content_len = len(result.full_content)
@@ -309,78 +315,98 @@ async def run_chat_generation(
             except Exception as e:
                 logger.warning("Failed to fetch MCP tools: %s", e)
 
-        stream = stream_text_completion(
-            model_id=model,
-            messages=messages,
-            temperature=0.7,
-            timeout=30.0,
-            request_id="auto",
-            user_id=user_id,
-            reasoning_effort=reasoning_effort,
-            provider_id=provider_id,
-            tools=mcp_tools if mcp_tools else None,
-        )
+        # [EMPTY-RESP-RETRY] 同角色扮演路径：模型偶发空响应自动重试一次，空/Error 不入库。
+        for _attempt in range(2):
+            stream = stream_text_completion(
+                model_id=model,
+                messages=messages,
+                temperature=0.7,
+                timeout=30.0,
+                request_id="auto",
+                user_id=user_id,
+                reasoning_effort=reasoning_effort,
+                provider_id=provider_id,
+                tools=mcp_tools if mcp_tools else None,
+            )
 
-        async for delta in stream:
-            if delta.get("type") == "queue":
-                await ws_manager.broadcast_to_session(session_id, delta)
-                continue
-
-            usage = delta.get("usage")
-            if usage:
-                result.total_tokens = int(usage.get("total_tokens", 0) or 0)
-                result.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-                result.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-                _rt = int(usage.get("reasoning_tokens", 0) or 0)
-                if not _rt:
-                    _details = usage.get("completion_tokens_details") or {}
-                    _rt = int(_details.get("reasoning_tokens", 0) or 0)
-                result.reasoning_tokens = _rt
-                result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                prompt_details = usage.get("prompt_tokens_details") or {}
-                result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
-                continue
-
-            if enable_tools:
-                tool_call = delta.get("tool_call")
-                if tool_call:
-                    await ws_manager.broadcast_to_session(session_id, {
-                        "type": "tool_call",
-                        "id": tool_call.get("id", ""),
-                        "name": tool_call.get("name", ""),
-                        "arguments": tool_call.get("arguments", {}),
-                    })
+            async for delta in stream:
+                if delta.get("type") == "queue":
+                    await ws_manager.broadcast_to_session(session_id, delta)
                     continue
 
-                tool_result = delta.get("tool_result")
-                if tool_result:
-                    await ws_manager.broadcast_to_session(session_id, {
-                        "type": "tool_result",
-                        "id": tool_result.get("id", ""),
-                        "name": tool_result.get("name", ""),
-                        "content": tool_result.get("content", "")[:2000],
-                    })
+                usage = delta.get("usage")
+                if usage:
+                    result.total_tokens = int(usage.get("total_tokens", 0) or 0)
+                    result.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                    result.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+                    _rt = int(usage.get("reasoning_tokens", 0) or 0)
+                    if not _rt:
+                        _details = usage.get("completion_tokens_details") or {}
+                        _rt = int(_details.get("reasoning_tokens", 0) or 0)
+                    result.reasoning_tokens = _rt
+                    result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
                     continue
 
-            reasoning = delta.get("reasoning")
-            content = delta.get("content")
-            if content or reasoning:
-                await ws_manager.send_chunk(
-                    session_id,
-                    content=content or "",
-                    reasoning=reasoning or "",
-                )
-                if reasoning:
-                    result.full_reasoning += reasoning
-                if content:
-                    result.full_content += content
-                # 同步正则重处理 + DB commit 极慢, 丢到线程池, 避免阻塞事件循环导致全站冻结
-                await asyncio.to_thread(persist_snapshot)
+                if enable_tools:
+                    tool_call = delta.get("tool_call")
+                    if tool_call:
+                        await ws_manager.broadcast_to_session(session_id, {
+                            "type": "tool_call",
+                            "id": tool_call.get("id", ""),
+                            "name": tool_call.get("name", ""),
+                            "arguments": tool_call.get("arguments", {}),
+                        })
+                        continue
 
-        persist_snapshot(force=True)
+                    tool_result = delta.get("tool_result")
+                    if tool_result:
+                        await ws_manager.broadcast_to_session(session_id, {
+                            "type": "tool_result",
+                            "id": tool_result.get("id", ""),
+                            "name": tool_result.get("name", ""),
+                            "content": tool_result.get("content", "")[:2000],
+                        })
+                        continue
 
-        if not result.has_content:
-            result.full_content = "Error: 模型未返回任何可显示内容，请切换模型或稍后重试。"
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                content = delta.get("content")
+                if content or reasoning:
+                    await ws_manager.send_chunk(
+                        session_id,
+                        content=content or "",
+                        reasoning=reasoning or "",
+                    )
+                    if reasoning:
+                        result.full_reasoning += reasoning
+                    if content:
+                        result.full_content += content
+                    # 同步正则重处理 + DB commit 极慢, 丢到线程池, 避免阻塞事件循环导致全站冻结
+                    await asyncio.to_thread(persist_snapshot)
+
+            persist_snapshot(force=True)
+
+            if result.full_content or result.full_reasoning:
+                break
+            logger.warning("EMPTY-RESP-RETRY auto-chat session=%s attempt=%d/2", session_id, _attempt + 1)
+            # 指数退避：模型网关故障窗口通常持续数十秒，给恢复时间再重试
+            await asyncio.sleep(4 * (2 ** _attempt))
+            result.full_content = ""
+            result.full_reasoning = ""
+            result.total_tokens = 0
+            result.prompt_tokens = 0
+            result.completion_tokens = 0
+            result.reasoning_tokens = 0
+
+        # [EMPTY-RESP-FIX] 判定改为「无正文」而非「无任何内容」：模型偶发只输出
+        # <think> 思考无正文（reasoning-only），对用户同样是"没输出"，应报错不显示。
+        if not result.full_content:
+            logger.error(
+                "[NO-CONTENT-FINAL] session=%s 重试后仍无正文 reasoning_len=%d（reasoning-only，已向用户报错）",
+                session_id, len(result.full_reasoning or ""),
+            )
+            result.full_content = "Error: 模型网关暂时无响应（连续多次返回空内容），请稍后重试或切换模型。"
             await ws_manager.send_error(session_id, result.full_content)
             return
 
@@ -400,6 +426,11 @@ async def run_chat_generation(
         await ws_manager.send_done(session_id, usage=usage_info)
 
     except asyncio.CancelledError:
+        # [DIAG] 此路径此前零日志，"第二轮报错"排查时无法区分用户取消/超时取消
+        logger.warning(
+            "[STREAM-CANCELLED] session=%s content_len=%d reasoning_len=%d（用户断开或超时取消）",
+            session_id, len(result.full_content or ""), len(result.full_reasoning or ""),
+        )
         if not result.has_content:
             result.full_content = "Error: 请求已中断，未收到模型回复。"
         persist_snapshot(force=True)
@@ -430,7 +461,8 @@ async def run_chat_generation(
                         mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
                             mem_svc.store_memory(user_id, session_id, "user", user_message)
-                            mem_svc.store_memory(user_id, session_id, "assistant", result.full_content)
+                            # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
+                            mem_svc.store_memory(user_id, session_id, "assistant", clean_memory_content(result.full_content))
                             save_db.commit()
                             memory_stored = True
                 except Exception as e:
@@ -438,6 +470,59 @@ async def run_chat_generation(
                     logger.warning("Memory storage failed: %s", e)
         finally:
             save_db.close()
+
+
+def _run_secondary_mvu_sync(
+    save_db,
+    user_id: int,
+    char_ext_raw: dict,
+    stat_data: dict,
+    story_text: str,
+    main_loop,
+) -> tuple[list, list[str]]:
+    """同步包装：查询副 AI 配置，若开启则跨线程调副模型生成变量 patches。
+
+    返回 (patches, logs)。未配置/未开启/调用失败均返回 ([], [])，不抛异常。
+    persist_snapshot 可能在 to_thread 线程运行，故用 run_coroutine_threadsafe
+    把副 AI 协程提交到主事件循环执行。
+    """
+    try:
+        from app.models import UserSetting
+        us = save_db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+        if us is None:
+            return [], []
+        if not us.mvu_secondary_enabled:
+            return [], []
+        sec_model = (us.mvu_secondary_model or "").strip()
+        if not sec_model:
+            return [], []
+    except Exception as exc:
+        logger.warning("MVU secondary config load failed: %s", exc)
+        return [], []
+
+    try:
+        from app.services.mvu_engine import extract_schema_defaults
+        from app.services.mvu_secondary import run_secondary_mvu
+        schema_defaults = extract_schema_defaults(
+            char_ext_raw.get("tavern_helper") if isinstance(char_ext_raw, dict) else None
+        )
+        # [MVU-SECONDARY-GUARD] 无 schema = 角色卡没有变量系统/面板，副 AI 不介入，
+        # 避免对无变量系统的卡乱生成变量（特调/乱输出防护）。仅当卡定义了
+        # tavern_helper schema（z.object）时才触发副 AI。
+        if not schema_defaults:
+            return [], []
+        coro = run_secondary_mvu(
+            secondary_model=sec_model,
+            stat_data=stat_data,
+            story_text=story_text,
+            schema_defaults=schema_defaults,
+        )
+        future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+        patches, logs = future.result(timeout=90)
+        return patches, logs
+    except Exception as exc:
+        logger.warning("MVU secondary AI failed: %s", exc)
+        return [], []
 
 
 async def run_character_chat_generation(
@@ -475,6 +560,9 @@ async def run_character_chat_generation(
 ):
     result = StreamResult()
     save_db = SessionLocal()
+    # [MVU-SECONDARY] 主事件循环引用：persist_snapshot 可能在 to_thread 线程运行，
+    # 副 AI 协程需跨线程提交到主循环执行（asyncio.run_coroutine_threadsafe）。
+    _main_loop = asyncio.get_running_loop()
     # P2-8 修复: 续写模式下预设 assistant_message_id，使 persist 更新而非创建新消息
     assistant_message_id = continue_message_id
     # 记录原始内容长度，用于续写时追加（而非替换）
@@ -497,14 +585,19 @@ async def run_character_chat_generation(
     stream_gen_id = _uuid_mod.uuid4().hex[:8]
     stream_start_ts = time.monotonic()
     status_stripper = StreamingStatusStripper()
-    status_config_saved = False
     mvu_variables_saved = False
     mvu_latest_variables: dict | None = None
 
     def persist_snapshot(force: bool = False):
-        nonlocal assistant_message_id, last_saved_content_len, last_saved_reasoning_len, last_flush_ts, status_config_saved, mvu_variables_saved, mvu_latest_variables
+        nonlocal assistant_message_id, last_saved_content_len, last_saved_reasoning_len, last_flush_ts, mvu_variables_saved, mvu_latest_variables
 
-        if not result.has_content:
+        # [EMPTY-RESP-FIX] 空响应/仅思考无正文时不入库：模型偶发返回空（200 OK 但无
+        # content/reasoning）或只有 <think> 无正文，若把 "Error: ..." 或 think 残渣存成
+        # assistant 消息，会污染历史 → 后续重试提示词带 Error 历史 → 越重试越失败
+        # （2026-08-18 实测：2175/2177/2181 三条 Error 消息入库后该会话连续失败）。
+        if not result.full_content:
+            return
+        if result.full_content.strip().startswith("Error:"):
             return
 
         content_delta = len(result.full_content) - last_saved_content_len
@@ -517,9 +610,20 @@ async def run_character_chat_generation(
             if content_delta < 80 and reasoning_delta < 80 and (time.monotonic() - last_flush_ts) < 1.0:
                 return
 
-        final_raw = result.final_text()
-        # 剥离 palink-status 标记 + 解析状态栏配置
-        final_raw, status_config = strip_and_parse_status_marker(final_raw, char, force=force)
+        # [THINK-DEDUP] 用 full_content 而非 final_text()：final_text() 会把
+        # full_reasoning 包成 <think> 前缀拼在正文前，而下方 574 行还会再拼一次
+        # regexed_reasoning 的 <think>，导致入库 content 出现两份重复思维链
+        # （2026-08-18 实测 2198：双 <think> 块，用户看到思维链"泄露/重复"）。
+        final_raw = result.full_content
+        # 剥离历史残留的 palink-status 标记（防御性清理，不再解析/保存状态栏配置）
+        final_raw, _ = strip_and_parse_status_marker(final_raw, char, force=force)
+        # [THINK-IN-CONTENT-FIX] 模型可能把思维链直接写进 content（reasoning 字段为空，
+        # content 里带  thinking... response 块，2026-08-18 实测 598/600/1292/2207）。
+        # 在下方拼 reasoning 前缀之前剥离，避免思维链污染入库正文（前端显示"思维链泄露"）。
+        # 剥离后为空（纯思维链无正文）时保留原始，避免入库空消息。
+        _clean_raw = re.sub(r"<think[\s\S]*?</think\s*>", "", final_raw, flags=re.IGNORECASE).strip()
+        if _clean_raw:
+            final_raw = _clean_raw
         final = _apply_persist_regex_to_display_text(
             final_raw,
             save_db,
@@ -550,7 +654,8 @@ async def run_character_chat_generation(
                 user_name=user_name or "User",
                 char_name=character_name or "Character",
             )
-            final = "<think>" + regexed_reasoning + "</think>\n" + final
+            # [REASONING-SEPARATE] 思考不再内联包裹进 content，仅经 msg_extra.reasoning 持久化
+            # （与 Step 4 前端消费点迁移同批上线）
         token_count = result.token_count()
 
         # Phase 3 extra 字段: reasoning 双写 + gen_id + per-swipe 元数据
@@ -572,10 +677,29 @@ async def run_character_chat_generation(
                     MvuEngine,
                     merge_character_book_entries,
                 )
-                char_ext_raw: dict = {}
-                if char is not None and getattr(char, "extensions", None):
+                # [MVU-DETACHED-FIX] char 参数来自 ws 调用方会话（gen_db 已 close，实例
+                # detached），直接访问 char.world_books 触发 lazy load 必抛
+                # "Parent instance is not bound to a Session" → 整个 MVU 更新失败、
+                # variables 永不下发（2026-08-17 实测 26 次失败 / 0 成功）。
+                # 用 save_db 重新加载并 eager load world_books.entries，读到的仍是同一角色。
+                from sqlalchemy.orm import selectinload
+                _mvu_char = None
+                if char is not None and getattr(char, "id", None):
                     try:
-                        raw_ext = char.extensions
+                        _mvu_char = (
+                            save_db.query(Character)
+                            .options(
+                                selectinload(Character.world_books).selectinload(WorldBook.entries)
+                            )
+                            .filter(Character.id == char.id)
+                            .first()
+                        )
+                    except Exception:
+                        _mvu_char = None
+                char_ext_raw: dict = {}
+                if _mvu_char is not None and getattr(_mvu_char, "extensions", None):
+                    try:
+                        raw_ext = _mvu_char.extensions
                         char_ext_raw = json.loads(raw_ext) if isinstance(raw_ext, str) else (raw_ext if isinstance(raw_ext, dict) else {})
                     except (json.JSONDecodeError, TypeError):
                         pass
@@ -583,7 +707,7 @@ async def run_character_chat_generation(
                 # 供 build_initial_stat_data 提取 <initvar>（头像 URL/服饰/内心想法等初始值）。
                 wb_entries = [
                     str(stage.content or "")
-                    for wb in (char.world_books or [])
+                    for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
                     if getattr(wb, "type", "") == "character_book"
                     for stage in (wb.entries or [])
                 ]
@@ -606,6 +730,11 @@ async def run_character_chat_generation(
                     new_vars, mvu_logs = MvuEngine.update_from_reply(
                         cur_vars, final_raw, char_ext_raw
                     )
+                    # [MVU-SECONDARY-MANUAL] 副 AI 已改为全手动模式：
+                    # 不再在 persist 阶段自动调用副模型解析剧情（此前 90s 同步阻塞
+                    # 会导致主流程收尾停滞、界面"生成完但一直转圈"）。
+                    # 需要变量更新时由用户在前端消息按钮手动触发
+                    # POST /api/character-sessions/{session_id}/mvu-secondary。
                     cur_meta["variables"] = new_vars
                     sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
                     msg_extra["variables"] = new_vars
@@ -719,14 +848,6 @@ async def run_character_chat_generation(
                         logger.warning("Failed to update msg.extra with Phase 3 fields", exc_info=True)
                     save_db.commit()
 
-            # 保存状态栏配置（仅首次解析到有效配置时）
-            if status_config and not status_config_saved and char is not None:
-                try:
-                    save_status_config(char, save_db, status_config)
-                    status_config_saved = True
-                except Exception:
-                    logger.warning("Failed to save palink_status_bar_config", exc_info=True)
-
             last_saved_content_len = len(result.full_content)
             last_saved_reasoning_len = len(result.full_reasoning)
             last_flush_ts = time.monotonic()
@@ -794,108 +915,123 @@ async def run_character_chat_generation(
                 "branch_id": branch_id,
             })
 
-        stream = stream_text_completion(
-            model_id=model,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            frequency_penalty=frequency_penalty,
-            presence_penalty=presence_penalty,
-            min_p=min_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            timeout=30.0,
-            request_id=session_id,
-            user_id=user_id,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
-            provider_id=provider_id,
-            logit_bias=logit_bias,
-            # Task 3.4.3/3.4.4: 传递前端 function tool，并通过 WebSocket
-            # 请求前端执行 handler（替代后端 MCP 执行）
-            tools=tools,
-            tool_executor=(
-                lambda tool_name, tool_call_id, tool_args: ws_manager.request_tool_call(
-                    session_id, tool_call_id, tool_name, tool_args
-                )
-            ) if tools else None,
-        )
+        # [GEN-STARTED] 流式开始前推送生成状态事件：模型网关（opencode.ai）响应慢时
+        # 首个 chunk 可能数十秒后才到，前端若只等 chunk 会误判"没回复"并弹超时警告
+        # （2026-08-18 实测：连接重试 31s + 生成 64s，前端 15s 就警告）。先推送
+        # generation_started，前端据此清除超时警告并显示"正在生成"。
+        await ws_manager.broadcast_to_session(session_id, {"type": "generation_started"})
 
-        async for delta in stream:
-            if delta.get("type") == "queue":
-                await ws_manager.broadcast_to_session(session_id, delta)
-                continue
-
-            usage = delta.get("usage")
-            if usage:
-                result.total_tokens = int(usage.get("total_tokens", 0) or 0)
-                result.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-                result.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-                _rt = int(usage.get("reasoning_tokens", 0) or 0)
-                if not _rt:
-                    _details = usage.get("completion_tokens_details") or {}
-                    _rt = int(_details.get("reasoning_tokens", 0) or 0)
-                result.reasoning_tokens = _rt
-                result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                prompt_details = usage.get("prompt_tokens_details") or {}
-                result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
-                continue
-
-            reasoning = delta.get("reasoning")
-            content = delta.get("content")
-            # 当思考模式关闭时，将 reasoning 合并到 content 显示
-            if enable_thinking is False and reasoning:
-                if not content:
-                    content = reasoning
-                reasoning = ""
-            # 流式层剥离 palink-status 标记（跨 chunk 缓冲）
-            push_content = status_stripper.feed(content) if content else ""
-            if push_content or reasoning:
-                await ws_manager.send_chunk(
-                    session_id,
-                    content=push_content or "",
-                    reasoning=reasoning or "",
-                )
-                if reasoning:
-                    result.full_reasoning += reasoning
-                if content:
-                    result.full_content += content
-                # 同步正则重处理 + DB commit 极慢, 丢到线程池, 避免阻塞事件循环导致全站冻结
-                await asyncio.to_thread(persist_snapshot)
-
-        # ── 状态栏兜底：针对 R1 等低遵循度模型 ──
-        # 即便已把状态栏指令贴到最后一条 user 消息末尾，推理模型仍可能在 <think>
-        # 阶段把状态栏排除在任务外，导致正文丢失面板。此处检测回复是否已含状态栏，
-        # 若不含则用角色卡缓存的真实值基线自动补一个到末尾（DB 与前端均包含），
-        # 保证面板 100% 出现；模型已自行输出面板时跳过（保留模型的更新值）。
-        try:
-            from ..services.status_bar_detector import (
-                build_fallback_panel,
-                response_has_status_bar,
-                wrap_bare_status_bar,
+        # [EMPTY-RESP-RETRY] 模型偶发空响应（HTTP 200 但无 content/reasoning 增量，
+        # opencode.ai 网关实测出现）：自动重试。失败不入库（persist_snapshot
+        # 已跳过空/Error 文本），重试提示词保持干净，避免 Error 历史污染恶性循环。
+        # 仅当「完全空」时重试；只输出  thinking 无正文（reasoning-only）不重试，
+        # 防止前端收到重复思考流。
+        # 2026-08-18 实测：网关间歇性空响应（直连 3 次中 1 次 reasoning-only），
+        # 2 次重试不够（生产连续 2 次全空 → 报错）。增至 3 次 + 退避 4s/8s/16s。
+        for _attempt in range(3):
+            stream = stream_text_completion(
+                model_id=model,
+                messages=messages,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                min_p=min_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                timeout=30.0,
+                request_id=session_id,
+                user_id=user_id,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+                provider_id=provider_id,
+                logit_bias=logit_bias,
+                # Task 3.4.3/3.4.4: 传递前端 function tool，并通过 WebSocket
+                # 请求前端执行 handler（替代后端 MCP 执行）
+                tools=tools,
+                tool_executor=(
+                    lambda tool_name, tool_call_id, tool_args: ws_manager.request_tool_call(
+                        session_id, tool_call_id, tool_name, tool_args
+                    )
+                ) if tools else None,
             )
-            if char is not None:
-                # 先把模型漏写包裹标签的裸状态栏补上原生触发标签，使后续判定能
-                # 识别为「模型已输出面板」，从而保留模型给出的最新值；否则会误判为
-                # 缺失、用开场白基准模板兜底，导致面板显示成旧模板而非最新状态。
-                result.full_content = wrap_bare_status_bar(result.full_content, char)
-                if response_has_status_bar(result.full_content, char):
-                    logger.info("status_bar_source=model (panel rendered by model)")
-                else:
-                    _panel = build_fallback_panel(char, user_name, char.name if char else None)
-                    if _panel:
-                        result.full_content = result.full_content.rstrip() + "\n" + _panel
-                        logger.info("status_bar_source=fallback (model omitted, server filled)")
-                    else:
-                        logger.info("status_bar_source=none (no panel & no fallback config)")
-        except Exception as _sb_e:
-            logger.warning("status bar fallback injection failed: %s", _sb_e)
 
-        persist_snapshot(force=True)
+            async for delta in stream:
+                if delta.get("type") == "queue":
+                    await ws_manager.broadcast_to_session(session_id, delta)
+                    continue
 
-        if not result.has_content:
-            result.full_content = "Error: 模型未返回任何可显示内容，请切换模型或稍后重试。"
+                usage = delta.get("usage")
+                if usage:
+                    result.total_tokens = int(usage.get("total_tokens", 0) or 0)
+                    result.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                    result.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+                    _rt = int(usage.get("reasoning_tokens", 0) or 0)
+                    if not _rt:
+                        _details = usage.get("completion_tokens_details") or {}
+                        _rt = int(_details.get("reasoning_tokens", 0) or 0)
+                    result.reasoning_tokens = _rt
+                    result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
+                    continue
+
+                reasoning = delta.get("reasoning")
+                content = delta.get("content")
+                # 当思考模式关闭时，将 reasoning 合并到 content 显示
+                if enable_thinking is False and reasoning:
+                    if not content:
+                        content = reasoning
+                    reasoning = ""
+                # 流式层剥离 palink-status 标记（跨 chunk 缓冲）
+                push_content = status_stripper.feed(content) if content else ""
+                if push_content or reasoning:
+                    await ws_manager.send_chunk(
+                        session_id,
+                        content=push_content or "",
+                        reasoning=reasoning or "",
+                    )
+                    if reasoning:
+                        result.full_reasoning += reasoning
+                    if content:
+                        result.full_content += content
+                    # 同步正则重处理 + DB commit 极慢, 丢到线程池, 避免阻塞事件循环导致全站冻结
+                    await asyncio.to_thread(persist_snapshot)
+
+            persist_snapshot(force=True)
+
+            # [REASONING-ONLY-RETRY] 2026-08-18：有思考无正文（reasoning-only）同样
+            # 视为失败并重试。此前 break 条件含 full_reasoning，reasoning-only 直接
+            # 跳过重试走 922 报错路径（零日志），实测"第二轮 100% 报错"即此路径：
+            # HTTP 200 但只有思考流，用户端只见 Error。重试期间清空状态，前端会
+            # 收到第二段思考流（可接受，优于直接报错）。
+            if result.full_content:
+                break
+            _rr_tail = (result.full_reasoning[-200:]) if result.full_reasoning else ""
+            logger.warning(
+                "EMPTY-RESP-RETRY session=%s attempt=%d/3 content_len=%d reasoning_len=%d reasoning_tail=%r",
+                session_id, _attempt + 1, len(result.full_content or ""),
+                len(result.full_reasoning or ""), _rr_tail,
+            )
+            # 指数退避：模型网关故障窗口通常持续数十秒，给恢复时间再重试
+            await asyncio.sleep(4 * (2 ** _attempt))
+            result.full_content = ""
+            result.full_reasoning = ""
+            result.total_tokens = 0
+            result.prompt_tokens = 0
+            result.completion_tokens = 0
+            result.reasoning_tokens = 0
+            status_stripper = StreamingStatusStripper()
+
+        # [EMPTY-RESP-FIX] 判定改为「无正文」而非「无任何内容」：模型偶发只输出
+        # <think> 思考无正文（reasoning-only），对用户同样是"没输出"，应报错不显示。
+        if not result.full_content:
+            logger.error(
+                "[NO-CONTENT-FINAL] session=%s 重试后仍无正文 reasoning_len=%d（reasoning-only，已向用户报错）",
+                session_id, len(result.full_reasoning or ""),
+            )
+            result.full_content = "Error: 模型网关暂时无响应（连续多次返回空内容），请稍后重试或切换模型。"
             await ws_manager.send_error(session_id, result.full_content)
             return
 
@@ -928,6 +1064,11 @@ async def run_character_chat_generation(
         await ws_manager.send_done(session_id, usage=usage_info)
 
     except asyncio.CancelledError:
+        # [DIAG] 此路径此前零日志，"第二轮报错"排查时无法区分用户取消/超时取消
+        logger.warning(
+            "[STREAM-CANCELLED] session=%s content_len=%d reasoning_len=%d（用户断开或超时取消）",
+            session_id, len(result.full_content or ""), len(result.full_reasoning or ""),
+        )
         if not result.has_content:
             result.full_content = "Error: 请求已中断，未收到模型回复。"
         persist_snapshot(force=True)
@@ -984,11 +1125,12 @@ async def run_character_chat_generation(
                                     content=user_message,
                                     branch_id=branch_id,
                                 )
+                            # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
                             mem_svc.store_memory(
                                 user_id=user_id,
                                 session_id=session_id,
                                 role="assistant",
-                                content=result.full_content,
+                                content=clean_memory_content(result.full_content),
                                 branch_id=branch_id,
                             )
                             save_db.commit()
@@ -1137,7 +1279,7 @@ async def ws_chat(websocket: WebSocket):
                                     max_tokens=2000,
                                     memory_mode=memory_mode,
                                 )
-                                memory_text = build_memory_context(mem_ctx)
+                                memory_text = build_memory_context(mem_ctx, max_tokens=2000)
                         except Exception as e:
                             logger.warning("Memory context retrieval failed: %s", e)
 

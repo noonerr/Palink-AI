@@ -395,15 +395,18 @@ export function stripSillyTavernNamePrefix(
 }
 
 export function wrapSillyTavernQuotedText(content: string): string {
+  // 引号字符一律使用 \uXXXX 转义（对齐 ST script.js L1870-1896 原版写法）。
+  // 历史 bug：此前正则中的中文弯引号等字面字符曾被编码损坏为 ASCII 引号，
+  // 导致中文对话 “...” 永远无法包裹成 <q>、正文引号着色失效（2026-08-21 实测）。
   return String(content || '').replace(
-    /<style>[\s\S]*?<\/style>|```[\s\S]*?```|~~~[\s\S]*?~~~|``[\s\S]*?``|`[\s\S]*?`|(".*?")|(".*?")|(«.*?»)|(".*?")|(".*?")|(".*?")/gim,
+    /<style>[\s\S]*?<\/style>|```[\s\S]*?```|~~~[\s\S]*?```|``[\s\S]*?``|`[\s\S]*?`|(".*?")|(\u201C.*?\u201D)|(\u00AB.*?\u00BB)|(\u300C.*?\u300D)|(\u300E.*?\u300F)|(\uFF02.*?\uFF02)/gim,
     (match, p1, p2, p3, p4, p5, p6) => {
       if (p1) return `<q>"${p1.slice(1, -1)}"</q>`;
-      if (p2) return `<q>"${p2.slice(1, -1)}"</q>`;
-      if (p3) return `<q>«${p3.slice(1, -1)}»</q>`;
-      if (p4) return `<q>「${p4.slice(1, -1)}」</q>`;
-      if (p5) return `<q>『${p5.slice(1, -1)}』</q>`;
-      if (p6) return `<q>＂${p6.slice(1, -1)}＂</q>`;
+      if (p2) return `<q>\u201C${p2.slice(1, -1)}\u201D</q>`;
+      if (p3) return `<q>\u00AB${p3.slice(1, -1)}\u00BB</q>`;
+      if (p4) return `<q>\u300C${p4.slice(1, -1)}\u300D</q>`;
+      if (p5) return `<q>\u300E${p5.slice(1, -1)}\u300F</q>`;
+      if (p6) return `<q>\uFF02${p6.slice(1, -1)}\uFF02</q>`;
       return match;
     },
   );

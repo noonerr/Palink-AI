@@ -39,7 +39,11 @@ interface UseCharacterChatOptions {
   onVariablesUpdated?: (variables: Record<string, unknown>) => void;
 }
 
-const TIMEOUT_WARNING_MS = 15000;
+// 生成超时警告阈值：模型网关（opencode.ai）响应慢时首个 chunk 可能数十秒后才到，
+// 15s 太激进会误报"回复慢"（2026-08-18 实测连接重试 31s + 生成 64s）。后端已在
+// 流式开始前推送 generation_started，收到后即清除本警告，故此处阈值只需覆盖
+// "后端尚未开始生成"的极端情况，放宽到 30s。
+const TIMEOUT_WARNING_MS = 30000;
 
 interface SendMessageOptions {
   sessionOverride?: CharacterChatSession | null;
@@ -232,7 +236,8 @@ export function useCharacterChat({
   const catchUpAnimatorRef = useRef<CatchUpAnimator | null>(null);
 
   const streamRafRef = useRef<number | null>(null);
-  const streamPendingRef = useRef<{ assistantId: string; content: string } | null>(null);
+  // [REASONING-SEPARATE] 流式快照分离携带思考，落 state 时合并进 msg.extra.reasoning
+  const streamPendingRef = useRef<{ assistantId: string; content: string; reasoning?: string } | null>(null);
   const messageIndexMapRef = useRef<Map<string, number>>(new Map());
 
   // PlotLine 阶段推进回调 ref，避免闭包过期且无需修改现有 useCallback 依赖
@@ -265,24 +270,29 @@ export function useCharacterChat({
     if (!pending) return;
     streamPendingRef.current = null;
     setMessages(prev => {
+      const applyPatch = (msg: (typeof prev)[number]) => (
+        pending.reasoning !== undefined
+          ? { ...msg, content: pending.content, extra: { ...(msg.extra || {}), reasoning: pending.reasoning } }
+          : { ...msg, content: pending.content }
+      );
       const idx = messageIndexMapRef.current.get(pending.assistantId);
       if (idx === undefined) {
         // Fallback to findIndex if map is stale
         const fallbackIdx = prev.findIndex((msg) => msg.id === pending.assistantId);
         if (fallbackIdx === -1) return prev;
         const newMessages = [...prev];
-        newMessages[fallbackIdx] = { ...newMessages[fallbackIdx], content: pending.content };
+        newMessages[fallbackIdx] = applyPatch(newMessages[fallbackIdx]);
         updateMessageIndexMap(newMessages);
         return newMessages;
       }
       const newMessages = [...prev];
-      newMessages[idx] = { ...newMessages[idx], content: pending.content };
+      newMessages[idx] = applyPatch(newMessages[idx]);
       return newMessages;
     });
   }, [setMessages, updateMessageIndexMap]);
 
-  const scheduleStreamUpdate = useCallback((assistantId: string, content: string) => {
-    streamPendingRef.current = { assistantId, content };
+  const scheduleStreamUpdate = useCallback((assistantId: string, content: string, reasoning?: string) => {
+    streamPendingRef.current = { assistantId, content, reasoning: reasoning || undefined };
     if (streamRafRef.current === null) {
       streamRafRef.current = requestAnimationFrame(flushStreamUpdate);
     }
@@ -335,10 +345,8 @@ export function useCharacterChat({
         wsRuntime?.onStreamToken(data.content);
       }
 
-      const streamContent = wsFullReasoningRef.current
-        ? '<think' + '>' + wsFullReasoningRef.current + '</think' + '>\n' + wsFullContentRef.current
-        : wsFullContentRef.current;
-      scheduleStreamUpdate(assistantId, streamContent);
+      // [REASONING-SEPARATE] 正文与思考分离携带，不再拼接包裹体
+      scheduleStreamUpdate(assistantId, wsFullContentRef.current, wsFullReasoningRef.current || undefined);
     },
     onDone: (data) => {
       if (streamRafRef.current !== null) {
@@ -352,7 +360,9 @@ export function useCharacterChat({
           const idx = messageIndexMapRef.current.get(pending.assistantId) ?? prev.findIndex((msg) => msg.id === pending.assistantId);
           if (idx === -1) return prev;
           const newMessages = [...prev];
-          newMessages[idx] = { ...newMessages[idx], content: pending.content };
+          newMessages[idx] = pending.reasoning !== undefined
+            ? { ...newMessages[idx], content: pending.content, extra: { ...(newMessages[idx].extra || {}), reasoning: pending.reasoning } }
+            : { ...newMessages[idx], content: pending.content };
           return newMessages;
         });
       }
@@ -391,6 +401,15 @@ export function useCharacterChat({
         ? data.message_id
         : null;
       const nextVariables = (data.variables && typeof data.variables === 'object') ? data.variables : null;
+      // [WS-MVU-EVENT] WebSocket 路径与 HTTP 路径对齐：final_content 带 variables 时
+      // dispatch palink:mvuVariablesUpdated，让会话级 sessionVariables 即时更新。
+      // 否则旧消息 iframe（面板常驻处）只能靠 isGenerating 翻转后的异步 refetch 兜底，
+      // 面板拿到的是旧 stat_data —— "变量进不了面板"的前端侧根因之一。
+      if (nextVariables) {
+        window.dispatchEvent(new CustomEvent('palink:mvuVariablesUpdated', {
+          detail: { sessionId: wsResolvedSessionIdRef.current ?? selectedSession?.id, variables: nextVariables },
+        }));
+      }
       setMessages(prev => prev.map(msg => {
         if (msg.id !== assistantId) return msg;
         const patched = {
@@ -429,16 +448,22 @@ export function useCharacterChat({
         });
       }
 
-      const fullContent = data.reasoning
-        ? '<think' + '>' + data.reasoning + '</think' + '>\n' + data.content
-        : data.content;
+      // [REASONING-SEPARATE] 追赶动画只作用于正文；思考直接写入 extra.reasoning
+      const syncReasoning = typeof data.reasoning === 'string' ? data.reasoning : '';
+      if (syncReasoning) {
+        setMessages(prev => prev.map(msg => (
+          String(msg.id) === String(assistantId)
+            ? { ...msg, extra: { ...(msg.extra || {}), reasoning: syncReasoning } }
+            : msg
+        )));
+      }
 
       if (catchUpAnimatorRef.current.isRunning) {
-        catchUpAnimatorRef.current.appendContent(fullContent);
+        catchUpAnimatorRef.current.appendContent(data.content || '');
       } else {
         setMessages(prev => {
           const currentMsg = prev.find((msg) => msg.id === assistantId);
-          catchUpAnimatorRef.current!.start(fullContent, currentMsg?.content ?? '');
+          catchUpAnimatorRef.current!.start(data.content || '', currentMsg?.content ?? '');
           return prev;
         });
       }
@@ -575,14 +600,15 @@ export function useCharacterChat({
   }, [selectedCharacterId, wsConnect, wsDisconnect]);
 
   const handleRegenerate = useCallback(async (messageIndex: number) => {
-    if (!selectedCharacter || isGenerating || uploading || messageIndex < 1) return;
+    if (!selectedCharacter || isGenerating || uploading || messageIndex < 0) return;
 
     const assistantMessageIndex = messageIndex;
+    // 开场白（messageIndex === 0）前面没有 user 消息。
+    // ST 对齐：重新生成开场白时直接基于角色卡/系统提示生成，
+    // 上下文不注入开场白文本，前端仅跳过 user 上下文解析即可。
     const userMessageIndex = assistantMessageIndex - 1;
-    if (userMessageIndex < 0) return;
-
-    const userMessage = messages[userMessageIndex];
-    if (userMessage.role !== 'user') return;
+    const userMessage = userMessageIndex >= 0 ? messages[userMessageIndex] : undefined;
+    if (userMessageIndex >= 0 && userMessage?.role !== 'user') return;
 
     const assistantMessage = messages[assistantMessageIndex];
     const targetMessageId = typeof assistantMessage.id === 'number'
@@ -621,7 +647,9 @@ export function useCharacterChat({
     try {
       // Task 7.2: 触发 ST GENERATION_STARTED 事件（带 type，区分 normal/regenerate/continue/swipe）
       const runtime = getGlobalSillyTavernRuntime();
-      const baseMessage = userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim();
+      const baseMessage = userMessage
+        ? userMessage.content.replace(/!\[.*?\]\(.*?\)|\[📎.*?\]\(.*?\)/g, '').trim()
+        : '';
 
       runtime?.emitGenerationStarted('regenerate', {
         character_id: selectedCharacter.id,
@@ -644,6 +672,15 @@ export function useCharacterChat({
       }, { signal: abortControllerRef.current.signal });
 
       const streamResult = await streamEngineRef.current.sendViaSSE(response, (json) => {
+        // 后端已开始生成：清除超时警告，避免网关响应慢时误报"回复慢"
+        if (json.type === 'generation_started') {
+          if (timeoutRef.current) {
+            window.clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
+          setTimeoutWarning(false);
+          return;
+        }
         if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number') && typeof json.content === 'string') {
           setMessages(prev => prev.map(msg => (
             String(msg.id) === String(json.message_id) ? { ...msg, content: json.content as string } : msg
@@ -703,10 +740,8 @@ export function useCharacterChat({
           runtime?.onStreamToken(content);
         }
 
-        const streamContent = fullReasoning
-          ? '<think' + '>' + fullReasoning + '</think' + '>\n' + fullContent
-          : fullContent;
-        scheduleStreamUpdate(assistantMessageId, streamContent);
+        // [REASONING-SEPARATE] 正文与思考分离携带，不再拼接包裹体
+        scheduleStreamUpdate(assistantMessageId, fullContent, fullReasoning || undefined);
       });
 
       if (streamResult.cancelled) {
@@ -759,7 +794,9 @@ export function useCharacterChat({
           const idx = prev.findIndex((msg) => msg.id === pending.assistantId);
           if (idx === -1) return prev;
           const newMessages = [...prev];
-          newMessages[idx] = { ...newMessages[idx], content: pending.content };
+          newMessages[idx] = pending.reasoning !== undefined
+            ? { ...newMessages[idx], content: pending.content, extra: { ...(newMessages[idx].extra || {}), reasoning: pending.reasoning } }
+            : { ...newMessages[idx], content: pending.content };
           return newMessages;
         });
       }
@@ -826,6 +863,15 @@ export function useCharacterChat({
       }, { signal: abortControllerRef.current.signal });
 
       const streamResult = await streamEngineRef.current.sendViaSSE(response, (json) => {
+        // 后端已开始生成：清除超时警告（与主发送路径一致）
+        if (json.type === 'generation_started') {
+          if (timeoutRef.current) {
+            window.clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
+          setTimeoutWarning(false);
+          return;
+        }
         if (json.type === 'plotline_advanced' && json.new_stage && typeof json.new_stage === 'object') {
           const newStage = json.new_stage as { stage_index: number; title: string; summary: string };
           const title = newStage.title || '新阶段';
@@ -872,11 +918,8 @@ export function useCharacterChat({
           runtime?.onStreamToken(content);
         }
 
-        // continue 模式：流式内容追加到原消息内容之后
-        const newPart = fullReasoning
-          ? '<think' + '>' + fullReasoning + '</think' + '>\n' + fullContent
-          : fullContent;
-        scheduleStreamUpdate(assistantMessageId, originalContent + newPart);
+        // continue 模式：流式正文追加到原消息内容之后；思考分离携带
+        scheduleStreamUpdate(assistantMessageId, originalContent + fullContent, fullReasoning || undefined);
       });
 
       if (streamResult.cancelled) {
@@ -920,7 +963,9 @@ export function useCharacterChat({
           const idx = prev.findIndex((msg) => msg.id === pending.assistantId);
           if (idx === -1) return prev;
           const newMessages = [...prev];
-          newMessages[idx] = { ...newMessages[idx], content: pending.content };
+          newMessages[idx] = pending.reasoning !== undefined
+            ? { ...newMessages[idx], content: pending.content, extra: { ...(newMessages[idx].extra || {}), reasoning: pending.reasoning } }
+            : { ...newMessages[idx], content: pending.content };
           return newMessages;
         });
       }
@@ -1226,10 +1271,8 @@ export function useCharacterChat({
           runtime?.onStreamToken(content);
         }
 
-        const streamContent2 = fullReasoning
-          ? '<think' + '>' + fullReasoning + '</think' + '>\n' + fullContent
-          : fullContent;
-        scheduleStreamUpdate(assistantMessageId, streamContent2);
+        // [REASONING-SEPARATE] 正文与思考分离携带，不再拼接包裹体
+        scheduleStreamUpdate(assistantMessageId, fullContent, fullReasoning || undefined);
       });
 
       if (streamResult2.cancelled) {
@@ -1292,7 +1335,9 @@ export function useCharacterChat({
           const idx = prev.findIndex((msg) => msg.id === pending.assistantId);
           if (idx === -1) return prev;
           const newMessages = [...prev];
-          newMessages[idx] = { ...newMessages[idx], content: pending.content };
+          newMessages[idx] = pending.reasoning !== undefined
+            ? { ...newMessages[idx], content: pending.content, extra: { ...(newMessages[idx].extra || {}), reasoning: pending.reasoning } }
+            : { ...newMessages[idx], content: pending.content };
           return newMessages;
         });
       }

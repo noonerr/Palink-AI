@@ -12,13 +12,8 @@ export const generateMessageId = (): string => {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 };
 
-/**
- * 构建助手消息内容（包含推理内容）
- */
-export const buildAssistantContent = (content: string, reasoning?: string): string => {
-  if (!reasoning) return content;
-  return `<think>${reasoning}</think>\n${content}`;
-};
+// [REASONING-SEPARATE] 原 buildAssistantContent（拼接 think 包裹体）已随分离存储迁移废弃删除；
+// 思考统一持有在消息 extra.reasoning，渲染层由 Message.tsx 直读。
 
 /**
  * 从文本中剥离附件Markdown

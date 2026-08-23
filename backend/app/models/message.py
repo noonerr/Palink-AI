@@ -18,4 +18,7 @@ class ChatMessage(Base):
     prompt_tokens = Column(Integer, default=0)
     reasoning_tokens = Column(Integer, default=0)
     web_search_results = Column(Text, nullable=True)
+    # [REASONING-SEPARATE] 分离存储：assistant 思考经 extra.reasoning 单独持久化
+    # （Text 列存 JSON，与 character_chat_messages.extra 同约定）
+    extra = Column(Text, nullable=True)
     session = relationship("ChatSession", back_populates="messages")

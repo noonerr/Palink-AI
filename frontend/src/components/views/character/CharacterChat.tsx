@@ -55,6 +55,7 @@ import { getCachedGlobalRegexScripts, preloadGlobalRegexScripts, loadEngineConfi
 import type { RegexScript } from '@/utils/regexEngine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
+import { extractReasoningTags } from '@/lib/sillytavern/formatting';
 import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
 import { promptInjection } from '@/services/prompt-injection';
 import { PluginManager } from '@/components/roleplay/PluginManager';
@@ -232,8 +233,6 @@ export interface CharacterChatProps {
   // dialogue
   dialogueMode: 'first_person' | 'third_person';
   setDialogueMode: (m: 'first_person' | 'third_person') => void;
-  showCharacterStatus: boolean;
-  setShowCharacterStatus: (v: boolean) => void;
   autoGenerateChatImages: boolean;
   setAutoGenerateChatImages: (v: boolean) => void;
   responseLength: string;
@@ -378,7 +377,6 @@ export function CharacterChat(props: CharacterChatProps) {
     handleMixedDelete, showDeleteMixedConfirm, setShowDeleteMixedConfirm, confirmDeleteMixed, clearSelection,
     memoryMode, memoryStats, compressing, manualCompressMemory,
     dialogueMode, setDialogueMode,
-    showCharacterStatus, setShowCharacterStatus,
     autoGenerateChatImages, setAutoGenerateChatImages,
     responseLength, setResponseLength,
     sidebarCollapsed, setSidebarCollapsed: _setSidebarCollapsed,
@@ -557,19 +555,6 @@ export function CharacterChat(props: CharacterChatProps) {
   const handleToggleDialogueMode = useCallback(() => {
     setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person');
   }, [dialogueMode, setDialogueMode]);
-
-  const handleToggleCharacterStatus = useCallback(async (value: boolean) => {
-    setShowCharacterStatus(value);
-    try {
-      await api.put('/api/users/me/settings', { show_character_status: value });
-      invalidateCache('/api/users/me/settings');
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { showCharacterStatus: value } }));
-      toast.success(value ? (t.character_status_enabled || '角色状态表格已开启') : (t.character_status_disabled || '角色状态表格已关闭'));
-    } catch (e) {
-      console.error('Failed to update character status setting:', e);
-      setShowCharacterStatus(!value);
-    }
-  }, [setShowCharacterStatus, t]);
 
   const handleToggleAutoGenerateImages = useCallback(async (value: boolean) => {
     setAutoGenerateChatImages(value);
@@ -1246,6 +1231,49 @@ export function CharacterChat(props: CharacterChatProps) {
     if (idx >= 0) void wrappedHandleRegenerateRef.current(idx);
   }, []);
 
+  // [MVU-SECONDARY-MANUAL] 手动触发副 AI 变量更新：以指定消息剧情为源，
+  // 调用后端 POST /api/character-sessions/{session_id}/mvu-secondary 解析变量。
+  // 成功后用返回的 variables 刷新会话级 stat_data（驱动角色面板/状态栏）。
+  const [mvuSecondaryRunning, setMvuSecondaryRunning] = useState(false);
+  const handleManualMvuSecondary = useCallback(async (messageId?: string | number) => {
+    if (!selectedSession || selectedSession.id === '__pending__') {
+      toast.error('会话未创建，无法更新变量');
+      return;
+    }
+    if (mvuSecondaryRunning) return;
+    setMvuSecondaryRunning(true);
+    try {
+      const res = await api.post(`/api/character-sessions/${selectedSession.id}/mvu-secondary`, {
+        message_id: messageId != null ? Number(messageId) : null,
+      });
+      if (res?.variables && typeof res.variables === 'object') {
+        setSessionVariables(res.variables as { stat_data?: Record<string, unknown> });
+        window.dispatchEvent(new CustomEvent('palink:mvuVariablesUpdated', {
+          detail: { sessionId: selectedSession.id, variables: res.variables },
+        }));
+      }
+      if (res?.applied) {
+        toast.success('变量已更新');
+      } else {
+        const reason = res?.reason || 'no_patches';
+        if (reason === 'secondary_disabled' || reason === 'secondary_model_missing') {
+          toast.error('副 AI 未配置，请在设置中开启并填写模型');
+        } else if (reason === 'no_schema') {
+          toast.error('角色卡无变量系统（无 tavern_helper schema）');
+        } else if (reason === 'no_patches') {
+          toast.info('副 AI 未解析出变量变化');
+        } else {
+          toast.info('变量更新完成（无变化）');
+        }
+      }
+    } catch (e: any) {
+      console.error('Manual MVU secondary failed:', e);
+      toast.error('变量更新失败');
+    } finally {
+      setMvuSecondaryRunning(false);
+    }
+  }, [selectedSession, mvuSecondaryRunning]);
+
   const handleEditAt = useCallback((newContent: string, messageId?: string | number) => {
     if (messageId === undefined || messageId === null) return;
     const idx = displayedMessagesRef.current.findIndex((m) => String(m.id) === String(messageId));
@@ -1260,39 +1288,50 @@ export function CharacterChat(props: CharacterChatProps) {
         mobileComposerKeyboardBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX,
       )
     : mobileComposerClosedBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX;
-  const smartCardChatMessages = useMemo(() => displayedMessages.map((item, index) => ({
-    id: item.id ?? null,
-    message_id: item.message_id ?? item.id ?? null,
-    mesid: Number.isFinite(Number(item.mesid)) ? Number(item.mesid) : index,
-    role: item.role,
-    is_user: typeof item.is_user === 'boolean' ? item.is_user : item.role === 'user',
-    is_system: typeof item.is_system === 'boolean' ? item.is_system : item.role === 'system',
-    is_name: typeof (item as any).is_name === 'boolean'
-      ? (item as any).is_name
-      : typeof (item as any).extra?.is_name === 'boolean'
-        ? (item as any).extra.is_name
-        : true,
-    force_avatar: (item as any).force_avatar ?? (item as any).extra?.force_avatar,
-    original_avatar: (item as any).original_avatar ?? (item as any).extra?.original_avatar,
-    avatar: (item as any).avatar ?? (item as any).extra?.avatar,
-    gen_id: (item as any).gen_id ?? (item as any).extra?.gen_id,
-    group_id: (item as any).group_id ?? (item as any).extra?.group_id,
-    group_name: (item as any).group_name ?? (item as any).extra?.group_name,
-    selected_group: (item as any).selected_group ?? (item as any).extra?.selected_group,
-    groups: (item as any).groups ?? (item as any).extra?.groups,
-    name: item.name || (item.role === 'user' ? user.username : item.role === 'system' ? 'System' : selectedCharacter.name),
-    content: item.content || '',
-    mes: item.content || '',
-    message: item.content || '',
-    text: item.content || '',
-    swipes: Array.isArray((item as any).swipes) && (item as any).swipes.length
+  // [REASONING-SEPARATE] 插件边界适配：iframe 通道的 mes 预剥离思考块（含存量混合行），
+  // 思考走 extra.reasoning 独立字段——源码不可改的随卡插件（BubbleDialogue 等）靠此保兼容
+  const smartCardChatMessages = useMemo(() => displayedMessages.map((item, index) => {
+    const { content: cleanMes, reasoning } = extractReasoningTags(item.content || '');
+    const baseExtra = (item as any).extra && typeof (item as any).extra === 'object' ? (item as any).extra : {};
+    const boundaryExtra = reasoning && !(typeof baseExtra.reasoning === 'string' && baseExtra.reasoning.trim())
+      ? { ...baseExtra, reasoning }
+      : baseExtra;
+    const stripSwipe = (s: string) => extractReasoningTags(s || '').content;
+    const rawSwipes: string[] = Array.isArray((item as any).swipes) && (item as any).swipes.length
       ? (item as any).swipes
-      : [item.content || ''],
-    swipe_id: Number.isFinite(Number((item as any).swipe_id)) ? Number((item as any).swipe_id) : 0,
-    swipe_info: Array.isArray((item as any).swipe_info) ? (item as any).swipe_info : [],
-    extra: (item as any).extra && typeof (item as any).extra === 'object' ? (item as any).extra : {},
-    created_at: item.created_at,
-  })), [displayedMessages, selectedCharacter.name, user.username]);
+      : [item.content || ''];
+    return {
+      id: item.id ?? null,
+      message_id: item.message_id ?? item.id ?? null,
+      mesid: Number.isFinite(Number(item.mesid)) ? Number(item.mesid) : index,
+      role: item.role,
+      is_user: typeof item.is_user === 'boolean' ? item.is_user : item.role === 'user',
+      is_system: typeof item.is_system === 'boolean' ? item.is_system : item.role === 'system',
+      is_name: typeof (item as any).is_name === 'boolean'
+        ? (item as any).is_name
+        : typeof (item as any).extra?.is_name === 'boolean'
+          ? (item as any).extra.is_name
+          : true,
+      force_avatar: (item as any).force_avatar ?? (item as any).extra?.force_avatar,
+      original_avatar: (item as any).original_avatar ?? (item as any).extra?.original_avatar,
+      avatar: (item as any).avatar ?? (item as any).extra?.avatar,
+      gen_id: (item as any).gen_id ?? (item as any).extra?.gen_id,
+      group_id: (item as any).group_id ?? (item as any).extra?.group_id,
+      group_name: (item as any).group_name ?? (item as any).extra?.group_name,
+      selected_group: (item as any).selected_group ?? (item as any).extra?.selected_group,
+      groups: (item as any).groups ?? (item as any).extra?.groups,
+      name: item.name || (item.role === 'user' ? user.username : item.role === 'system' ? 'System' : selectedCharacter.name),
+      content: cleanMes,
+      mes: cleanMes,
+      message: cleanMes,
+      text: cleanMes,
+      swipes: rawSwipes.map(stripSwipe),
+      swipe_id: Number.isFinite(Number((item as any).swipe_id)) ? Number((item as any).swipe_id) : 0,
+      swipe_info: Array.isArray((item as any).swipe_info) ? (item as any).swipe_info : [],
+      extra: boundaryExtra,
+      created_at: item.created_at,
+    };
+  }), [displayedMessages, selectedCharacter.name, user.username]);
 
   const totalMsgCount = displayedMessages.length;
 
@@ -1636,7 +1675,6 @@ export function CharacterChat(props: CharacterChatProps) {
             isNavigating,
             mobileSidebarOpen,
             dialogueMode,
-            showCharacterStatus,
             autoGenerateChatImages,
             responseLength,
             plotLineSessionStatus: pl.sessionStatus,
@@ -1647,7 +1685,6 @@ export function CharacterChat(props: CharacterChatProps) {
             onShowWorldBookManager: () => setShowWorldBookManager(true),
             onToggleStoryline: handleToggleStoryline,
             onToggleDialogueMode: handleToggleDialogueMode,
-            onToggleCharacterStatus: handleToggleCharacterStatus,
             onToggleAutoGenerateImages: handleToggleAutoGenerateImages,
             onResponseLengthChange: handleResponseLengthChange,
             onShowPluginManager: () => setPluginManagerOpen(true),
@@ -1781,13 +1818,15 @@ export function CharacterChat(props: CharacterChatProps) {
                 onCompress={idx === totalMsgCount - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
                 compressing={compressing}
                 onRegenerate={msg.role === 'assistant' && !isGenerating ? handleRegenerateAt : undefined}
-                canRegenerate={msg.role === 'assistant' && !isGenerating && idx > 0 && displayedMessages[idx - 1]?.role === 'user'}
+                canRegenerate={msg.role === 'assistant' && !isGenerating}
                 showModelReasoning={showModelReasoning}
                 onEdit={msg.id != null ? handleEditAt : undefined}
                 canEdit={msg.role === 'assistant' && !isGenerating}
                 onGenerateImage={msg.id != null ? handleGenerateImage : undefined}
                 isGeneratingImage={msg.id != null ? generatingImageMessageIds.has(String(msg.id)) : false}
                 onSmartCardAction={handleSmartCardAction}
+                onManualMvuSecondary={msg.role === 'assistant' ? handleManualMvuSecondary : undefined}
+                mvuSecondaryRunning={mvuSecondaryRunning}
                 isMixedDeleteMode={isMixedDeleteMode}
                 messageIndex={idx}
                 selectedWholeMessages={selectedWholeMessages}
