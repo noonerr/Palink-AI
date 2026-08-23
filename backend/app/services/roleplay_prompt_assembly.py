@@ -1,4 +1,4 @@
-﻿"""Unified roleplay prompt assembly service.
+"""Unified roleplay prompt assembly service.
 
 This module is the backend seam for Palink's ST-compatible roleplay runtime.
 It intentionally preserves the existing prompt behavior while making the
@@ -4526,6 +4526,28 @@ def _append_worldbook_context(
         elif req.message and not req.smart_card_trigger and not req.is_continue:
             recent_msgs.append({"role": "user", "content": req.message})
 
+        # D-1 修复（2026-08-23）: 世界书 delay 的 ST chat.length 绝对语义
+        # （world-info.js:665-676）需要真实聊天消息总数——recent_for_wb 是截断
+        # 窗口不能充当。计数口径对齐 ST chat 数组（含 hidden，不含未落库的本轮
+        # 新消息；is_init 时为 1）。COUNT 查询失败时回退窗口长度。
+        try:
+            from sqlalchemy import func as _sa_func
+
+            _wb_persisted_count = (
+                req.db.query(_sa_func.count(CharacterChatMessage.id))
+                .filter(CharacterChatMessage.session_id == req.session_id)
+                .scalar()
+            ) or 0
+        except Exception as exc:
+            logger.warning("worldbook chat_length count failed: %s", exc)
+            _wb_persisted_count = len(recent_for_wb)
+        if req.is_init:
+            _wb_chat_length = 1
+        elif req.message and not req.smart_card_trigger and not req.is_continue:
+            _wb_chat_length = _wb_persisted_count + 1
+        else:
+            _wb_chat_length = max(_wb_persisted_count, len(recent_msgs))
+
         # E1 修复: 群聊 per-member 世界书（strategy=all/group 时，将启用成员字段并入 WI haystack）
         group_chars_arg = None
         if req.group_id and _g_mode is not None and group_wi_strategy in ("all", "group"):
@@ -4549,6 +4571,8 @@ def _append_worldbook_context(
             min_activations_depth_max=wi_min_activations_depth_max,
             # Phase G: 透传 world_info_character_strategy 插入排序策略
             world_info_character_strategy=wi_char_strategy,
+            # D-1 修复: delay 的 chat_length 绝对判定需要真实消息总数
+            chat_length=_wb_chat_length,
         )
         if wb_result.text:
             wb_text = wb_result.text

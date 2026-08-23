@@ -176,7 +176,7 @@ class TimedEffectsManager:
     def get_state(self, entry_id: str) -> Optional[SessionWorldBookEntryState]:
         return self._load_all_states().get(entry_id)
 
-    def can_activate(self, entry: WorldBookStage, message_index: int) -> bool:
+    def can_activate(self, entry: WorldBookStage, message_index: int, chat_length: Optional[int] = None) -> bool:
         """检查条目是否可激活（不含关键词匹配层）。
 
         Bug #3 修复: ST 1.18.0 ``world-info.js:4733-4745`` 的判定顺序：
@@ -184,18 +184,24 @@ class TimedEffectsManager:
             2. ``isCooldown && !isSticky`` → 跳过 (sticky 激活时 cooldown 被忽略)
             3. 其他情况 → 可进入关键词/sticky 强制激活判定
 
-        原实现错误：cooldown>0 即返回 False，导致 sticky 仍处于激活期的条目
-        被错误跳过。修复后 sticky 激活时跳过 cooldown 检查，由 ``_scan_entries``
-        中的 sticky 强制激活路径接管。
+        D-1 修复（2026-08-23）: delay 改为 ST chat_length 绝对语义
+        （``world-info.js:665-676`` ``#checkDelayEffect``）：
+        ``entry.delay > 0 且 chat.length < entry.delay`` → 本轮抑制。
+        无状态、无计数器，随聊天消息数增长自动解除。废弃旧「激活才初始化
+        delay_remaining 计数」模型——该模型下 delay 条目被 can_activate 永久
+        拦截、永远到不了 record_activation，整个会话不可激活（死锁）。
         """
+        effective_chat_length = (
+            chat_length if chat_length is not None else (message_index + 1)
+        )
+        if entry.delay and entry.delay > 0 and effective_chat_length < entry.delay:
+            return False
         state = self.get_state(entry.id)
         if not state:
-            if entry.delay and entry.delay > 0:
-                return False
             return True
-        # delay 优先级最高，无视 sticky
-        if state.delay_remaining and state.delay_remaining > 0:
-            return False
+        # D-1 修复: delay 已改为 chat_length 绝对判定（见 docstring），
+        # 旧 state.delay_remaining 计数不再消费；存量行残留值随 update_after_message
+        # 不再递减、也不参与判定（列保留仅为 schema 兼容）。
         # Bug #3 修复: isCooldown && !isSticky → suppress
         is_sticky_active = (state.sticky_remaining or 0) > 0
         if (state.cooldown_remaining or 0) > 0 and not is_sticky_active:
@@ -222,7 +228,8 @@ class TimedEffectsManager:
                 entry_id=entry.id,
                 sticky_remaining=entry.sticky or 0,
                 cooldown_remaining=entry.cooldown or 0,
-                delay_remaining=entry.delay or 0,
+                # D-1 修复: delay 为 chat_length 绝对语义，不再落计数器
+                delay_remaining=0,
                 last_activated_message_index=message_index,
             )
             self.db.add(state)
@@ -255,8 +262,8 @@ class TimedEffectsManager:
         states = list(self._load_all_states().values())
         expired_keys: list[str] = []
         for state in states:
-            if state.delay_remaining and state.delay_remaining > 0:
-                state.delay_remaining -= 1
+            # D-1 修复: delay_remaining 不再递减——delay 为 chat_length 绝对语义，
+            # 无需按消息递减的计数器（列保留仅为 schema 兼容）。
             if state.sticky_remaining and state.sticky_remaining > 0:
                 state.sticky_remaining -= 1
                 if state.sticky_remaining <= 0:
@@ -700,6 +707,9 @@ def _scan_entries(
     global_scan_depth: Optional[int] = None,
     # P2-10 修复: 透传给 _build_haystack 的递归 buffer（RECURSION 状态使用）
     recurse_buffer: Optional[list[str]] = None,
+    # D-1 修复: ST chat.length 绝对语义的聊天消息总数
+    # （world-info.js:665-676；None 时回退 len(recent_messages)）
+    chat_length: Optional[int] = None,
 ) -> list[WorldBookStage]:
     activated: list[WorldBookStage] = []
     # Remember where this call's reports begin, so we can enrich them with
@@ -744,6 +754,21 @@ def _scan_entries(
             )
             continue
 
+        # P3 对齐（2026-08-23）: ST world-info.js:4758-4760 — RECURSION 轮跳过
+        # exclude_recursion 条目（sticky 激活期豁免）。INITIAL 轮不受影响；
+        # ST 中该检查位于 constant 分支（:4781）之前，故 constant 条目同样被抑制。
+        if recursion_depth > 0 and entry.exclude_recursion:
+            if not (timed_mgr and timed_mgr.is_sticky_active(entry)):
+                report.append(
+                    WorldbookEntryReport(
+                        entry_id=entry.id,
+                        title=entry.title or "",
+                        status="skipped",
+                        reason="exclude_recursion",
+                    )
+                )
+                continue
+
         # Feature: triggers - filter by generation type
         triggers = _parse_json_list(entry.triggers)
         if triggers and trigger_type and trigger_type not in triggers:
@@ -775,12 +800,15 @@ def _scan_entries(
                 )
                 continue
 
-        if timed_mgr and not timed_mgr.can_activate(entry, message_index):
+        if timed_mgr and not timed_mgr.can_activate(entry, message_index, chat_length=chat_length):
             state = timed_mgr.get_state(entry.id)
             reason_parts: list[str] = []
+            # D-1 修复: delay 原因为 chat_length 绝对判定（非状态行计数）
+            if entry.delay and entry.delay > 0:
+                _eff_len = chat_length if chat_length is not None else len(recent_messages)
+                if _eff_len < entry.delay:
+                    reason_parts.append(f"delay={entry.delay},chat_length={_eff_len}")
             if state:
-                if state.delay_remaining and state.delay_remaining > 0:
-                    reason_parts.append(f"delay={state.delay_remaining}")
                 if state.cooldown_remaining and state.cooldown_remaining > 0:
                     reason_parts.append(f"cooldown={state.cooldown_remaining}")
                     if entry.id in timed_mgr.sticky_to_cooldown_entries:
@@ -953,6 +981,8 @@ def _recursive_scan(
     # Phase E 修复: ST 1.18.0 MIN_ACTIVATIONS 状态机 (world-info.js:4991-5005)
     min_activations: int = 0,
     min_activations_depth_max: int = 0,
+    # D-1 修复: ST chat.length 绝对语义（透传给 _scan_entries → can_activate）
+    chat_length: Optional[int] = None,
 ) -> tuple[list[WorldBookStage], list[WorldbookEntryReport]]:
     """递归扫描世界书条目，对齐 ST 1.18.0 scan_state 状态机。
 
@@ -995,6 +1025,7 @@ def _recursive_scan(
             chat_metadata,
             persona_description,
             group_chars,
+            chat_length=chat_length,
         )
         if not activated:
             break
@@ -1043,6 +1074,7 @@ def _recursive_scan(
                 character_name, character_tags, chat_metadata,
                 persona_description, group_chars,
                 global_scan_depth=DEFAULT_SCAN_DEPTH,
+                chat_length=chat_length,
             )
             if activated:
                 all_activated.extend(activated)
@@ -1057,7 +1089,7 @@ def _recursive_scan(
         # ST 的 advanceScan 会持续递增深度，即使当前深度未找到新条目，
         # 更深的扫描可能看到更多聊天历史从而匹配新关键词。
         # 循环终止条件由 depth_max / chat_length / min_activations 三重保证。
-        chat_length = len(recent_messages)
+        _ma_chat_length = len(recent_messages)
         current_global_depth = DEFAULT_SCAN_DEPTH
         while len(all_activated) < min_activations:
             current_global_depth += 1  # buffer.advanceScan()
@@ -1065,7 +1097,7 @@ def _recursive_scan(
             #   (n_depth_max > 0 && getDepth() > n_depth_max) || (getDepth() > chat.length)
             if min_activations_depth_max > 0 and current_global_depth > min_activations_depth_max:
                 break
-            if current_global_depth > chat_length:
+            if current_global_depth > _ma_chat_length:
                 break
             activated = _scan_entries(
                 entries, recent_messages, char, timed_mgr, message_index,
@@ -1073,6 +1105,7 @@ def _recursive_scan(
                 character_name, character_tags, chat_metadata,
                 persona_description, group_chars,
                 global_scan_depth=current_global_depth,
+                chat_length=chat_length,
             )
             if activated:
                 all_activated.extend(activated)
@@ -1114,6 +1147,7 @@ def _recursive_scan(
                     persona_description, group_chars,
                     global_scan_depth=DEFAULT_SCAN_DEPTH,
                     recurse_buffer=recurse_buffer_parts,
+                    chat_length=chat_length,
                 )
                 if not new_activated:
                     break
@@ -1381,6 +1415,11 @@ def build_worldbook_context(
     # 插入排序策略: 0=evenly, 1=character_first(ST 默认), 2=global_first。
     # 控制激活条目按 lore 来源分层的排序顺序，对齐 ST getSortedEntries。
     world_info_character_strategy: int = 1,
+    # D-1 修复（2026-08-23）: ST chat.length 绝对语义的聊天消息总数
+    # （world-info.js:665-676 #checkDelayEffect）。delay 条目按
+    # ``chat_length < entry.delay`` 判定抑制；None 时回退 len(recent_messages)
+    # （调用方 recent_messages 通常有截断窗口，生产方应显式传真实总数）。
+    chat_length: Optional[int] = None,
 ) -> WorldbookContextResult:
     """
     ST-grade worldbook context builder.
@@ -1499,6 +1538,8 @@ def build_worldbook_context(
 
     # Phase E: min_activations>0 时强制走 _recursive_scan 路径以运行状态机，
     # 即使 enable_recursive=False（ST 的 MIN_ACTIVATIONS 不依赖 world_info_recursive）
+    # D-1 修复: chat_length 未显式传入时回退 len(msgs)（截断窗口近似值）
+    effective_chat_length = chat_length if chat_length is not None else len(msgs)
     if enable_recursive or min_activations > 0:
         activated, report = _recursive_scan(
             entries, msgs, character, timed_mgr, message_index,
@@ -1510,6 +1551,7 @@ def build_worldbook_context(
             group_chars=group_chars,
             min_activations=min_activations,
             min_activations_depth_max=min_activations_depth_max,
+            chat_length=effective_chat_length,
         )
     else:
         visited: set[str] = set()
@@ -1522,6 +1564,7 @@ def build_worldbook_context(
             chat_metadata=session.chat_metadata,
             persona_description=persona_description,
             group_chars=group_chars,
+            chat_length=effective_chat_length,
         )
 
     # Apply group scoring (before sorting)
