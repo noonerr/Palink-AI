@@ -6,6 +6,7 @@ Supports common macros and variable operations.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from datetime import datetime, timedelta
@@ -14,10 +15,29 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session as DBSession
 
 from ..models.chat_variable import ChatVariable, UserVariable, GlobalVariable
+from ..models.character import CharacterChatSession
 from .st_seedrandom import st_get_string_hash, st_pick_index
 
 
 MACRO_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
+
+# world book 的"当前变量状态"模板标签（ST MVU 扩展用），宏替换后需转成参考说明
+_STATUS_CURRENT_VAR_RE = re.compile(
+    r"<status_current_variable>([\s\S]*?)</status_current_variable>",
+    re.IGNORECASE,
+)
+
+
+def _format_status_current_variable_ref(m: re.Match) -> str:
+    body = m.group(1).strip()
+    if not body:
+        return ""
+    return (
+        "【当前变量状态】（内部数据，仅供 AI 思考判断使用；【严格禁止】把其中任何"
+        "内容（如日期时间、天气、数值、角色状态）抄进回复正文——正文只允许写剧情"
+        "对话；如需更新变量，必须使用 <UpdateVariable> JSON Patch 格式）\n"
+        + body
+    )
 
 # ST 1.18.0 {{pick}} 宏专用模式 (macros.js:522): 用于确定性随机选择。
 # 匹配 {{pick ::list}} 或 {{pick:list}}，捕获列表字符串。
@@ -524,6 +544,29 @@ def _resolve_complex_macro(parts: list[str], env: MacroEnv) -> Optional[str]:
             return "\n".join(entries) if entries else ""
         return ""
 
+    # {{format_message_variable::stat_data}} — ST 消息格式化宏（macros.js formatMessageVariable）。
+    # Palink 此前不识别该宏 → 模板文字原样进提示词 → AI 误以为要输出
+    # <status_current_variable> 快照而非 <UpdateVariable> JSON Patch（2026-08-18 实测 2163）。
+    # 这里输出当前会话 stat_data 的 JSON 供 AI 参考变量现状（与 ST 前端渲染行为对齐）。
+    if cmd == "format_message_variable" and args:
+        key = args[0].strip()
+        if key != "stat_data":
+            return ""
+        try:
+            row = (
+                env.db.query(CharacterChatSession)
+                .filter(CharacterChatSession.id == env.session_id)
+                .first()
+            )
+            if row and row.chat_metadata:
+                meta = json.loads(row.chat_metadata) if isinstance(row.chat_metadata, str) else row.chat_metadata
+                variables = (meta or {}).get("variables") or {}
+                sd = variables.get("stat_data") or {}
+                return json.dumps(sd, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return "{}"
+
     # Phase C 修复: {{banned "word"}} (ST macros.js:443) — 副作用宏，加入禁词列表，返回空串。
     # body 形如 'banned "word"'，_split_macro_args 不拆分引号，故 parts[0] 含完整文本。
     if cmd.startswith("banned"):
@@ -809,6 +852,14 @@ def evaluate_macros(text: str, env: MacroEnv, max_iterations: int = 10) -> str:
         if new_result == result:
             break
         result = new_result
+
+    # [STATUS-CURRENT-VAR] world book 里
+    # <status_current_variable>{{format_message_variable::stat_data}}</status_current_variable>
+    # 是"当前变量状态"模板（ST 前端 MVU 扩展渲染用）。宏替换后它变成
+    # <status_current_variable>{JSON}</status_current_variable>，AI 会误以为要输出该格式
+    # （2026-08-18 实测 2163：AI 输出 stat_data 快照而非 <UpdateVariable> JSON Patch）。
+    # 把标签替换为明确的"参考"说明，杜绝误解。
+    result = _STATUS_CURRENT_VAR_RE.sub(_format_status_current_variable_ref, result)
     return result
 
 

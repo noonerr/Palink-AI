@@ -561,8 +561,28 @@ ${bootHeader}
           _res.push(_ids[_i] + '=' + (document.getElementById(_ids[_i]) ? 'yes' : 'NO'));
         }
         console.warn('[PANEL-DBG] panel DOM check: ' + _res.join(' '));
+        // [PANEL-DBG2] 渲染结果 dump：面板脚本（refreshFromMVU）应已执行并填充这些 DOM。
+        // 有值→面板渲染成功（问题在可见性/高度）；无值→渲染未执行/中断。
+        try {
+          var _dbgEl = function (id) {
+            var el = document.getElementById(id);
+            return el ? JSON.stringify(String(el.textContent || '').slice(0, 40)) : 'null';
+          };
+          var _list = document.getElementById('charListContainer');
+          console.warn('[PANEL-DBG2] affectionText=' + _dbgEl('affectionText') +
+            ' charName=' + _dbgEl('charName') +
+            ' relationText=' + _dbgEl('relationText') +
+            ' worldDate=' + _dbgEl('worldDate') +
+            ' listChildren=' + (_list ? _list.children.length : 'null') +
+            ' panelVisible=' + (function () {
+              var el = document.getElementById('app');
+              if (!el) return 'noApp';
+              var r = el.getBoundingClientRect();
+              return 'w=' + Math.round(r.width) + ' h=' + Math.round(r.height);
+            })());
+        } catch (_pd2b) {}
       } catch (_pd) {}
-    }, 1500);
+    }, 2500);
   } catch (_pd2) {}
   // [SINGLE-SOURCE] extension prompts/fields 与 V4 变量同构：不再维护独立副本，
   // 统一存于 chatVariableStore.__extension_prompts / __extension_fields（随会话变量
@@ -6325,81 +6345,136 @@ ${bootHeader}
         ? window.Mvu.getAllVariables.bind(window.Mvu)
         : null;
 
-    const mvuGetAllVariablesFinal = () => {
+    // 归一化任意来源（扁平复合 key 或已嵌套）的变量对象，提取出嵌套 stat_data
+    // （含头像 UUID 绝对化）。与 ST 真实 MVU 契约一致：stat_data 永远是
+    // 嵌套结构 { 角色: { 属性: 值 }, 世界信息: { ... } }。
+    const mvuNormalizeStatData = (rawVars) => {
+      const vars = (rawVars && typeof rawVars === 'object') ? rawVars : {};
+      const sd = (vars.stat_data && typeof vars.stat_data === 'object') ? vars.stat_data : {};
+      const sdKeys = Object.keys(sd);
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const RE_CHAR = new RegExp('^/api/st/characters/', 'i');
+      const absolutize = function (v) {
+        if (typeof v === 'string') {
+          const t = v.trim();
+          if (UUID_RE.test(t)) return SMART_CARD_ORIGIN + '/api/st/characters/' + t;
+          if (RE_CHAR.test(t)) return SMART_CARD_ORIGIN + t;
+        }
+        return v;
+      };
+      const isNested = sdKeys.some(function (k) { return sd[k] && typeof sd[k] === 'object'; });
+      if (!isNested) {
+        // 扁平复合 key（如 "桃汐.好感度"、"世界信息.日期时间"）→ 按 "." 第一段分组为嵌套
+        // 不依赖 charMeta：通用 split，覆盖所有角色 + 世界信息等任意分组
+        const nested = {};
+        for (let i = 0; i < sdKeys.length; i++) {
+          const fullKey = sdKeys[i];
+          const dot = fullKey.indexOf('.');
+          let group, attr;
+          if (dot > 0) {
+            group = fullKey.slice(0, dot);
+            attr = fullKey.slice(dot + 1);
+          } else {
+            group = '_';
+            attr = fullKey;
+          }
+          if (!nested[group]) nested[group] = {};
+          nested[group][attr] = absolutize(sd[fullKey]);
+        }
+        return nested;
+      }
+      // 已是嵌套：递归对所有头像类 UUID 绝对化（返回副本，避免改写原对象）
+      const out = {};
+      const walk = function (src, dst) {
+        if (!src || typeof src !== 'object') return;
+        const ks = Object.keys(src);
+        for (let i = 0; i < ks.length; i++) {
+          const val = src[ks[i]];
+          if (typeof val === 'string' && UUID_RE.test(val.trim())) {
+            dst[ks[i]] = SMART_CARD_ORIGIN + '/api/st/characters/' + val.trim();
+          } else if (val && typeof val === 'object') {
+            dst[ks[i]] = {};
+            walk(val, dst[ks[i]]);
+          } else {
+            dst[ks[i]] = val;
+          }
+        }
+      };
+      walk(sd, out);
+      return out;
+    };
+
+    // 解析 getMvuData/getAllVariables 的变量来源：
+    // - message：按 message_id（负数=深度索引，-1=最新）取该楼层 extra.variables
+    // - global ：仅全局 store
+    // - chat/character/默认：合并后端 chat+global+local 与插件 store（后端优先）
+    // 返回的是"原始变量对象"，stat_data 的扁平→嵌套由 mvuNormalizeStatData 统一处理。
+    const mvuResolveSourceVars = (type, option) => {
+      if (type === 'message') {
+        let msgId = option.message_id;
+        if (msgId === undefined || msgId === null || msgId === 'latest' || msgId === '') msgId = -1;
+        const messages = getCompatChatMessages();
+        let idx;
+        if (typeof msgId === 'number' && Number.isFinite(msgId)) {
+          idx = (msgId < 0) ? (messages.length + msgId) : msgId;
+        } else {
+          idx = messages.findIndex((m) => String(m.id) === String(msgId) || String(m.message_id) === String(msgId));
+        }
+        const msg = (idx >= 0 && idx < messages.length) ? messages[idx] : null;
+        const vars = (msg && msg.extra && typeof msg.extra.variables === 'object') ? msg.extra.variables : {};
+        return vars;
+      }
+      if (type === 'global') return globalVariableStore;
       const ours = { ...globalVariableStore, ...chatVariableStore, ...localVariableStore };
       let theirs = {};
       try { if (pluginGetAllVariables) theirs = pluginGetAllVariables() || {}; } catch (_e) { /* ignore */ }
-      // 后端数据（ours）优先，插件数据补充 ours 缺失的键
-      const merged = { ...theirs, ...ours };
+      return { ...theirs, ...ours };
+    };
+
+    const mvuGetAllVariablesFinal = () => {
+      const merged = mvuResolveSourceVars('chat', {});
+      try { merged.stat_data = mvuNormalizeStatData(merged); } catch (_e) { /* ignore */ }
+      // [VAR-DBG] 面板（状态栏）裸调用 getAllVariables() 的返回诊断：
+      // 确认面板读取点拿到的 stat_data 是否非空、形状是否嵌套
       try {
-        const sd = (merged && merged.stat_data) || {};
-        const sdKeys = Object.keys(sd);
-        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const RE_CHAR = new RegExp('^/api/st/characters/', 'i');
-        const absolutize = function (v) {
-          if (typeof v === 'string') {
-            const t = v.trim();
-            if (UUID_RE.test(t)) return SMART_CARD_ORIGIN + '/api/st/characters/' + t;
-            if (RE_CHAR.test(t)) return SMART_CARD_ORIGIN + t;
+        var _sdGAV = merged && merged.stat_data;
+        var _sdKeys = _sdGAV && typeof _sdGAV === 'object' ? Object.keys(_sdGAV) : [];
+        var _sample = {};
+        try {
+          if (_sdGAV && _sdGAV['桃汐'] && typeof _sdGAV['桃汐'] === 'object') {
+            _sample['桃汐.好感度'] = _sdGAV['桃汐']['好感度'];
+            _sample['桃汐.服饰'] = _sdGAV['桃汐']['服饰'];
           }
-          return v;
-        };
-        // 判断 stat_data 是否已是嵌套（任一值直接是 object）
-        const isNested = sdKeys.some(function (k) { return sd[k] && typeof sd[k] === 'object'; });
-        if (!isNested) {
-          // 扁平复合 key（如 "桃汐.好感度"、"世界信息.日期时间"）→ 按 "." 第一段分组为嵌套
-          // 不依赖 charMeta：通用 split，覆盖所有角色 + 世界信息等任意分组
-          const nested = {};
-          for (let i = 0; i < sdKeys.length; i++) {
-            const fullKey = sdKeys[i];
-            const dot = fullKey.indexOf('.');
-            let group, attr;
-            if (dot > 0) {
-              group = fullKey.slice(0, dot);
-              attr = fullKey.slice(dot + 1);
-            } else {
-              group = '_';
-              attr = fullKey;
-            }
-            if (!nested[group]) nested[group] = {};
-            nested[group][attr] = absolutize(sd[fullKey]);
+          if (_sdGAV && _sdGAV['世界信息'] && typeof _sdGAV['世界信息'] === 'object') {
+            _sample['世界信息.日期时间'] = _sdGAV['世界信息']['日期时间'];
           }
-          merged.stat_data = nested;
-        } else {
-          // 已是嵌套：递归对所有头像类 UUID 绝对化
-          const walk = function (obj) {
-            if (!obj || typeof obj !== 'object') return;
-            const ks = Object.keys(obj);
-            for (let i = 0; i < ks.length; i++) {
-              const val = obj[ks[i]];
-              if (typeof val === 'string' && UUID_RE.test(val.trim())) {
-                obj[ks[i]] = SMART_CARD_ORIGIN + '/api/st/characters/' + val.trim();
-              } else if (val && typeof val === 'object') {
-                walk(val);
-              }
-            }
-          };
-          walk(sd);
-        }
-      } catch (_e) { /* ignore */ }
-      // [VAR-DBG] 读取链路调试（排查"插件角色面板不能显示变量"）
-      try { var _sdRet = (merged && merged.stat_data) || {}; console.warn('[VAR-DBG] getAllVariables stat_data keys=' + JSON.stringify(Object.keys(_sdRet)) + ' sample=' + JSON.stringify(_sdRet).slice(0, 200)); } catch (_vdbgD) {}
+        } catch (_sampErr) {}
+        console.warn('[VAR-DBG] getAllVariables stat_data keys=' + JSON.stringify(_sdKeys) + ' sample=' + JSON.stringify(_sample));
+      } catch (_vdbgGAV) {}
       return merged;
+    };
+
+    // [MVU-FAITHFUL] 忠实复刻 MVU 框架 getMvuData 契约（非单卡特调）：
+    // getMvuData({type, message_id}) → MvuData（含 .stat_data），按 type 解析来源、
+    // 按 message_id 解析楼层。任何依赖 Mvu.getMvuData 的卡片/插件（数据库界面/Galgame 等）通用。
+    const mvuGetMvuDataFinal = (option) => {
+      const opt = (option && typeof option === 'object') ? option : {};
+      const type = (typeof opt.type === 'string' && opt.type) ? opt.type : 'chat';
+      let sourceVars;
+      try { sourceVars = mvuResolveSourceVars(type, opt); } catch (_e) { sourceVars = {}; }
+      let statData;
+      try { statData = mvuNormalizeStatData(sourceVars); } catch (_e) { statData = {}; }
+      // [VAR-DBG] 调试（排查"插件角色面板不能显示变量"）
+      try { console.warn('[VAR-DBG] getMvuData type=' + type + ' stat_data keys=' + JSON.stringify(Object.keys(statData))); } catch (_vdbgD) {}
+      return { initialized_lorebooks: {}, stat_data: statData };
     };
 
     window.Mvu = window.Mvu || {};
     window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
     setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
-    // [GALGAME-COMPAT] Galgame 界面插件（数据库界面插件）通过 Mvu.getMvuData(option)
-    // 读取 stat_data（MVU_SCOPE_OPTIONS: {type:'message'|'chat'|'character'|'global'}）。
-    // shim 此前未提供 → TypeError → 插件 try/catch 吞掉 → 角色面板不显示变量。
-    // 与 getAllVariables 同源（merged 含 stat_data）；插件只读 .stat_data，
-    // 直接返回 merged 即可（option 忽略）。
     if (typeof window.Mvu.getMvuData !== 'function') {
-      window.Mvu.getMvuData = function (option) {
-        try { return mvuGetAllVariablesFinal(); } catch (_e) { return {}; }
-      };
-      setCompatFunction('getMvuData', window.Mvu.getMvuData);
+      window.Mvu.getMvuData = mvuGetMvuDataFinal;
+      setCompatFunction('getMvuData', mvuGetMvuDataFinal);
     }
     // 插件脚本若异步再次覆盖，延时再保险一次
     setTimeout(() => {
@@ -6407,10 +6482,8 @@ ${bootHeader}
         window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
         setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
         if (typeof window.Mvu.getMvuData !== 'function') {
-          window.Mvu.getMvuData = function (option) {
-            try { return mvuGetAllVariablesFinal(); } catch (_e2) { return {}; }
-          };
-          setCompatFunction('getMvuData', window.Mvu.getMvuData);
+          window.Mvu.getMvuData = mvuGetMvuDataFinal;
+          setCompatFunction('getMvuData', mvuGetMvuDataFinal);
         }
       } catch (_e) { /* ignore */ }
     }, 0);

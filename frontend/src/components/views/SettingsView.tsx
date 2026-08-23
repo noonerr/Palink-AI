@@ -427,6 +427,9 @@ export function SettingsView({
   const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
   const [promptLanguage, setPromptLanguage] = useState<string>('auto');
   const [characterDisplayMode, setCharacterDisplayMode] = useState<string>('framed');
+  // MVU 副 AI 变量更新（2026-08-19）：主模型未输出变量块时用副模型补
+  const [mvuSecondaryEnabled, setMvuSecondaryEnabled] = useState<boolean>(false);
+  const [mvuSecondaryModel, setMvuSecondaryModel] = useState<string>('');
   // 亮色模式智能卡对比度自动增强开关（localStorage 持久化，增强器实时读取）
   const [autoContrast, setAutoContrast] = useState<boolean>(true);
   // 角色扮演角色卡头像展示开关（localStorage 持久化，Message 实时读取；默认开启）
@@ -495,6 +498,8 @@ export function SettingsView({
       setShowModelReasoning(settings.show_model_reasoning !== false);
       setPromptLanguage(settings.prompt_language || 'auto');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
+      setMvuSecondaryEnabled(settings.mvu_secondary_enabled === true);
+      setMvuSecondaryModel(settings.mvu_secondary_model || '');
     } catch (e) {
       console.error('Failed to fetch memory mode:', e);
     }
@@ -550,6 +555,19 @@ export function SettingsView({
     } catch (e) {
       console.error('Failed to save memory mode:', e);
       toast.error('保存记忆模式失败');
+    }
+  };
+
+  // MVU 副 AI 变量更新：开关 + 副模型 ID
+  const handleSaveMvuSecondary = async (patch: { mvu_secondary_enabled?: boolean; mvu_secondary_model?: string }) => {
+    try {
+      await api.put('/api/users/me/settings', patch);
+      invalidateCache('/api/users/me/settings');
+      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
+      toast.success('副 AI 变量更新设置已保存');
+    } catch (e) {
+      console.error('Failed to save MVU secondary settings:', e);
+      toast.error('保存副 AI 设置失败');
     }
   };
 
@@ -1875,6 +1893,56 @@ export function SettingsView({
                       </Button>
                     </div>
                   </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
+                    <div className="flex items-center gap-3">
+                      <Database size={20} className="text-muted-foreground shrink-0" />
+                      <div>
+                        <p className="font-medium">副 AI 变量更新</p>
+                        <p className="text-xs text-muted-foreground">
+                          主模型未输出变量块时，用独立副模型解析剧情并更新角色面板（时间/好感度/服饰等），适配所有带变量系统的角色卡
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 w-full sm:w-auto">
+                      <Switch
+                        checked={mvuSecondaryEnabled}
+                        onCheckedChange={(checked) => {
+                          setMvuSecondaryEnabled(checked);
+                          handleSaveMvuSecondary({ mvu_secondary_enabled: checked });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {mvuSecondaryEnabled && (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
+                      <div className="flex items-center gap-3">
+                        <Database size={20} className="text-muted-foreground shrink-0" />
+                        <div>
+                          <p className="font-medium">副 AI 模型</p>
+                          <p className="text-xs text-muted-foreground">
+                            填写用于解析变量更新的模型 ID（建议用比主模型更强的模型，如 deepseek-v4-pro）
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 w-full sm:w-auto items-center">
+                        <Input
+                          value={mvuSecondaryModel}
+                          onChange={(e) => setMvuSecondaryModel(e.target.value)}
+                          placeholder="如 deepseek-v4-pro"
+                          className="w-full sm:w-56"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveMvuSecondary({ mvu_secondary_model: mvuSecondaryModel })}
+                          className="min-h-[44px]"
+                        >
+                          保存
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3">
                     <div className="flex items-center gap-3">

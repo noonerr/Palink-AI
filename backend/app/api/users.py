@@ -50,6 +50,8 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "silly_tavern_theme": setting.silly_tavern_theme or "palink",
         "active_persona_id": setting.active_persona_id,
         "power_user": setting.power_user if setting.power_user is not None else "{}",
+        "mvu_secondary_model": setting.mvu_secondary_model,
+        "mvu_secondary_enabled": setting.mvu_secondary_enabled if setting.mvu_secondary_enabled is not None else False,
     }
 
 
@@ -98,6 +100,10 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.active_persona_id = req.active_persona_id or None
     if req.power_user is not None:
         setting.power_user = req.power_user
+    if req.mvu_secondary_model is not None:
+        setting.mvu_secondary_model = req.mvu_secondary_model or None
+    if req.mvu_secondary_enabled is not None:
+        setting.mvu_secondary_enabled = req.mvu_secondary_enabled
     db.commit()
     # Phase 7 SubTask 7.1: 缓存失效 prefix 必须与 _build_key 生成的 key 完全匹配。
     # _build_key 在 kwargs 路径下使用 f"{k}={v.id}" 格式（cache.py:81），

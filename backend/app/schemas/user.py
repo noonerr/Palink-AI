@@ -36,6 +36,9 @@ class UserSettingUpdate(BaseModel):
     active_persona_id: Optional[str] = None
     # ST 1.18.0 power_user persistence (JSON string of full power_user object).
     power_user: Optional[str] = None
+    # MVU 副 AI 变量更新（2026-08-19）：副模型 ID（空=不启用）+ 开关。
+    mvu_secondary_model: Optional[str] = None
+    mvu_secondary_enabled: Optional[bool] = None
 
 class PasswordReset(BaseModel):
     new_password: str

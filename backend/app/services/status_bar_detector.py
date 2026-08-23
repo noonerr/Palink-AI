@@ -344,6 +344,31 @@ def build_detect_instruction(lang: str) -> str:
         )
 
 
+def _card_has_mvu_scripts(char) -> bool:
+    """卡片是否自带 MVU 体系脚本（<UpdateVariable> / <StatusPlaceHolderImpl/>）。
+
+    MVU 卡（酒馆助手体系）的变量更新走 <UpdateVariable> JSON Patch，面板渲染走
+    <StatusPlaceHolderImpl/> 占位符；若仍注入 Palink 的 <status> 指令，AI 会输出
+    <status> 而 MVU 引擎（mvu_engine）只认 <UpdateVariable> → stat_data 永不更新
+    → 面板恒显示初始值（2026-08-18 实锤：AI 输出 <status>，好感度永不变化）。
+    """
+    try:
+        ext_raw = getattr(char, "extensions", None)
+        if not ext_raw:
+            return False
+        ext = json.loads(ext_raw) if isinstance(ext_raw, str) else ext_raw
+        if not isinstance(ext, dict):
+            return False
+        for _rs in (ext.get("regex_scripts") or []):
+            if isinstance(_rs, dict):
+                _fr = str(_rs.get("findRegex", ""))
+                if "UpdateVariable" in _fr or "StatusPlaceHolderImpl" in _fr:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def build_status_instruction(char, lang: str, show_status: bool) -> str:
     """构建状态表详细指令（用于 system_prompt，路径 a/b）。
 
@@ -352,7 +377,11 @@ def build_status_instruction(char, lang: str, show_status: bool) -> str:
       - 已检测 has_status_bar=true → 卡内格式沿用指令
       - 已检测 has_status_bar=false + show_status=true → 默认 emoji 表指令
       - 已检测 has_status_bar=false + show_status=false → 空
+      - 卡片自带 MVU 脚本 → 空（不注入 <status>，避免与 <UpdateVariable> 冲突）
     """
+    # [MVU-SKIP] MVU 卡不注入任何 <status> 指令（卡内体系优先，见 _card_has_mvu_scripts）
+    if _card_has_mvu_scripts(char):
+        return ""
     config = get_status_config(char)
     if config is None:
         return ""  # 未检测，不注入状态表指令

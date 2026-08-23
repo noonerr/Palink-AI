@@ -76,6 +76,83 @@ def _find_first_json_array(text: str) -> list | None:
     return None
 
 
+# ── 裸 JSON Patch 容错（2026-08-18）──
+# ST 的 MVU 是前端扩展、解析有容错；Palink 后端此前只认 <UpdateVariable> 包裹块，
+# AI 偶发不包裹、直接输出 JSON Patch 数组（如 2160 消息）时提取不到 → stat_data 永不更新。
+# 这里按结构特征（op+path）识别"像 stat_data JSON Patch"的数组，防误解析正文 JSON。
+_JSONPATCH_OPS = {"replace", "delta", "insert", "remove", "move"}
+
+
+def _looks_like_stat_data_patch(data) -> bool:
+    """判断解析出的 JSON 数组是否像 stat_data JSON Patch。
+
+    判据：至少 1 个条目为 {op: replace/delta/insert/remove/move, path: /xxx/yyy}，
+    path 首段非空、不以 `_` 开头（readonly 字段）、不含 < >（防 HTML/XML 误判）。
+    """
+    if not isinstance(data, list) or not data:
+        return False
+    legit = 0
+    for p in data:
+        if not isinstance(p, dict):
+            continue
+        op = p.get("op")
+        path = p.get("path")
+        if op in _JSONPATCH_OPS and isinstance(path, str):
+            stripped = path.strip()
+            if not stripped.startswith("/"):
+                continue
+            first = stripped.lstrip("/").split("/", 1)[0]
+            if not first or first.startswith("_") or "<" in stripped or ">" in stripped:
+                continue
+            legit += 1
+    return legit > 0
+
+
+def _find_stat_data_patch_spans(text: str):
+    """扫描全文，返回所有「像 stat_data JSON Patch」数组的 (start, end, parsed) 列表。
+
+    按出现顺序返回；end 为闭区间后一位。平衡括号扫描 + _safe_json_loads_list 解析
+    + _looks_like_stat_data_patch 结构校验三重保障，最大限度降低误伤正文。
+    """
+    spans = []
+    idx = 0
+    while True:
+        start = text.find("[", idx)
+        if start == -1:
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        end = -1
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1:
+            break
+        candidate = text[start : end + 1]
+        parsed = _safe_json_loads_list(candidate)
+        if parsed is not None and _looks_like_stat_data_patch(parsed):
+            spans.append((start, end + 1, parsed))
+        idx = end + 1
+    return spans
+
+
 _PLACEHOLDER_VALUE_RE = re.compile(r"^\$\{[^}]+\}$")
 
 
@@ -137,6 +214,17 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
             blocks.append(patches)
         else:
             logger.warning("MVU: skipped unparseable <UpdateVariable> block")
+    # [BARE-JSONPATCH] 模型偶发不包 <UpdateVariable> 直接输出裸 JSON Patch 数组
+    # （2026-08-18 实测：world book 指令要求包裹但 AI 输出裸数组，后端提取不到
+    # → stat_data 永不更新）。无包裹块时，扫描全文采纳第一个结构校验通过的裸数组。
+    if not blocks:
+        try:
+            for _s, _e, parsed in _find_stat_data_patch_spans(text):
+                if parsed is not None:
+                    blocks.append(parsed)
+                    break
+        except Exception:
+            pass
     return blocks
 
 
@@ -164,6 +252,13 @@ def strip_update_variable_blocks(text: str) -> str:
     # 剥离块后围栏行残留（表现为正文泄漏 ``` / ```html）；一并清理，语义同前端
     # stripHtmlFenceLeftovers。
     cleaned = _strip_markdown_fence_leftovers(cleaned)
+    # [BARE-JSONPATCH] 剥离结构校验通过的裸 JSON Patch 数组（AI 未包裹时的残留，
+    # 避免正文显示泄漏的 JSON patch 文本）。从后往前删，避免索引错位。
+    try:
+        for _s, _e, _p in reversed(_find_stat_data_patch_spans(cleaned)):
+            cleaned = cleaned[:_s] + cleaned[_e:]
+    except Exception:
+        pass
     # 清理块移除后可能留下的孤立空行（相邻块之间留一行即可）
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()

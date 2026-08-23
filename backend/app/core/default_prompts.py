@@ -77,12 +77,11 @@ OUTPUT_FORMAT_TEMPLATE_ZH = """【回复格式规则 - 严格遵守】
 - 内心想法：用括号包裹 （我该怎么办...）
 - 动作叙述：用普通文本，不加特殊标记
 - 禁止使用：<action>、<thinking>等XML标签
-- 例外：角色卡自带的状态栏标签（如 <NSFW>、<status>、<details> 等）不受上述禁止规则限制。开启「显示角色状态」后，必须按系统要求原样输出这些原生状态标签及其内容。
 - 保持沉浸感：像{name}那样回应，带有情感、手势和感官细节
 - 根据情境调整回复长度：快速交流时简短，情感或戏剧性时刻可以更长
 
 【声音描述要求】
-- 在回复的最后（状态表格之前），用一行文字描述当前回复适合的声音特点
+- 在回复的最后，用一行文字描述当前回复适合的声音特点
 - 格式：【声音：描述】
 - 描述应包括：语气（如温柔/活泼/成熟/稳重等）、情绪（如开心/害羞/兴奋/愤怒等）
 - 示例：【声音：温柔开心的女声】或【声音：稳重低沉的男声】"""
@@ -92,12 +91,11 @@ OUTPUT_FORMAT_TEMPLATE_EN = """[Response Format Rules - Strictly Follow]
 - Inner Thoughts: Wrap in parentheses (What should I do...)
 - Actions/Narration: Use plain text without special markers
 - Prohibited: XML tags like <action> or <thinking>
-- Exception: Status bar tags native to the character card (e.g. <NSFW>, <status>, <details>) are NOT covered by the prohibition above. When "Show Character Status" is enabled, you MUST output these native status tags and their content exactly as required by the system.
 - Stay Immersive: Respond as {name} would, with emotions, gestures, and sensory details
 - Vary Response Length: Short for quick exchanges, longer for emotional or dramatic moments
 
 [Voice Description Requirement]
-- At the end of your response (before the status table), add a line describing the voice characteristics suitable for this response
+- At the end of your response, add a line describing the voice characteristics suitable for this response
 - Format: [Voice: description]
 - Description should include: tone (gentle/lively/mature/steady, etc.) and emotion (happy/shy/excited/angry, etc.)
 - Example: [Voice: gentle and happy female voice] or [Voice: steady deep male voice]"""
@@ -292,10 +290,32 @@ def build_default_character_prompt(
 
     # 第三层：输出格式
     output_format = format_template.format(name=char_name)
-    from ..services.status_bar_detector import build_status_instruction
-    status_instr = build_status_instruction(char, lang, show_character_status)
-    if status_instr:
-        output_format += status_instr
+
+    # [MVU-EXEMPT] MVU 卡系统级豁免（2026-08-18）
+    # OUTPUT_FORMAT 的「禁止 XML 标签」与 MVU 卡的 <UpdateVariable> 变量体系冲突：
+    # user-tail 注入的用户级申明（"此标签不受禁止 XML 规则限制"）不足以覆盖系统级
+    # 禁令（实测 deepseek-v4-flash 3/3 条回复均不输出 <UpdateVariable> → mvu_engine
+    # 解析不到 → stat_data 恒初始值）。以同等权威（系统提示词）显式放行，仅 MVU
+    # 卡追加，不影响普通卡。延迟导入避免 core→services 顶层反向依赖。
+    if char is not None:
+        try:
+            from ..services.status_bar_detector import _card_has_mvu_scripts
+            if _card_has_mvu_scripts(char):
+                if lang == "zh":
+                    output_format += (
+                        "\n- 【重要例外】<UpdateVariable>（含内部 <Analysis>、<JSONPatch>）"
+                        "是本卡变量系统的功能标签，不受上述「禁止 XML 标签」限制；"
+                        "每条回复的最末尾必须按变量更新指令完整输出该标签"
+                    )
+                else:
+                    output_format += (
+                        "\n- [IMPORTANT EXCEPTION] <UpdateVariable> (including <Analysis> and "
+                        "<JSONPatch> inside) is a functional tag of this card's variable system, "
+                        "exempt from the XML-tag prohibition above; it MUST be output in full at "
+                        "the very end of every reply as instructed by the variable update directive"
+                    )
+        except Exception:
+            pass
 
     # 组装三层结构
     prompt_parts = [core_rules, character_attributes, output_format]

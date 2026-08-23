@@ -64,6 +64,12 @@ class UserSetting(Base):
     # instruct_template_id references InstructTemplate.id (NULL = no template).
     instruct_enabled = Column(Boolean, default=False)
     instruct_template_id = Column(Integer, nullable=True)
+    # MVU 副 AI 变量更新（2026-08-19）：主模型未输出 <UpdateVariable> 块时，
+    # 用独立副模型解析剧情并输出变量更新，保证 stat_data 稳定写入（适配所有
+    # 带变量系统的角色卡，不特调）。mvu_secondary_model 为空 = 不启用副 AI；
+    # mvu_secondary_enabled 为 False = 关闭（即使配了模型也不跑）。
+    mvu_secondary_model = Column(String, nullable=True)
+    mvu_secondary_enabled = Column(Boolean, default=False)
     user = relationship("User", back_populates="settings")
 
 class GenerationPreset(Base):
