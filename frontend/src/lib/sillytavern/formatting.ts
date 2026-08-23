@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import katex from 'katex';
 import { Converter } from 'showdown';
 import type showdown from 'showdown';
 import { getRegexedString, type RegexScript } from './regex/engine';
@@ -56,8 +57,8 @@ function registerStDomPurifyHooks(): void {
         return;
       }
       const classes = value.split(/\s+/).filter(c => c);
-      const prefixList = ['fa-', 'note-', 'custom-'];
-      const exactList = ['monospace', 'mes_text', 'mes_block', 'mes', 'last_mes', 'last_mes_text', 'swipe', 'swipes', 'reasoning', 'code', 'code-box', 'markdown-content', 'mes_reasoning_details', 'mes_reasoning_summary', 'mes_reasoning_header_title', 'mes_reasoning'];
+      const prefixList = ['fa-', 'note-', 'custom-', 'katex-'];
+      const exactList = ['monospace', 'mes_text', 'mes_block', 'mes', 'last_mes', 'last_mes_text', 'swipe', 'swipes', 'reasoning', 'code', 'code-box', 'markdown-content', 'mes_reasoning_details', 'mes_reasoning_summary', 'mes_reasoning_header_title', 'mes_reasoning', 'katex'];
       const prefixed = classes.map(cls => {
         // 白名单:不前缀化（精确匹配或有效前缀匹配）
         if (exactList.includes(cls) || prefixList.some(prefix => cls.startsWith(prefix) && cls.length > prefix.length)) {
@@ -122,11 +123,19 @@ export const ST_DOMPURIFY_CONFIG = {
   ADD_TAGS: [
     'custom-style', 'font', 'content', 'thinking', 'analysis', 'reasoning',
     'start', 'now_plot', 'sakura_status', 'style', 'nsfw',
+    // F-1: KaTeX htmlAndMathml 输出的 MathML 标签（默认白名单部分缺失，显式兜底）
+    'math', 'semantics', 'annotation', 'annotation-xml', 'mrow', 'mi', 'mo', 'mn',
+    'msup', 'msub', 'msubsup', 'mfrac', 'msqrt', 'mroot', 'mstyle', 'mtext',
+    'mspace', 'mtable', 'mtr', 'mtd', 'munder', 'mover', 'munderover', 'mmultiscripts',
+    'mphantom',
   ],
   ADD_ATTR: [
     'color', 'face', 'size', 'target', 'rel', 'href', 'src', 'alt', 'title',
     'class', 'style', 'id', 'name', 'value', 'type', 'width', 'height',
     'colspan', 'rowspan', 'align', 'valign', 'bgcolor',
+    // F-1: KaTeX MathML 属性
+    'encoding', 'mathvariant', 'displaystyle', 'stretchy', 'fence', 'lspace',
+    'rspace', 'voffset', 'depth', 'notation',
   ],
   FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'base', 'form'],
   FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
@@ -183,6 +192,68 @@ export function restoreProtectedBlocks(text: string, blocks: string[], placehold
   return text.replace(new RegExp(`${placeholder}(\\d+)${placeholder}`, 'g'), (_, index) => {
     return blocks[parseInt(index, 10)] || '';
   });
+}
+
+// ── LaTeX 渲染（完成态管线，F-1 修复 2026-08-23）────────────
+// 流式期 MarkdownRenderer 走 remark-math + rehype-katex 可渲染公式；完成态
+// showdown 管线此前无 katex 处理 → 公式塌回 $x^2$ 原文（流式/完成态突变）。
+// 此处在 Showdown 之后、DOMPurify 之前把数学片段预渲染为 KaTeX HTML，
+// 与流式引擎视觉对齐（katex.min.css 已在 index.html 全局加载）。
+
+const DISPLAY_MATH_HTML_REGEX = /\$\$([\s\S]+?)\$\$/g;
+// 行内 $...$：首尾非空白非$，避免 "价格 $5 和 $10" 类误配
+const INLINE_MATH_HTML_REGEX = /\$([^\s$](?:[^$\n]*[^\s$])?)\$/g;
+const PAREN_MATH_HTML_REGEX = /\\\(([\s\S]+?)\\\)/g;
+const BRACKET_MATH_HTML_REGEX = /\\\[([\s\S]+?)\\\]/g;
+const CODE_SEGMENT_SPLIT_REGEX = /(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/gi;
+
+function decodeBasicEntities(input: string): string {
+  return input
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function renderSingleMath(tex: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(tex, {
+      displayMode,
+      throwOnError: false,
+      strict: false,
+      output: 'htmlAndMathml',
+    });
+  } catch {
+    // 渲染失败保留原文（与"公式塌回原文"等价，但不影响其余内容）
+    return displayMode ? `$$${tex}$$` : `$${tex}$`;
+  }
+}
+
+function renderMathInSegment(segment: string): string {
+  if (!segment.includes('$') && !segment.includes('\\(') && !segment.includes('\\[')) {
+    return segment;
+  }
+  let result = segment.replace(BRACKET_MATH_HTML_REGEX, (_, tex) => renderSingleMath(decodeBasicEntities(tex), true));
+  result = result.replace(PAREN_MATH_HTML_REGEX, (_, tex) => renderSingleMath(decodeBasicEntities(tex), false));
+  result = result.replace(DISPLAY_MATH_HTML_REGEX, (_, tex) => renderSingleMath(decodeBasicEntities(tex), true));
+  result = result.replace(INLINE_MATH_HTML_REGEX, (_, tex) => renderSingleMath(decodeBasicEntities(tex), false));
+  return result;
+}
+
+/**
+ * 完成态 HTML 中的数学片段 → KaTeX HTML。
+ * <pre>/<code> 段原样保留（代码里的 $ 不是公式）。
+ */
+export function renderMathInHtml(html: string): string {
+  if (!html || (!html.includes('$') && !html.includes('\\(') && !html.includes('\\['))) {
+    return html;
+  }
+  return html.split(CODE_SEGMENT_SPLIT_REGEX).map((part, idx) => {
+    // split 带捕获组：奇数下标为 code/pre 段，原样保留
+    if (idx % 2 === 1) return part;
+    return renderMathInSegment(part);
+  }).join('');
 }
 
 // ── HTML 块提取/还原 ─────────────────────────────────────────
@@ -1059,6 +1130,12 @@ export function formatMessage(
     // Restore the HTML blocks extracted before Showdown (verbatim, so generated
     // markup and its attributes survive intact for the final DOMPurify + CSS scoping).
     mes = restoreHtmlBlocks(mes, htmlBlocks.blocks);
+
+    // F-1 修复（2026-08-23）: 完成态 LaTeX 渲染——在 DOMPurify 之前把
+    // $$..$$ / $..$ / \(..\) / \[..\] 片段预渲染为 KaTeX HTML，消除
+    // "流式可渲染、完成态塌回原文"的引擎切换突变（与流式 remark-math +
+    // rehype-katex 对齐；katex.min.css 全局加载）。
+    mes = renderMathInHtml(mes);
 
     // 9. afterMarkdown extension hooks
     if (options.afterMarkdownHooks) {
