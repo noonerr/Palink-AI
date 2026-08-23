@@ -126,18 +126,10 @@ export class WorldBookScanner {
         continue;
       }
 
-      // 检查选择性匹配
-      if (entry.selective && entry.key.length > 0 && entry.keysecondary.length > 0) {
-        const primaryMatch = this.matchPrimaryKeys(entry, context);
-        const secondaryMatch = this.matchSecondaryKeys(entry, context);
-
-        if (primaryMatch && secondaryMatch) {
-          activated.push(entry);
-          matchedKeywords.set(entry.id, [...primaryMatch, ...secondaryMatch]);
-        }
-      } else if (entry.key.length > 0) {
-        // 普通匹配
-        const match = this.matchPrimaryKeys(entry, context);
+      // 关键词匹配（D-8 修复：ST world-info.js:4800-4866 权威流程）
+      // 主键 plain 匹配；logic 只作用于副键层；主键命中 + 无有效副键 = 直接激活
+      if (entry.key.length > 0) {
+        const match = this.evaluateEntryMatch(entry, context);
         if (match) {
           activated.push(entry);
           matchedKeywords.set(entry.id, match);
@@ -156,56 +148,70 @@ export class WorldBookScanner {
   }
 
   /**
-   * 匹配主关键词
+   * 条目级匹配判定（D-8 修复，2026-08-23）。
+   *
+   * ST 权威流程（world-info.js:4800-4866）：
+   * 1. 主关键词 plain 匹配（任一命中即推进，logic 不参与）；
+   * 2. 主键未命中 → 条目不激活；
+   * 3. 无有效副键（非 selective 或 keysecondary 为空）→ 主键命中即激活；
+   * 4. selectiveLogic 四态只作用于副键匹配结果：
+   *    AND_ANY(0) 任一副键命中 / NOT_ALL(1) 存在未命中的副键 /
+   *    NOT_ANY(2) 全部副键未命中 / AND_ALL(3) 全部副键命中。
+   *
+   * 旧实现把 logic 错位作用于主键（NOT_ANY 在主键命中时恒拒绝 = 条目永不激活），
+   * 且副键硬编码 ANY——与 ST 语义完全相反。
+   *
+   * @returns 激活时的匹配关键词列表（主 + 副），未激活返回 null
    */
-  private matchPrimaryKeys(
+  private evaluateEntryMatch(
     entry: WorldBookEntry,
     context: ScanContext,
   ): string[] | null {
     const haystack = this.getHaystack(entry, context);
-    const matches: string[] = [];
 
+    // PRIMARY KEYWORDS — plain any-match（ST :4801-4809）
+    const primaryMatches: string[] = [];
     for (const key of entry.key) {
       if (this.matchKey(haystack, key, entry)) {
-        matches.push(key);
+        primaryMatches.push(key);
       }
     }
+    if (primaryMatches.length === 0) return null;
 
-    if (matches.length === 0) return null;
-
-    // 检查逻辑门
-    const logic = entry.selectiveLogic as WorldInfoLogic;
-    switch (logic) {
-      case 0: // AND_ANY - 任一匹配
-        return matches.length > 0 ? matches : null;
-      case 1: // NOT_ALL - 非全部匹配
-        return matches.length < entry.key.length ? matches : null;
-      case 2: // NOT_ANY - 非任一匹配
-        return matches.length === 0 ? matches : null;
-      case 3: // AND_ALL - 全部匹配
-        return matches.length === entry.key.length ? matches : null;
-      default:
-        return matches.length > 0 ? matches : null;
+    // SECONDARY KEYWORDS（ST :4811-4822）
+    const hasSecondaryKeywords =
+      entry.selective === true && entry.keysecondary.length > 0;
+    if (!hasSecondaryKeywords) {
+      return primaryMatches;
     }
-  }
 
-  /**
-   * 匹配副关键词
-   */
-  private matchSecondaryKeys(
-    entry: WorldBookEntry,
-    context: ScanContext,
-  ): string[] | null {
-    const haystack = this.getHaystack(entry, context);
-    const matches: string[] = [];
-
+    const secondaryMatches: string[] = [];
     for (const key of entry.keysecondary) {
       if (this.matchKey(haystack, key, entry)) {
-        matches.push(key);
+        secondaryMatches.push(key);
       }
     }
 
-    return matches.length > 0 ? matches : null;
+    const logic = entry.selectiveLogic as WorldInfoLogic;
+    switch (logic) {
+      case 1: // NOT_ALL - 任一副键不匹配即激活（ST :4846-4849）
+        return secondaryMatches.length < entry.keysecondary.length
+          ? [...primaryMatches, ...secondaryMatches]
+          : null;
+      case 2: // NOT_ANY - 全部副键未命中才激活（ST :4853+）
+        return secondaryMatches.length === 0
+          ? primaryMatches
+          : null;
+      case 3: // AND_ALL - 全部副键命中才激活
+        return secondaryMatches.length === entry.keysecondary.length
+          ? [...primaryMatches, ...secondaryMatches]
+          : null;
+      case 0: // AND_ANY - 任一副键命中即激活（ST :4842-4845）
+      default:
+        return secondaryMatches.length > 0
+          ? [...primaryMatches, ...secondaryMatches]
+          : null;
+    }
   }
 
   /**
