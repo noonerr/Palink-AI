@@ -1519,6 +1519,13 @@ export function CharacterChat(props: CharacterChatProps) {
             })
             .catch(() => {});
         }
+        // C-1 对齐（2026-08-23）: 此处是插件事件载荷的"显示语义"计算
+        // （isMarkdown: true → 只应用 markdownOnly 脚本，ST regex-engine.js:348-355）。
+        // 不再把正则结果写回 DB：普通脚本已由后端 persist 单点应用
+        // （websocket.py:627），旧回写导致同一非幂等脚本最多三重叠加
+        // （后端 persist + 前端完成态渲染 + 此处回写）；markdownOnly 属显示层
+        // 虚拟变换，按后端 ephemeral 门语义（character_ext.py:926-927 persist
+        // 拒绝 only 脚本）不得落库。
         const processed = getRegexedStringForMessage(lastMsg.content || '', regex_placement.AI_OUTPUT, {
           characterName: selectedCharacter.name,
           userName: user.username,
@@ -1526,10 +1533,8 @@ export function CharacterChat(props: CharacterChatProps) {
           characterExtensions: compatCharacterExtensions,
           characterPresetData: compatCharacterPresetData,
           globalRegexScripts,
+          isMarkdown: true,
         });
-        if (processed !== lastMsg.content && lastMsg.id != null) {
-          handleEditMessage(lastMsg.id, displayedMessages.length - 1, processed);
-        }
         stRuntimeRef.current?.emit('MESSAGE_RECEIVED', {
           message: {
             name: selectedCharacter.name,
@@ -1542,7 +1547,7 @@ export function CharacterChat(props: CharacterChatProps) {
         } catch {}
       }
     }
-  }, [isGenerating, displayedMessages, selectedCharacter.name, user.username, selectedCharacter.avatar, compatCharacterExtensions, compatCharacterPresetData, globalRegexScripts, handleEditMessage]);
+  }, [isGenerating, displayedMessages, selectedCharacter.name, user.username, selectedCharacter.avatar, compatCharacterExtensions, compatCharacterPresetData, globalRegexScripts]);
 
   const prevSessionIdRef = useRef<string | null>(selectedSession?.id || null);
   useEffect(() => {

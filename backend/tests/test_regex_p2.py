@@ -352,3 +352,48 @@ def test_apply_persist_regex_to_display_text_passthrough_without_scripts():
         depth=0,
     )
     assert result == "Just a greeting."
+
+
+# ---------------------------------------------------------------------------
+# Test 6: P1-#2 — persist 正则结果经 _sync_message_content_to_active_swipe
+#          同步后 content 与 active swipe 干净一致（无残留原文）
+# ---------------------------------------------------------------------------
+
+def test_sync_message_content_to_active_swipe_keeps_swipe_clean():
+    """persist 层应用普通脚本后的最终文本写入消息时，active swipe 必须与
+    content 同步为同一份已变换文本（P1-#2 三重叠加修复的持久化不变量）。
+    """
+    import json as _json
+
+    from app.api.character_ext import _sync_message_content_to_active_swipe
+
+    msg = SimpleNamespace(
+        content="RAW",
+        swipe_id=0,
+        swipes=_json.dumps(["RAW"]),
+        extra=None,
+    )
+    _sync_message_content_to_active_swipe(msg, "TRANSFORMED")
+    assert msg.content == "TRANSFORMED"
+    stored = _json.loads(msg.swipes)
+    assert isinstance(stored, list) and len(stored) >= 1
+    assert stored[0] == "TRANSFORMED", "active swipe 应同步为变换后的干净文本"
+
+
+def test_sync_message_content_to_active_swipe_targets_active_index():
+    """swipe_id>0 时同步落点必须是当前激活 swipe，其他 swipe 不被污染。"""
+    import json as _json
+
+    from app.api.character_ext import _sync_message_content_to_active_swipe
+
+    msg = SimpleNamespace(
+        content="old-active",
+        swipe_id=1,
+        swipes=_json.dumps(["first", "old-active"]),
+        extra=None,
+    )
+    _sync_message_content_to_active_swipe(msg, "new-active")
+    stored = _json.loads(msg.swipes)
+    assert stored[0] == "first", "非激活 swipe 不得被改写"
+    assert stored[1] == "new-active"
+    assert msg.content == "new-active"

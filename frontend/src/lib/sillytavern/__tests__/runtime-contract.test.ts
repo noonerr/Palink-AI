@@ -240,12 +240,15 @@ describe('SmartCard Runtime Core Globals', () => {
 // 顺序合并，组内按数组顺序保留。getRegexedString 按该顺序依次应用脚本。
 // ============================================================
 describe('Regex Execution Order', () => {
+  // C-1 修复后显示层只运行 markdownOnly 脚本（ST regex-engine.js:348-355 三分支），
+  // 顺序断言改用 markdownOnly 脚本承载；普通脚本在显示层跳过已有专测
+  // （regex-pipeline-contract.test.ts）。
   it('global scripts run before scoped scripts', () => {
     const globalScripts: RegexScript[] = [
       {
         findRegex: 'hello',
         replaceString: 'world',
-        markdownOnly: false,
+        markdownOnly: true,
         promptOnly: false,
         disabled: false,
       },
@@ -254,7 +257,7 @@ describe('Regex Execution Order', () => {
       {
         findRegex: 'world',
         replaceString: 'earth',
-        markdownOnly: false,
+        markdownOnly: true,
         promptOnly: false,
         disabled: false,
       },
@@ -273,14 +276,14 @@ describe('Regex Execution Order', () => {
       {
         findRegex: 'hello',
         replaceString: 'hi',
-        markdownOnly: false,
+        markdownOnly: true,
         promptOnly: false,
         disabled: false,
       },
       {
         findRegex: 'hi',
         replaceString: 'hey',
-        markdownOnly: false,
+        markdownOnly: true,
         promptOnly: false,
         disabled: false,
       },

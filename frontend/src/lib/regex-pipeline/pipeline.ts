@@ -234,23 +234,37 @@ export class RegexPipeline {
 
   /**
    * ST 兼容：检查是否应该跳过脚本
+   *
+   * C-1/C-3/C-4 修复（2026-08-23）对齐 ST 1.18.0 regex-engine.js:334-381：
+   * - 三分支运行条件取反为跳过条件：普通脚本（两个 only 均否）只在
+   *   isMarkdown/isPrompt 均 falsy 的上下文运行（Palink 中等价后端 persist
+   *   单点应用，websocket.py:627；前端显示层不得重复应用）。
+   * - placement 数组权威判定（:374 includes）：空数组 = 不匹配任何位置
+   *   （旧实现 length>0 才检查 → 空数组被当成匹配全部，语义相反）。
+   * - 深度边界豁免（:362-372）：minDepth>=-1 / maxDepth>=0 才参与比较，
+   *   depth=-1（prompt 尾部哨兵）不被 maxDepth=0 / minDepth=0 误杀。
    */
   private shouldSkipStScript(script: StRegexScript, options: StRegexProcessingOptions): boolean {
     if (script.disabled) return true;
 
-    if (script.placement && Array.isArray(script.placement) && script.placement.length > 0) {
+    if (Array.isArray(script.placement)) {
       const matched = Array.isArray(options.placement)
         ? options.placement.some((p) => script.placement!.includes(p))
         : script.placement.includes(options.placement);
       if (!matched) return true;
     }
 
-    if (script.markdownOnly && !options.isMarkdown) return true;
-    if (script.promptOnly && !options.isPrompt) return true;
+    const isMarkdown = !!options.isMarkdown;
+    const isPrompt = !!options.isPrompt;
+    if (script.markdownOnly && !isMarkdown) return true;
+    if (script.promptOnly && !isPrompt) return true;
+    if (!script.markdownOnly && !script.promptOnly && (isMarkdown || isPrompt)) return true;
 
     if (typeof options.depth === 'number') {
-      if (typeof script.minDepth === 'number' && options.depth < script.minDepth) return true;
-      if (typeof script.maxDepth === 'number' && options.depth > script.maxDepth) return true;
+      if (typeof script.minDepth === 'number' && !Number.isNaN(script.minDepth)
+        && script.minDepth >= -1 && options.depth < script.minDepth) return true;
+      if (typeof script.maxDepth === 'number' && !Number.isNaN(script.maxDepth)
+        && script.maxDepth >= 0 && options.depth > script.maxDepth) return true;
     }
 
     if (options.isEdit && !script.runOnEdit) return true;
@@ -288,7 +302,12 @@ export class RegexPipeline {
     if (!findRegex) return input;
 
     const replaceString = script.replaceString || '';
-    const trimStrings = script.trimStrings || [];
+    // C-4b 修复（ST regex-engine.js:460 / 后端 _filter_trim_strings 对齐）:
+    // 每个 trimString 先做 substituteParams 宏替换再移除，含 {{user}}/{{char}}
+    // 的 trim 串在前端生效。
+    const trimStrings = (script.trimStrings || []).map(
+      (trim) => stSubstituteParams(String(trim || ''), params),
+    );
 
     try {
       return input.replace(findRegex, function (match: string, ...args: any[]) {
