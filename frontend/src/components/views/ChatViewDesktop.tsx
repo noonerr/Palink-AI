@@ -146,7 +146,7 @@ export function ChatViewDesktop({
                       onCompress={chat.memoryMode === 'rule' && idx === chat.messages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                       compressing={chat.compressing}
                       onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
-                      canRegenerate={msg.role === 'assistant' && !chat.streaming && idx > 0 && chat.messages[idx - 1]?.role === 'user'}
+                      canRegenerate={msg.role === 'assistant' && !chat.streaming}
                       onDelete={msg.id != null ? () => chat.handleDeleteMessage(msg.id as string | number, idx) : undefined}
                       onEdit={msg.id != null ? (newContent: string) => chat.handleEditMessage(msg.id as string | number, idx, newContent) : undefined}
                       canEdit={msg.role === 'assistant' && !chat.streaming}

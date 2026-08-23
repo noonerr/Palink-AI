@@ -5,7 +5,7 @@
 import React from 'react';
 import {
   BookOpen, Clock, GitBranch, Image,
-  Puzzle, Sliders, Table, Trash2, User as UserIcon,
+  Puzzle, Sliders, Trash2, User as UserIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -28,7 +28,6 @@ export interface ChatMoreMenuProps {
   isNavigating: boolean;
   mobileSidebarOpen: boolean;
   dialogueMode: 'first_person' | 'third_person';
-  showCharacterStatus: boolean;
   autoGenerateChatImages: boolean;
   responseLength: string;
   // 世界书
@@ -48,7 +47,6 @@ export interface ChatMoreMenuProps {
   onShowWorldBookManager: () => void;
   onToggleStoryline: () => void;
   onToggleDialogueMode: () => void;
-  onToggleCharacterStatus: (value: boolean) => Promise<void>;
   onToggleAutoGenerateImages: (value: boolean) => Promise<void>;
   onResponseLengthChange: (value: string) => void;
   onShowPluginManager: () => void;
@@ -69,7 +67,6 @@ export function ChatMoreMenu(props: ChatMoreMenuProps) {
     isNavigating,
     mobileSidebarOpen,
     dialogueMode,
-    showCharacterStatus,
     autoGenerateChatImages,
     responseLength,
     worldBookStatus,
@@ -81,7 +78,6 @@ export function ChatMoreMenu(props: ChatMoreMenuProps) {
     onShowWorldBookManager,
     onToggleStoryline,
     onToggleDialogueMode,
-    onToggleCharacterStatus,
     onToggleAutoGenerateImages,
     onResponseLengthChange,
     onShowPluginManager,
@@ -139,15 +135,6 @@ export function ChatMoreMenu(props: ChatMoreMenuProps) {
             ? (t.switch_story_mode || '切换故事模式')
             : (t.switch_first_person || '切换第一人称')}
         </DropdownMenuItem>
-
-        {/* Character status table toggle */}
-        <ToggleMenuItem
-          icon={<Table size={14} />}
-          label={t.show_character_status || '角色状态'}
-          hint={t.character_status_hint || '下次对话生效'}
-          checked={showCharacterStatus}
-          onToggle={() => onToggleCharacterStatus(!showCharacterStatus)}
-        />
 
         {/* Auto image generation toggle */}
         <ToggleMenuItem

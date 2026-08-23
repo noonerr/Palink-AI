@@ -960,6 +960,104 @@ h6,
 }
 
 /* ========================================
+   ST 兼容：.mes_text 正文渲染样式
+   对齐 SillyTavern 原版 style.css 的 .mes_text 规则，
+   使引号（<q> 琥珀黄）、斜体（<em>/<i>）、下划线（<u>）、
+   引用块、表格、段落/列表间距等正文细节与 ST 一致。
+   角色卡/插件特殊符号包裹的内容仍走正则 → HTML → 角色卡样式，不受影响。
+   置于 .markdown-content 样式之后，确保 ST 正文样式优先。
+   ======================================== */
+.mes_text table {
+  border-spacing: 0;
+  border-collapse: collapse;
+  margin-bottom: 10px;
+}
+
+.mes_text td,
+.mes_text th {
+  border: 1px solid;
+  border-collapse: collapse;
+  padding: 0.25em;
+}
+
+.mes_text p {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.mes_text p:last-child {
+  margin-bottom: 0;
+}
+
+.mes_text ol,
+.mes_text ul {
+  margin-top: 5px;
+  margin-bottom: 5px;
+}
+
+.mes_text i,
+.mes_text em {
+  color: var(--SmartThemeEmColor);
+}
+
+.mes_text q i,
+.mes_text q em {
+  color: inherit;
+}
+
+.mes_text u {
+  color: var(--SmartThemeUnderlineColor);
+}
+
+.mes_text q {
+  color: var(--SmartThemeQuoteColor);
+}
+
+/* 防止浏览器 UA 默认样式给 <q> 叠加伪元素引号（与文本内的引号字符形成双引号）。
+   对齐 ST 社区实践（BanG! City 渲染模板同款处理）：引号字符由 wrap 包裹时保留在
+   文本里负责显示，<q> 标签仅承担着色职责。 */
+.mes_text q {
+  quotes: none;
+}
+
+.mes_text q::before,
+.mes_text q::after {
+  content: none;
+}
+
+.mes_text font[color] em,
+.mes_text font[color] i,
+.mes_text font[color] u,
+.mes_text font[color] q {
+  color: inherit;
+}
+
+.mes_text blockquote {
+  border-left: 3px solid var(--SmartThemeQuoteColor);
+  padding-left: 10px;
+  background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+  margin: 0;
+}
+
+.mes_text strong em,
+.mes_text strong,
+.mes_text h2,
+.mes_text h1 {
+  font-weight: bold;
+}
+
+.mes_text pre code {
+  position: relative;
+  display: block;
+  overflow-x: auto;
+  padding: 1em;
+}
+
+.mes_text img:not(.mes_img) {
+  max-width: 100%;
+}
+
+/* ========================================
    Shadcn UI Overrides
    ======================================== */
 [data-slot="button"] {

@@ -135,7 +135,6 @@ export function CharacterView({
   const [developerMode, setDeveloperMode] = useState(false);
   const prevModelBeforeDeveloperRef = useRef<string | null>(null);
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
-  const [showCharacterStatus, setShowCharacterStatus] = useState(false);
   const [autoGenerateChatImages, setAutoGenerateChatImages] = useState(false);
   const [responseLength, setResponseLength] = useState<string>('medium');
   const [sillyTavernMode, setSillyTavernMode] = useState<'st-native' | 'st-compat' | 'palink-native' | 'classic'>('classic');
@@ -422,7 +421,6 @@ export function CharacterView({
       setShowModelReasoning(settings.show_model_reasoning || false);
       setMemoryMode(settings.memory_mode || 'rule');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
-      setShowCharacterStatus(settings.show_character_status || false);
       setAutoGenerateChatImages(settings.auto_generate_chat_images || false);
       setSillyTavernMode(settings.silly_tavern_mode || 'classic');
     } catch (e) {
@@ -491,9 +489,6 @@ export function CharacterView({
       }
       if (e.detail?.characterDisplayMode !== undefined) {
         setCharacterDisplayMode(e.detail.characterDisplayMode);
-      }
-      if (e.detail?.showCharacterStatus !== undefined) {
-        setShowCharacterStatus(e.detail.showCharacterStatus);
       }
       if (e.detail?.autoGenerateChatImages !== undefined) {
         setAutoGenerateChatImages(e.detail.autoGenerateChatImages);
@@ -1808,8 +1803,6 @@ export function CharacterView({
           manualCompressMemory={manualCompressMemory}
           dialogueMode={dialogueMode}
           setDialogueMode={setDialogueMode}
-          showCharacterStatus={showCharacterStatus}
-          setShowCharacterStatus={setShowCharacterStatus}
           autoGenerateChatImages={autoGenerateChatImages}
           setAutoGenerateChatImages={setAutoGenerateChatImages}
           responseLength={responseLength}

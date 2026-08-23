@@ -469,7 +469,7 @@ export function ChatViewMobile({
                           onCompress={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                           compressing={chat.compressing}
                           onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
-                          canRegenerate={msg.role === 'assistant' && !chat.streaming && idx > 0 && anim.displayedMessages[idx - 1]?.role === 'user'}
+                          canRegenerate={msg.role === 'assistant' && !chat.streaming}
                           onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
                           onEdit={msg.id ? (newContent: string) => chat.handleEditMessage(msg.id, idx, newContent) : undefined}
                           canEdit={msg.role === 'assistant' && !chat.streaming}
@@ -614,7 +614,7 @@ export function ChatViewMobile({
                           onCompress={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                           compressing={chat.compressing}
                           onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
-                          canRegenerate={msg.role === 'assistant' && !chat.streaming && idx > 0 && anim.displayedMessages[idx - 1]?.role === 'user'}
+                          canRegenerate={msg.role === 'assistant' && !chat.streaming}
                           onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
                           onEdit={msg.id ? (newContent: string) => chat.handleEditMessage(msg.id, idx, newContent) : undefined}
                           canEdit={msg.role === 'assistant' && !chat.streaming}
