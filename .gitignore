@@ -207,3 +207,11 @@ frontend/.shim_current.txt
 frontend/dist_*/
 frontend/dist.prev/
 frontend/src_bak_*/
+
+# 2026-08-23 分离存储批次：会话备份（含 DB 转储，禁止入库）、调试目录与临时文件
+_backup/
+.dbg/
+.omo/
+_tmp_*.txt
+backend/_tmp_*.py
+frontend/scripts/_shim_check_probe.*
