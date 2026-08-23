@@ -24,8 +24,7 @@ class StreamResult:
         return bool(self.full_content or self.full_reasoning)
 
     def final_text(self) -> str:
-        if self.full_reasoning:
-            return "<think" + ">" + self.full_reasoning + "</think" + ">\n" + self.full_content
+        # [REASONING-SEPARATE] 分离存储：只返回纯正文；思考经 extra.reasoning 单独持久化
         return self.full_content
 
     def token_count(self) -> int:
@@ -117,7 +116,7 @@ async def stream_chat_deltas(
                     yield f"data: {json.dumps({'type': 'tool_result', 'id': tool_result.get('id', ''), 'name': tool_result.get('name', ''), 'content': tool_result.get('content', '')[:2000]}, ensure_ascii=False)}\n\n"
                     continue
 
-            reasoning = delta.get("reasoning")
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
             content = delta.get("content")
             resp = {}
             # 当 enable_thinking=False 时，将 reasoning 合并到 content
@@ -206,7 +205,7 @@ async def parse_stream_deltas(
                     })
                 continue
 
-        reasoning = delta.get("reasoning")
+        reasoning = delta.get("reasoning") or delta.get("reasoning_content")
         content = delta.get("content")
         resp = {}
         if isinstance(reasoning, str) and reasoning:
