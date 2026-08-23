@@ -66,15 +66,31 @@
 - **存量迁移执行记录（2026-08-23）**: 用户批准后 `--apply` 落库——12 行 → 29 块（2~4 块/行），0 跳过 0 失败；验证全过：旧 id 无残留、全部带 #chunk 标记、created_at/session/branch/importance 按组保留（12 组与原行一一对应）、抽查块完整可读、全库向量 1024 维一致无维度警告、检索命中正常、全量测试基线不变（860 过/4 存量失败）。临时验证脚本已清理
 - **备份**: `_backup/20260822_semantic_chunk/`（7 个改动文件的原状副本）
 
+### [已完成] SPEC 9 项 P1 修复（2026-08-23，docs/SILLYTAVERN_COMPAT_SPEC_2026-08-23.md §11）
+- **范围**: §11 全部 9 项 P1 + 指定同批 P2/P3；st-compat/st-native 冻结未动
+- **#1 世界书 delay 死锁**: 废弃「激活才初始化计数」模型，对齐 ST chat_length 绝对语义（world-info.js:665-676）——can_activate 按 `chat_length < entry.delay` 判定（worldbook_service.py），build_worldbook_context 新增 chat_length 透传（roleplay_prompt_assembly 计数口径=全量消息数+本轮未落库 user）；state.delay_remaining 不再读写（列保留兼容）。顺带 P3：RECURSION 轮跳过 exclude_recursion 条目（sticky 豁免，ST:4758-4760）。测试 test_p1_worldbook_delay.py 7 用例
+- **#2 前端正则三分支**: pipeline.ts shouldSkipStScript 照抄后端 character_ext.py:929-937 语义（普通脚本仅在双 flag 均否的上下文运行=后端 persist 单点）；同批 C-3 空 placement 反义、C-4a minDepth>=-1/maxDepth>=0 守卫、C-4b trimStrings 宏替换。CharacterChat.tsx 下降沿回写删除（三重叠加消除：persist 单点+显示层只跑 markdownOnly）。测试 regex-pipeline-contract.test.ts 13 例 + 后端 swipes 干净锁定（test_regex_p2.py 2 例）
+- **#3 $N 双反斜杠**: **SPEC 误报**——SillyTavernCompatRuntime.ts:2296 位于模板字符串内，`\\$` 经转义折叠生成产物实为正确的 `/\$(\d+)|\$<([^>]+)>/g`（探针实测）。加回归锁定测试防重构破坏转义（regex-replace-contract.test.ts 3 例）
+- **#4 LaTeX 完成态**: formatting.ts 新增 renderMathInHtml（Showdown 后、DOMPurify 前，$$..$/$..$/\(\)/\[\] 四形态，code/pre 豁免），DOMPurify 白名单放行 KaTeX HTML/MathML 标签与属性、class 前缀化豁免 katex*。流式/完成态引擎切换不再塌回原文。测试 formatting-latex-contract.test.ts 6 例
+- **#5 worldbooks/import 字段映射补齐**: 方案 A（补映射列，弃 extensions_json 兜底方案——列已齐备且与 ST 契约路径同构，避免扫描热路径双轨复杂度）。order/sticky/cooldown/delay/depth/selectiveLogic/caseSensitive/matchWholeWords/excludeRecursion/preventRecursion/group 系/scanDepth/vectorized/ignoreBudget/role/useGroupScoring/automationId/match* 六项全量映射，语义对齐 silly_tavern.py:1618-1670。测试 test_p1_worldbook_import_fields.py 2 例
+- **#6 经典轨 getContext 补齐**: sillyTavernPluginRuntime.ts getContext 返回对象新增 eventSource/event_types（编译期注入 ST_TO_PALINK_EVENT_MAP）/toastr/getRequestHeaders/substituteParams/saveSettingsDebounced/getChatMessages 等 16 成员 + renderExtensionTemplateAsync 最小插值实现（模板源=resources.templates）
+- **#7 沙箱 stub 倒挂**: sandbox.ts triggerSlash/openCharacterChat/setChatMessages/generate/injectPrompts/uninjectPrompts 改为调用时转发主 window 同名真实现（经典轨桥接），缺失时诚实降级 warn；deleteChatMessages 两轨均无底层实现保留桩
+- **#8 writeExtensionField 三轨统一**: 共享 writeExtensionFieldCompat（getContext.ts 尾部）——ST 角色卡语义优先（characterId 解析成功→merge-attributes），模块名调用回退旧命名空间语义（存量插件不受影响）。getContext.ts/sandbox.ts×3 处收敛单实现
+- **#9 scanner selectiveLogic 错位**: scanner.ts 重构为 evaluateEntryMatch——主键 plain 匹配、logic 只作用于副键层、主键命中+无副键=直接激活（ST world-info.js:4800-4866 权威）。NOT_ANY 排除型条目前端恢复可用。测试 scanner-logic-contract.test.ts 8 例
+- **验证**: 后端全量 pytest 898 过/4 存量失败零新增（基线逐一对应 mvu_engine/p1_fixes/st_contract/st_plugin_import）；前端 tsc 零错误 + npm run test:contract 扩至 7 文件 119 用例全过；docker compose up -d --build backend 后容器 healthy
+- **勘误记录**: spec §12 的「分离存储进行中」已过时（当日完工）；§11 #3 为误报（见上）；交接文件行号漂移不影响结论
+
 ### [进行中] ST 1.18.0 对比分析的后续实施（2026-08-20）
 - **状态**: 分析已完成（报告落盘）；待办 3（depth 队列排序权重）已于 2026-08-22 实施 ✅，其余待办未开始
 - **交付**: `PALINK_VS_SILLYTAVERN_COMPARISON.md`（完整对比）+ `HANDOFF_ST对比分析_2026-08-20.md`（交接）
 - **待办**（按优先级）:
-  1. 仅补 `{{time}}` 本地时区支持（**`{{banned}}`/`{{reverse}}`/`{{roll}}` 经 2026-08-20 核对已实现，见 `macro_service.py` L570/705/673，已从待办移除**）；低成本高兼容
-  2. 补 chara note 三态
+  1. 仅补 `{{time}}` 本地时区支持（**`{{banned}}`/`{{reverse}}`/`{{roll}}` 经 2026-08-20 核对已实现，见 `macro_service.py` L570/705/673，已从待办移除**）；低成本高兼容；**2026-08-23 复核确认仍未做**——macro_service 全部 `datetime.utcnow()`（L351/353/355/369/371/373/722），无本地时区
+  2. ~~补 chara note 三态~~ → **已完成（2026-08-23 核对关闭）**：roleplay_prompt_assembly L3155-3186 已覆盖 -1(NONE 跳过)/1(IN_CHAT+DepthInjection)/0、2(prompt 相对) 全枚举 + frequency 门控；builder L1006 注释确认 ST 枚举语义
   3. ~~depth 队列补 ST 一致的顺序权重~~ → **已完成（2026-08-22）**：palink-native 引入统一 `DepthInjection` 队列（`roleplay_prompt_assembly.py`），5 来源（世界书 atDepth/AN/persona//inject/插件 IN_CHAT/角色卡 depth_prompt）汇入单管线，三级确定序 depth↓→order↑→role(assistant→user→system)→key 字母序（对齐 ST `populationInjectionPrompts`/`getExtensionPrompt`/`doChatInject`；key 等价物 `0_palink_injection`/`1_persona_description`/`2_floating_prompt`/`DEPTH_PROMPT`/`customDepthWI_{d}_{r}`/插件 identifier），同 (depth,order,role) 合并单条 join('\n')；删除 ext_depth_entries 第二遍插入；st-compat 分支未动（clear() 守卫保留）。新测试 `backend/tests/test_depth_injection_order.py` 7 用例全过；全量 817 过/4 存量失败（stash 基线对照确认与本次无关）；容器已重建 healthy
-  4. 核对 `setExtensionPrompt` 沙箱签名与 ST 七参一致性
-  5. 补齐未覆盖对比：memory_module/、worldbook_vector_service.py、前端 regex、sillyTavernPluginRuntime.ts、st-plugins/、plugins.py
+  4. ~~核对 `setExtensionPrompt` 沙箱签名与 ST 七参一致性~~ → **已完成（2026-08-23 核对关闭）**：sandbox.ts:3199 七参与 ST script.js:8866 一致（identifier/content/position/depth/scan/role/filter）；role 兼容字符串为超集；prompt-injection.ts:30-37 同构
+  5. 补齐未覆盖对比：memory_module/、worldbook_vector_service.py、前端 regex、sillyTavernPluginRuntime.ts、st-plugins/、plugins.py（memory_module 代码虽经语义切分演进，「与 ST vectors 对比」本身仍未做）
+- **⚠️ 新增待办池（2026-08-23）**: 见 `docs/SILLYTAVERN_COMPAT_SPEC_2026-08-23.md` §11 —— 9 项 P1 问题（世界书 delay 条目永久沉默死锁、前端正则三分支漏判、智能卡 $N 双反斜杠损坏、LaTeX 流式/完成态断裂、worldbooks/import 字段丢失、经典轨 getContext 缩水、triggerSlash stub 倒挂、writeExtensionField 三轨三义、scanner selectiveLogic 错位）+ P2 批次择要；§12 要求分离存储完工后复核模块 C persist 正则与模块 F 渲染剥离消费点（已于同日复核通过：persist 侧三层正则链在 `_apply_reasoning_regex` 重构中完整保留且思考正则只作用于 extra.reasoning；渲染侧 Message.tsx memo 新格式直读 extra.reasoning 不再重复提取，旧格式 parse 路径不变）。**分工（2026-08-23 用户指定）：该 SPEC 的 P1/P2 修复由其他 agent 执行；本线 agent 只承担审计复核与提示词/交接撰写，不直接改 P1**
+- ✅ **上述 9 项 P1 已全部修复（2026-08-23，见顶部「SPEC 9 项 P1 修复」条目；#3 经复核为 SPEC 误报）——P2 批次仍未开始**
 - **约束**: st-compat 已封存保持冻结；主攻 palink-native
 - ⚠️ **已更正（2026-08-20 核对）**：对比报告原"缺失宏 `{{banned}}`/`{{reverse}}`/`{{roll}}`"结论错误——三者均已在 `backend/app/services/macro_service.py` 实现（L570/705/673）。请勿据此重复实现。
 - ⚠️ **报告 §8/§9/§10 部分缺失项声明已过时（2026-08-22 核对）**：`renderExtensionTemplateAsync` 已实现（sandbox.ts P-8）；tokenizers 已实现（K-9）；jailbreak 在 palink-native 有 PHI+模板等价物（st-compat 有完整 D1 合并链）；`{{/regex}}` 宏两边源码均不存在。实施前请勿照抄报告缺失清单。
