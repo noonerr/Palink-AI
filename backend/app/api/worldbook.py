@@ -363,6 +363,16 @@ async def import_worldbook(
         if len(entry_content) > 50000:
             entry_content = entry_content[:50000]
         is_constant = entry.get("constant", False)
+        extensions = entry.get("extensions") or {}
+        # D-2 修复（2026-08-23）: 补齐条目级高级字段映射（此前仅映射 8 项，
+        # order/sticky/cooldown/delay/depth/selectiveLogic/caseSensitive/
+        # matchWholeWords/excludeRecursion/preventRecursion/group 系/scanDepth
+        # 等十余字段静默丢失）。字段名与默认值语义对齐 ST 契约路径
+        # （silly_tavern.py:1618-1670）与 character_import_service 路径。
+        def _int(name: str, default: int) -> int:
+            v = entry.get(name)
+            return v if isinstance(v, int) and not isinstance(v, bool) else default
+
         stage = WorldBookStage(
             id=str(uuid.uuid4()),
             world_book_id=wb.id,
@@ -375,14 +385,63 @@ async def import_worldbook(
             token_count=len(entry_content) // 4,
             keys=json.dumps(entry_keys(entry)),
             secondary_keys=json.dumps(entry_secondary_keys(entry)),
-            scan_depth=entry.get("scanDepth", 4),
+            scan_depth=_int("scanDepth", 4),
             position=normalize_worldbook_position(entry.get("position", 4)),
             selective=entry.get("selective", False),
             probability=entry.get("probability", 100),
             constant=is_constant,
             group=entry.get("group", None),
+            enabled=True,  # disabled 条目已在上方 entry_is_disabled 过滤
+            case_sensitive=bool(entry.get("caseSensitive")),
+            match_whole_words=bool(entry.get("matchWholeWords")),
+            selective_logic=_int("selectiveLogic", 0),
+            sticky=_int("sticky", 0),
+            cooldown=_int("cooldown", 0),
+            delay=_int("delay", 0),
+            depth=_int("depth", 4),
+            order=_int("order", stage_index),
+            exclude_recursion=bool(entry.get("excludeRecursion")),
+            prevent_recursion=bool(entry.get("preventRecursion")),
+            group_override=bool(entry.get("groupOverride")),
+            group_weight=_int("groupWeight", 0),
+            vectorized=bool(entry.get("vectorized")),
+            add_memo=bool(entry.get("addMemo")),
+            decorators=json.dumps(entry.get("decorators") or [], ensure_ascii=False),
+            character_filter=None,
+            min_activations=_int("minActivations", 0),
+            delay_until_recursion=(
+                int(entry["delayUntilRecursion"])
+                if isinstance(entry.get("delayUntilRecursion"), int) and not isinstance(entry.get("delayUntilRecursion"), bool)
+                else 0
+            ),
+            triggers=json.dumps(entry.get("triggers") or [], ensure_ascii=False),
+            outlet_name=(str(entry.get("outletName"))[:200] or None) if entry.get("outletName") else None,
+            ignore_budget=bool(entry.get("ignoreBudget") or extensions.get("ignore_budget", False)),
+            role=(
+                _int("role", 0)
+                if isinstance(entry.get("role"), int) and not isinstance(entry.get("role"), bool)
+                else (extensions["role"] if isinstance(extensions.get("role"), int) and not isinstance(extensions.get("role"), bool) else 0)
+            ),
+            use_group_scoring=(
+                entry["useGroupScoring"]
+                if isinstance(entry.get("useGroupScoring"), bool)
+                else (extensions.get("use_group_scoring") if isinstance(extensions.get("use_group_scoring"), bool) else None)
+            ),
+            automation_id=str(entry.get("automationId") or "") or None,
             created_at=_utc_now(),
         )
+        if isinstance(entry.get("matchPersonaDescription"), bool):
+            stage.match_persona_description = entry["matchPersonaDescription"]
+        if isinstance(entry.get("matchCharacterDescription"), bool):
+            stage.match_character_description = entry["matchCharacterDescription"]
+        if isinstance(entry.get("matchCharacterPersonality"), bool):
+            stage.match_character_personality = entry["matchCharacterPersonality"]
+        if isinstance(entry.get("matchCharacterDepthPrompt"), bool):
+            stage.match_character_depth_prompt = entry["matchCharacterDepthPrompt"]
+        if isinstance(entry.get("matchScenario"), bool):
+            stage.match_scenario = entry["matchScenario"]
+        if isinstance(entry.get("matchCreatorNotes"), bool):
+            stage.match_creator_notes = entry["matchCreatorNotes"]
         entry_extensions = entry.get("extensions", {})
         if entry_extensions and isinstance(entry_extensions, dict):
             stage.extensions_json = json.dumps(entry_extensions, ensure_ascii=False)
