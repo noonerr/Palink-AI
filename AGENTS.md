@@ -23,6 +23,11 @@
 4. 提示词装配默认值是 `palink-native`（`backend/app/models/system.py` 的 `silly_tavern_mode` 列），不要无授权改动。
 5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。
 
+## 待办（跨 agent 协作）
+
+- **所有 agent 在动工前请先阅读根目录 `TODOS.md`**（遗留任务、方向决策、进行中的工作项）。
+- 它是本项目跨会话/跨 agent 的待办与决策记录，修改前先同步，完成后按其状态更新。
+
 ## 核心代码位置
 
 - 后端提示词装配：`backend/app/services/roleplay_prompt_assembly.py`
