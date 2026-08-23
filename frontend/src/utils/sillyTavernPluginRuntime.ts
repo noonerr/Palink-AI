@@ -6,6 +6,7 @@ import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 import { sanitizePluginCss, isUrlAllowedByPluginWhitelist } from '@/lib/plugin-system/sandbox';
 import { generationEngine } from '@/services/generation-engine';
 import { getContext as getStContext } from '@/lib/sillytavern/getContext';
+import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
 
 interface RuntimePluginResource {
   path?: string;
@@ -618,6 +619,10 @@ export class SillyTavernPluginRuntime {
         var runtime = window.__palinkStRuntime;
         if (!runtime) return;
 
+        // A-1 修复（2026-08-23）: ST event_types 常量表（与沙箱轨同源，
+        // 编译期注入，避免经典轨插件 eventTypes.MESSAGE_RECEIVED 解构 undefined）
+        window.event_types = ${JSON.stringify(ST_TO_PALINK_EVENT_MAP)};
+
         window.SillyTavern = window.SillyTavern || {};
         window.SillyTavern.getContext = function() {
           var ctx = runtime.context || {};
@@ -659,6 +664,26 @@ export class SillyTavernPluginRuntime {
             name2: ctx.name2 || ctx.character?.name || '',
             extensionSettings: runtime.getExtensionSettings ? runtime.getExtensionSettings() : (cfg.extension_settings || {}),
             stat_data: statData,
+            // ── A-1 修复（2026-08-23）: ST 插件惯用解构成员。此前本对象仅含
+            // 数据字段，const { eventSource, getRequestHeaders } = getContext()
+            // 在经典轨全为 undefined（沙箱轨已用聚合语义解决，两轨不一致）。
+            // 各成员在调用时从 window 求值（上方全局均已挂载），与沙箱轨对齐。
+            eventSource: window.eventSource || {},
+            event_types: window.event_types || {},
+            toastr: window.toastr,
+            getRequestHeaders: window.getRequestHeaders,
+            substituteParams: window.substituteParams,
+            substitudeMacros: window.substitudeMacros,
+            saveSettingsDebounced: window.saveSettingsDebounced,
+            getChatMessages: window.getChatMessages,
+            getLastMessageId: window.getLastMessageId,
+            getCurrentChatId: window.getCurrentChatId,
+            setChatMessages: window.setChatMessages,
+            triggerSlash: window.triggerSlash,
+            openCharacterChat: window.openCharacterChat,
+            generateRaw: window.generateRaw,
+            registerSlashCommand: window.registerSlashCommand,
+            renderExtensionTemplateAsync: window.renderExtensionTemplateAsync,
           };
         };
 
@@ -736,6 +761,49 @@ export class SillyTavernPluginRuntime {
           if (runtime.saveExtensionSettings) {
             runtime.saveExtensionSettings();
           }
+        };
+
+        // A-1 修复（2026-08-23）: ST 兼容 renderExtensionTemplateAsync。
+        // 模板内容来自插件配置的 resources.templates（后端导入时已抽取）。
+        // 实现为最小 Handlebars 风格插值：{{key}} HTML 转义、{{{key}}} 原样、
+        // 点路径取值；块级语法（#each/#if）不在支持范围，未命中模板时 reject
+        // 供插件显式降级（优于 undefined TypeError）。
+        window.renderExtensionTemplateAsync = function(extensionName, templateName, data) {
+          data = data || {};
+          var wanted = String(templateName || extensionName || '').replace(/\\\\/g, '/');
+          wanted = wanted.replace(/\\.(?:html|hbs|handlebars|mustache)$/i, '');
+          var found = null;
+          var plugins = (runtime.config && runtime.config.plugins) || [];
+          for (var pi = 0; pi < plugins.length; pi++) {
+            var tpls = (plugins[pi].resources && plugins[pi].resources.templates) || [];
+            for (var ti = 0; ti < tpls.length; ti++) {
+              if (!tpls[ti].content) continue;
+              var p = String(tpls[ti].path || '').replace(/\\\\/g, '/');
+              var normalized = p.replace(/\\.(?:html|hbs|handlebars|mustache)$/i, '');
+              if (p === wanted || normalized === wanted || p === '/' + wanted || normalized.endsWith('/' + wanted)) {
+                found = tpls[ti].content;
+                break;
+              }
+            }
+            if (found != null) break;
+          }
+          if (found == null) {
+            return Promise.reject(new Error('renderExtensionTemplateAsync: template not found: ' + wanted));
+          }
+          var getPath = function(obj, path) {
+            return String(path).split('.').reduce(function(o, k) { return o == null ? undefined : o[k]; }, obj);
+          };
+          var html = String(found)
+            .replace(/\\{\\{\\{\\s*([\\w.]+)\\s*\\}\\}\\}/g, function(_, key) {
+              var v = getPath(data, key);
+              return v == null ? '' : String(v);
+            })
+            .replace(/\\{\\{\\s*([\\w.]+)\\s*\\}\\}/g, function(_, key) {
+              var v = getPath(data, key);
+              var s = v == null ? '' : String(v);
+              return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            });
+          return Promise.resolve(html);
         };
 
         // ST 兼容：宏替换。旧桩为纯 no-op（原样返回），插件依赖宏展开的逻辑

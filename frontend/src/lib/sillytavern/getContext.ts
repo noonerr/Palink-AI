@@ -1688,17 +1688,24 @@ export function getContext(): StGetContext {
     // 而非每次调用新建的空对象 —— 对齐 ST 1.18.0 全局 extension_settings 契约
     extensionSettings: ctx?.extensionSettings ?? globalExtensionSettings,
     writeExtensionField: (module: string, field: string, value: any) => {
-      // 通过 runtime.setExtensionSettings 持久化到原始状态（而非修改拷贝）
-      const current = runtime?.getExtensionSettings(module)
-        ?? (ctx?.extensionSettings?.[module] ?? getExtensionSettingsNs(module));
-      const updated = { ...current, [field]: value };
-      if (runtime) {
-        runtime.setExtensionSettings(module, updated);
-      } else if (ctx?.extensionSettings) {
-        ctx.extensionSettings[module] = updated;
-      } else {
-        setExtensionSettingsNs(module, updated);
-      }
+      // A-3 修复（2026-08-23）: 三轨统一到 writeExtensionFieldCompat——
+      // ST 语义（characterId,key,value → 角色卡 extensions）优先；
+      // 旧"扩展设置命名空间"语义降级为兼容回退（存量插件传模块名不受影响）。
+      void writeExtensionFieldCompat(module, field, value, {
+        legacyFallback: () => {
+          // 通过 runtime.setExtensionSettings 持久化到原始状态（而非修改拷贝）
+          const current = runtime?.getExtensionSettings(module)
+            ?? (ctx?.extensionSettings?.[module] ?? getExtensionSettingsNs(module));
+          const updated = { ...current, [field]: value };
+          if (runtime) {
+            runtime.setExtensionSettings(module, updated);
+          } else if (ctx?.extensionSettings) {
+            ctx.extensionSettings[module] = updated;
+          } else {
+            setExtensionSettingsNs(module, updated);
+          }
+        },
+      });
     },
     getExtensionSettings: (module?: string) => {
       if (module) {
@@ -2936,3 +2943,73 @@ function toStMessage(msg: ChatMessage): StChatMessage {
  * 获取当前上下文（getContext 的别名，供插件直接调用）
  */
 export const getContextValue = getContext;
+
+/**
+ * A-3 修复（2026-08-23）: writeExtensionField 三轨统一实现。
+ *
+ * ST 权威语义（extensions.js:2061-2111）: `(characterId, key, value)` 写角色卡
+ * `data.extensions.{key}` 并经 /api/characters/merge-attributes 持久化。
+ *
+ * 兼容回退: Palink 旧实现是"扩展设置命名空间"语义（module,field,value），
+ * 存量插件可能以模块名调用。判别规则：characterId 可解析为角色列表中的
+ * 具体角色（含 avatar）→ ST 语义；否则 → legacyFallback（调用方提供旧语义）。
+ * 已知边界：数字型字符串（"2"）优先按 ST 角色索引解析。
+ */
+export async function writeExtensionFieldCompat(
+  characterId: number | string,
+  key: string,
+  value: unknown,
+  options: { legacyFallback?: () => void } = {},
+): Promise<void> {
+  let target: Record<string, unknown> | null = null;
+  try {
+    const st = getGlobalSillyTavernRuntime()?.getContext?.() as
+      | { characters?: unknown }
+      | null;
+    const list = Array.isArray(st?.characters) ? (st!.characters as unknown[]) : [];
+    if (list.length > 0) {
+      const idx = Number(characterId);
+      const byIndex = Number.isNaN(idx) ? undefined : list[idx];
+      const byKey = (list as unknown as Record<string, unknown>)[String(characterId)];
+      const found = [byIndex, byKey].find(
+        (c): c is Record<string, unknown> =>
+          !!c && typeof c === 'object' && typeof (c as any).avatar === 'string' && !!(c as any).avatar,
+      );
+      if (found) target = found;
+    }
+  } catch {
+    // 角色解析失败 → 走回退
+  }
+
+  if (!target) {
+    if (typeof options.legacyFallback === 'function') {
+      options.legacyFallback();
+    } else {
+      console.warn(
+        `[writeExtensionField] 未找到角色 ${characterId}（或缺 avatar），且无兼容回退，已忽略 key=${String(key)}`,
+      );
+    }
+    return;
+  }
+
+  try {
+    const token =
+      typeof localStorage !== 'undefined' ? localStorage.getItem('palink_token') : null;
+    const resp = await fetch('/api/characters/merge-attributes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        avatar: target.avatar,
+        data: { extensions: { [String(key)]: value } },
+      }),
+    });
+    if (!resp.ok) {
+      console.warn(`[writeExtensionField] 保存失败 (${String(key)}): ${resp.status}`);
+    }
+  } catch (e) {
+    console.warn(`[writeExtensionField] 失败 (${String(key)}):`, e);
+  }
+}

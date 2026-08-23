@@ -10,7 +10,7 @@ import { promptInjection } from '@/services/prompt-injection';
 import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import DOMPurify from 'dompurify';
-import { ST_EVENT_TYPES, getContext as buildStContext } from '../sillytavern/getContext';
+import { ST_EVENT_TYPES, getContext as buildStContext, writeExtensionFieldCompat } from '../sillytavern/getContext';
 import { SlashCommandEngine } from '../slash-engine';
 import {
   globalExtensionSettings,
@@ -3241,7 +3241,11 @@ export class PluginSandbox {
         return {};
       },
       writeExtensionField: (name: string, field: string, value: unknown) => {
-        writeExtensionSettingsField(name, field, value);
+        // A-3 修复（2026-08-23）: 三轨统一——ST 角色卡语义优先（characterId 可
+        // 解析时），模块名调用回退旧"扩展设置命名空间"语义，与经典轨/getContext 轨一致。
+        void writeExtensionFieldCompat(name, field, value, {
+          legacyFallback: () => writeExtensionSettingsField(name, field, value),
+        });
       },
       substituteParams: (input: string) => {
         try {
@@ -3501,9 +3505,23 @@ export class PluginSandbox {
           return -1;
         }
       },
-      // triggerSlash: 触发 slash 命令（stub，让脚本不崩；后续可桥接到 SlashCommandEngine）
+      // ── A-2 修复（2026-08-23）: 能力倒挂消除 ──
+      // 以下 API 此前是 console.warn 空桩，而同样代码注入主 window（经典轨）
+      // 经 __palinkBridge 有真桥接——同一酒馆助手脚本"注入能跑、进沙箱失效"。
+      // 统一改为调用时转发到主 window 同名真实现，缺失时保留诚实降级。
+
+      // triggerSlash: 触发 slash 命令（桥接经典轨 window.triggerSlash → __palinkBridge.runSlashCommand）
       triggerSlash: async (_command: string) => {
-        console.warn(`[PluginSandbox] triggerSlash stub: ${_command}`);
+        try {
+          const w = window as any;
+          if (typeof w.triggerSlash === 'function') {
+            return await w.triggerSlash(_command);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] triggerSlash 桥接失败:', e);
+          return '';
+        }
+        console.warn(`[PluginSandbox] triggerSlash: 无可用桥接（window.triggerSlash 缺失）: ${_command}`);
         return '';
       },
       // generateRaw: 生成请求（K-5 修复：桥接到真实实现，非空 stub）
@@ -3523,34 +3541,82 @@ export class PluginSandbox {
         console.warn('[PluginSandbox] generateRaw stub（无可用实现）');
         return '';
       },
-      // openCharacterChat: 打开角色聊天（stub）
-      openCharacterChat: (_options?: any) => {
-        console.warn('[PluginSandbox] openCharacterChat stub');
+      // openCharacterChat: 打开角色聊天（桥接经典轨 __palinkBridge.switchChat）
+      openCharacterChat: async (_options?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.openCharacterChat === 'function') {
+            return await w.openCharacterChat(_options);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] openCharacterChat 桥接失败:', e);
+          return;
+        }
+        console.warn('[PluginSandbox] openCharacterChat: 无可用桥接（window.openCharacterChat 缺失）');
       },
       // ===== 补充：脚本实际调用但之前未补的 API（对照 JS-Slash-Runner index.ts） =====
       // substitudeMacros: 宏替换（对照源码 substitudeMacros，注意拼写不是 substitute）
       substitudeMacros: (input: string) => {
         try { return substituteParamsExtended(input); } catch { return input; }
       },
-      // generate: 生成请求（stub）
+      // generate: 生成请求（桥接 buildStContext().generateRaw，与上方 generateRaw 同源）
       generate: async (_prompt: string, _options?: any) => {
-        console.warn('[PluginSandbox] generate stub');
+        try {
+          const st = buildStContext() as unknown as { generateRaw?: (...args: any[]) => Promise<string> } | null;
+          if (st && typeof st.generateRaw === 'function') {
+            return await st.generateRaw(_prompt, _options);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] generate 桥接失败:', e);
+          return '';
+        }
+        console.warn('[PluginSandbox] generate stub（无可用实现）');
         return '';
       },
-      // injectPrompts / uninjectPrompts: prompt 注入（stub，需后续和后端 prompt 装配打通）
-      injectPrompts: (_prompts: any) => {
-        console.warn('[PluginSandbox] injectPrompts stub');
+      // injectPrompts / uninjectPrompts: prompt 注入（桥接主 window 实现；
+      // 经典轨当前亦为桩，转发保持两轨单一来源，后续实现只改一处）
+      injectPrompts: async (_prompts: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.injectPrompts === 'function') {
+            return await w.injectPrompts(_prompts);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] injectPrompts 桥接失败:', e);
+          return '';
+        }
+        console.warn('[PluginSandbox] injectPrompts: 无可用桥接（window.injectPrompts 缺失）');
         return '';
       },
-      uninjectPrompts: (_id?: string) => {
-        console.warn('[PluginSandbox] uninjectPrompts stub');
+      uninjectPrompts: async (_id?: string) => {
+        try {
+          const w = window as any;
+          if (typeof w.uninjectPrompts === 'function') {
+            return await w.uninjectPrompts(_id);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] uninjectPrompts 桥接失败:', e);
+          return;
+        }
+        console.warn('[PluginSandbox] uninjectPrompts: 无可用桥接（window.uninjectPrompts 缺失）');
       },
-      // setChatMessages / deleteChatMessages: 消息操作（stub）
-      setChatMessages: (_messages: any, _range?: any) => {
-        console.warn('[PluginSandbox] setChatMessages stub');
+      // setChatMessages / deleteChatMessages: 消息操作
+      // setChatMessages 桥接经典轨真实现（__palinkBridge.saveChatMessages）；
+      // deleteChatMessages 两轨均无底层实现，保留诚实桩。
+      setChatMessages: async (_messages: any, _range?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.setChatMessages === 'function') {
+            return await w.setChatMessages(_messages, _range);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] setChatMessages 桥接失败:', e);
+          return;
+        }
+        console.warn('[PluginSandbox] setChatMessages: 无可用桥接（window.setChatMessages 缺失）');
       },
       deleteChatMessages: (_range?: any) => {
-        console.warn('[PluginSandbox] deleteChatMessages stub');
+        console.warn('[PluginSandbox] deleteChatMessages stub（两轨均无底层实现）');
       },
       // getCharacter / getCurrentCharacterName / getCharacterNames / getCharData:
       // 尝试从 window 上的全局聊天状态读取角色信息，不可用时返回安全默认值
@@ -4462,30 +4528,10 @@ export class PluginSandbox {
         // K-4 修复: ST extensions.js:2061-2111 writeExtensionField(characterId, key, value)
         // 写角色卡 data.extensions.{key} 并 POST /api/characters/merge-attributes 持久化
         // （此前缺失 → regex/engine.js:148 等插件 import 后调用抛 TypeError）。
-        writeExtensionField: async (characterId: number | string, key: string, value: unknown) => {
-          const idx = Number(characterId);
-          const ch = Array.isArray(characters) ? characters[idx] : undefined;
-          if (!ch || typeof ch !== 'object' || !ch.avatar) {
-            console.warn(`[PluginSandbox] writeExtensionField: 未找到角色 ${characterId}（或缺 avatar）`);
-            return;
-          }
-          try {
-            const token = typeof localStorage !== 'undefined' ? localStorage.getItem('palink_token') : null;
-            const resp = await (sandbox.fetch as any)?.(`/api/characters/merge-attributes`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-              },
-              body: JSON.stringify({ avatar: ch.avatar, data: { extensions: { [key]: value } } }),
-            });
-            if (resp && !resp.ok) {
-              console.warn(`[PluginSandbox] writeExtensionField 保存失败 (${key}): ${resp.status}`);
-            }
-          } catch (e) {
-            console.warn(`[PluginSandbox] writeExtensionField 失败 (${key}):`, e);
-          }
-        },
+        // A-3 修复（2026-08-23）: 收敛到共享 writeExtensionFieldCompat（与
+        // getContext 轨 / sandbox.getContext 轨同一实现），消除三轨三义。
+        writeExtensionField: (characterId: number | string, key: string, value: unknown): Promise<void> =>
+          writeExtensionFieldCompat(characterId, key, value),
         modules: [],
         renderExtensionTemplateAsync: async (extensionName = '', templateName = '', data: Record<string, any> = {}): Promise<string> => {
           const templates = (context as unknown as Record<string, unknown>).pluginTemplates as
