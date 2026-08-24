@@ -21,6 +21,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
+from ..core.cache import invalidate_user_cache
 from ..core.token_blacklist import is_blacklisted
 from ..character_card import (
     convert_character_to_chara_card,
@@ -557,6 +558,13 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+# [MODE-SEALED] 2026-08-24 用户拍板：除 palink-native 外的模式运行时封存不可达。
+# sidecar mode 查询出口与 users.py 同步重定向（iframe 即使存在也只会被告知
+# palink-native）。解封 = 移除守卫并恢复合法集判定。
+_SEALED_ST_MODES = {"compat", "st-compat", "st-native"}
+_LEGAL_ST_MODES = {"compat", "st-compat", "st-native", "palink-native"}  # 解封后恢复使用
+
+
 def _normalize_silly_tavern_mode(mode: Optional[str]) -> str:
     raw = str(mode or "palink-native").strip() or "palink-native"
     aliases = {
@@ -564,7 +572,9 @@ def _normalize_silly_tavern_mode(mode: Optional[str]) -> str:
         "native": "palink-native",
     }
     normalized = aliases.get(raw, raw)
-    return normalized if normalized in {"compat", "st-compat", "st-native", "palink-native"} else "palink-native"
+    if normalized in _LEGAL_ST_MODES and normalized not in _SEALED_ST_MODES:
+        return normalized
+    return "palink-native"
 
 
 def _st_native_public_url(request: Request) -> str:
@@ -5041,7 +5051,22 @@ async def st_import_character(
     character_id = str(result.get("id") or "")
     character_name = str(result.get("name") or "Imported Character")
     filename = _avatar_key(character_id) if character_id else file.filename
-    return {"name": character_name, "filename": filename}
+    # [CHAR-LIST-CACHE-FIX] 导入已 commit，但列表接口挂 @cached("character_list")
+    # 30s 缓存——不失效会导致前端导入后拉到旧列表：占位卡移除后新卡"闪现即消失"，
+    # 刷新也无用（后端缓存仍在 TTL 内），直到缓存过期才出现（2026-08-23 实测）。
+    # 对齐 character.py 全部写路径惯例（创建/批量导入均失效 list+detail）。
+    invalidate_user_cache("character_list", user.id)
+    invalidate_user_cache("character_detail", user.id)
+    # 返回形状对齐 character.py:512 老导入端点（前端 handleImportCharacter 读
+    # result.character.id / has_character_book / worldbook_entry_count 触发
+    # 自动打开对话与世界书提示；name/filename 保留为 ST 形状超集）。
+    return {
+        "status": "ok",
+        "name": character_name,
+        "filename": filename,
+        "character": result,
+        "auto_parsed": False,
+    }
 
 
 class CharacterExportRequest(BaseModel):

@@ -54,6 +54,22 @@ DEFAULT_CONTEXT_TEMPLATE_NAME = "Default"
 # 语义上同样应按 ST 排序装配。
 ST_COMPAT_MODES = {"st-compat", "compat"}
 
+# [MODE-SEALED] 2026-08-24 用户拍板：除 palink-native 外的模式运行时封存不可达。
+# 封存作用在【装配入口】（_st_mode_effective 归一化用户设置），而非本文件的
+# _is_st_compat_mode / st-compat 函数族内部——后者是被固化测试直调的纯函数契约，
+# 代码本体保留，待隐患排除后与固化测试一起统一删除。
+# 解封 = 从 SEALED_ST_MODES 移除对应值（并同步 users.py / silly_tavern.py 守卫）。
+SEALED_ST_MODES = {"st-compat", "compat", "st-native"}
+
+
+def _st_mode_effective(st_mode: Optional[str]) -> str:
+    """[MODE-SEALED] 入口级模式归一：封存模式一律按 palink-native 处理。
+
+    仅用于读取 user_setting.silly_tavern_mode 后、进入装配分支前的判定；
+    st-compat 函数族内部不经过本函数（固化测试契约不变）。
+    """
+    return "" if (st_mode or "").strip().lower() in SEALED_ST_MODES else (st_mode or "").strip()
+
 
 def _is_st_compat_mode(st_mode: Optional[str]) -> bool:
     return (st_mode or "").strip().lower() in ST_COMPAT_MODES
@@ -2676,7 +2692,8 @@ async def _resolve_group_speaker(req: PromptAssemblyRequest) -> None:
     try:
         _us = req.db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
         if _us is not None:
-            st_mode = getattr(_us, "silly_tavern_mode", "palink-native") or "palink-native"
+            # [MODE-SEALED] 入口归一化：封存模式按 palink-native 处理
+            st_mode = _st_mode_effective(getattr(_us, "silly_tavern_mode", "")) or "palink-native"
     except Exception as exc:
         logger.warning("UserSetting lookup failed for st_mode detection (group_id=%s): %s", req.group_id, exc)
     if _is_st_compat_mode(st_mode) and strategy in (_GROUP_ACTIVATION_TALKATIVE, _GROUP_ACTIVATION_VOTING):
@@ -3531,7 +3548,11 @@ async def _assemble_roleplay_prompt_impl(
     st_wi_an_top_parts: list[str] = []
     st_wi_an_bottom_parts: list[str] = []
     _part_count_before = len(dynamic_context_parts)
-    _is_st_compat = bool(user_setting and _is_st_compat_mode(getattr(user_setting, "silly_tavern_mode", "")))
+    # [MODE-SEALED] 入口归一化：封存模式（st-compat/compat/st-native）按 palink-native 处理
+    _is_st_compat = bool(
+        user_setting
+        and _is_st_compat_mode(_st_mode_effective(getattr(user_setting, "silly_tavern_mode", "")))
+    )
     # E-1 修复: 世界书扫描（N+1 查询 + token 编码）是纯同步重活，移入线程池，
     # 避免阻塞事件循环（与 persist_snapshot 的 to_thread 模式一致）。
     await asyncio.to_thread(
@@ -3703,7 +3724,10 @@ async def _assemble_roleplay_prompt_impl(
 
     # ST 1.18.0 兼容模式分支：silly_tavern_mode 为 "st-compat"/"compat" 时，
     # 使用 ST 的精确装配序（角色字段分离、无 Palink 特有内容）。
-    st_mode = getattr(user_setting, "silly_tavern_mode", "palink-native") if user_setting else "palink-native"
+    # [MODE-SEALED] 入口归一化：封存模式按 palink-native 处理，本分支运行时不可达
+    st_mode = _st_mode_effective(
+        getattr(user_setting, "silly_tavern_mode", "") if user_setting else ""
+    ) or "palink-native"
     if _is_st_compat_mode(st_mode):
         # ST 1.18.0 对齐: 使用分离的世界书条目 (pos=0 → worldInfoBefore, pos=1 → worldInfoAfter)
         # 低危项修复: 条目间分隔符对齐 ST world-info.js:5146-5147（join('\n')，非 '\n\n'）

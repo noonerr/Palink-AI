@@ -421,43 +421,43 @@ def test_resolve_talkative_keeps_preset_speaker():
     assert req.current_speaker_id == "m1"
 
 
-def test_resolve_stcompat_talkative_downgrades_to_natural():
-    """st-compat 模式收到原生 TALKATIVE(4) -> 回退 NATURAL(0)，
-    不得调用 _select_talkative_speaker。固定 choice 取首位。"""
-    members = [FakeChar("m1", "Alice", "0"), FakeChar("m2", "Bob", "0")]
+def test_resolve_sealed_stcompat_talkative_uses_native_selector():
+    """[MODE-SEALED] 2026-08-24 封存后：DB 存量 st-compat 在入口被归一化为
+    palink-native -> 原生 TALKATIVE(4) 正常走 native selector（原「降级 NATURAL」
+    行为随 st-compat 管线一并封存）。"""
+    members = [FakeChar("m1", "Alice"), FakeChar("m2", "Bob")]
     g = FakeGroup(strategy=4, member_ids='["m1","m2"]', disabled="[]")
     us = FakeUserSetting(mode="st-compat")
     db = FakeDB(group=g, user_setting=us, members=members, session=None)
     req = _make_req(db, g)
 
-    def _should_not_be_called(*a, **k):
-        raise AssertionError("st-compat must NOT use native TALKATIVE selector")
-
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(rpa, "_select_talkative_speaker", _should_not_be_called)
-        mp.setattr(random, "choice", _pick(0))
+        mp.setattr(rpa, "_select_talkative_speaker",
+                   lambda db, group, members, allow_self_responses=False: "m2")
         asyncio.run(rpa._resolve_group_speaker(req))
-    assert req.current_speaker_id == "m1"
+    assert req.current_speaker_id == "m2"
 
 
-def test_resolve_stcompat_voting_downgrades_to_natural():
-    """st-compat 模式收到原生 VOTING(5) -> 回退 NATURAL(0)，
-    不得调用 _select_voting_speaker / _select_talkative_speaker。"""
-    members = [FakeChar("m1", "Alice", "0"), FakeChar("m2", "Bob", "0")]
+def test_resolve_sealed_stcompat_voting_uses_native_selector():
+    """[MODE-SEALED] 封存后：存量 st-compat + 原生 VOTING(5) -> 走 native
+    voting selector（不再回退 NATURAL）。"""
+    members = [FakeChar("m1", "Alice"), FakeChar("m2", "Bob")]
     g = FakeGroup(strategy=5, member_ids='["m1","m2"]', disabled="[]")
     us = FakeUserSetting(mode="st-compat")
     db = FakeDB(group=g, user_setting=us, members=members, session=None)
     req = _make_req(db, g)
 
-    def _should_not_be_called(*a, **k):
-        raise AssertionError("st-compat must NOT use native VOTING/TALKATIVE selector")
+    async def _fake_vote(db, group, members_, model):
+        return "m2"
 
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(rpa, "_select_talkative_speaker", _should_not_be_called)
-        mp.setattr(rpa, "_select_voting_speaker", _should_not_be_called)
-        mp.setattr(random, "choice", _pick(0))
+        mp.setattr(rpa, "_select_voting_speaker", _fake_vote)
+
+        def _talkative_should_not_be_called(*a, **k):
+            raise AssertionError("VOTING strategy must not fall through to talkative")
+        mp.setattr(rpa, "_select_talkative_speaker", _talkative_should_not_be_called)
         asyncio.run(rpa._resolve_group_speaker(req))
-    assert req.current_speaker_id == "m1"
+    assert req.current_speaker_id == "m2"
 
 
 if __name__ == "__main__":

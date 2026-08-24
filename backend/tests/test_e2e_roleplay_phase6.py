@@ -733,17 +733,22 @@ def _read_mode_from_db() -> str | None:
 
 
 def _normalize_mode(raw: str | None) -> str:
-    """与后端 _normalize_silly_tavern_mode 对齐的本地实现。"""
+    """与后端 _normalize_silly_tavern_mode 对齐的本地实现。
+
+    [MODE-SEALED] 2026-08-24：后端已封存 st-compat/st-native（运行时重定向
+    palink-native），本地副本同步该语义。
+    """
     aliases = {"iframe": "compat", "native": "palink-native"}
     r = str(raw or "palink-native").strip() or "palink-native"
     r = aliases.get(r, r)
-    return r if r in {"compat", "st-native", "palink-native"} else "palink-native"
+    # 封存期：唯一可达模式为 palink-native
+    return "palink-native"
 
 
 def subtask_6_1_4(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     print("\n=== SubTask 6.1.4: 模式切换 ===")
 
-    # 切换到 st-native
+    # [MODE-SEALED] 切换到 st-native 应被封存守卫重定向为 palink-native 落库
     status, resp = http_request(
         "PUT", "/api/users/me/settings", token=token, body={"silly_tavern_mode": "st-native"}
     )
@@ -755,11 +760,11 @@ def subtask_6_1_4(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     # 同时记录 GET 返回值（可能因缓存 bug 返回旧值）
     _, get_resp = http_request("GET", "/api/users/me/settings", token=token)
     st_get_mode = get_resp.get("silly_tavern_mode") if isinstance(get_resp, dict) else None
-    if st_save_ok and st_db_mode == "st-native":
-        cache_note = "" if st_get_mode == "st-native" else f" (GET cached={st_get_mode}, known cache bug)"
-        record("switch_to_st_native", "PASS", f"db_mode={st_db_mode}{cache_note}")
+    if st_save_ok and st_db_mode == "palink-native":
+        cache_note = "" if st_get_mode == "palink-native" else f" (GET cached={st_get_mode}, known cache bug)"
+        record("switch_to_st_native_sealed_redirect", "PASS", f"db_mode={st_db_mode}{cache_note}")
     else:
-        record("switch_to_st_native", "FAIL", f"save_status={status} db_mode={st_db_mode} get_mode={st_get_mode}")
+        record("switch_to_st_native_sealed_redirect", "FAIL", f"save_status={status} db_mode={st_db_mode} get_mode={st_get_mode}")
 
     # 切换回 palink-native
     status, resp = http_request(

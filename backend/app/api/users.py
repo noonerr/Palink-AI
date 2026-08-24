@@ -14,11 +14,20 @@ _SILLY_TAVERN_MODE_ALIASES = {
     "native": "palink-native",
 }
 
+# [MODE-SEALED] 2026-08-24 用户拍板：除 palink-native 外的模式运行时封存不可达。
+# GET 一律报告 palink-native（前端分支自然走主攻模式）；PUT 提交封存值时直接
+# 重定向为 palink-native 落库。DB 存量值不回写（可逆封存）。与 roleplay_prompt_
+# assembly.SEALED_ST_MODES 保持同步；解封 = 移除本守卫并恢复下方合法集判定。
+_SEALED_ST_MODES = {"compat", "st-compat", "st-native"}
+_LEGAL_ST_MODES = {"compat", "st-compat", "st-native", "palink-native"}  # 解封后恢复使用
+
 
 def _normalize_silly_tavern_mode(mode: str | None) -> str:
     raw = str(mode or "palink-native").strip() or "palink-native"
     normalized = _SILLY_TAVERN_MODE_ALIASES.get(raw, raw)
-    return normalized if normalized in {"compat", "st-compat", "st-native", "palink-native"} else "palink-native"
+    if normalized in _LEGAL_ST_MODES and normalized not in _SEALED_ST_MODES:
+        return normalized
+    return "palink-native"
 
 def _get_or_create_settings(user: User, db: Session) -> UserSetting:
     setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()

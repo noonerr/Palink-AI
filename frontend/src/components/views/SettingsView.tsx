@@ -246,12 +246,13 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
     }
   };
 
-  // 方向声明: 项目主攻 palink-native；st-compat / st-native 已封存冷处理、待删除，
-  // 除非用户明确要求不要优化这两个模式。详见根目录 AGENTS.md。
-  const stModes: Array<{ value: string; label: string; desc: string }> = [
+  // 方向声明: 项目主攻 palink-native；st-compat / st-native 已运行时封存
+  // （[MODE-SEALED] 2026-08-24 用户拍板：后端 GET/PUT 强制重定向，此处仅禁用入口）。
+  // 详见根目录 AGENTS.md。待隐患排除后将整体删除这两个模式。
+  const stModes: Array<{ value: string; label: string; desc: string; sealed?: boolean }> = [
     { value: 'palink-native', label: 'Palink 原生', desc: 'Palink 界面 + Palink 原生提示词装配' },
-    { value: 'st-compat', label: 'ST 兼容装配', desc: 'Palink 界面 + SillyTavern 1.18 对齐的提示词装配（推荐）' },
-    { value: 'st-native', label: 'ST 原生界面', desc: '嵌入完整的 SillyTavern 前端界面，使用酒馆原生渲染、插件和正则引擎' },
+    { value: 'st-compat', label: 'ST 兼容装配（已封存）', desc: '已封存：不可切换，待隐患排除后删除', sealed: true },
+    { value: 'st-native', label: 'ST 原生界面（已封存）', desc: '已封存：不可切换，待隐患排除后删除', sealed: true },
   ];
 
   return (
@@ -269,11 +270,19 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
             <button
               key={m.value}
               type="button"
+              disabled={m.sealed}
               className={cn(
                 'flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                stMode === m.value ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+                stMode === m.value ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
+                m.sealed && 'cursor-not-allowed opacity-50 hover:bg-transparent'
               )}
-              onClick={() => handleModeChange(m.value)}
+              onClick={() => {
+                if (m.sealed) {
+                  toast.info('该模式已封存，仅 Palink 原生模式可用');
+                  return;
+                }
+                void handleModeChange(m.value);
+              }}
             >
               <span className={cn(
                 'mt-1 h-3.5 w-3.5 shrink-0 rounded-full border',

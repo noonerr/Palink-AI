@@ -51,10 +51,11 @@ def test_normalize_silly_tavern_mode():
         (None, "palink-native"),
         ("", "palink-native"),
         ("palink-native", "palink-native"),
-        ("st-native", "st-native"),
-        ("compat", "compat"),
+        # [MODE-SEALED] 2026-08-24：封存模式一律重定向 palink-native
+        ("st-native", "palink-native"),
+        ("compat", "palink-native"),
+        ("iframe", "palink-native"),
         ("native", "palink-native"),
-        ("iframe", "compat"),
         ("unknown", "palink-native"),
     ]
     all_pass = True
