@@ -3266,6 +3266,9 @@ export class PluginSandbox {
         const messageText = message instanceof Node
           ? (message.textContent || '')
           : String(message ?? '');
+        // [N-1] 仅 DISPLAY 分支经 dangerouslySetInnerHTML 注入主 origin，入口先消毒（复用沙箱 sanitizeHtml）；
+        // TEXT/CONFIRM/INPUT 走 React 文本节点本已安全，保持原样
+        const displaySafeText = palinkType === PopupType.DISPLAY ? sanitizeHtml(messageText) : messageText;
         const popupOptions: any = {};
         if (options?.okButton) popupOptions.okButton = options.okButton;
         if (options?.cancelButton) popupOptions.cancelButton = options.cancelButton;
@@ -3285,7 +3288,7 @@ export class PluginSandbox {
           const result = await popupManager.show(
             palinkType,
             (options?.title as string) || 'SillyTavern',
-            messageText,
+            displaySafeText,
             popupOptions,
           );
           // 根据弹窗类型返回合适的值

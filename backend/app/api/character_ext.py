@@ -36,6 +36,7 @@ from ..models.system import UserSetting, GenerationPreset
 from ..character_card import create_png_with_chara_card, convert_character_to_chara_card
 from ..services.character_import_service import CharacterImportService, PngCharacterCardParser
 from ..memory_module.service import MemoryService
+from ..memory_module.storage import delete_by_message_id
 from ..schemas.character import character_to_dict
 from ..utils import normalize_image_url, get_default_ai_model, _is_public_http_url, clean_memory_content
 from ..services.inference_dispatcher import (
@@ -2739,6 +2740,15 @@ async def delete_character_session(
         ChatVariable.session_id == session_id
     ).delete(synchronize_session=False)
 
+    # [ORPHAN-MEM-FIX] 级联清理向量记忆（conversation_memories.session_id 为裸 TEXT
+    # 无 ForeignKey，不删则成为孤儿：检索永不召回但持续占存储。对齐普通聊天
+    # sessions.py delete_session_memories 的行为，2026-08-24 排查实锤 44 条全量孤儿）。
+    from sqlalchemy import text as _sa_text
+    db.execute(
+        _sa_text("DELETE FROM conversation_memories WHERE session_id = :sid"),
+        {"sid": session_id},
+    )
+
     # P0-5 修复: 手动清理 CharacterChatSessionBranch（无 ORM cascade 定义）
     # 原 Palink 仅删除 ChatVariable + session，未清理 branches，导致:
     # - SQLite (PRAGMA foreign_keys=ON): FOREIGN KEY constraint failed
@@ -2887,6 +2897,9 @@ async def delete_character_message(
     # P2 修复: is_locked 强制检查 — 锁定消息不允许删除（对齐 ST message is_locked 语义）
     if getattr(msg, "is_locked", False):
         raise HTTPException(status_code=403, detail="Message is locked and cannot be deleted")
+    # [ORPHAN-MEM-FIX] 单条消息删除级联清理其向量记忆（第五条删除路径收尾：
+    # 整角色 / 整会话 / 分支 / 单条消息 / 普通聊天会话）；存量 NULL 行不受影响。
+    delete_by_message_id(db, session_id, message_id)
     db.delete(msg)
     db.commit()
 
@@ -3220,6 +3233,8 @@ async def edit_character_message(
     # P2 修复: is_locked 强制检查 — 锁定消息不允许编辑（对齐 ST message is_locked 语义）
     if getattr(msg, "is_locked", False):
         raise HTTPException(status_code=403, detail="Message is locked and cannot be edited")
+    # [MEM-SYNC-ON-EDIT] 进入函数时缓存旧正文，供 commit 前对比内容是否变化
+    old_content_before = msg.content or ""
     if req.role:
         role = req.role.strip().lower()
         if role in {"assistant", "user", "system"}:
@@ -3270,7 +3285,49 @@ async def edit_character_message(
         extra=edit_extra,
         swipe_info=req.swipe_info,
     )
+    # [MEM-SYNC-ON-EDIT] 编辑即同步：记忆 = 消息当前内容的镜像。
+    # 内容(strip)变化 → 先删该消息全部记忆行，commit 后按新文本后台重嵌；
+    # 内容未变零操作；锁定消息已在上方 403 拦截（防御性再判一次）。
+    _edited_for_reembed = None
+    if not getattr(msg, "is_locked", False) and (msg.content or "").strip() != old_content_before.strip():
+        delete_by_message_id(db, session_id, message_id)
+        _edited_for_reembed = (msg.role, msg.content or "")
+    # 捕获标量，避免后台线程访问已关闭请求 Session 的 ORM 对象
+    _edit_branch_id = msg.branch_id
+    _edit_user_id = user.id
     db.commit()
+
+    if _edited_for_reembed is not None:
+        _reembed_role, _reembed_text = _edited_for_reembed
+
+        def _reembed_edited_message():
+            re_db = SessionLocal()
+            try:
+                svc = MemoryService(re_db)
+                if not svc.is_available():
+                    return
+                text_for_mem = (
+                    clean_memory_content(_reembed_text)
+                    if _reembed_role == "assistant"
+                    else _reembed_text
+                )
+                if text_for_mem.strip():
+                    svc.store_memory(
+                        user_id=_edit_user_id,
+                        session_id=session_id,
+                        role=_reembed_role,
+                        content=text_for_mem,
+                        branch_id=_edit_branch_id,
+                        message_id=message_id,
+                    )
+                    re_db.commit()
+            except Exception:
+                re_db.rollback()
+                logger.warning("[MEM-SYNC-ON-EDIT] re-embed after edit failed (message=%s)", message_id)
+            finally:
+                re_db.close()
+
+        asyncio.create_task(asyncio.to_thread(_reembed_edited_message))
 
     # 触发 ST DATA_ROOT 同步（后台非阻塞）
     if session.character:
@@ -3938,6 +3995,16 @@ async def delete_branch(
         CharacterChatMessage.branch_id.in_(branch_ids_to_delete)
     ).delete(synchronize_session=False)
 
+    # [ORPHAN-MEM-FIX] 级联清理被删分支的向量记忆（conversation_memories.branch_id
+    # 为裸 TEXT 无 ForeignKey；记忆按 branch 维度写入，随分支一并删除）
+    from sqlalchemy import text as _sa_text
+    _mem_ph = ", ".join([f":b{i}" for i in range(len(branch_ids_to_delete))])
+    _mem_params = {f"b{i}": bid for i, bid in enumerate(branch_ids_to_delete)}
+    db.execute(
+        _sa_text(f"DELETE FROM conversation_memories WHERE branch_id IN ({_mem_ph})"),
+        _mem_params,
+    )
+
     db.query(CharacterChatSessionBranch).filter(
         CharacterChatSessionBranch.id.in_(branch_ids_to_delete)
     ).delete(synchronize_session=False)
@@ -4459,8 +4526,9 @@ async def _character_chat_impl(
     logger.debug("[PromptAssembly] %s", assembly.debug_dict())
 
     # Save user message
+    _user_msg_row = None
     if not smart_card_trigger:
-        db.add(CharacterChatMessage(
+        _user_msg_row = CharacterChatMessage(
             session_id=session_id,
             branch_id=branch_id,
             role="user",
@@ -4472,7 +4540,8 @@ async def _character_chat_impl(
                 char_name=char.name or "Character",
                 user_name=user_nickname,
             ),
-        ))
+        )
+        db.add(_user_msg_row)
 
     # 更新分支的最后消息时间
     if branch_id:
@@ -4483,6 +4552,13 @@ async def _character_chat_impl(
             branch.last_message_at = datetime.now(timezone.utc)
             branch.is_frozen = False  # 有新消息时解冻
 
+    # [MEM-UPSERT] flush 取回用户消息主键，供记忆写入按 message_id 关联；
+    # smart_card_trigger / regenerate / swipe 场景无本轮用户消息 → 保持 None。
+    if _user_msg_row is not None:
+        db.flush()
+        sse_user_message_id = _user_msg_row.id
+    else:
+        sse_user_message_id = None
     db.commit()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -4822,21 +4898,29 @@ async def _character_chat_impl(
                         if not result.full_content.strip().startswith("Error:"):
                             mem_svc = MemoryService(save_db)
                             if mem_svc.is_available():
+                                # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id
+                                # 先删后写（幂等）；无本轮用户消息的场景 id 为 None 跳过删除。
                                 if not smart_card_trigger and req.message.strip():
+                                    if sse_user_message_id is not None:
+                                        delete_by_message_id(save_db, session_id, sse_user_message_id)
                                     mem_svc.store_memory(
                                         user_id=user.id,
                                         session_id=session_id,
                                         role="user",
                                         content=req.message,
                                         branch_id=branch_id,
+                                        message_id=sse_user_message_id,
                                     )
                                 # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
+                                if assistant_message_id is not None:
+                                    delete_by_message_id(save_db, session_id, assistant_message_id)
                                 mem_svc.store_memory(
                                     user_id=user.id,
                                     session_id=session_id,
                                     role="assistant",
                                     content=clean_memory_content(result.full_content),
                                     branch_id=branch_id,
+                                    message_id=assistant_message_id,
                                 )
                                 save_db.commit()
                     except Exception as e:
@@ -5436,6 +5520,7 @@ async def _run_action_stream(
     effective_max_tokens: int,
     initial_events: list[dict],
     persist_fn,
+    memory_mode: str = "vector",
 ) -> AsyncGenerator[str, None]:
     """Shared streaming + persistence generator for continue/regenerate/swipe.
 
@@ -5510,7 +5595,10 @@ async def _run_action_stream(
             result.full_content = f"Error: {e.message}"
         else:
             result.full_content += f"\n\n[{e.message}]"
-        yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
+        # U-5 修复: 统一 N12 error 契约（type:'error' + message），错误文本不再
+        # 塞进 content——前端 useCharacterChat action 回调按 type:'error' 消费并
+        # toast，content 携带错误文本会被当正文渲染
+        yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': e.message}, ensure_ascii=False)}\n\n"
     except Exception as e:
         logger.exception("Action stream error")
         err_msg = "推理过程中发生错误，请稍后重试。"
@@ -5518,16 +5606,49 @@ async def _run_action_stream(
             result.full_content = f"Error: {err_msg}"
         else:
             result.full_content += f"\n\n[推理中断: {err_msg}]"
-        yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
+        # U-5 修复: 同上，统一 type:'error' 载荷契约
+        yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': err_msg}, ensure_ascii=False)}\n\n"
     finally:
         try:
-            if result.has_content and not result.full_content.strip().startswith("Error:"):
+            final_body = (result.full_content or "").strip()
+            if final_body and not final_body.startswith("Error:"):
                 message_id, final_content = persist_fn(save_db, result)
+                # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id 先删后写。
+                # 覆盖：continue 追加重叠(P3)、swipe 重roll 旧内容残留(P4)；
+                # user 轮不受动作流改写 → 无 user 记忆写入。
+                if message_id is not None and memory_mode != "disabled":
+                    try:
+                        mem_svc = MemoryService(save_db)
+                        if mem_svc.is_available():
+                            delete_by_message_id(save_db, session_id, message_id)
+                            mem_svc.store_memory(
+                                user_id=user.id,
+                                session_id=session_id,
+                                role="assistant",
+                                content=clean_memory_content(final_content or ""),
+                                branch_id=branch_id,
+                                message_id=message_id,
+                            )
+                            save_db.commit()
+                    except Exception as mem_err:
+                        save_db.rollback()
+                        logger.warning(f"[MEM-UPSERT] action stream memory update failed: {mem_err}")
                 if message_id is not None:
                     yield f"data: {json.dumps({'type': 'final_content', 'content': final_content, 'message_id': message_id}, ensure_ascii=False)}\n\n"
+            elif not final_body and (result.full_reasoning or "").strip():
+                # [NO-CONTENT-FINAL] 动作流版：reasoning-only 不落库（对齐 websocket 主路径行为）
+                logger.error(
+                    "[NO-CONTENT-FINAL-ACTION] session=%s type=%s reasoning_len=%d（reasoning-only，不落库）",
+                    session_id, getattr(req, "type", "action") if hasattr(req, "type") else "action",
+                    len(result.full_reasoning or ""),
+                )
+                yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': '模型未输出正文，仅返回思考链，已丢弃本次生成。请重试或切换模型。'}, ensure_ascii=False)}\n\n"
         except Exception as e:
             save_db.rollback()
             logger.warning(f"Action persist failed: {e}")
+            # U-1 修复: persist 失败此前被静默吞掉——增量已显示但 final_content
+            # 永不到达，刷新即丢失。补发 N12 契约 error 事件让前端 toast 提示重试
+            yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': '回复保存失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
             save_db.close()
 
@@ -5651,6 +5772,7 @@ async def continue_session(
             effective_max_tokens=effective_max_tokens,
             initial_events=[{"session_id": session_id, "branch_id": branch_id}],
             persist_fn=persist_fn,
+            memory_mode=assembly.memory_mode,
         ),
         media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -5771,6 +5893,7 @@ async def regenerate_message(
             effective_max_tokens=effective_max_tokens,
             initial_events=[{"session_id": session_id, "branch_id": branch_id}],
             persist_fn=persist_fn,
+            memory_mode=assembly.memory_mode,
         ),
         media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -6013,6 +6136,7 @@ async def swipe_message(
             effective_max_tokens=effective_max_tokens,
             initial_events=[{"session_id": session_id, "branch_id": branch_id}],
             persist_fn=persist_fn,
+            memory_mode=assembly.memory_mode,
         ),
         media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

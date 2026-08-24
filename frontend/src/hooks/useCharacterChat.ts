@@ -681,6 +681,10 @@ export function useCharacterChat({
           setTimeoutWarning(false);
           return;
         }
+        if (json.type === 'error') {
+          toast.error(typeof json.message === 'string' ? json.message : '生成失败，请重试');
+          return;
+        }
         if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number') && typeof json.content === 'string') {
           setMessages(prev => prev.map(msg => (
             String(msg.id) === String(json.message_id) ? { ...msg, content: json.content as string } : msg
@@ -870,6 +874,10 @@ export function useCharacterChat({
             timeoutRef.current = null;
           }
           setTimeoutWarning(false);
+          return;
+        }
+        if (json.type === 'error') {
+          toast.error(typeof json.message === 'string' ? json.message : '生成失败，请重试');
           return;
         }
         if (json.type === 'plotline_advanced' && json.new_stage && typeof json.new_stage === 'object') {
@@ -1193,6 +1201,10 @@ export function useCharacterChat({
           if (timeoutRef.current) {
             window.clearTimeout(timeoutRef.current);
           }
+        }
+        if (json.type === 'error') {
+          toast.error(typeof json.message === 'string' ? json.message : '生成失败，请重试');
+          return;
         }
 
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;

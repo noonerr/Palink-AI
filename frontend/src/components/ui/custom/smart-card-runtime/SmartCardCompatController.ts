@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import DOMPurify from 'dompurify';
 import { api, invalidateCache } from '@/services/api';
 import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
@@ -845,7 +846,7 @@ export async function handleSmartCardCompatRequest(
       result = await saveSmartCardExtensionSettings(payload);
     } else if (action.action === 'callGenericPopup' || action.action === 'callPopup') {
       // Task 8.2: 委托到 popupManager.show() 并返回 PopupResult
-      const message = typeof payload.message === 'string' ? payload.message : String(payload.message ?? '');
+      const rawMessage = typeof payload.message === 'string' ? payload.message : String(payload.message ?? '');
       const rawType = typeof payload.type === 'string' ? payload.type : 'text';
       const inputValue = typeof payload.inputValue === 'string' ? payload.inputValue : '';
       const popupOptions = (payload.options && typeof payload.options === 'object')
@@ -859,6 +860,15 @@ export async function handleSmartCardCompatRequest(
       else if (normalizedType.includes('confirm')) popupType = PopupType.CONFIRM;
       else if (normalizedType.includes('display')) popupType = PopupType.DISPLAY;
       else if (normalizedType.includes('text')) popupType = PopupType.TEXT;
+
+      // [N-1] 仅 DISPLAY 分支经 dangerouslySetInnerHTML 注入主 origin，入口先消毒；
+      // TEXT/CONFIRM/INPUT 走 React 文本节点本已安全，保持原样
+      const message = popupType === PopupType.DISPLAY
+        ? String(DOMPurify.sanitize(rawMessage, {
+            FORBID_TAGS: ['script'],
+            FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+          }))
+        : rawMessage;
 
       // 构造 PopupOptions
       const options: import('@/lib/popup-system/types').PopupOptions = {};

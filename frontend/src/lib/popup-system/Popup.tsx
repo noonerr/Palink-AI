@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { popupManager } from './manager';
 import type { PopupState, PopupOptions, CustomButton } from './types';
 import { PopupType, PopupResult } from './types';
@@ -100,9 +101,16 @@ export function Popup() {
         {/* 内容 */}
         <div className="px-6 py-4">
           {type === PopupType.DISPLAY ? (
+            // [N-1] DISPLAY 分支经 dangerouslySetInnerHTML 注入主 origin，必须先经 DOMPurify 消毒；
+            // TEXT/CONFIRM/INPUT 走 React 文本节点本已安全，不在此处理
             <div
               className="whitespace-pre-wrap"
-              dangerouslySetInnerHTML={{ __html: text }}
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(String(text ?? ''), {
+                  FORBID_TAGS: ['script'],
+                  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+                }),
+              }}
             />
           ) : type === PopupType.INPUT ? (
             <div>

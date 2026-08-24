@@ -1769,6 +1769,14 @@ export function getContext(): StGetContext {
       }
 
       const palinkType = _mapPopupType(type);
+      // [N-1] 仅 DISPLAY 分支经 dangerouslySetInnerHTML 注入主 origin，入口先消毒；
+      // TEXT/CONFIRM/INPUT 走 React 文本节点本已安全，保持原样
+      const safeMessage = palinkType === PopupType.DISPLAY
+        ? String(DOMPurify.sanitize(String(message ?? ''), {
+            FORBID_TAGS: ['script'],
+            FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+          }))
+        : message;
       const popupOptions: any = {};
       if (options?.okButton) popupOptions.okButton = options.okButton;
       if (options?.cancelButton) popupOptions.cancelButton = options.cancelButton;
@@ -1787,7 +1795,7 @@ export function getContext(): StGetContext {
       const result = await popupManager.show(
         palinkType,
         options?.title || 'SillyTavern',
-        message,
+        safeMessage,
         popupOptions,
       );
 
