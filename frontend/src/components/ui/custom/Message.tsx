@@ -699,6 +699,15 @@ function MessageInner({
   mvuSecondaryRunning = false,
 }: MessageProps) {
   const [copied, setCopied] = useState(false);
+  // [N-21] 复制按钮复位定时器：ref 存储 + 卸载清理（对齐 CodeBlock copyResetTimerRef 模式）
+  const copyResetTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    };
+  }, []);
   const [fullscreenIndex, setFullscreenIndex] = useState<number | null>(null);
   const [webSearchExpanded, setWebSearchExpanded] = useState(false);
   const isUser = message.role === 'user';
@@ -1013,7 +1022,13 @@ function MessageInner({
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimerRef.current = null;
+    }, 2000);
   };
 
   // [ST 兼容] 消息内占位锚点点击防护（通用修复，不逐卡适配）：

@@ -479,6 +479,21 @@ export function CharacterChat(props: CharacterChatProps) {
   const navGenRef = useRef(0);
   const mobileSidebarOpenRef = useRef(mobileSidebarOpen);
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  // [N-21] 裸 setTimeout 收编进 ref，卸载时统一清理（对齐 CodeBlock copyResetTimerRef 模式）；
+  // 仅收编卸载后会 setState 的定时器（纯 DOM focus/scrollIntoView 与已有清理的不动）
+  const navSettleTimerRef = useRef<number | null>(null);
+  const branchNavSettleTimerRef = useRef<number | null>(null);
+  const smartCardRefreshTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      for (const timerRef of [navSettleTimerRef, branchNavSettleTimerRef, smartCardRefreshTimerRef]) {
+        if (timerRef.current !== null) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+      }
+    };
+  }, []);
 
   // 角色兼容性数据（从 useCharacterCompatData 提取）
   const {
@@ -553,7 +568,7 @@ export function CharacterChat(props: CharacterChatProps) {
       setSessionVisualSnapshot(null);
       throw e;
     } finally {
-      setTimeout(() => {
+      navSettleTimerRef.current = window.setTimeout(() => {
         if (navGenRef.current === gen) {
           setIsNavigating(false);
           if (shouldKeepMobileSidebarOpen) {
@@ -723,7 +738,7 @@ export function CharacterChat(props: CharacterChatProps) {
     if (!isMobile && prevBranchIdRef.current !== null && prevBranchIdRef.current !== branchId && branchId !== null) {
       const gen = ++navGenRef.current;
       setIsNavigating(true);
-      setTimeout(() => {
+      branchNavSettleTimerRef.current = window.setTimeout(() => {
         if (navGenRef.current === gen) {
           setIsNavigating(false);
         }
@@ -1034,7 +1049,7 @@ export function CharacterChat(props: CharacterChatProps) {
       && typeof nextOptions.refresh === 'string'
       && /display|render|current|chat/i.test(nextOptions.refresh)
     ) {
-      window.setTimeout(() => {
+      smartCardRefreshTimerRef.current = window.setTimeout(() => {
         void loadMessages(selectedSession.id);
       }, 120);
     }
@@ -1580,9 +1595,6 @@ export function CharacterChat(props: CharacterChatProps) {
         if (sid) {
           void api.get(`/api/character-sessions/${sid}/messages?limit=1`)
             .then((res: any) => {
-              const _vk = (res?.variables && typeof res.variables === 'object') ? Object.keys(res.variables) : null;
-              const _sk = (res?.variables?.stat_data && typeof res.variables.stat_data === 'object') ? Object.keys(res.variables.stat_data) : null;
-              console.warn('[VAR-DBG] session-refetch variables keys=', _vk, 'stat_data keys=', _sk);
               if (res?.variables) setSessionVariables(res.variables);
             })
             .catch(() => {});
