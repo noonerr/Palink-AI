@@ -134,6 +134,7 @@
     '/api/secrets/delete': true,
     '/api/secrets/rotate': true,
     '/api/secrets/rename': true,
+    '/api/secrets/settings': true,
     // Extensions — Palink redirects to extension market UI
     '/api/extensions/install': true,
     '/api/extensions/update': true,
@@ -141,6 +142,8 @@
     '/api/extensions/discover': true,
     // Images (silly_tavern.py)
     '/api/images/upload': true,
+    '/api/images/list': true,
+    '/api/images/folders': true,
     // Vector (silly_tavern.py)
     '/api/vector/index': true,
     '/api/vector/query': true,
@@ -155,13 +158,31 @@
     '/api/speech/get': true,
     '/api/speech/preview': true,
     '/api/speech/generate': true,
+    // Speech — ElevenLabs 兼容层 (silly_tavern.py P1 语音套件)
+    '/api/speech/elevenlabs/voices': true,
+    '/api/speech/elevenlabs/voice-settings': true,
+    '/api/speech/elevenlabs/synthesize': true,
+    '/api/speech/elevenlabs/history': true,
+    '/api/speech/elevenlabs/history-audio': true,
+    '/api/speech/elevenlabs/voices/add': true,
+    '/api/speech/elevenlabs/recognize': true,
+    // ST Extras 兼容层 (silly_tavern.py P1-9/P1-11/P1-12: extras 服务端 Palink 自实现)
+    '/api/modules': true,
+    '/api/summarize': true,
+    '/api/extra/caption': true,
+    '/api/extra/classify': true,
+    '/api/extra/classify/labels': true,
+    // Live2D 模型池 (live2d_pool.py，Palink 自有路由组 prefix=/api/live2d-pool)
+    '/api/live2d-pool/models': true,
+    '/api/live2d-pool/upload': true,
     // Translate & Search (silly_tavern.py)
     '/api/translate': true,
     '/api/search': true,
     // Backends (silly_tavern.py — Palink inference engine)
     '/api/backends/chat-completions/status': true,
     '/api/backends/chat-completions/generate': true,
-    '/api/backends/text-completions/generate': true
+    '/api/backends/text-completions/generate': true,
+    '/api/backends/kobold/embed': true
   };
 
   // 动态路径前缀匹配 — 用于路径参数化的端点
@@ -169,7 +190,8 @@
   var REAL_API_PREFIXES = [
     '/api/chats/swipe/',  // /api/chats/swipe/{index}
     '/api/images/list/',  // /api/images/list/{folder}
-    '/api/translate/'     // /api/translate/{provider}（onering/libre/google/lingva/deepl/deeplx/bing/yandex，Palink 已实现）
+    '/api/translate/',     // /api/translate/{provider}（onering/libre/google/lingva/deepl/deeplx/bing/yandex，Palink 已实现）
+    '/api/live2d-pool/'   // /api/live2d-pool/models/{model_id}、/api/live2d-pool/files/{model_id}/{path}（live2d_pool.py）
   ];
 
   function isPalinkOwnedApi(apiPath) {

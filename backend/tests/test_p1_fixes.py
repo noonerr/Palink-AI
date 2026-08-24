@@ -659,17 +659,39 @@ class TestP17ExtensionPromptStoreMerge:
     """验证两套 extensionPrompt store 合并读取。"""
 
     def test_character_card_renderer_registers_get_extension_prompts(self):
-        """CharacterCardRenderer.tsx 注册 getExtensionPrompts 合并读取。"""
-        renderer_path = os.path.join(
+        """CharacterCardRenderer 渲染链注册 getExtensionPrompts 合并读取。
+
+        【B】判定（断言跟随机械拆分现状，2026-08-25 甄别）：
+        CharacterCardRenderer.tsx 已被 scripts/_p1-split.mjs 机械拆分（文件头自述
+        AUTO-GENERATED），原单文件内的纯函数块整体迁入 smart-card-runtime/ 子目录，
+        P1-7 的 getExtensionPrompts 注册逻辑现落在
+        smart-card-runtime/frame-shim/legacy-st-sim.ts（源注释即「P1-7 修复」）与
+        smart-card-runtime/SillyTavernCompatRuntime.ts（getExtensionPromptsCompat），
+        且 CharacterCardRenderer.tsx 经 buildSillyTavernCompatRuntimeV2Shim import 保持
+        引用链完整。基线 commit（7d5dea1）中的该文件同样不含标记，证明断言在拆分时
+        即失效、非近期产品回退。故断言改为扫描主文件 + 拆分落点目录树。
+        """
+        frontend_custom_dir = os.path.normpath(os.path.join(
             _BACKEND_DIR, "..", "frontend", "src", "components", "ui", "custom",
-            "CharacterCardRenderer.tsx",
-        )
-        renderer_path = os.path.normpath(renderer_path)
+        ))
+        renderer_path = os.path.join(frontend_custom_dir, "CharacterCardRenderer.tsx")
+        runtime_dir = os.path.join(frontend_custom_dir, "smart-card-runtime")
         if not os.path.exists(renderer_path):
             pytest.skip(f"CharacterCardRenderer.tsx 不存在")
-        content = open(renderer_path, encoding="utf-8").read()
-        assert "getExtensionPrompts" in content or "__palink_extension_prompts" in content, \
-            "CharacterCardRenderer.tsx 应注册 getExtensionPrompts 合并读取逻辑"
+        scan_targets = [renderer_path]
+        if os.path.isdir(runtime_dir):
+            for root, _dirs, files in os.walk(runtime_dir):
+                for name in files:
+                    if name.endswith((".ts", ".tsx")):
+                        scan_targets.append(os.path.join(root, name))
+        found_in = []
+        for path in scan_targets:
+            content = open(path, encoding="utf-8").read()
+            if "getExtensionPrompts" in content or "__palink_extension_prompts" in content:
+                found_in.append(os.path.relpath(path, frontend_custom_dir))
+        assert found_in, \
+            "CharacterCardRenderer 渲染链（含 smart-card-runtime/ 拆分落点）应保留 " \
+            "getExtensionPrompts / __palink_extension_prompts 合并读取逻辑"
 
 
 # ---------------------------------------------------------------------------

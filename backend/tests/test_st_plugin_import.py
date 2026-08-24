@@ -164,6 +164,14 @@ def test_import_captures_root_settings_html_as_template(admin_client):
     拿到空串，设置面板空白。
 
     回归保护：早期实现只抽取 templates/ 子目录下的 .html，会漏掉根目录 settings.html。
+
+    【B】判定（断言形状跟随现状，2026-08-25 甄别）：
+    GET /api/plugins/{pid} 返回 _plugin_to_dict 形状——resources 嵌套于
+    detail["config"]["resources"]；顶层 resources 只出现在 /api/plugins/runtime/config
+    （_plugin_runtime_payload）。真实消费方 AdminPluginsTab.tsx 与
+    SmartCardCompatController.ts 均按 plugin.config 读取详情端点。导入抽取本身无回退：
+    调试实证 DB config.resources.templates 含 settings.html（基线 commit 与工作区零 diff，
+    git 更早历史因 2026-08-17 对象丢失不可考）。原断言读顶层 detail["resources"] 系形状漂移。
     """
     if not os.path.isdir(os.path.join(_ST_EXT_BASE, "caption")):
         pytest.skip("ST 参考源码缺失")
@@ -172,9 +180,10 @@ def test_import_captures_root_settings_html_as_template(admin_client):
     imp = _import_zip(admin_client, zip_bytes, "caption.zip").json()
     pid = imp["plugin"]["id"]
     detail = admin_client.get(f"/api/plugins/{pid}").json()
-    tpl_paths = [t["path"] for t in detail.get("resources", {}).get("templates", [])]
+    config_resources = (detail.get("config") or {}).get("resources") or {}
+    tpl_paths = [t["path"] for t in config_resources.get("templates", [])]
     assert "settings.html" in tpl_paths, f"根目录 settings.html 未被抽为模板: {tpl_paths}"
-    settings_tpl = next(t for t in detail["resources"]["templates"] if t["path"] == "settings.html")
+    settings_tpl = next(t for t in config_resources["templates"] if t["path"] == "settings.html")
     assert isinstance(settings_tpl.get("content"), str) and settings_tpl["content"].strip(), \
         "settings.html 模板内容为空"
 
