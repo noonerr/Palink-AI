@@ -53,6 +53,9 @@ class WorldBookStage(Base):
     position = Column(Integer, default=4)
     selective = Column(Boolean, default=False)
     probability = Column(Integer, default=100)
+    # ST 1.18.0 entry.useProbability — False 时无视 probability 必现，
+    # True 时按 probability% 滚动（migration 0061）
+    use_probability = Column(Boolean, default=True, nullable=False)
     constant = Column(Boolean, default=False)
     group = Column(String, nullable=True)
     extensions_json = Column(Text, nullable=True)

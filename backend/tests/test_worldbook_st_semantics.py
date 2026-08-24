@@ -308,7 +308,7 @@ def recursion_chain_b():
 
 @pytest.fixture
 def prevent_recursion_entry():
-    """prevent_recursion=True：递归深度 > 0 时跳过。"""
+    """prevent_recursion=True：自身正常激活，内容不进入递归扫描 buffer（A3 语义修正）。"""
     return {
         "uid": 12,
         "key": ["dragon"],
@@ -1066,7 +1066,7 @@ class TestRecursion:
         pytest.skip("requires DB session")
 
     def test_prevent_recursion(self, prevent_recursion_entry):
-        """prevent_recursion 在递归深度 > 0 时跳过条目。"""
+        """prevent_recursion 条目自身正常激活，内容不进入递归扫描 buffer（A3 语义修正）。"""
         pytest.skip("requires DB session")
 
     def test_delay_until_recursion(self, delay_until_recursion_entry):

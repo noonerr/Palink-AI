@@ -85,6 +85,7 @@ def _stage_to_response(s: WorldBookStage) -> dict:
         "position": s.position if s.position is not None else 4,
         "selective": bool(s.selective),
         "probability": s.probability if s.probability is not None else 100,
+        "use_probability": bool(s.use_probability) if s.use_probability is not None else True,
         "constant": bool(s.constant),
         "group": s.group,
         "extensions_json": s.extensions_json,
@@ -385,10 +386,21 @@ async def import_worldbook(
             token_count=len(entry_content) // 4,
             keys=json.dumps(entry_keys(entry)),
             secondary_keys=json.dumps(entry_secondary_keys(entry)),
-            scan_depth=_int("scanDepth", 4),
+            # A4 修复: scanDepth 缺失时保留 NULL（ST entry.scanDepth ?? world_info_depth），
+            # 使全局 world_info_depth 对未自定义扫描深度的条目生效。
+            scan_depth=(
+                entry["scanDepth"]
+                if isinstance(entry.get("scanDepth"), int) and not isinstance(entry.get("scanDepth"), bool)
+                else None
+            ),
             position=normalize_worldbook_position(entry.get("position", 4)),
             selective=entry.get("selective", False),
             probability=entry.get("probability", 100),
+            use_probability=(
+                entry["useProbability"]
+                if isinstance(entry.get("useProbability"), bool)
+                else True
+            ),
             constant=is_constant,
             group=entry.get("group", None),
             enabled=True,  # disabled 条目已在上方 entry_is_disabled 过滤
@@ -504,6 +516,8 @@ async def update_stage(
         stage.selective = req.selective
     if req.probability is not None:
         stage.probability = req.probability
+    if req.use_probability is not None:
+        stage.use_probability = req.use_probability
     if req.constant is not None:
         stage.constant = req.constant
     if req.group is not None:

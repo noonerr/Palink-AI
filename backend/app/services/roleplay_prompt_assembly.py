@@ -3555,6 +3555,14 @@ async def _assemble_roleplay_prompt_impl(
     )
     # E-1 修复: 世界书扫描（N+1 查询 + token 编码）是纯同步重活，移入线程池，
     # 避免阻塞事件循环（与 persist_snapshot 的 to_thread 模式一致）。
+    # A5 修复: 与 _compute_prompt_token_budget 同源取真实上下文上限
+    # （用户 openai_max_context 覆盖优先，回退模型注册表 context_length）。
+    _wb_ctx_override = _get_openai_max_context_override(user_setting)
+    _wb_max_context_tokens = (
+        _wb_ctx_override
+        if isinstance(_wb_ctx_override, int) and _wb_ctx_override > 0
+        else _get_model_context_window(req.model)
+    )
     await asyncio.to_thread(
         _append_worldbook_context,
         req,
@@ -3571,6 +3579,7 @@ async def _assemble_roleplay_prompt_impl(
         st_wi_an_bottom_parts=st_wi_an_bottom_parts,  # G4 修复
         skip_dynamic_context=_is_st_compat,  # st-compat 模式下 worldbook 通过 ST 位置注入，不重复添加到 dynamic_context_parts
         char_name=_macro_char_name,
+        max_context_tokens=_wb_max_context_tokens,
     )
     dynamic_context_part_keys.extend(["worldbook"] * (len(dynamic_context_parts) - _part_count_before))
 
@@ -4469,6 +4478,8 @@ def _append_worldbook_context(
     st_wi_an_bottom_parts: Optional[list[str]] = None,  # G4 修复: ANBottom (pos=3)
     skip_dynamic_context: bool = False,  # st-compat 模式下跳过 dynamic_context_parts 注入
     char_name: str = "",  # 角色名（用于正则宏替换）
+    # A5 修复: 真实模型上下文上限（世界书百分比预算基数；None 时服务内回退 16000 兜底）
+    max_context_tokens: Optional[int] = None,
 ) -> None:
     """注入世界书上下文到 prompt 中。
 
@@ -4500,6 +4511,10 @@ def _append_worldbook_context(
         wi_min_activations_depth_max = 0
         # Phase G: ST 1.18.0 world_info_character_strategy 默认 character_first(1)
         wi_char_strategy = 1
+        # A4 修复: ST world_info_depth 默认对齐 ST=2、world_info_recursive 默认开。
+        # 存量用户显式配置过的值原样生效（仅未配置时取 ST 默认）。
+        wi_world_info_depth = 2
+        wi_recursive = True
         try:
             us = req.db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
             if us:
@@ -4522,6 +4537,9 @@ def _append_worldbook_context(
                                 # Phase G: ST 1.18.0 world_info_character_strategy
                                 # (world-info.js:4496) 默认 1=character_first
                                 wi_char_strategy = int(_wis.get("world_info_character_strategy", 1) or 1)
+                                # A4 修复: world_info_depth（ST 默认 2）+ recursive 总开关（ST 默认 true）
+                                wi_world_info_depth = int(_wis.get("world_info_depth", 2) or 2)
+                                wi_recursive = bool(_wis.get("world_info_recursive", True))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         pass
         except Exception as exc:
@@ -4597,6 +4615,11 @@ def _append_worldbook_context(
             world_info_character_strategy=wi_char_strategy,
             # D-1 修复: delay 的 chat_length 绝对判定需要真实消息总数
             chat_length=_wb_chat_length,
+            # A4 修复: world_info_depth 全局扫描深度 + recursive 总开关
+            world_info_depth=wi_world_info_depth,
+            enable_recursive=wi_recursive,
+            # A5 修复: 百分比预算基数传真实上下文上限（16000 仅作兜底）
+            max_context_tokens=max_context_tokens,
         )
         if wb_result.text:
             wb_text = wb_result.text

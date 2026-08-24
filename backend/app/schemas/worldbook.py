@@ -102,6 +102,7 @@ class WorldBookStageResponse(BaseModel):
     position: int = 4
     selective: bool = False
     probability: int = 100
+    use_probability: bool = True
     constant: bool = False
     group: Optional[str] = None
     extensions_json: Optional[str] = None
@@ -123,6 +124,7 @@ class WorldBookStageUpdate(BaseModel):
     position: Optional[int] = None
     selective: Optional[bool] = None
     probability: Optional[int] = None
+    use_probability: Optional[bool] = None
     constant: Optional[bool] = None
     group: Optional[str] = None
     extensions_json: Optional[str] = None

@@ -112,13 +112,14 @@ DIALOGUE_MODE_EN = {
 }
 
 # 属性标签
+# A7 修复（2026-08-25）: creator_notes 退出 prompt 装配层（ST 不把创作者备注
+# 注入 system prompt），标签同步移除；前端展示不受影响。
 ATTRIBUTE_LABELS_ZH = {
     "system_prompt": "核心设定：",
     "personality": "性格：",
     "background": "背景：",
     "scenario": "场景：",
-    "description": "描述：",
-    "creator_notes": "创作者备注："
+    "description": "描述："
 }
 
 ATTRIBUTE_LABELS_EN = {
@@ -126,8 +127,7 @@ ATTRIBUTE_LABELS_EN = {
     "personality": "Personality: ",
     "background": "Background: ",
     "scenario": "Scenario: ",
-    "description": "Description: ",
-    "creator_notes": "Creator Notes: "
+    "description": "Description: "
 }
 
 # 角色状态表格指令
@@ -279,8 +279,8 @@ def build_default_character_prompt(
         attributes_parts.append(labels["scenario"] + scenario)
     if description:
         attributes_parts.append(labels["description"] + description)
-    if creator_notes:
-        attributes_parts.append(labels["creator_notes"] + creator_notes)
+    # A7 修复（2026-08-25）: creator_notes 不再拼入三层模板（ST 语义对齐）。
+    # 参数保留仅为调用方签名兼容。
 
     attributes_text = "\n".join(attributes_parts) if attributes_parts else "（没有提供额外角色卡字段）" if lang == "zh" else "(No additional character card fields provided)"
     character_attributes = attr_template.format(

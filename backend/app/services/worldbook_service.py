@@ -135,6 +135,8 @@ class WorldbookEntryReport:
     recursion_depth: int = -1  # recursion depth at which the entry was evaluated
     position: Optional[int] = None  # final insertion position (WI_POS_*)
     probability_roll: Optional[int] = None  # actual probability roll (only set when rolled)
+    # A1 修复: 条目级 useProbability 开关状态（None=旧数据/未评估）
+    use_probability: Optional[bool] = None
 
 
 @dataclass
@@ -730,16 +732,9 @@ def _scan_entries(
                 )
             )
             continue
-        if entry.prevent_recursion and recursion_depth > 0:
-            report.append(
-                WorldbookEntryReport(
-                    entry_id=entry.id,
-                    title=entry.title or "",
-                    status="skipped",
-                    reason="prevent_recursion",
-                )
-            )
-            continue
+        # A3 修复: ST world-info.js 中 preventRecursion 不在扫描阶段跳过条目，
+        # 仅排除其自身内容进入其他条目的递归扫描 buffer；条目本身正常激活注入
+        # （排除点见 _recursive_scan 的 new_content_parts / recurse_buffer_parts 收集处）。
 
         # Feature: delay_until_recursion - skip entry until recursion depth reaches N
         delay_until = entry.delay_until_recursion or 0
@@ -924,7 +919,10 @@ def _scan_entries(
             matched = primary_matches
 
         prob = entry.probability if entry.probability is not None else 100
-        if prob < 100:
+        # A1 修复: ST entry.useProbability — False 时无视 probability 必现；
+        # True（含旧数据 None 回退）时按现行 probability% 滚动逻辑不变。
+        use_prob = entry.use_probability if entry.use_probability is not None else True
+        if use_prob and prob < 100:
             # Roll only when a probability gate is active. Kept inside the
             # `prob < 100` branch to preserve RNG consumption (short-circuit
             # equivalence with the previous `prob < 100 and random()...` form).
@@ -937,6 +935,7 @@ def _scan_entries(
                         status="skipped",
                         reason=f"probability={prob}%,roll={int(roll)}",
                         probability_roll=int(roll),
+                        use_probability=use_prob,
                     )
                 )
                 continue
@@ -951,6 +950,7 @@ def _scan_entries(
                 reason="keyword_match",
                 matched_keywords=matched,
                 tokens_estimate=_estimate_tokens(entry.content),
+                use_probability=use_prob,
             )
         )
         if timed_mgr:
@@ -983,6 +983,10 @@ def _recursive_scan(
     min_activations_depth_max: int = 0,
     # D-1 修复: ST chat.length 绝对语义（透传给 _scan_entries → can_activate）
     chat_length: Optional[int] = None,
+    # A4 修复: ST world_info_depth 全局扫描深度（设置层默认对齐 ST=2）。
+    # 仅对未设置自定义 scan_depth 的条目生效（entry.scanDepth ?? getDepth()）；
+    # None 时回退 DEFAULT_SCAN_DEPTH（既有行为，存量直接调用方不受影响）。
+    global_scan_depth: Optional[int] = None,
 ) -> tuple[list[WorldBookStage], list[WorldbookEntryReport]]:
     """递归扫描世界书条目，对齐 ST 1.18.0 scan_state 状态机。
 
@@ -1026,14 +1030,16 @@ def _recursive_scan(
             persona_description,
             group_chars,
             chat_length=chat_length,
+            global_scan_depth=global_scan_depth,
         )
         if not activated:
             break
 
         # Collect new content for recursive scanning
+        # A3 修复: prevent_recursion 条目内容不进入递归匹配源（对齐 ST）
         new_content_parts: list[str] = []
         for e in activated:
-            if not e.exclude_recursion and e.content:
+            if not e.exclude_recursion and not e.prevent_recursion and e.content:
                 new_content_parts.append(e.content)
 
         if not new_content_parts:
@@ -1073,7 +1079,9 @@ def _recursive_scan(
                 visited, ma_recursion_depth, report, trigger_type,
                 character_name, character_tags, chat_metadata,
                 persona_description, group_chars,
-                global_scan_depth=DEFAULT_SCAN_DEPTH,
+                global_scan_depth=(
+                    global_scan_depth if global_scan_depth is not None else DEFAULT_SCAN_DEPTH
+                ),
                 chat_length=chat_length,
             )
             if activated:
@@ -1090,7 +1098,9 @@ def _recursive_scan(
         # 更深的扫描可能看到更多聊天历史从而匹配新关键词。
         # 循环终止条件由 depth_max / chat_length / min_activations 三重保证。
         _ma_chat_length = len(recent_messages)
-        current_global_depth = DEFAULT_SCAN_DEPTH
+        current_global_depth = (
+            global_scan_depth if global_scan_depth is not None else DEFAULT_SCAN_DEPTH
+        )
         while len(all_activated) < min_activations:
             current_global_depth += 1  # buffer.advanceScan()
             # ST over_max 检查 (world-info.js:4995-4998):
@@ -1127,10 +1137,11 @@ def _recursive_scan(
     # 转换路径，不受 max_recursion_steps 限制。此回退允许 MIN_ACTIVATIONS 期间
     # 找到的条目内容参与递归扫描，对齐 ST 行为。
     if min_activations > 0 and all_activated:
-        # 收集所有已激活条目的内容（非 exclude_recursion）作为递归 buffer
+        # 收集所有已激活条目的内容（非 exclude_recursion / 非 prevent_recursion）作为递归 buffer
+        # A3 修复: prevent_recursion 条目内容同样排除出递归匹配源（对齐 ST）
         recurse_buffer_parts: list[str] = []
         for e in all_activated:
-            if not e.exclude_recursion and e.content:
+            if not e.exclude_recursion and not e.prevent_recursion and e.content:
                 recurse_buffer_parts.append(e.content)
 
         if recurse_buffer_parts:
@@ -1145,7 +1156,9 @@ def _recursive_scan(
                     visited, fallback_depth, report, trigger_type,
                     character_name, character_tags, chat_metadata,
                     persona_description, group_chars,
-                    global_scan_depth=DEFAULT_SCAN_DEPTH,
+                    global_scan_depth=(
+                        global_scan_depth if global_scan_depth is not None else DEFAULT_SCAN_DEPTH
+                    ),
                     recurse_buffer=recurse_buffer_parts,
                     chat_length=chat_length,
                 )
@@ -1153,8 +1166,9 @@ def _recursive_scan(
                     break
                 all_activated.extend(new_activated)
                 # 追加新条目内容到递归 buffer（链式触发）
+                # A3 修复: prevent_recursion 条目内容不参与链式追加
                 for e in new_activated:
-                    if not e.exclude_recursion and e.content:
+                    if not e.exclude_recursion and not e.prevent_recursion and e.content:
                         recurse_buffer_parts.append(e.content)
                 fallback_depth += 1
 
@@ -1418,8 +1432,11 @@ def build_worldbook_context(
     # D-1 修复（2026-08-23）: ST chat.length 绝对语义的聊天消息总数
     # （world-info.js:665-676 #checkDelayEffect）。delay 条目按
     # ``chat_length < entry.delay`` 判定抑制；None 时回退 len(recent_messages)
-    # （调用方 recent_messages 通常有截断窗口，生产方应显式传真实总数）。
+    # （调用方 recent_messages 通常有截断窗口，生产方应显式传入真实总数）。
     chat_length: Optional[int] = None,
+    # A4 修复: ST world_info_depth 全局扫描深度（设置层默认对齐 ST=2）。
+    # None 时回退 DEFAULT_SCAN_DEPTH；仅影响未设置自定义 scan_depth 的条目。
+    world_info_depth: Optional[int] = None,
 ) -> WorldbookContextResult:
     """
     ST-grade worldbook context builder.
@@ -1552,6 +1569,7 @@ def build_worldbook_context(
             min_activations=min_activations,
             min_activations_depth_max=min_activations_depth_max,
             chat_length=effective_chat_length,
+            global_scan_depth=world_info_depth,
         )
     else:
         visited: set[str] = set()
@@ -1565,6 +1583,7 @@ def build_worldbook_context(
             persona_description=persona_description,
             group_chars=group_chars,
             chat_length=effective_chat_length,
+            global_scan_depth=world_info_depth,
         )
 
     # Apply group scoring (before sorting)

@@ -141,11 +141,23 @@ def build_character_chat_messages(
     # D3 修复: 群聊时 {{char}} 绑定到当前发言者
     _char_name_for_sub = (speaker_char.name if (is_group and speaker_char is not None) else char.name) or ""
 
+    # A2 修复: mes_example 按 <START> 拆块组织（ST parseMesExamples +
+    # populateDialogueExamples 语义），对齐 st-compat 函数族行为：
+    # 多组示例对话各自以 [Example Chat] 标记 + example_user/example_assistant
+    # name 字段展开为多条 system 消息。仅移植组织语义，
+    # _split_example_blocks/_parse_example_chat 函数体保持原样。
     if char.mes_example:
-        messages.append({
-            "role": "system",
-            "content": f"Example dialogue:\n{_replace_placeholders(char.mes_example, user_nickname, _char_name_for_sub)}",
-        })
+        _example_text = _replace_placeholders(char.mes_example, user_nickname, _char_name_for_sub) or ""
+        for _block in _split_example_blocks(_example_text):
+            _parsed_msgs = _parse_example_chat(_block, user_nickname, _char_name_for_sub)
+            if not _parsed_msgs:
+                continue
+            messages.append({"role": "system", "content": _ST_DEFAULT_NEW_EXAMPLE_CHAT_PROMPT})
+            for _msg_name, _msg_content in _parsed_msgs:
+                _msg_obj: Dict[str, Any] = {"role": "system", "content": _msg_content}
+                if _msg_name:
+                    _msg_obj["name"] = _msg_name
+                messages.append(_msg_obj)
 
     if branch_id:
         history = _get_full_branch_history(
@@ -285,12 +297,19 @@ def build_character_chat_messages(
     # ST 1.18.0 context template wrapping — applied after the existing
     # message assembly so the original Palink prompt structure is preserved.
     # The Default template (and missing template) is a passthrough.
+    # A6 修复: V3 卡独立 jailbreak 消费进 jailbreak 槽（优先级
+    # context_template > 卡自带 > 无）；与 PHI 相同的 V2 回退拷贝不重复消费。
+    _card_jailbreak = (getattr(char, "jailbreak", None) or "").strip()
+    _phi_text = (char.post_history_instructions or "").strip()
+    if _card_jailbreak and _phi_text and _card_jailbreak == _phi_text:
+        _card_jailbreak = ""
     messages = _apply_context_template(
         messages,
         context_template=context_template,
         char_name=char.name or "",
         user_name=user_nickname,
         replace_placeholders=_replace_placeholders,
+        card_jailbreak=_card_jailbreak,
     )
 
     return messages
@@ -303,11 +322,13 @@ def _apply_context_template(
     char_name: str,
     user_name: str,
     replace_placeholders: callable,
+    card_jailbreak: str = "",
 ) -> List[Dict[str, Any]]:
     """Wrap the assembled messages with context template fields.
 
     Backward-compatibility contract:
-      - context_template is None → passthrough (unchanged)
+      - context_template is None → passthrough (unchanged), unless a card
+        jailbreak is provided (see below)
       - context_template.name == "Default" → passthrough (unchanged)
       - otherwise:
           * template.system_prompt (if non-empty) is inserted as a leading
@@ -316,11 +337,16 @@ def _apply_context_template(
             message immediately after the first system message
           * template.chat_start (if non-empty) is inserted as a system
             separator just before the first user/assistant message
+
+    A6 修复: ``card_jailbreak``（V3 卡独立 jailbreak）在模板未提供 jailbreak
+    时消费进同一槽位（优先级 context_template > 卡自带 > 无，对齐 ST prompt
+    manager 语义）。
     """
-    if context_template is None:
-        return messages
     tmpl_name = getattr(context_template, "name", None)
-    if not tmpl_name or tmpl_name == "Default":
+    tmpl_is_wrapping = (
+        context_template is not None and tmpl_name and tmpl_name != "Default"
+    )
+    if not tmpl_is_wrapping and not card_jailbreak:
         return messages
 
     next_messages: List[Dict[str, Any]] = list(messages)
@@ -338,8 +364,10 @@ def _apply_context_template(
         next_messages.insert(insert_at, {"role": "system", "content": rendered})
 
     # 2) Insert jailbreak as a system message after the leading system block.
-    if tmpl_jailbreak:
-        rendered_jb = replace_placeholders(tmpl_jailbreak, user_name, char_name)
+    # A6 修复: 槽位内容优先级 context_template > 卡自带 jailbreak > 无。
+    effective_jailbreak = tmpl_jailbreak or (card_jailbreak or "").strip()
+    if effective_jailbreak:
+        rendered_jb = replace_placeholders(effective_jailbreak, user_name, char_name)
         # Find the index after the last leading system message.
         insert_at = 0
         for idx, m in enumerate(next_messages):
