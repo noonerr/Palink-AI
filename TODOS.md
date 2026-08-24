@@ -53,6 +53,14 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
+### [进行中] 二期批次：世界书 vectorized 接线 + N-8 止血滑动续期（2026-08-25 spec 就绪）
+- **spec**: `docs/SPEC_二期_vectorized接线与N8止血_2026-08-25.md`（含强制备份要求 §4）
+- **V 线 vectorized 接线**（孤岛激活）: V-1 同步触发三处（编辑 API commit 后/导入对齐/装配兜底懒同步二选一）/ V-2 检索注入（最近 4 条对话为查询，top5 阈值 0.25 命中跳关键词直进激活管线，嵌入失败静默降级）/ V-3 开关 vectorized_enabled 默认 false 存量零突变——基建三件套早已就绪只缺两个调用点
+- **S 线 N-8 止血滑动续期**: 后端 get_current_user 剩余寿命 <1/3 时签发新 token 走 X-Palink-Token-Refresh 响应头 + 前端拦截器落地 localStorage——活跃用户永不掉线、被盗窗口有界 12h、零 refresh 架构成本；12h 默认保持 env 可配
+- **备份强制**: backup/2026-08-25_vectorized-n8-stopgap/ + MANIFEST sha256
+- **基线**: 宿主 996 passed / 0 failed；容器内 988 passed / 0 failed（C7 对齐达成）
+- **派单**: 单 agent 施工
+
 ### [已完成·已验收] 清理批次总案（除 N-8 外全部存量，2026-08-24 三线并行施工 + 当日验收通过）
 - **spec**: `docs/SPEC_清理批次总案_除N8_2026-08-24.md`（互斥矩阵/报告精简格式/统一冻结）
 - **A 线 世界书与示例域**（7 子项）: useProbability 接线（DB列+导入+扫描判定，ST 语义 false=必现）/ mes_example 拆块移植 palink-native / prevent_recursion 语义修正（排除出递归 buffer 而非整条跳过）/ WI 全局设置补接线（world_info_depth 对齐 ST=2 等）/ 百分比预算基数传真实 max_context / V3 卡独立 jailbreak 消费 / creator_notes 退出 prompt——修复 agent
