@@ -51,6 +51,19 @@ def _parse_chunk_meta(topics) -> Optional[Tuple[str, int, int]]:
     return turn_hash, idx, total
 
 
+def delete_by_message_id(db_session: Session, session_id: str, message_id: int) -> None:
+    """[MEM-UPSERT] 删除指定消息的全部记忆行（记忆 = 消息当前内容的镜像）。
+
+    统一先删半步：写入侧 upsert、编辑钩子 [MEM-SYNC-ON-EDIT]、单条消息
+    删除级联共用；仅在 message_id 非 None 时由调用方触发，与本路径后续
+    写入/提交共享同一连接同一事务。
+    """
+    db_session.execute(
+        text("DELETE FROM conversation_memories WHERE session_id = :s AND message_id = :m"),
+        {"s": session_id, "m": message_id},
+    )
+
+
 _tables_initialized = False
 _is_postgres_cached = None
 _migration_done = False
@@ -79,10 +92,9 @@ class MemoryStorage:
             if row and 'PostgreSQL' in str(row[0]):
                 return True
         except Exception:
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
+            # 探测查询是本会话第一条语句、无副作用，静默视为 SQLite；
+            # 此处不可 rollback——同连接上可能承载其他会话的在途数据。
+            pass
         return False
     
     def _init_tables(self):
@@ -94,11 +106,11 @@ class MemoryStorage:
             else:
                 self._init_sqlite_tables()
             
+            self._migrate_tables()
+            _migration_done = True
+            # 索引必须在迁移之后创建：idx_memory_message_id 依赖迁移新增的列
             self._create_indexes()
-            if not _migration_done:
-                self._migrate_tables()
-                _migration_done = True
-            
+
             self.db.commit()
             _tables_initialized = True
             logger.info(f"记忆表初始化完成 (数据库类型: {'PostgreSQL' if self.is_postgres else 'SQLite'})")
@@ -187,12 +199,31 @@ class MemoryStorage:
                 logger.info("迁移: 添加 branch_id 列")
             except Exception:
                 nested.rollback()
-        else:
             try:
+                nested = self.db.begin_nested()
+                # [MEM-UPSERT] 消息主键关联列：记忆 = 消息当前内容的镜像
                 self.db.execute(text("""
-                    ALTER TABLE conversation_memories ADD COLUMN branch_id TEXT
+                    ALTER TABLE conversation_memories ADD COLUMN IF NOT EXISTS message_id INTEGER
                 """))
-                logger.info("迁移: 添加 branch_id 列")
+                nested.commit()
+                logger.info("迁移: 添加 message_id 列")
+            except Exception:
+                nested.rollback()
+        else:
+            # SQLite 无 ADD COLUMN IF NOT EXISTS：先查 table_info 判列存在，
+            # 仅缺列时执行 ALTER（避免异常吞咽路径上的 rollback 波及同连接在途数据）
+            try:
+                cols = [r[1] for r in self.db.execute(text(
+                    "PRAGMA table_info(conversation_memories)"))]
+                if "branch_id" not in cols:
+                    self.db.execute(text(
+                        "ALTER TABLE conversation_memories ADD COLUMN branch_id TEXT"))
+                    logger.info("迁移: 添加 branch_id 列")
+                if "message_id" not in cols:
+                    # [MEM-UPSERT] 消息主键关联列：记忆 = 消息当前内容的镜像
+                    self.db.execute(text(
+                        "ALTER TABLE conversation_memories ADD COLUMN message_id INTEGER"))
+                    logger.info("迁移: 添加 message_id 列")
             except Exception:
                 self.db.rollback()
 
@@ -211,6 +242,9 @@ class MemoryStorage:
             CREATE INDEX IF NOT EXISTS idx_memory_branch_id ON conversation_memories(branch_id)
         """))
         self.db.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_memory_message_id ON conversation_memories(message_id)
+        """))
+        self.db.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_profile_user_id ON user_profiles(user_id)
         """))
         self.db.execute(text("""
@@ -225,11 +259,12 @@ class MemoryStorage:
         content: str,
         importance_score: float = 0.5,
         topics: List[str] = None,
-        branch_id: Optional[str] = None
+        branch_id: Optional[str] = None,
+        message_id: Optional[int] = None
     ) -> Optional[int]:
         """
         存储单条记忆（先存储 content，embedding 置 NULL，后台异步计算）
-        
+
         Returns:
             memory_id: 记忆ID，失败返回 None
         """
@@ -238,17 +273,17 @@ class MemoryStorage:
         try:
             tokens_count = len(content) // 2
             topics_json = json.dumps(topics or [])
-            
+
             if self.is_postgres:
                 sql = text("""
-                    INSERT INTO conversation_memories 
-                    (user_id, session_id, branch_id, role, content, embedding, 
-                     importance_score, topics, tokens_count, created_at)
+                    INSERT INTO conversation_memories
+                    (user_id, session_id, branch_id, role, content, embedding,
+                     importance_score, topics, tokens_count, created_at, message_id)
                     VALUES (:user_id, :session_id, :branch_id, :role, :content, NULL,
-                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                     RETURNING id
                 """)
-                
+
                 result = self.db.execute(sql, {
                     "user_id": user_id,
                     "session_id": session_id,
@@ -257,19 +292,20 @@ class MemoryStorage:
                     "content": content,
                     "importance_score": importance_score,
                     "topics": topics_json,
-                    "tokens_count": tokens_count
+                    "tokens_count": tokens_count,
+                    "message_id": message_id
                 })
-                
+
                 memory_id = result.scalar()
             else:
                 sql = text("""
-                    INSERT INTO conversation_memories 
-                    (user_id, session_id, branch_id, role, content, embedding, 
-                     importance_score, topics, tokens_count, created_at)
+                    INSERT INTO conversation_memories
+                    (user_id, session_id, branch_id, role, content, embedding,
+                     importance_score, topics, tokens_count, created_at, message_id)
                     VALUES (:user_id, :session_id, :branch_id, :role, :content, NULL,
-                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                 """)
-                
+
                 result = self.db.execute(sql, {
                     "user_id": user_id,
                     "session_id": session_id,
@@ -278,7 +314,8 @@ class MemoryStorage:
                     "content": content,
                     "importance_score": importance_score,
                     "topics": topics_json,
-                    "tokens_count": tokens_count
+                    "tokens_count": tokens_count,
+                    "message_id": message_id
                 })
                 
                 memory_id = result.lastrowid
@@ -306,8 +343,11 @@ class MemoryStorage:
         chunks: List[str],
         branch_id: Optional[str] = None,
         importance_score: float = 0.5,
+        message_id: Optional[int] = None,
     ) -> List[int]:
         """批量存储语义块（方案 B）：一次批量嵌入 + 单事务插入，embedding 直写。
+
+        同一 turn 的多块共享同一 message_id（[MEM-UPSERT] 编辑时一删全删）。
 
         Returns:
             各块 memory_id 列表（顺序与 chunks 一致）；整体失败返回 []
@@ -334,6 +374,7 @@ class MemoryStorage:
                     importance_score=importance_score,
                     topics=_chunk_topics(turn_hash, i, total),
                     branch_id=branch_id,
+                    message_id=message_id,
                 )
                 if mid is not None:
                     ids.append(mid)
@@ -347,9 +388,9 @@ class MemoryStorage:
                 sql = text("""
                     INSERT INTO conversation_memories
                     (user_id, session_id, branch_id, role, content, embedding,
-                     importance_score, topics, tokens_count, created_at)
+                     importance_score, topics, tokens_count, created_at, message_id)
                     VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
-                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                            :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                 """)
                 params = {
                     "user_id": user_id,
@@ -361,14 +402,15 @@ class MemoryStorage:
                     "importance_score": importance_score,
                     "topics": topics_json,
                     "tokens_count": len(chunk) // 2,
+                    "message_id": message_id,
                 }
                 if self.is_postgres:
                     sql = text("""
                         INSERT INTO conversation_memories
                         (user_id, session_id, branch_id, role, content, embedding,
-                         importance_score, topics, tokens_count, created_at)
+                         importance_score, topics, tokens_count, created_at, message_id)
                         VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
-                                :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP)
+                                :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                         RETURNING id
                     """)
                     result = self.db.execute(sql, params)

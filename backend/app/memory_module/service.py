@@ -61,6 +61,7 @@ class MemoryService:
         role: str,
         content: str,
         branch_id: Optional[str] = None,
+        message_id: Optional[int] = None,
         **metadata
     ) -> Optional[int]:
         """
@@ -74,6 +75,8 @@ class MemoryService:
             session_id: 会话ID
             role: 角色 ('user' | 'assistant')
             content: 内容
+            message_id: 关联消息主键（[MEM-UPSERT] 记忆=消息当前内容的镜像；
+                切分多块共享同一 id；None 表示无关联——存量兼容路径）
             **metadata: 额外元数据 (importance_score, topics等)
 
         Returns:
@@ -102,6 +105,7 @@ class MemoryService:
                             chunks=chunks,
                             branch_id=branch_id,
                             importance_score=metadata.get('importance_score', 0.5),
+                            message_id=message_id,
                         )
                         if ids:
                             return ids[0]
@@ -116,7 +120,8 @@ class MemoryService:
                 content=content,
                 importance_score=metadata.get('importance_score', 0.5),
                 topics=metadata.get('topics', []),
-                branch_id=branch_id
+                branch_id=branch_id,
+                message_id=message_id
             )
         except Exception as e:
             logger.error(f"存储记忆失败: {e}")

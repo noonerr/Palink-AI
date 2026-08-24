@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
+import asyncio
 import uuid
 import json
 import logging
@@ -12,8 +13,12 @@ from ..core.input_validation import sanitize_title, sanitize_text
 logger = logging.getLogger(__name__)
 
 from ..core import get_db
+from ..core.database import SessionLocal
 from ..api.dependencies import get_current_user
+from ..memory_module.service import MemoryService
+from ..memory_module.storage import delete_by_message_id
 from ..models import User, ChatSession, ChatMessage
+from ..utils import clean_memory_content
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -274,6 +279,47 @@ async def update_message(
     message = db.query(ChatMessage).filter(ChatMessage.id == mid, ChatMessage.session_id == sid).first()
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
+    # [MEM-SYNC-ON-EDIT] 编辑即同步：记忆 = 消息当前内容的镜像（普通聊天无分支，
+    # branch_id=None；user/assistant 均可能被编辑）。
+    old_content_before = message.content or ""
     message.content = req.content
+    _edited_for_reembed = None
+    if (message.content or "").strip() != old_content_before.strip():
+        delete_by_message_id(db, sid, mid)
+        _edited_for_reembed = (message.role, message.content or "")
+    _edit_user_id = user.id
     db.commit()
+
+    if _edited_for_reembed is not None:
+        _reembed_role, _reembed_text = _edited_for_reembed
+
+        def _reembed_edited_message():
+            re_db = SessionLocal()
+            try:
+                svc = MemoryService(re_db)
+                if not svc.is_available():
+                    return
+                text_for_mem = (
+                    clean_memory_content(_reembed_text)
+                    if _reembed_role == "assistant"
+                    else _reembed_text
+                )
+                if text_for_mem.strip():
+                    svc.store_memory(
+                        user_id=_edit_user_id,
+                        session_id=sid,
+                        role=_reembed_role,
+                        content=text_for_mem,
+                        branch_id=None,
+                        message_id=mid,
+                    )
+                    re_db.commit()
+            except Exception:
+                re_db.rollback()
+                logger.warning("[MEM-SYNC-ON-EDIT] re-embed after edit failed (message=%s)", mid)
+            finally:
+                re_db.close()
+
+        asyncio.create_task(asyncio.to_thread(_reembed_edited_message))
+
     return {"status": "ok"}

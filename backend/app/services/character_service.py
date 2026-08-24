@@ -3,6 +3,7 @@ import logging
 import shutil
 from pathlib import Path
 from typing import List, Optional
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -144,6 +145,16 @@ class CharacterService:
                     self.db.query(ChatVariable).filter(
                         ChatVariable.session_id.in_(batch)
                     ).delete(synchronize_session=False)
+
+                    # [ORPHAN-MEM-FIX] 级联清理向量记忆（conversation_memories.session_id
+                    # 为裸 TEXT 无 ForeignKey，不删则随角色删除留下孤儿记忆。
+                    # 2026-08-24 排查实锤：44 条全量孤儿均源于此）
+                    _mem_ph = ", ".join([f":s{j}" for j in range(len(batch))])
+                    _mem_params = {f"s{j}": sid for j, sid in enumerate(batch)}
+                    self.db.execute(
+                        text(f"DELETE FROM conversation_memories WHERE session_id IN ({_mem_ph})"),
+                        _mem_params,
+                    )
 
                     self.db.query(CharacterChatSession).filter(
                         CharacterChatSession.id.in_(batch)

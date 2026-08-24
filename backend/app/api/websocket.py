@@ -66,6 +66,7 @@ from ..api.character_ext import (
     REGEX_PLACEMENT_WORLD_INFO,
 )
 from ..memory_module.service import MemoryService
+from ..memory_module.storage import delete_by_message_id
 from ..utils import normalize_image_url, build_memory_context, clean_memory_content, apply_message_extra_patch
 
 router = APIRouter(tags=["websocket"])
@@ -173,6 +174,11 @@ async def run_chat_generation(
     memory_mode: str,
     user_message: str,
     enable_tools: bool = True,
+    user_message_id: Optional[int] = None,
+    # N-2 修复: 函数体 stream_text_completion 调用引用此二形参，缺失即 NameError
+    # 导致 WS 普通聊天路径整体不可用（对齐 run_character_chat_generation 签名）
+    reasoning_effort: Optional[str] = None,
+    provider_id: Optional[str] = None,
 ):
     result = StreamResult()
     save_db = SessionLocal()
@@ -460,9 +466,17 @@ async def run_chat_generation(
                     if not result.full_content.strip().startswith("Error:"):
                         mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
-                            mem_svc.store_memory(user_id, session_id, "user", user_message)
+                            # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id 先删后写（幂等）。
+                            # 覆盖：重试路径重复写入；user_message_id 为 None 时保持存量兼容。
+                            if user_message_id is not None:
+                                delete_by_message_id(save_db, session_id, user_message_id)
+                            mem_svc.store_memory(user_id, session_id, "user", user_message,
+                                                 message_id=user_message_id)
                             # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
-                            mem_svc.store_memory(user_id, session_id, "assistant", clean_memory_content(result.full_content))
+                            if assistant_message_id is not None:
+                                delete_by_message_id(save_db, session_id, assistant_message_id)
+                            mem_svc.store_memory(user_id, session_id, "assistant", clean_memory_content(result.full_content),
+                                                 message_id=assistant_message_id)
                             save_db.commit()
                             memory_stored = True
                 except Exception as e:
@@ -554,6 +568,7 @@ async def run_character_chat_generation(
     provider_id: Optional[str] = None,
     logit_bias: Optional[Dict[str, int]] = None,
     store_user_memory: bool = True,
+    user_message_id: Optional[int] = None,
     char=None,
     # Task 3.4.3: 前端序列化的插件 function tool（OpenAI 格式）
     tools: Optional[list] = None,
@@ -1117,21 +1132,42 @@ async def run_character_chat_generation(
                     if not result.full_content.strip().startswith("Error:"):
                         mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
+                            # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id 先删后写（幂等）。
+                            # 覆盖：continue 追加重叠(P3)、swipe 重roll 旧内容残留(P4)、重试路径重复写。
                             if store_user_memory and user_message.strip():
+                                if user_message_id is not None:
+                                    delete_by_message_id(save_db, session_id, user_message_id)
                                 mem_svc.store_memory(
                                     user_id=user_id,
                                     session_id=session_id,
                                     role="user",
                                     content=user_message,
                                     branch_id=branch_id,
+                                    message_id=user_message_id,
                                 )
-                            # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
+                            # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链。
+                            # 记忆源取 DB 中消息最终显示内容（persist_snapshot 已含
+                            # continue 追加/regex 清洗），保证「记忆=当前内容镜像」：
+                            # 续写(P2-8)后为合并全文而非仅本轮增量，修复 P3 重叠。
+                            if assistant_message_id is not None:
+                                delete_by_message_id(save_db, session_id, assistant_message_id)
+                                _asst_db_msg = save_db.query(CharacterChatMessage).filter(
+                                    CharacterChatMessage.id == assistant_message_id
+                                ).first()
+                                _asst_mem_src = (
+                                    (_asst_db_msg.content or "")
+                                    if _asst_db_msg is not None
+                                    else result.full_content
+                                ) or result.full_content
+                            else:
+                                _asst_mem_src = result.full_content
                             mem_svc.store_memory(
                                 user_id=user_id,
                                 session_id=session_id,
                                 role="assistant",
-                                content=clean_memory_content(result.full_content),
+                                content=clean_memory_content(_asst_mem_src),
                                 branch_id=branch_id,
+                                message_id=assistant_message_id,
                             )
                             save_db.commit()
                 except Exception as e:
@@ -1198,6 +1234,10 @@ async def ws_chat(websocket: WebSocket):
                 display_content = raw.get("display_content")
                 web_search = raw.get("web_search", False)
                 temperature = raw.get("temperature", 0.7)
+                # N-2 修复: 解析推理努力/供应商并传入 run_chat_generation
+                # （解析写法对齐 ws_character_chat 角色扮演侧）
+                reasoning_effort = raw.get("reasoning_effort") or None
+                provider_id = raw.get("provider_id") or None
 
                 db = SessionLocal()
                 try:
@@ -1249,12 +1289,16 @@ async def ws_chat(websocket: WebSocket):
 
                     final_user_content = message + "\n\n" + context_text if context_text else message
 
-                    db.add(ChatMessage(
+                    # [MEM-UPSERT] flush 取回用户消息主键，供记忆写入按 message_id 关联
+                    _user_msg_row = ChatMessage(
                         session_id=session_id,
                         role="user",
                         content=final_user_content,
                         model=model,
-                    ))
+                    )
+                    db.add(_user_msg_row)
+                    db.flush()
+                    user_message_id = _user_msg_row.id
                     db.commit()
 
                     system_parts = [
@@ -1357,6 +1401,10 @@ async def ws_chat(websocket: WebSocket):
                         memory_mode=memory_mode,
                         user_message=message,
                         enable_tools=True,
+                        user_message_id=user_message_id,
+                        # N-2 修复: 传参样式对齐 ws_character_chat 角色扮演侧
+                        reasoning_effort=reasoning_effort,
+                        provider_id=provider_id,
                     )
 
                 try:
@@ -1750,6 +1798,10 @@ async def ws_character_chat(websocket: WebSocket):
                     #               list => 显式队列（LIST 按名册顺序多成员 / MANUAL 空队列跳过）。
                     _speaker_plan = resolve_group_speaker_queue(db, ws_group_id, ws_current_speaker_id, ws_generation_type)
 
+                    # [MEM-UPSERT] 本轮用户消息行引用；smart_card_trigger / slash
+                    # 不落用户消息时保持 None，记忆写入退化为存量兼容（无 message_id）。
+                    _user_msg_row = None
+                    user_message_id = None
                     if not smart_card_trigger:
                         if slash_result:
                             if slash_result.extra_messages:
@@ -1816,7 +1868,7 @@ async def ws_character_chat(websocket: WebSocket):
                                     ),
                                 ))
                             if slash_result.send_to_chat:
-                                db.add(CharacterChatMessage(
+                                _user_msg_row = CharacterChatMessage(
                                     session_id=session_id,
                                     branch_id=branch_id,
                                     role="user",
@@ -1828,9 +1880,11 @@ async def ws_character_chat(websocket: WebSocket):
                                         char_name=char.name or "Character",
                                         user_name=user_nickname,
                                     ),
-                                ))
+                                )
+                                db.add(_user_msg_row)
                         else:
-                            db.add(CharacterChatMessage(
+                            # [MEM-UPSERT] 保留用户消息主键，供记忆写入按 message_id 关联
+                            _user_msg_row = CharacterChatMessage(
                                 session_id=session_id,
                                 branch_id=branch_id,
                                 role="user",
@@ -1842,7 +1896,12 @@ async def ws_character_chat(websocket: WebSocket):
                                     char_name=char.name or "Character",
                                     user_name=user_nickname,
                                 ),
-                            ))
+                            )
+                            db.add(_user_msg_row)
+                    # [MEM-UPSERT] flush 取回用户消息主键，供记忆写入按 message_id 关联
+                    if _user_msg_row is not None:
+                        db.flush()
+                        user_message_id = _user_msg_row.id
                     db.commit()
 
                     # ST 1.18.0 logit_bias / ban_sequences — load preset (if any)
@@ -2000,6 +2059,7 @@ async def ws_character_chat(websocket: WebSocket):
                                 provider_id=provider_id,
                                 logit_bias=logit_bias_dict,
                                 store_user_memory=(idx == 0),
+                                user_message_id=(user_message_id if idx == 0 else None),
                                 char=speaker_char,
                                 # Task 3.4.3: 传递前端 function tool
                                 tools=ws_tools,
