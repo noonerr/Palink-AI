@@ -175,6 +175,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     mode === 'trusted-native' || readSmartCardTrustGrant(context.characterId, sourceFingerprint)
   ));
   const [pendingTrustAction, setPendingTrustAction] = useState<'enable' | 'revoke' | null>(null);
+  // [N-22] 供零依赖 useCallback 在调用时读取最新信任态（避免闭包捕获过期值）
+  const trustedNativeRef = useRef(trustedNative);
+  trustedNativeRef.current = trustedNative;
   const inferredImmersiveTheme = useMemo(
     () => inferImmersiveThemeFromHtml(html, customCss),
     [html, customCss]
@@ -396,7 +399,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
       frameId: frameIdRef.current,
       type: 'plugin-scripts-push',
       bundle: slimSmartCardPluginScriptBundle(bundle),
-    }, '*');
+    }, smartCardFrameTargetOrigin(trustedNativeRef.current));
   }, []);
 
   const postContextToFrame = useCallback((nextContext: CharacterSmartCardContext, immediate = false) => {
@@ -412,7 +415,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
         frameId: frameIdRef.current,
         type: 'context-update',
         context: contextToPost,
-      }, '*');
+      }, smartCardFrameTargetOrigin(trustedNativeRef.current));
       // [P0-SRCDOC-SLIM] context 发送时顺带把插件脚本包推给 iframe（幂等，按
       // generated_at 去重）。源码不再内联进 context，避免 4.4MB 随每次
       // context-update（滚动/键盘等高频触发）反复结构化克隆导致滑动卡顿。
@@ -864,7 +867,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
             frameId: frameIdRef.current,
             requestId: data.requestId,
             ...response,
-          }, '*');
+          }, smartCardFrameTargetOrigin(trustedNativeRef.current));
         };
         // [P1-SRCDOC-SLIM] iframe 按需批量拉取插件源码：从完整 bundle 应答。
         // 清单推送只含元数据+URL，内容在此按需下发（父侧内存/HTTP 缓存），
@@ -1482,6 +1485,11 @@ function buildSmartCardImmersiveBridge(frameId: string): string {
 })();
 </script>`;
 }
+
+// [N-22] 父→iframe postMessage 的 targetOrigin：trusted-native（allow-same-origin 同源通道）
+// 收紧到 window.location.origin；opaque origin iframe 无法指定且无放大，维持 '*'
+const smartCardFrameTargetOrigin = (sameOrigin: boolean): string =>
+  sameOrigin ? window.location.origin : '*';
 
 function CharacterCardRendererInner({
   content,

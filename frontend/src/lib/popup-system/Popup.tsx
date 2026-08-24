@@ -18,12 +18,12 @@ export function Popup() {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 监听弹窗状态变化
+  // [N-20] 订阅弹窗状态变更（替代 100ms 轮询）：isOpen 变化即时反映，卸载时退订
   useEffect(() => {
     const checkState = () => {
       const currentState = popupManager.getState();
       setState(currentState);
-      
+
       if (currentState?.type === PopupType.INPUT) {
         setInputValue(currentState.options.placeholder || '');
       }
@@ -32,9 +32,7 @@ export function Popup() {
     // 初始检查
     checkState();
 
-    // 定期检查（简化实现，实际应使用事件监听）
-    const interval = setInterval(checkState, 100);
-    return () => clearInterval(interval);
+    return popupManager.subscribe(checkState);
   }, []);
 
   // 自动聚焦输入框

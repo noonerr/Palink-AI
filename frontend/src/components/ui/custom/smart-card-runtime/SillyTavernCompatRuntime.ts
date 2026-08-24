@@ -548,42 +548,6 @@ ${bootHeader}
     if (!ctxVariables) return base;
     return deepMergeVariablesCompat(base, ctxVariables);
   })();
-  // [VAR-DBG] 启动注入变量调试（排查"插件角色面板不能显示变量"）
-  try { console.warn('[VAR-DBG] boot ctx.variables keys=' + JSON.stringify(ctxVariables ? Object.keys(ctxVariables) : [])); } catch (_vdbgA) {}
-  try { var _sdBoot = chatVariableStore && chatVariableStore.stat_data; console.warn('[VAR-DBG] boot chatVariableStore.stat_data keys=' + JSON.stringify(_sdBoot && typeof _sdBoot === 'object' ? Object.keys(_sdBoot) : [])); } catch (_vdbgB) {}
-  // [PANEL-DBG] 延迟检查面板 DOM 是否真在卡 iframe 文档里（排查"面板脚本与面板 HTML 错位"）
-  try {
-    setTimeout(function () {
-      try {
-        var _ids = ['charAvatar', 'charListContainer', 'worldDate', 'navPrev', 'affectionBar'];
-        var _res = [];
-        for (var _i = 0; _i < _ids.length; _i++) {
-          _res.push(_ids[_i] + '=' + (document.getElementById(_ids[_i]) ? 'yes' : 'NO'));
-        }
-        console.warn('[PANEL-DBG] panel DOM check: ' + _res.join(' '));
-        // [PANEL-DBG2] 渲染结果 dump：面板脚本（refreshFromMVU）应已执行并填充这些 DOM。
-        // 有值→面板渲染成功（问题在可见性/高度）；无值→渲染未执行/中断。
-        try {
-          var _dbgEl = function (id) {
-            var el = document.getElementById(id);
-            return el ? JSON.stringify(String(el.textContent || '').slice(0, 40)) : 'null';
-          };
-          var _list = document.getElementById('charListContainer');
-          console.warn('[PANEL-DBG2] affectionText=' + _dbgEl('affectionText') +
-            ' charName=' + _dbgEl('charName') +
-            ' relationText=' + _dbgEl('relationText') +
-            ' worldDate=' + _dbgEl('worldDate') +
-            ' listChildren=' + (_list ? _list.children.length : 'null') +
-            ' panelVisible=' + (function () {
-              var el = document.getElementById('app');
-              if (!el) return 'noApp';
-              var r = el.getBoundingClientRect();
-              return 'w=' + Math.round(r.width) + ' h=' + Math.round(r.height);
-            })());
-        } catch (_pd2b) {}
-      } catch (_pd) {}
-    }, 2500);
-  } catch (_pd2) {}
   // [SINGLE-SOURCE] extension prompts/fields 与 V4 变量同构：不再维护独立副本，
   // 统一存于 chatVariableStore.__extension_prompts / __extension_fields（随会话变量
   // 由 persistVariableStores 持久化到父页面 __palink_chat_variables）。旧独立持久化
@@ -4449,13 +4413,10 @@ ${bootHeader}
     // 合并行为对齐；否则 getVariable()/getAllVariables() 读到的是旧数据。
     if (nextContext.variables && typeof nextContext.variables === 'object') {
       try {
-        console.warn('[VAR-DBG] context-update incoming keys=' + JSON.stringify(Object.keys(nextContext.variables)));
         deepMergeVariablesCompat(chatVariableStore, clone(nextContext.variables));
-        var _sdUpd = chatVariableStore && chatVariableStore.stat_data;
-        console.warn('[VAR-DBG] context-update after merge store.stat_data keys=' + JSON.stringify(_sdUpd && typeof _sdUpd === 'object' ? Object.keys(_sdUpd) : []));
         emitCompatEvent('VARIABLE_UPDATE_ENDED', chatVariableStore);
         emitCompatEvent('CHAT_VARIABLES_UPDATED', chatVariableStore);
-      } catch (_vdbgC) {}
+      } catch (_e) {}
     }
     if (Array.isArray(ctx.chatMessages) && ctx.chatMessages.length > 0) {
       compatChat.splice(0, compatChat.length, ...ctx.chatMessages.map(normalizeChatMessage));
@@ -6434,23 +6395,6 @@ ${bootHeader}
     const mvuGetAllVariablesFinal = () => {
       const merged = mvuResolveSourceVars('chat', {});
       try { merged.stat_data = mvuNormalizeStatData(merged); } catch (_e) { /* ignore */ }
-      // [VAR-DBG] 面板（状态栏）裸调用 getAllVariables() 的返回诊断：
-      // 确认面板读取点拿到的 stat_data 是否非空、形状是否嵌套
-      try {
-        var _sdGAV = merged && merged.stat_data;
-        var _sdKeys = _sdGAV && typeof _sdGAV === 'object' ? Object.keys(_sdGAV) : [];
-        var _sample = {};
-        try {
-          if (_sdGAV && _sdGAV['桃汐'] && typeof _sdGAV['桃汐'] === 'object') {
-            _sample['桃汐.好感度'] = _sdGAV['桃汐']['好感度'];
-            _sample['桃汐.服饰'] = _sdGAV['桃汐']['服饰'];
-          }
-          if (_sdGAV && _sdGAV['世界信息'] && typeof _sdGAV['世界信息'] === 'object') {
-            _sample['世界信息.日期时间'] = _sdGAV['世界信息']['日期时间'];
-          }
-        } catch (_sampErr) {}
-        console.warn('[VAR-DBG] getAllVariables stat_data keys=' + JSON.stringify(_sdKeys) + ' sample=' + JSON.stringify(_sample));
-      } catch (_vdbgGAV) {}
       return merged;
     };
 
@@ -6464,8 +6408,6 @@ ${bootHeader}
       try { sourceVars = mvuResolveSourceVars(type, opt); } catch (_e) { sourceVars = {}; }
       let statData;
       try { statData = mvuNormalizeStatData(sourceVars); } catch (_e) { statData = {}; }
-      // [VAR-DBG] 调试（排查"插件角色面板不能显示变量"）
-      try { console.warn('[VAR-DBG] getMvuData type=' + type + ' stat_data keys=' + JSON.stringify(Object.keys(statData))); } catch (_vdbgD) {}
       return { initialized_lorebooks: {}, stat_data: statData };
     };
 

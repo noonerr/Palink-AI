@@ -31,9 +31,34 @@ export class PopupManager {
   private state: PopupState | null = null;
   private config: PopupSystemConfig;
   private pendingResolve: ((result: any) => void) | null = null;
+  // [N-20] 状态变更订阅列表：Popup 组件据此即时反映 isOpen 变化（替代轮询）
+  private stateListeners = new Set<() => void>();
 
   constructor(config?: Partial<PopupSystemConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * [N-20] 订阅弹窗状态变更，返回退订函数
+   */
+  subscribe(listener: () => void): () => void {
+    this.stateListeners.add(listener);
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * [N-20] 状态落定后通知订阅方（show/close 的 state 变更完成后调用）
+   */
+  private notifyStateListeners(): void {
+    this.stateListeners.forEach((listener) => {
+      try {
+        listener();
+      } catch (error) {
+        console.error('[PopupManager] Error in state listener:', error);
+      }
+    });
   }
 
   /**
@@ -112,6 +137,7 @@ export class PopupManager {
 
       this.pendingResolve = resolve;
       emitEvent('popup:opened', { type, header });
+      this.notifyStateListeners();
     });
   }
 
@@ -124,6 +150,7 @@ export class PopupManager {
       emitEvent('popup:closed', { result });
       this.state = null;
       this.pendingResolve = null;
+      this.notifyStateListeners();
     }
   }
 

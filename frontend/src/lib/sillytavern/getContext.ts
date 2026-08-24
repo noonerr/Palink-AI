@@ -2703,14 +2703,20 @@ export function getContext(): StGetContext {
     symbols: {
       // ST 内部 symbols 对象（替代 Symbol() 常量）
       // 提供 ST 插件可能引用的常用 symbol 占位
-      IGNORE_SYMBOL: '<ignore>',
+      // [A-5] 键名对齐 ST：symbols.ignore；旧键经存取器委托读写，兼容一版后移除
+      ignore: '<ignore>',
       EMPTY_STRING: '',
+      get IGNORE_SYMBOL(): string { return this.ignore; },
+      set IGNORE_SYMBOL(value: string) { this.ignore = value; },
     },
     constants: {
       // ST constants.js 导出的常量
-      IGNORE_SYMBOL: '<ignore>',
+      // [A-5] 键名对齐 ST：constants.unset；旧键经存取器委托读写，兼容一版后移除
+      unset: '<ignore>',
       MAX_CONTEXT_DEFAULT: 16384,
       SWIPE_COUNT_DEFAULT: 0,
+      get IGNORE_SYMBOL(): string { return this.unset; },
+      set IGNORE_SYMBOL(value: string) { this.unset = value; },
     },
     loader: {
       // ST action-loader.js loader

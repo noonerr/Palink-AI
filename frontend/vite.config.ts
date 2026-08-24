@@ -35,7 +35,8 @@ export default defineConfig({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: false,
+        // [N-19] 生产构建移除全部 console.*（terser 仅在 build 期生效，dev 不受影响）
+        drop_console: true,
         drop_debugger: true,
         pure_funcs: ['console.log', 'console.info'],
         passes: 2,
