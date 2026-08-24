@@ -2409,6 +2409,7 @@ class ParseCharacterRequest(BaseModel):
 @router_characters.post("/parse")
 async def parse_character_card(
     req: ParseCharacterRequest,
+    http_request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -2476,7 +2477,12 @@ async def parse_character_card(
         except ValueError as exc:
             char.is_processing = False
             db.commit()
-            raise HTTPException(status_code=400, detail=str(exc))
+            _rid = getattr(http_request.state, "request_id", "unknown")
+            logger.warning("Character parse model unavailable: %s request_id=%s", exc, _rid)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model not configured or not available (request_id: {_rid})",
+            ) from exc
 
         fields_to_parse = {
             "description": char.description or "",
@@ -2549,6 +2555,7 @@ class TranslateRequest(BaseModel):
 @router_characters.post("/translate")
 async def translate_character(
     req: TranslateRequest,
+    http_request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -2578,7 +2585,12 @@ async def translate_character(
     except ValueError as exc:
         char.is_processing = False
         db.commit()
-        raise HTTPException(status_code=400, detail=str(exc))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("Character translate model unavailable: %s request_id=%s", exc, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not configured or not available (request_id: {_rid})",
+        ) from exc
 
     fields_to_translate = {
         "description": char.description or "",
@@ -6211,6 +6223,9 @@ async def switch_message_swipe(
     if new_swipe_id < 0 or new_swipe_id >= len(swipes):
         raise HTTPException(status_code=400, detail="swipe_id out of range")
 
+    # [MEM-SYNC-ON-SWITCH] 进入函数时缓存旧正文，供 commit 前对比内容是否变化
+    old_content_before = msg.content or ""
+
     msg.swipe_id = new_swipe_id
     msg.content = swipes[new_swipe_id]
     current_extra = _message_extra(msg)
@@ -6219,8 +6234,50 @@ async def switch_message_swipe(
         swipes=swipes,
         swipe_id=new_swipe_id,
     ))
+    # [MEM-SYNC-ON-SWITCH] 切换即同步：记忆 = 消息当前内容的镜像。
+    # 切换导致内容(strip)变化 → 先删该消息全部记忆行，commit 后按新文本后台重嵌；
+    # 内容未变（重复切换到同一 swipe）零操作。
+    _switched_for_reembed = None
+    if (msg.content or "").strip() != old_content_before.strip():
+        delete_by_message_id(db, session_id, message_id)
+        _switched_for_reembed = (msg.role, msg.content or "")
+    # 捕获标量，避免后台线程访问已关闭请求 Session 的 ORM 对象
+    _switch_branch_id = msg.branch_id
+    _switch_user_id = user.id
     db.commit()
     db.refresh(msg)
+
+    if _switched_for_reembed is not None:
+        _reembed_role, _reembed_text = _switched_for_reembed
+
+        def _reembed_switched_message():
+            re_db = SessionLocal()
+            try:
+                svc = MemoryService(re_db)
+                if not svc.is_available():
+                    return
+                text_for_mem = (
+                    clean_memory_content(_reembed_text)
+                    if _reembed_role == "assistant"
+                    else _reembed_text
+                )
+                if text_for_mem.strip():
+                    svc.store_memory(
+                        user_id=_switch_user_id,
+                        session_id=session_id,
+                        role=_reembed_role,
+                        content=text_for_mem,
+                        branch_id=_switch_branch_id,
+                        message_id=message_id,
+                    )
+                    re_db.commit()
+            except Exception:
+                re_db.rollback()
+                logger.warning("[MEM-SYNC-ON-SWITCH] re-embed after switch failed (message=%s)", message_id)
+            finally:
+                re_db.close()
+
+        asyncio.create_task(asyncio.to_thread(_reembed_switched_message))
     return {
         "message_id": msg.id,
         "swipe_id": new_swipe_id,

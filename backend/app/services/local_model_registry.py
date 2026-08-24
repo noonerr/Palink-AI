@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +11,11 @@ from ..core import settings
 
 LOCAL_MODEL_PREFIX = "local:"
 _ALLOWED_MODEL_EXTENSIONS = {".gguf"}
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+def _upload_max_bytes() -> int:
+    return max(1, int(settings.LOCAL_MODEL_UPLOAD_MAX_FILE_SIZE_MB)) * 1024 * 1024
 
 
 def _now_iso() -> str:
@@ -329,11 +333,38 @@ def upload_local_model(file: UploadFile) -> Dict[str, Any]:
         suffix = datetime.now().strftime("%Y%m%d%H%M%S")
         final_path = os.path.join(models_dir, f"{stem}-{suffix}{ext_name}")
 
+    # N-16: 限流读取落盘——逐块写入并累计总量，超过可配置上限即中止并清理半成品，
+    # 避免无上限 copyfileobj 直写盘被恶意/误传大文件撑爆磁盘。
+    max_bytes = _upload_max_bytes()
     try:
+        written = 0
         with open(final_path, "wb") as output_file:
             file.file.seek(0)
-            shutil.copyfileobj(file.file, output_file)
+            while True:
+                chunk = file.file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    output_file.close()
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            "Uploaded model exceeds LOCAL_MODEL_UPLOAD_MAX_FILE_SIZE_MB="
+                            f"{settings.LOCAL_MODEL_UPLOAD_MAX_FILE_SIZE_MB}MB limit"
+                        ),
+                    )
+                output_file.write(chunk)
+    except HTTPException:
+        raise
     except Exception:
+        if os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except OSError:
+                pass
         raise HTTPException(status_code=500, detail="Failed to save model file")
 
     size_bytes = os.path.getsize(final_path) if os.path.exists(final_path) else 0

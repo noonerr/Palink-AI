@@ -5,6 +5,8 @@ from typing import List, Tuple
 _SENSITIVE_PATTERNS: List[Tuple[str, str]] = [
     (r"eyJ[A-Za-z0-9-_]{20,}", "[REDACTED_JWT]"),
     (r"Bearer\s+\S+", "Bearer [REDACTED]"),
+    # N-15: 裸 API 密钥形态（sk-/pk- 前缀 + 16 位以上字母数字），防御性脱敏
+    (r"(?<![\w-])(?:sk|pk)-[A-Za-z0-9]{16,}(?![\w-])", "[REDACTED_API_KEY]"),
     (r'(?i)(password|pwd|secret|api_key|apikey|access_token|refresh_token|private_key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
     (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", lambda m: m.group(0)[:2] + "***@" + m.group(0).split("@")[1][:3] + "***"),
     (r"(?<!\d)1[3-9]\d{9}(?!\d)", lambda m: m.group(0)[:3] + "****" + m.group(0)[-4:]),

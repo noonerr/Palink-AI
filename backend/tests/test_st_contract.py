@@ -1356,7 +1356,9 @@ _BRIDGE_JS_CANDIDATE_PATHS = [
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "frontend", "public", "st", "bridge.js",
     ),
-    # 容器内若挂载 frontend 时可能的位置
+    # 容器内若挂载 frontend 时可能的位置（C7/N-17: /opt/frontend-src 为
+    # docker-compose 只读挂载点，探测到即运行）
+    "/opt/frontend-src/public/st/bridge.js",
     "/app/frontend/public/st/bridge.js",
     "/frontend/public/st/bridge.js",
 ]

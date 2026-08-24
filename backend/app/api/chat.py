@@ -54,7 +54,12 @@ async def chat_stream(
     try:
         ensure_model_available(req.model)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        _rid = getattr(request.state, "request_id", "unknown")
+        logger.warning("Chat model unavailable: %s request_id=%s", exc, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not configured or not available (request_id: {_rid})",
+        ) from exc
 
     chat_service = ChatService(db)
 

@@ -322,6 +322,7 @@ def _current_role_binding_state(db: Session, user: User, role: str, character_id
 @router.post("/synthesize", response_model=TTSResponse)
 async def synthesize_tts(
     request: TTSRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -340,7 +341,9 @@ async def synthesize_tts(
         )
         return TTSResponse(success=True, **result)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS synthesis validation failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
     except Exception:
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail="TTS synthesis failed")
@@ -351,6 +354,7 @@ async def synthesize_tts_st_compat(
     text: str = Form(...),
     voice: Optional[str] = Form(None),
     speed: float = Form(1.0),
+    http_request: Request = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -377,7 +381,9 @@ async def synthesize_tts_st_compat(
             headers={"Content-Disposition": "inline; filename=tts.mp3", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("ST-compat TTS validation failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")
     except Exception:
@@ -417,7 +423,9 @@ async def synthesize_audio(
             headers={"Content-Disposition": "inline; filename=tts_audio.wav", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS audio validation failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")
     except Exception:
@@ -435,7 +443,7 @@ async def get_config(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/config")
-async def save_config(req: TTSConfigRequest, current_user: User = Depends(get_admin)):
+async def save_config(req: TTSConfigRequest, http_request: Request, current_user: User = Depends(get_admin)):
     current = _get_raw_config()
     updates = {}
     if req.enabled is not None:
@@ -460,7 +468,9 @@ async def save_config(req: TTSConfigRequest, current_user: User = Depends(get_ad
     try:
         saved = save_tts_config(merged)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS config save failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"TTS 配置无效 (request_id: {_rid})") from e
     all_providers = list(BUILTIN_PROVIDERS) + saved.get("providers", [])
     return {**saved, "available_providers": all_providers}
 
@@ -790,6 +800,7 @@ async def get_management(current_user: User = Depends(get_current_user), db: Ses
 @router.put("/admin/default-bindings")
 async def save_admin_default_bindings(
     request: BindingsUpdateRequest,
+    http_request: Request,
     current_user: User = Depends(get_admin),
     db: Session = Depends(get_db),
 ):
@@ -797,7 +808,9 @@ async def save_admin_default_bindings(
         return {"success": True, "bindings": _apply_bindings_update(db, current_user, request, scope="global", allow_clone=False)}
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS default bindings update failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音绑定配置无效 (request_id: {_rid})") from e
 
 
 @router.get("/my/bindings")
@@ -808,6 +821,7 @@ async def get_my_bindings(current_user: User = Depends(get_current_user), db: Se
 @router.put("/my/bindings")
 async def save_my_bindings(
     request: BindingsUpdateRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -815,7 +829,9 @@ async def save_my_bindings(
         return {"success": True, "bindings": _apply_bindings_update(db, current_user, request, scope="user", target_user_id=current_user.id)}
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS user bindings update failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音绑定配置无效 (request_id: {_rid})") from e
 
 
 @router.get("/characters/{character_id}/voice-bindings")
@@ -832,6 +848,7 @@ async def get_character_voice_bindings(
 async def save_character_voice_bindings(
     character_id: str,
     request: BindingsUpdateRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -850,7 +867,9 @@ async def save_character_voice_bindings(
         }
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS character bindings update failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音绑定配置无效 (request_id: {_rid})") from e
 
 
 @router.get("/clone-samples")
@@ -939,6 +958,7 @@ async def delete_clone_sample(sample_id: str, current_user: User = Depends(get_c
 @router.post("/preview/metadata")
 async def preview_metadata(
     request: TTSPreviewRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -959,7 +979,9 @@ async def preview_metadata(
         )
         return {"success": True, **result}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS preview metadata validation failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音试听请求无效 (request_id: {_rid})") from e
 
 
 @router.post("/preview/audio")
@@ -996,6 +1018,8 @@ async def preview_audio(
             headers={"Content-Disposition": "inline; filename=tts_preview.wav", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("TTS preview audio validation failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"语音试听请求无效 (request_id: {_rid})") from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")

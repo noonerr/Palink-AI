@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     DATA_DIR: str = "./data"
     UPLOAD_DIR: str = "./data/uploads"
     CHAT_UPLOAD_MAX_FILE_SIZE_MB: int = 20
+    # N-16: 本地模型（llama.cpp .gguf）上传单文件上限，超限返回 413。默认 10GB。
+    LOCAL_MODEL_UPLOAD_MAX_FILE_SIZE_MB: int = 10240
     CHAT_UPLOAD_MAX_USER_STORAGE_MB: int = 1024
     CHAT_UPLOAD_ALLOWED_EXTENSIONS: str = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.tar,.gz,.csv,.json,.md,.css,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.go,.rs,.rb,.php,.swift,.kt,.xml,.yaml,.yml,.toml,.ini,.cfg"
     CHAT_UPLOAD_BLOCKED_EXTENSIONS: str = ".exe,.dll,.bat,.cmd,.com,.msi,.scr,.ps1,.psm1,.vbs,.vbe,.jse,.wsf,.wsh,.hta,.jar,.apk,.html,.htm,.svg"
@@ -107,6 +109,12 @@ class Settings(BaseSettings):
                     "ADMIN_PASSWORD environment variable is required when APP_ENV != 'development'."
                 )
         elif self.ADMIN_PASSWORD == "admin123":
+            # N-18: prod 环境弱管理员密码从告警升级为启动阻断。
+            if self.APP_ENV == "production":
+                raise RuntimeError(
+                    "ADMIN_PASSWORD is set to the default value 'admin123' in production. "
+                    "Refusing to start — set a strong ADMIN_PASSWORD via environment variable."
+                )
             logger.warning(
                 "[SECURITY] ADMIN_PASSWORD is set to the default value 'admin123'. "
                 "This is not recommended for production use."

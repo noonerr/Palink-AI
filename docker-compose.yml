@@ -129,6 +129,9 @@ services:
       - ./backend/data:/app/data
       - ./backend/models:/app/models
       - ./backend/tests:/app/tests
+      # C7/N-17 容器 pytest 对齐：只读挂载前端源码，供三个契约测试探测运行
+      # （compose 相对路径以本文件所在目录为基准，故为 ./frontend）
+      - ./frontend:/opt/frontend-src:ro
     env_file:
       - .env
     environment:

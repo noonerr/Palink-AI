@@ -96,8 +96,15 @@ class TestP22GenerationAfterCommandsEvent:
 
     def test_runtime_ts_uses_uppercase_event_value(self):
         """runtime.ts 中 GENERATION_AFTER_COMMANDS 应使用大写值（对齐 ST events.js）。"""
-        runtime_path = os.path.join(
-            _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts"
+        runtime_candidates = [
+            os.path.normpath(os.path.join(
+                _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts"
+            )),
+            "/opt/frontend-src/src/lib/sillytavern/runtime.ts",
+        ]
+        runtime_path = next(
+            (p for p in runtime_candidates if os.path.exists(p)),
+            runtime_candidates[0],
         )
         if not os.path.exists(runtime_path):
             pytest.skip("runtime.ts 不存在")

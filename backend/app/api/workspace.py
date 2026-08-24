@@ -395,6 +395,7 @@ async def download_workspace_file(
 @router.post("/analyze")
 async def analyze_workspace_file(
     req: AnalyzeRequest,
+    http_request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -405,7 +406,12 @@ async def analyze_workspace_file(
     try:
         ensure_model_available(req.model)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("Workspace analyze model unavailable: %s request_id=%s", exc, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not configured or not available (request_id: {_rid})",
+        ) from exc
 
     content = _extract_file_content(f)
     messages = _build_analysis_messages(f, content, req.lang)
@@ -430,6 +436,7 @@ async def analyze_workspace_file(
 @router.post("/analyze/stream")
 async def stream_analyze_workspace_file(
     req: AnalyzeRequest,
+    http_request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -440,7 +447,12 @@ async def stream_analyze_workspace_file(
     try:
         ensure_model_available(req.model)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("Workspace stream analyze model unavailable: %s request_id=%s", exc, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not configured or not available (request_id: {_rid})",
+        ) from exc
 
     content = _extract_file_content(f)
     messages = _build_analysis_messages(f, content, req.lang)

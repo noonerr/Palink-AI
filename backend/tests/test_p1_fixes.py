@@ -588,12 +588,23 @@ class TestP16ImpersonateCommand:
 class TestP13StreamingEvents:
     """验证前端 runtime.ts 中流式事件触发（通过检查文件内容）。"""
 
+    @staticmethod
+    def _resolve_runtime_ts() -> str:
+        """宿主仓库布局优先，其次容器只读挂载点（C7/N-17）。"""
+        candidates = [
+            os.path.normpath(os.path.join(
+                _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts",
+            )),
+            "/opt/frontend-src/src/lib/sillytavern/runtime.ts",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return candidates[0]
+
     def test_runtime_ts_emits_streaming_started(self):
         """runtime.ts 包含 message_streaming_started 事件触发。"""
-        runtime_path = os.path.join(
-            _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts",
-        )
-        runtime_path = os.path.normpath(runtime_path)
+        runtime_path = self._resolve_runtime_ts()
         if not os.path.exists(runtime_path):
             pytest.skip(f"runtime.ts 不存在: {runtime_path}")
         content = open(runtime_path, encoding="utf-8").read()
@@ -601,10 +612,7 @@ class TestP13StreamingEvents:
 
     def test_runtime_ts_emits_streaming_stopped(self):
         """runtime.ts 包含 message_streaming_stopped 事件触发。"""
-        runtime_path = os.path.join(
-            _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts",
-        )
-        runtime_path = os.path.normpath(runtime_path)
+        runtime_path = self._resolve_runtime_ts()
         if not os.path.exists(runtime_path):
             pytest.skip(f"runtime.ts 不存在: {runtime_path}")
         content = open(runtime_path, encoding="utf-8").read()
@@ -671,9 +679,16 @@ class TestP17ExtensionPromptStoreMerge:
         引用链完整。基线 commit（7d5dea1）中的该文件同样不含标记，证明断言在拆分时
         即失效、非近期产品回退。故断言改为扫描主文件 + 拆分落点目录树。
         """
-        frontend_custom_dir = os.path.normpath(os.path.join(
-            _BACKEND_DIR, "..", "frontend", "src", "components", "ui", "custom",
-        ))
+        frontend_custom_candidates = [
+            os.path.normpath(os.path.join(
+                _BACKEND_DIR, "..", "frontend", "src", "components", "ui", "custom",
+            )),
+            "/opt/frontend-src/src/components/ui/custom",
+        ]
+        frontend_custom_dir = next(
+            (p for p in frontend_custom_candidates if os.path.isdir(p)),
+            frontend_custom_candidates[0],
+        )
         renderer_path = os.path.join(frontend_custom_dir, "CharacterCardRenderer.tsx")
         runtime_dir = os.path.join(frontend_custom_dir, "smart-card-runtime")
         if not os.path.exists(renderer_path):

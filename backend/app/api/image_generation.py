@@ -1,6 +1,8 @@
 """Image generation API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, selectinload
 
 from .dependencies import get_admin, get_current_user
@@ -21,6 +23,7 @@ from ..services.image_generation_service import (
 )
 
 router = APIRouter(prefix="/api/image-generation", tags=["image-generation"])
+logger = logging.getLogger(__name__)
 
 
 def _chat_message_context(db: Session, session_id: str, up_to_message_id: int, limit: int) -> list[ChatMessage]:
@@ -54,12 +57,14 @@ async def get_config(current_user: User = Depends(get_current_user)):
 
 
 @router.put("/config")
-async def update_config(req: ImageGenerationConfigRequest, current_user: User = Depends(get_admin)):
+async def update_config(req: ImageGenerationConfigRequest, http_request: Request, current_user: User = Depends(get_admin)):
     try:
         saved = save_image_generation_config(req.model_dump())
         return {**saved, "can_admin": True}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("Image generation config save failed: %s request_id=%s", exc, _rid)
+        raise HTTPException(status_code=400, detail=f"图片生成配置无效 (request_id: {_rid})") from exc
 
 
 @router.post("/test")

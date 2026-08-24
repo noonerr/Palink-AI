@@ -19,6 +19,7 @@
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,11 +29,13 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from ..core.config import settings
 from .dependencies import get_admin, get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/live2d-pool", tags=["live2d-pool"])
 
@@ -158,6 +161,7 @@ async def upload_model(
     file: UploadFile = File(...),
     name: str = Form(""),
     description: str = Form(""),
+    http_request: Request = None,
     _user=Depends(get_current_user),
 ) -> dict:
     """上传 Live2D 模型 zip 包到服务器池。
@@ -194,7 +198,12 @@ async def upload_model(
         raise
     except Exception as e:
         shutil.rmtree(target, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"解压失败: {e}") from e
+        _rid = getattr(http_request.state, "request_id", "unknown") if http_request else "unknown"
+        logger.warning("Live2D upload extract failed: %s request_id=%s", e, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"解压失败：zip 内容无法解析或包含不支持的条目 (request_id: {_rid})",
+        ) from e
 
     model = _scan_model(target)
     return {"model": model}

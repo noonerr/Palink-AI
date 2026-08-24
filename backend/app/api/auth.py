@@ -259,7 +259,9 @@ async def oauth_login_url(provider: str, request: Request, db: Session = Depends
     try:
         url, state_token = build_authorize_url(provider, redirect_uri, db)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(request.state, "request_id", "unknown")
+        logger.warning("OAuth authorize URL build failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"OAuth 登录发起失败 (request_id: {_rid})") from e
 
     response = Response(
         content=json.dumps({"login_url": url}),
@@ -299,7 +301,9 @@ async def oauth_callback(
     try:
         state_data = verify_state(state)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(request.state, "request_id", "unknown")
+        logger.warning("OAuth state verify failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"登录状态校验失败，请重新发起登录 (request_id: {_rid})") from e
 
     if state_data.get("provider") != provider:
         raise HTTPException(status_code=400, detail="Provider mismatch in state")
@@ -334,7 +338,9 @@ async def oauth_callback(
         return response
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _rid = getattr(request.state, "request_id", "unknown")
+        logger.warning("OAuth user sync failed: %s request_id=%s", e, _rid)
+        raise HTTPException(status_code=400, detail=f"OAuth 登录失败，请重试 (request_id: {_rid})") from e
     except Exception as e:
         logger.error(f"OAuth callback error: {e}")
         raise HTTPException(status_code=500, detail="OAuth authentication failed")

@@ -4,7 +4,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from ..core import get_db
@@ -72,10 +72,18 @@ def _stage_to_response(stage: PlotStage) -> dict:
 
 @router.get("")
 def list_plot_lines(
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    pls = db.query(PlotLine).filter(PlotLine.user_id == current_user.id).all()
+    pls = (
+        db.query(PlotLine)
+        .filter(PlotLine.user_id == current_user.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return [_pl_to_response(pl) for pl in pls]
 
 
@@ -173,7 +181,12 @@ async def parse_plot_line(
     try:
         ensure_model_available(model)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        _rid = getattr(http_request.state, "request_id", "unknown")
+        logger.warning("Plotline parse model unavailable: %s request_id=%s", exc, _rid)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not configured or not available (request_id: {_rid})",
+        ) from exc
 
     try:
         completion = await complete_text_completion(

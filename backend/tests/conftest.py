@@ -33,6 +33,27 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+# ---------------------------------------------------------------------------
+# 前端源码路径解析（容器内 pytest 对齐，C7/N-17）
+# ---------------------------------------------------------------------------
+# 宿主/CI 直接跑 pytest 时前端源码位于仓库根 frontend/；backend 容器内通过
+# docker-compose 只读挂载 ./frontend -> /opt/frontend-src。契约测试按候选
+# 顺序探测，探测到即运行，避免容器内因路径不可达而假性 skip。
+_FRONTEND_ROOT_CANDIDATES = (
+    os.path.normpath(os.path.join(_BACKEND_DIR, "..", "frontend")),
+    "/opt/frontend-src",
+    "/app/frontend",
+)
+
+
+def resolve_frontend_source(*parts: str) -> str:
+    """按候选根解析前端源码文件路径；全部不可达时返回宿主布局的规范路径。"""
+    candidates = [os.path.join(root, *parts) for root in _FRONTEND_ROOT_CANDIDATES]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return os.path.normpath(candidate)
+    return os.path.normpath(candidates[0])
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
