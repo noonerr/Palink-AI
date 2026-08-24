@@ -53,6 +53,14 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
+### [进行中] 清理批次总案（除 N-8 外全部存量，2026-08-24 spec 就绪，三线并行）
+- **spec**: `docs/SPEC_清理批次总案_除N8_2026-08-24.md`（互斥矩阵/报告精简格式/统一冻结）
+- **A 线 世界书与示例域**（7 子项）: useProbability 接线（DB列+导入+扫描判定，ST 语义 false=必现）/ mes_example 拆块移植 palink-native / prevent_recursion 语义修正（排除出递归 buffer 而非整条跳过）/ WI 全局设置补接线（world_info_depth 对齐 ST=2 等）/ 百分比预算基数传真实 max_context / V3 卡独立 jailbreak 消费 / creator_notes 退出 prompt——修复 agent
+- **B 线 前端卫生**（5 子项）: N-19 构建期 drop_console+重灾区手清(VAR-DBG) / N-20 Popup 轮询改事件 / N-21 timer 清理对齐 / N-22 postMessage origin 收紧 / A-5 symbols 键名对齐——修复 agent
+- **C 线 后端安全卫生与二期尾巴**（7 子项）: PATCH/swipe 记忆同步钩子(message_id 二期) / N-13 四xx文案×15 / N-15 日志脱敏 sk-pk / N-16 上传上限 / N-17 无limit限幅(silly_tavern.py 一处顺延) / N-18 prod 弱密码阻断 / 容器 pytest 对齐(compose 只读挂载 frontend + skipif 候选路径)——审计线或修复 agent
+- **待拍板**: vectorized 孤岛接线 or 删除；N-8 止血 token 有效期数值
+- **基线**: 952 passed / 0 failed 全绿；三线禁改矩阵见 spec §0
+
 ### [已完成·已验收] 性能与体验批次 N-3/N-9/N-12（2026-08-24 施工 + 当日验收通过）
 - **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`（与安全批三线并行零冲突）
 - **验收记录**: 纯前端 3 文件 284+/75-，禁改清单未触碰；N-9 代次守卫 25 处布点核验（三条 SSE 路径+WS 槽位双轨+suppress 豁免流内回写）；N-3 sanitize 入 memo + render 只读 stCompatSanitizedHtml；N-12 SmartCardDormancyGate 一屏缓冲等高占位；tsc 干净；统一构建产物 palink-card-dormancy 在位
