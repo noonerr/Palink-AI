@@ -102,6 +102,61 @@ type HandleSendMessageOptions = {
 const stripStyleBlocks = (html: unknown): string =>
   String(html ?? '').replace(/<style[\s\S]*?<\/style>/gi, '');
 
+// [N-3] 尾部实时条数：最后 K 条（正在流式的 assistant + 触发它的 user）每次重建，
+// 其余历史元素引用恒定（ref 快照复用），避免每个 SSE chunk 击穿下游 Message memo 与 pipelineResult。
+const SMART_CARD_TAIL_REALTIME_COUNT = 2;
+
+// [N-3] 单条消息 → 智能卡上下文条目的纯映射（模块级函数，便于历史快照按引用复用）
+function buildSmartCardChatEntry(
+  item: CharacterChatMessage,
+  index: number,
+  characterName: string,
+  userNameFallback: string,
+) {
+  const { content: cleanMes, reasoning } = extractReasoningTags(item.content || '');
+  const baseExtra = (item as any).extra && typeof (item as any).extra === 'object' ? (item as any).extra : {};
+  const boundaryExtra = reasoning && !(typeof baseExtra.reasoning === 'string' && baseExtra.reasoning.trim())
+    ? { ...baseExtra, reasoning }
+    : baseExtra;
+  const stripSwipe = (s: string) => extractReasoningTags(s || '').content;
+  const rawSwipes: string[] = Array.isArray((item as any).swipes) && (item as any).swipes.length
+    ? (item as any).swipes
+    : [item.content || ''];
+  return {
+    id: item.id ?? null,
+    message_id: item.message_id ?? item.id ?? null,
+    mesid: Number.isFinite(Number(item.mesid)) ? Number(item.mesid) : index,
+    role: item.role,
+    is_user: typeof item.is_user === 'boolean' ? item.is_user : item.role === 'user',
+    is_system: typeof item.is_system === 'boolean' ? item.is_system : item.role === 'system',
+    is_name: typeof (item as any).is_name === 'boolean'
+      ? (item as any).is_name
+      : typeof (item as any).extra?.is_name === 'boolean'
+        ? (item as any).extra.is_name
+        : true,
+    force_avatar: (item as any).force_avatar ?? (item as any).extra?.force_avatar,
+    original_avatar: (item as any).original_avatar ?? (item as any).extra?.original_avatar,
+    avatar: (item as any).avatar ?? (item as any).extra?.avatar,
+    gen_id: (item as any).gen_id ?? (item as any).extra?.gen_id,
+    group_id: (item as any).group_id ?? (item as any).extra?.group_id,
+    group_name: (item as any).group_name ?? (item as any).extra?.group_name,
+    selected_group: (item as any).selected_group ?? (item as any).extra?.selected_group,
+    groups: (item as any).groups ?? (item as any).extra?.groups,
+    name: item.name || (item.role === 'user' ? userNameFallback : item.role === 'system' ? 'System' : characterName),
+    content: cleanMes,
+    mes: cleanMes,
+    message: cleanMes,
+    text: cleanMes,
+    swipes: rawSwipes.map(stripSwipe),
+    swipe_id: Number.isFinite(Number((item as any).swipe_id)) ? Number((item as any).swipe_id) : 0,
+    swipe_info: Array.isArray((item as any).swipe_info) ? (item as any).swipe_info : [],
+    extra: boundaryExtra,
+    created_at: item.created_at,
+  };
+}
+
+type SmartCardChatEntry = ReturnType<typeof buildSmartCardChatEntry>;
+
 /* ────── Props ──────────────────────────────────────────────────────────────────────────────────────── */
 
 export interface CharacterChatProps {
@@ -1288,50 +1343,63 @@ export function CharacterChat(props: CharacterChatProps) {
         mobileComposerKeyboardBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX,
       )
     : mobileComposerClosedBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX;
-  // [REASONING-SEPARATE] 插件边界适配：iframe 通道的 mes 预剥离思考块（含存量混合行），
-  // 思考走 extra.reasoning 独立字段——源码不可改的随卡插件（BubbleDialogue 等）靠此保兼容
-  const smartCardChatMessages = useMemo(() => displayedMessages.map((item, index) => {
-    const { content: cleanMes, reasoning } = extractReasoningTags(item.content || '');
-    const baseExtra = (item as any).extra && typeof (item as any).extra === 'object' ? (item as any).extra : {};
-    const boundaryExtra = reasoning && !(typeof baseExtra.reasoning === 'string' && baseExtra.reasoning.trim())
-      ? { ...baseExtra, reasoning }
-      : baseExtra;
-    const stripSwipe = (s: string) => extractReasoningTags(s || '').content;
-    const rawSwipes: string[] = Array.isArray((item as any).swipes) && (item as any).swipes.length
-      ? (item as any).swipes
-      : [item.content || ''];
-    return {
-      id: item.id ?? null,
-      message_id: item.message_id ?? item.id ?? null,
-      mesid: Number.isFinite(Number(item.mesid)) ? Number(item.mesid) : index,
-      role: item.role,
-      is_user: typeof item.is_user === 'boolean' ? item.is_user : item.role === 'user',
-      is_system: typeof item.is_system === 'boolean' ? item.is_system : item.role === 'system',
-      is_name: typeof (item as any).is_name === 'boolean'
-        ? (item as any).is_name
-        : typeof (item as any).extra?.is_name === 'boolean'
-          ? (item as any).extra.is_name
-          : true,
-      force_avatar: (item as any).force_avatar ?? (item as any).extra?.force_avatar,
-      original_avatar: (item as any).original_avatar ?? (item as any).extra?.original_avatar,
-      avatar: (item as any).avatar ?? (item as any).extra?.avatar,
-      gen_id: (item as any).gen_id ?? (item as any).extra?.gen_id,
-      group_id: (item as any).group_id ?? (item as any).extra?.group_id,
-      group_name: (item as any).group_name ?? (item as any).extra?.group_name,
-      selected_group: (item as any).selected_group ?? (item as any).extra?.selected_group,
-      groups: (item as any).groups ?? (item as any).extra?.groups,
-      name: item.name || (item.role === 'user' ? user.username : item.role === 'system' ? 'System' : selectedCharacter.name),
-      content: cleanMes,
-      mes: cleanMes,
-      message: cleanMes,
-      text: cleanMes,
-      swipes: rawSwipes.map(stripSwipe),
-      swipe_id: Number.isFinite(Number((item as any).swipe_id)) ? Number((item as any).swipe_id) : 0,
-      swipe_info: Array.isArray((item as any).swipe_info) ? (item as any).swipe_info : [],
-      extra: boundaryExtra,
-      created_at: item.created_at,
-    };
-  }), [displayedMessages, selectedCharacter.name, user.username]);
+  // [N-3] 稳定切片：历史部分（index < len-K，K=SMART_CARD_TAIL_REALTIME_COUNT）冻结于 ref 快照，
+  // 仅在 会话切换 / 消息数量变化 / 正则脚本集变化 / 生成相位翻转（isGenerating 起止，作为流的
+  // 提交点：发起时尾条清空、结束时写入终稿）时重建；尾部 K 条实时更新。对外输出完整数组，
+  // 但历史元素引用恒定——流式打字机阶段本 memo 依赖（均为原始值）不变 → 直接返回缓存数组引用，
+  // 下游 Message memo 比较器通过、pipelineResult/parseContentSegments/sanitize 零重算。
+  // displayedMessages 经 displayedMessagesRef 读取最新值，禁止整体放入依赖。
+  const smartCardHistoryCacheRef = useRef<{
+    sessionId: string | null;
+    regexScripts: RegexScript[];
+    characterName: string;
+    userName: string;
+    sources: CharacterChatMessage[];
+    mapped: SmartCardChatEntry[];
+  } | null>(null);
+  const smartCardChatMessages = useMemo(() => {
+    const source = displayedMessagesRef.current;
+    const sessionId = selectedSession?.id ?? null;
+    const historyLen = Math.max(0, source.length - SMART_CARD_TAIL_REALTIME_COUNT);
+    const cache = smartCardHistoryCacheRef.current;
+    let historyMapped: SmartCardChatEntry[] | null = null;
+    if (
+      cache
+      && cache.sessionId === sessionId
+      && cache.regexScripts === globalRegexScripts
+      && cache.characterName === selectedCharacter.name
+      && cache.userName === user.username
+      && cache.sources.length === historyLen
+    ) {
+      // 源元素逐位引用比对：捕获同长度的内容编辑（编辑/swipe/图片回写），命中则整体复用快照
+      let refsUnchanged = true;
+      for (let i = 0; i < historyLen; i += 1) {
+        if (cache.sources[i] !== source[i]) {
+          refsUnchanged = false;
+          break;
+        }
+      }
+      if (refsUnchanged) historyMapped = cache.mapped;
+    }
+    if (!historyMapped) {
+      const historySources = source.slice(0, historyLen);
+      historyMapped = historySources.map((item, index) => buildSmartCardChatEntry(item, index, selectedCharacter.name, user.username));
+      smartCardHistoryCacheRef.current = {
+        sessionId,
+        regexScripts: globalRegexScripts,
+        characterName: selectedCharacter.name,
+        userName: user.username,
+        sources: historySources,
+        mapped: historyMapped,
+      };
+    }
+    const tail: SmartCardChatEntry[] = [];
+    for (let i = historyLen; i < source.length; i += 1) {
+      tail.push(buildSmartCardChatEntry(source[i], i, selectedCharacter.name, user.username));
+    }
+    return [...historyMapped, ...tail];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayedMessages.length, selectedSession?.id, isGenerating, globalRegexScripts, selectedCharacter.name, user.username, sessionVisualSnapshot]);
 
   const totalMsgCount = displayedMessages.length;
 

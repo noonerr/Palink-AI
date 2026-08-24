@@ -597,6 +597,54 @@ function FramelessContent({ segments, streaming, markdownComponents }: {
   );
 };
 
+// [N-12] 出视口智能卡休眠：智能卡容器外包一层 IntersectionObserver（rootMargin 一屏缓冲）。
+// 出视口 → 记录容器当前 offsetHeight → 卸载卡片（iframe 随之卸载，释放内存与合成层开销）
+// → 渲染同高占位 div 防止滚动跳动；重新入视口 → 按原内容恢复渲染（srcDoc 重挂载）。
+// 仅包裹智能卡分支；普通文本/图片消息不参与。休眠状态不持久化（刷新即全部恢复）；
+// 消毒在上游 pipelineResult 已完成，此处只做挂载/卸载，与 N-1 不冲突。
+// Observer 实例随组件卸载 disconnect（对齐 CodeBlock timer 清理模式）。
+function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [dormant, setDormant] = useState(false);
+  const [dormantHeight, setDormantHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    // rootMargin 一屏缓冲：上下各扩一个视口高度，快速滚动时提前唤醒/延迟休眠
+    const buffer = Math.max(window.innerHeight || 0, 480);
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          setDormant(false);
+        } else {
+          const measured = el.offsetHeight > 0
+            ? el.offsetHeight
+            : Math.round(entry.boundingClientRect.height);
+          setDormantHeight(measured > 0 ? measured : null);
+          setDormant(true);
+        }
+      }
+    }, { rootMargin: `${buffer}px 0px ${buffer}px 0px` });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full"
+      data-palink-card-dormancy={dormant ? 'sleeping' : 'awake'}
+    >
+      {dormant ? (
+        <div aria-hidden="true" style={{ height: dormantHeight != null ? `${dormantHeight}px` : undefined }} />
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
 function MessageInner({
   message,
   userAvatar: _userAvatar,
@@ -796,7 +844,14 @@ function MessageInner({
           false,
           typeof messageIndex === 'number' ? messageIndex : undefined
         );
-        return { kind: 'html-display' as const, content: html, markdownContent: html };
+        return {
+          kind: 'html-display' as const,
+          content: html,
+          markdownContent: html,
+          // [N-3] 此分支渲染走 InlineHtmlRenderer（内部自行消毒），且下方 ST 兼容内联分支
+          // 要求 !useNativeStRendering 不可达；此处恒空占位，统一 memo 返回形状
+          stCompatSanitizedHtml: '',
+        };
       }
     }
 
@@ -833,7 +888,10 @@ function MessageInner({
       chatMessages: _chatMessages as any,
     });
 
-    return result;
+    // [N-3] sanitizeStCompatHtml（DOMPurify）从 render 体移入本 memo：仅随 content/正则脚本集
+    // 等输入重算。上游 smartCardChatMessages 引用稳定后，流式期间历史消息不会重入本 memo，
+    // 消毒不再每帧裸跑；render 体只读 stCompatSanitizedHtml。
+    return { ...result, stCompatSanitizedHtml: sanitizeStCompatHtml(result.content || displayContent) };
   }, [isCharacterChat, isUser, displayContent, useNativeStRendering, characterName, _userName, messageIndex, _totalMessages, streaming, isLast, _globalRegexScripts, _characterExtensions, _characterPresetData, _chatMessages, formatterRevision, hasStatusBarScript]);
 
   // [FULLSCREEN-ADAPT] 全屏界面检测：smart-card 内容若为「开局界面/星空启动器」等界面文档
@@ -1285,37 +1343,41 @@ function MessageInner({
               ) : isCharacterChat && !isUser && !useNativeStRendering && isHtmlOrCard && (pipelineResult?.kind !== 'smart-card' || isGreetingInlineHtml) ? (
                 <div
                   className="markdown-content mes_text w-full break-words overflow-wrap-anywhere"
-                  dangerouslySetInnerHTML={{ __html: sanitizeStCompatHtml(pipelineResult?.content || displayContent) }}
+                  // [N-3] 只读 pipelineResult.stCompatSanitizedHtml（已在 pipelineResult useMemo 内消毒）
+                  dangerouslySetInnerHTML={{ __html: pipelineResult ? pipelineResult.stCompatSanitizedHtml : '' }}
                 />
               ) : pipelineResult?.kind === 'smart-card' ? (
-                <SmartCardComponent
-                  content={pipelineResult.content}
-                  onAction={onSmartCardAction}
-                  renderRemaining={(remaining) => (
-                    <div
-                      className="markdown-content mes_text w-full break-words overflow-wrap-anywhere"
-                      dangerouslySetInnerHTML={{ __html: sanitizeStCompatHtml(remaining) }}
-                    />
-                  )}
-                  context={{
-                    // [FULLSCREEN-ADAPT] 不再无条件强制内联：全屏界面文档（开局启动器/星空启动器，
-                    // body{height:100vh} 或 #launcher）允许走沉浸式全屏分支，对齐 ST 原样渲染；
-                    // 状态栏等普通面板仍为 inline（其 HTML 的 position:fixed 装饰层不会再被
-                    // htmlPrefersImmersive 误判为沉浸式）。CharacterCardRenderer 会按内容中每个
-                    // HTML 块独立判定沉浸式/内联，故同一条消息可同时含全屏 launcher 与内联状态栏。
-                    presentationMode: cardAllowsImmersive ? 'immersive-sandbox' : 'inline',
-                    characterId: _characterId ? String(_characterId) : undefined,
-                    characterName,
-                    userName: _userName,
-                    messageId: message.id,
-                    messageContent: displayContent,
-                    firstMes: _characterFirstMes,
-                    alternateGreetings: _characterAlternateGreetings,
-                    sessionId: _sessionId ? String(_sessionId) : undefined,
-                    characterExtensions: _characterExtensions as any,
-                    variables: (message.extra?.variables as any) ?? _sessionVariables ?? { stat_data: {} },
-                  }}
-                />
+                // [N-12] 出视口休眠：卸载卡片 iframe 释放资源，等高占位防跳动，入视口恢复
+                <SmartCardDormancyGate>
+                  <SmartCardComponent
+                    content={pipelineResult.content}
+                    onAction={onSmartCardAction}
+                    renderRemaining={(remaining) => (
+                      <div
+                        className="markdown-content mes_text w-full break-words overflow-wrap-anywhere"
+                        dangerouslySetInnerHTML={{ __html: sanitizeStCompatHtml(remaining) }}
+                      />
+                    )}
+                    context={{
+                      // [FULLSCREEN-ADAPT] 不再无条件强制内联：全屏界面文档（开局启动器/星空启动器，
+                      // body{height:100vh} 或 #launcher）允许走沉浸式全屏分支，对齐 ST 原样渲染；
+                      // 状态栏等普通面板仍为 inline（其 HTML 的 position:fixed 装饰层不会再被
+                      // htmlPrefersImmersive 误判为沉浸式）。CharacterCardRenderer 会按内容中每个
+                      // HTML 块独立判定沉浸式/内联，故同一条消息可同时含全屏 launcher 与内联状态栏。
+                      presentationMode: cardAllowsImmersive ? 'immersive-sandbox' : 'inline',
+                      characterId: _characterId ? String(_characterId) : undefined,
+                      characterName,
+                      userName: _userName,
+                      messageId: message.id,
+                      messageContent: displayContent,
+                      firstMes: _characterFirstMes,
+                      alternateGreetings: _characterAlternateGreetings,
+                      sessionId: _sessionId ? String(_sessionId) : undefined,
+                      characterExtensions: _characterExtensions as any,
+                      variables: (message.extra?.variables as any) ?? _sessionVariables ?? { stat_data: {} },
+                    }}
+                  />
+                </SmartCardDormancyGate>
               ) : pipelineResult && pipelineResult.kind === 'html-display' ? (
                 <InlineHtmlRenderer
                   html={pipelineResult.content}

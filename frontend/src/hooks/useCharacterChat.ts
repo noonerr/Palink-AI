@@ -240,6 +240,20 @@ export function useCharacterChat({
   const streamPendingRef = useRef<{ assistantId: string; content: string; reasoning?: string } | null>(null);
   const messageIndexMapRef = useRef<Map<string, number>>(new Map());
 
+  // [N-9] 会话切换即中止旧流：
+  // - generationEpochRef：代次计数器。发起请求时快照（SSE 用局部 const / WS 存 activeStreamEpochRef），
+  //   用户切换会话时递增使全部在途回调失效；回调入口比对快照 !== 当前值即丢弃（不 setMessages 不 toast）。
+  // - activeStreamEpochRef：WS 共享回调（onDone/onError）无法闭包捕获局部快照，用槽位存当前 WS 代次。
+  // - requestSessionIdRef：本次请求归属的会话 id（规格 P-1 快照语义），供切换守卫识别"流内解析回写"。
+  // - prevSwitchSessionIdRef：上一会话 id（undefined=尚未挂载），跳过首挂载。
+  // - suppressSwitchAbortRef：新会话首聊时后端异步分配 session_id 后回写 setSelectedSession，
+  //   该 null→id 变化不是用户切换，置此标记让 effect 跳过 abort。
+  const generationEpochRef = useRef(0);
+  const activeStreamEpochRef = useRef(0);
+  const requestSessionIdRef = useRef<string | null>(null);
+  const prevSwitchSessionIdRef = useRef<string | null | undefined>(undefined);
+  const suppressSwitchAbortRef = useRef(false);
+
   // PlotLine 阶段推进回调 ref，避免闭包过期且无需修改现有 useCallback 依赖
   const onPlotLineAdvancedRef = useRef(onPlotLineAdvanced);
   onPlotLineAdvancedRef.current = onPlotLineAdvanced;
@@ -349,6 +363,9 @@ export function useCharacterChat({
       scheduleStreamUpdate(assistantId, wsFullContentRef.current, wsFullReasoningRef.current || undefined);
     },
     onDone: (data) => {
+      // [N-9] 代次比对：会话已切走（切换 effect 已递增代次）时丢弃迟到 done，
+      // 防止旧流的收尾写入新会话 state / 弹跨会话提示
+      if (activeStreamEpochRef.current !== generationEpochRef.current) return;
       if (streamRafRef.current !== null) {
         cancelAnimationFrame(streamRafRef.current);
         streamRafRef.current = null;
@@ -493,6 +510,8 @@ export function useCharacterChat({
       onPlotLineAdvancedRef.current?.({ new_stage: newStage, session_id: sessionId });
     },
     onError: (data) => {
+      // [N-9] 代次比对：会话已切走时丢弃迟到 error（不写错误文案、不置错误态）
+      if (activeStreamEpochRef.current !== generationEpochRef.current) return;
       const assistantId = wsAssistantMessageIdRef.current;
       if (assistantId) {
         const errorInfo = AppError.fromStreamError(data.message);
@@ -568,8 +587,12 @@ export function useCharacterChat({
     onUsage: () => {},
     onSessionId: (sessionId) => {
       wsResolvedSessionIdRef.current = sessionId;
+      // [N-9] 流内解析出的会话 id 回写 selectedSession 不属于"用户切换"，
+      // 置 suppress 标记让切换 effect 跳过本次 abort；同时同步请求归属会话
+      requestSessionIdRef.current = sessionId;
       if (!selectedSession && !wsSessionSyncedRef.current) {
         wsSessionSyncedRef.current = true;
+        suppressSwitchAbortRef.current = true;
         const now = new Date().toISOString();
         setSelectedSession({
           id: sessionId,
@@ -598,6 +621,35 @@ export function useCharacterChat({
       }
     };
   }, [selectedCharacterId, wsConnect, wsDisconnect]);
+
+  // [N-9] 会话切换即中止旧流：abort 进行中的 SSE / cancel WS 生成，并复位生成态，
+  // 防止旧流继续扣费、写库、污染新会话视图。首挂载跳过；流内解析回写（suppress 标记）跳过。
+  useEffect(() => {
+    const currentId = selectedSession?.id ?? null;
+    const prevId = prevSwitchSessionIdRef.current;
+    prevSwitchSessionIdRef.current = currentId;
+    if (prevId === undefined || prevId === currentId) return;
+    if (suppressSwitchAbortRef.current) {
+      suppressSwitchAbortRef.current = false;
+      return;
+    }
+    // 递增代次使所有在途回调（SSE 局部快照 / WS 槽位比对）失效
+    generationEpochRef.current += 1;
+    activeStreamEpochRef.current = generationEpochRef.current;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (wsAssistantMessageIdRef.current) {
+      wsSendCancel();
+      wsAssistantMessageIdRef.current = null;
+    }
+    clearGenerationTimers();
+    setIsGenerating(false);
+    setRequestStartTime(null);
+    setTimeoutWarning(false);
+    setRegeneratingMessageIndex(null);
+  }, [selectedSession?.id, clearGenerationTimers, wsSendCancel]);
 
   const handleRegenerate = useCallback(async (messageIndex: number) => {
     if (!selectedCharacter || isGenerating || uploading || messageIndex < 0) return;
@@ -644,6 +696,9 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    // [N-9] 快照本次请求的归属会话与代次；回调入口比对代次，切换后即失效
+    requestSessionIdRef.current = sessionId;
+    const requestEpoch = ++generationEpochRef.current;
     try {
       // Task 7.2: 触发 ST GENERATION_STARTED 事件（带 type，区分 normal/regenerate/continue/swipe）
       const runtime = getGlobalSillyTavernRuntime();
@@ -672,6 +727,8 @@ export function useCharacterChat({
       }, { signal: abortControllerRef.current.signal });
 
       const streamResult = await streamEngineRef.current.sendViaSSE(response, (json) => {
+        // [N-9] 代次比对：会话已切走时丢弃迟到 chunk（不 setMessages 不 toast）
+        if (requestEpoch !== generationEpochRef.current) return;
         // 后端已开始生成：清除超时警告，避免网关响应慢时误报"回复慢"
         if (json.type === 'generation_started') {
           if (timeoutRef.current) {
@@ -769,6 +826,8 @@ export function useCharacterChat({
       await loadSessions(selectedCharacter.id);
       await loadMemoryStats(sessionId);
     } catch (e: any) {
+      // [N-9] 代次比对：切换导致的 abort 不再向 ST runtime 发停止/结束事件、不写错误文案
+      if (requestEpoch !== generationEpochRef.current) return;
       const runtime = getGlobalSillyTavernRuntime();
       if (e.name === 'AbortError') {
         // Task 7.2: 触发 ST GENERATION_STOPPED + GENERATION_ENDED 事件
@@ -844,6 +903,9 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    // [N-9] 快照本次请求的归属会话与代次；回调入口比对代次，切换后即失效
+    requestSessionIdRef.current = sessionId;
+    const requestEpoch = ++generationEpochRef.current;
 
     try {
       // 触发 ST GENERATION_STARTED 事件（type: continue）
@@ -867,6 +929,8 @@ export function useCharacterChat({
       }, { signal: abortControllerRef.current.signal });
 
       const streamResult = await streamEngineRef.current.sendViaSSE(response, (json) => {
+        // [N-9] 代次比对：会话已切走时丢弃迟到 chunk（不 setMessages 不 toast）
+        if (requestEpoch !== generationEpochRef.current) return;
         // 后端已开始生成：清除超时警告（与主发送路径一致）
         if (json.type === 'generation_started') {
           if (timeoutRef.current) {
@@ -947,6 +1011,8 @@ export function useCharacterChat({
 
       await loadMemoryStats(sessionId);
     } catch (e: any) {
+      // [N-9] 代次比对：切换导致的 abort 不再向 ST runtime 发停止/结束事件、不写错误文案
+      if (requestEpoch !== generationEpochRef.current) return;
       const runtime = getGlobalSillyTavernRuntime();
       if (e.name === 'AbortError') {
         runtime?.stopGeneration();
@@ -1068,6 +1134,9 @@ export function useCharacterChat({
     let resolvedSessionId: string | null = (effectiveSession?.id && effectiveSession.id !== '__pending__') ? effectiveSession.id : null;
     let sessionSynced = false;
     const requestSessionId = (effectiveSession?.id && effectiveSession.id !== '__pending__') ? effectiveSession.id : null;
+    // [N-9] 快照本次请求的归属会话与代次；回调入口比对代次，切换后即失效
+    requestSessionIdRef.current = requestSessionId;
+    const requestEpoch = ++generationEpochRef.current;
 
     // Task 18: Apply AI_INPUT regex to the outgoing message before sending to the API.
     // This transforms what the AI sees without altering the chat display (displayContent
@@ -1109,6 +1178,8 @@ export function useCharacterChat({
       wsResolvedSessionIdRef.current = requestSessionId;
       wsSessionSyncedRef.current = false;
       wsHasReceivedDataRef.current = false;
+      // [N-9] WS 共享回调（onDone/onError）通过槽位比对当前代次
+      activeStreamEpochRef.current = requestEpoch;
 
       // WebSocket 路径触发生成开始事件（与 SSE 路径的 runtime.startGeneration 对应）
       const wsRuntime = getGlobalSillyTavernRuntime();
@@ -1195,6 +1266,8 @@ export function useCharacterChat({
       }
 
       const streamResult2 = await streamEngineRef.current.sendViaSSE(response, (json) => {
+        // [N-9] 代次比对：会话已切走时丢弃迟到 chunk（不 setMessages 不 toast）
+        if (requestEpoch !== generationEpochRef.current) return;
         if (!hasReceivedData) {
           hasReceivedData = true;
           setTimeoutWarning(false);
@@ -1260,8 +1333,12 @@ export function useCharacterChat({
 
         if (sessionId) {
           resolvedSessionId = sessionId;
+          // [N-9] 流内解析出的会话 id 回写 selectedSession 不属于"用户切换"，
+          // 置 suppress 标记让切换 effect 跳过本次 abort，并同步请求归属会话
+          requestSessionIdRef.current = sessionId;
           if ((!effectiveSession || effectiveSession.id === '__pending__') && !sessionSynced) {
             sessionSynced = true;
+            suppressSwitchAbortRef.current = true;
             const now = new Date().toISOString();
             setSelectedSession({
               id: sessionId,
@@ -1313,6 +1390,8 @@ export function useCharacterChat({
       }
       return fullContent || null;
     } catch (e: any) {
+      // [N-9] 代次比对：切换导致的 abort 不再向 ST runtime 发停止/结束事件、不置错误态
+      if (requestEpoch !== generationEpochRef.current) return null;
       const runtime = getGlobalSillyTavernRuntime();
       if (e.name === 'AbortError') {
         // Task 7.2: 触发 ST GENERATION_STOPPED + GENERATION_ENDED 事件
