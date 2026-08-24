@@ -53,13 +53,21 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
-### [进行中] 清理批次总案（除 N-8 外全部存量，2026-08-24 spec 就绪，三线并行）
+### [已完成·已验收] 清理批次总案（除 N-8 外全部存量，2026-08-24 三线并行施工 + 当日验收通过）
 - **spec**: `docs/SPEC_清理批次总案_除N8_2026-08-24.md`（互斥矩阵/报告精简格式/统一冻结）
 - **A 线 世界书与示例域**（7 子项）: useProbability 接线（DB列+导入+扫描判定，ST 语义 false=必现）/ mes_example 拆块移植 palink-native / prevent_recursion 语义修正（排除出递归 buffer 而非整条跳过）/ WI 全局设置补接线（world_info_depth 对齐 ST=2 等）/ 百分比预算基数传真实 max_context / V3 卡独立 jailbreak 消费 / creator_notes 退出 prompt——修复 agent
 - **B 线 前端卫生**（5 子项）: N-19 构建期 drop_console+重灾区手清(VAR-DBG) / N-20 Popup 轮询改事件 / N-21 timer 清理对齐 / N-22 postMessage origin 收紧 / A-5 symbols 键名对齐——修复 agent
 - **C 线 后端安全卫生与二期尾巴**（7 子项）: PATCH/swipe 记忆同步钩子(message_id 二期) / N-13 四xx文案×15 / N-15 日志脱敏 sk-pk / N-16 上传上限 / N-17 无limit限幅(silly_tavern.py 一处顺延) / N-18 prod 弱密码阻断 / 容器 pytest 对齐(compose 只读挂载 frontend + skipif 候选路径)——审计线或修复 agent
 - **待拍板**: vectorized 孤岛接线 or 删除；N-8 止血 token 有效期数值
 - **基线**: 952 passed / 0 failed 全绿；三线禁改矩阵见 spec §0
+- **验收记录（2026-08-24 审计线独立复核）**:
+  - A 线 7 项 diff 核验全合格（A1 None 回退 True 保旧数据行为 + RNG 短路等价注释；A4 附带修正导入 scanDepth 强写 4 使全局深度失效的隐藏缺陷；A6 V2 拷贝去重守卫防 PHI 双注入）；test_batch_a 24 例
+  - B 线 5 项核验合格；甄别合理（VAR-DBG 实际分布在 CharacterChat×1+SillyTavernCompatRuntime×5 而非派单所写文件，按实况清除；PANEL-DBG 同类脚手架连带删除）
+  - C 线 7 项核验合格；C1 swipe 切换记忆镜像语义与编辑钩子一致；C7 compose 挂载路径纠偏（./frontend 相对 compose 所在目录）
+  - 终态：宿主 pytest **996 passed / 0 failed 全绿**（952+44 新增精确勾稽）；tsc 干净；统一 build 成功
+- **⚠️ formatting.ts 第二次未授权回退已拦截**: 与 hotfix 批次同模式（F-1 LaTeX 修复整文件被旧版覆写，-81 行）。已再次 git checkout 还原。**根因对策落地**：新增前端源码契约守卫 frontend/src/lib/__tests__/formatting-katex-contract.test.ts（3 例：renderMathInHtml 存在/MathML 白名单/管线调用先于消毒），此后任何回退立即红灯
+- **顺延项（下批处理）**: silly_tavern.py:1425 无 limit 一处（本轮 silly_tavern.py 全员禁改）；character_ext 导入导出 f-string 宽异常站 3 处（5237/5303/5336，N-13 同类）；silly_tavern.py 导出侧 useProbability 为 probability<100 推导近似（A1 只读未改）
+- **施工过程披露**: C 线 N-13 在制品曾致 image_generation.py 缺 import 使 app.api 不可导入，A 线机械解堵（补 stdlib import）——跨线协作互救案例；B 线遭遇并行编辑竞态改动丢失，tsc 抓到后重放修复
 
 ### [已完成·已验收] 性能与体验批次 N-3/N-9/N-12（2026-08-24 施工 + 当日验收通过）
 - **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`（与安全批三线并行零冲突）
