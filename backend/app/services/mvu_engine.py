@@ -715,8 +715,18 @@ def _parse_js_object_literal(raw: str) -> dict | None:
     except (json.JSONDecodeError, ValueError):
         pass
     # 修复：给无引号的 key 加双引号
-    # 匹配 { key: 或 , key: （key 不带引号）
-    fixed = re.sub(r'([{,]\s*)([A-Za-z_$][\w$]*)\s*:', r'\1"\2":', raw)
+    # 匹配 { key: 或 , key: （key 不带引号；key 允许中文等 Unicode 词字符——
+    # 此前 [A-Za-z_$][\w$]* 不认中文 key，prefault({ 中文名: ... }) 解析失败
+    # 静默返回 {} 导致显式覆盖丢失，2026-08-24 存量失败根因）
+    fixed = re.sub(r'([{,]\s*)([A-Za-z_$\u4e00-\u9fff][\w$\u4e00-\u9fff]*)\s*:', r'\1"\2":', raw)
+    # 修复二：单引号字符串值 → 双引号（JS 对象字面量常用单引号，如
+    # prefault({ 名字: '覆盖名' })——只修 key 不修 value 时 json.loads 仍失败，
+    # 同样静默返回 {} 导致覆盖丢失）
+    fixed = re.sub(
+        r"'([^'\\]*(?:\\.[^'\\]*)*)'",
+        lambda m: '"' + m.group(1).replace('"', '\\"') + '"',
+        fixed,
+    )
     # 去尾逗号
     fixed = re.sub(r",\s*}", "}", fixed)
     try:

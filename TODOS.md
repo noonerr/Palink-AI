@@ -31,6 +31,14 @@
 - **⚠️ 部署知识（重要）**: frontend 服务是 `./frontend/dist:/usr/share/nginx/html:ro` bind mount——**重建 frontend 镜像不更新前端**；更新前端唯一正确方式 = 本地 `cd frontend && npm run build`（卷直挂即时生效）。本次验收发现修复 agent 未跑本地 build 导致前端改动未上线，已补构建并 HTTP 冒烟通过（SettingsView chunk 新 hash 2WpH_asK 在线服务正常）。另注意：ripgrep/Grep 工具对 minified 长行 JS 有 binary 误判，搜 dist 产物请用 PowerShell Select-String
 - **施工记录（2026-08-24 修复 agent）**: R1 已完成——character_ext.py `_run_action_stream` finally 单点守卫 + 前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast（解析器原本不识别该事件）；新增 `backend/tests/test_action_stream_no_content_guard.py` 3 例（TDD 先红后绿）；全量回归 905 passed / 4 存量失败零新增；tsc 干净。未 commit，待审计线按 §5 验收
 
+### [进行中] 性能与体验批次（N-3/N-9/N-12，与安全第二批并行零冲突，2026-08-24 spec 就绪）
+- **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`——文件级零重叠设计（禁改 N-6/7 占用的 8 个文件），纯前端后端零改动
+- **P-1[N-9]**: 切换会话即中止旧流（abort + wsSendCancel + 生成态复位）+ 回调代次比对双保险
+- **P-2[N-3]**: 三重 memo 击穿修复——smartCardChatMessages 稳定切片（历史冻结快照+尾部 K 条实时）/ sanitizeStCompatHtml 入 useMemo / memo 比较器维持现状
+- **P-3[N-12]**: 出视口智能卡 iframe 休眠（IntersectionObserver + 等高占位防跳动）
+- **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
+- **派单**: 与 N-6/N-7 同步交修复 agent
+
 ### [进行中] 安全加固第二批（N-6/N-7/N-8，2026-08-24 spec 就绪）
 - **spec**: `docs/SPEC_安全加固第二批_N6_N7_N8_2026-08-24.md`
 - **N-6**: openai_compat service_key 分支的 X-Palink-User-Id 改 HMAC-SHA256 签名头校验（未签名视为伪造忽略落 admin 回退；sidecar 注入侧同步）——派修复 agent

@@ -5,8 +5,9 @@ import sys
 import os
 import pytest
 
-# 确保能 import
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+# 确保能 import（backend 目录——此前误插仓库根，单独运行本文件时
+# "app is not a package" 收集失败，全量运行靠其他测试文件先行注入才侥幸通过）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.mvu_engine import (
     extract_update_variable_blocks,
