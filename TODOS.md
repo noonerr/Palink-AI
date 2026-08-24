@@ -31,6 +31,14 @@
 - **⚠️ 部署知识（重要）**: frontend 服务是 `./frontend/dist:/usr/share/nginx/html:ro` bind mount——**重建 frontend 镜像不更新前端**；更新前端唯一正确方式 = 本地 `cd frontend && npm run build`（卷直挂即时生效）。本次验收发现修复 agent 未跑本地 build 导致前端改动未上线，已补构建并 HTTP 冒烟通过（SettingsView chunk 新 hash 2WpH_asK 在线服务正常）。另注意：ripgrep/Grep 工具对 minified 长行 JS 有 binary 误判，搜 dist 产物请用 PowerShell Select-String
 - **施工记录（2026-08-24 修复 agent）**: R1 已完成——character_ext.py `_run_action_stream` finally 单点守卫 + 前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast（解析器原本不识别该事件）；新增 `backend/tests/test_action_stream_no_content_guard.py` 3 例（TDD 先红后绿）；全量回归 905 passed / 4 存量失败零新增；tsc 干净。未 commit，待审计线按 §5 验收
 
+### [已完成·已验收] 安全加固第二批 N-6/N-7（2026-08-24 施工 + 当日验收通过）
+- **spec**: `docs/SPEC_安全加固第二批_N6_N7_N8_2026-08-24.md`（N-8 仅设计确认零代码）
+- **N-6 验收记录**: security.py `sign/verify_service_user_id`（HMAC-SHA256 + compare_digest 防时序）+ openai_compat 消费侧（伪造→warning 忽略落 admin 回退，不 403 无探测信号）+ sidecar 注入侧三处生产者全配对 Sig 头（silly_tavern.py auth 响应/后端→ST 代理 + nginx.conf auth_request_set+proxy_set_header）——全链路头名统一 X-Palink-User-Id/-Sig 实证一致。test_n6_service_user_sig.py 8 例
+- **N-7 验收记录**: POST /api/uploads/token 签发 upload-scope 短令牌（claims 仅 sub/scope/exp:300s，无 jti 无长效）；_verify_upload_access 强制 scope=="upload"（主 JWT 从此不得出现在附件 URL），N-14 黑名单检查原样保留；uploadUrls.ts 整文件重写（缓存+in-flight 去重+提前 100s 刷新+失败退裸路径）；12 调用点全适配（AsyncUploadImg/AsyncUploadPreview/resolvedImageSrc 等）；MarkdownRenderer `<a href>` 永不带 token（点击复制路径）。test_n7_upload_scope_token.py 7 例 + 前端契约 upload-url-contract.test.ts 15 例
+- **审计线独立复验**: 新测试定向 14 过；宿主全量 **952 passed / 0 failed 全绿**（历史性时刻——三契约漂移亦被测试归零批并行清偿）；tsc 干净；后端容器重建 healthy，镜像内五项运行时验证全过（含 create_upload_token 解码 scope/jti 断言）
+- **影响面确认**: 存量外发的旧附件 URL 部署后即 401（scope 强制）=修复目的；前端渲染链路动态重构造不受影响
+- ⏸ 前端 dist 统一构建待性能批落地后执行（避免构建竞态）
+
 ### [进行中] 测试归零批次（三契约漂移甄别 + U-3 端点级回归，2026-08-24 spec 就绪）
 - **spec**: `docs/SPEC_测试归零批次_三契约漂移与U3_2026-08-24.md`——与安全批/性能批**三线并行**（禁改清单九文件互斥），主战场 backend/tests/
 - **T-1**: 三失败 A/B/C 决策树甄别——F1 p1_fixes（倾向断言未跟随 _p1-split.mjs 机械拆分）/ F2 st_contract（倾向 bridge.js 白名单真缺 20 端点，补前抽查端点存在性）/ F3 st_plugin_import（需 git 历史对照甄别）
@@ -44,6 +52,15 @@
 - **P-3[N-12]**: 出视口智能卡 iframe 休眠（IntersectionObserver + 等高占位防跳动）
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
+
+### [已完成·已验收] 性能与体验批次 N-3/N-9/N-12（2026-08-24 施工 + 当日验收通过）
+- **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`（与安全批三线并行零冲突）
+- **验收记录**: 纯前端 3 文件 284+/75-，禁改清单未触碰；N-9 代次守卫 25 处布点核验（三条 SSE 路径+WS 槽位双轨+suppress 豁免流内回写）；N-3 sanitize 入 memo + render 只读 stCompatSanitizedHtml；N-12 SmartCardDormancyGate 一屏缓冲等高占位；tsc 干净；统一构建产物 palink-card-dormancy 在位
+- **施工亮点**: isGenerating 相位翻转作快照提交点（防插件上下文永久停在流起始值）；O(N) 逐位引用比对捕获同长度编辑
+
+### [已完成·已验收] 测试归零批次（2026-08-24 施工 + 当日达成全绿）
+- **成果**: 宿主全量 pytest **952 passed / 0 failed 历史性全绿**（F1 断言跟随 _p1-split 拆分【B】/ F2 bridge.js 白名单补 20 端点【A】/ F3 settings.html 断言更新【B】+ U-3 封存端点级回归 PUT 重定向/GET 不回写两场景）
+- **意义**: 此后所有批次验收不再背存量失败豁免清单
 
 ### [进行中] 安全加固第二批（N-6/N-7/N-8，2026-08-24 spec 就绪）
 - **spec**: `docs/SPEC_安全加固第二批_N6_N7_N8_2026-08-24.md`
