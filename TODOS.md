@@ -31,6 +31,12 @@
 - **⚠️ 部署知识（重要）**: frontend 服务是 `./frontend/dist:/usr/share/nginx/html:ro` bind mount——**重建 frontend 镜像不更新前端**；更新前端唯一正确方式 = 本地 `cd frontend && npm run build`（卷直挂即时生效）。本次验收发现修复 agent 未跑本地 build 导致前端改动未上线，已补构建并 HTTP 冒烟通过（SettingsView chunk 新 hash 2WpH_asK 在线服务正常）。另注意：ripgrep/Grep 工具对 minified 长行 JS 有 binary 误判，搜 dist 产物请用 PowerShell Select-String
 - **施工记录（2026-08-24 修复 agent）**: R1 已完成——character_ext.py `_run_action_stream` finally 单点守卫 + 前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast（解析器原本不识别该事件）；新增 `backend/tests/test_action_stream_no_content_guard.py` 3 例（TDD 先红后绿）；全量回归 905 passed / 4 存量失败零新增；tsc 干净。未 commit，待审计线按 §5 验收
 
+### [进行中] 测试归零批次（三契约漂移甄别 + U-3 端点级回归，2026-08-24 spec 就绪）
+- **spec**: `docs/SPEC_测试归零批次_三契约漂移与U3_2026-08-24.md`——与安全批/性能批**三线并行**（禁改清单九文件互斥），主战场 backend/tests/
+- **T-1**: 三失败 A/B/C 决策树甄别——F1 p1_fixes（倾向断言未跟随 _p1-split.mjs 机械拆分）/ F2 st_contract（倾向 bridge.js 白名单真缺 20 端点，补前抽查端点存在性）/ F3 st_plugin_import（需 git 历史对照甄别）
+- **T-2**: U-3 封存端点级回归——PUT 落库重定向 / GET 报告不回写两场景 DB fixture 测试
+- **目标**: 宿主全量 0 failed 全绿；派修复 agent
+
 ### [进行中] 性能与体验批次（N-3/N-9/N-12，与安全第二批并行零冲突，2026-08-24 spec 就绪）
 - **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`——文件级零重叠设计（禁改 N-6/7 占用的 8 个文件），纯前端后端零改动
 - **P-1[N-9]**: 切换会话即中止旧流（abort + wsSendCancel + 生成态复位）+ 回调代次比对双保险
