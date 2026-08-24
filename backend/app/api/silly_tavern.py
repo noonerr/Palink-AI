@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
 from ..core.cache import invalidate_user_cache
+from ..core.security import sign_service_user_id
 from ..core.token_blacklist import is_blacklisted
 from ..character_card import (
     convert_character_to_chara_card,
@@ -736,6 +737,10 @@ def _st_native_session_payload(request: Request) -> dict[str, Any]:
 def _st_native_auth_response(user: User, session_payload: Optional[dict[str, Any]] = None) -> Response:
     response = Response(status_code=204)
     response.headers["X-Palink-User-Id"] = str(user.id)
+    # [N-6] 与 X-Palink-User-Id 配套的 HMAC 签名头：nginx auth_request_set
+    # 捕获后随代理请求下发，openai_compat 侧按 verify_service_user_id 校验。
+    if str(app_settings.ST_NATIVE_SERVICE_KEY or "").strip():
+        response.headers["X-Palink-User-Sig"] = sign_service_user_id(user.id)
     response.headers["X-Palink-Username"] = quote(str(user.username or ""), safe="")
     response.headers["X-Palink-Is-Admin"] = "1" if str(user.role or "").lower() == "admin" else "0"
     payload = session_payload or {}
@@ -4791,6 +4796,10 @@ def _build_proxy_request_headers(
             continue
         headers[key] = value
     headers["X-Palink-User-Id"] = str(user.id)
+    # [N-6] 与 X-Palink-User-Id 配套的 HMAC 签名头（openai_compat 校验用）
+    service_key = str(app_settings.ST_NATIVE_SERVICE_KEY or "").strip()
+    if service_key:
+        headers["X-Palink-User-Sig"] = sign_service_user_id(user.id)
     headers["X-Palink-Username"] = quote(str(user.username or ""), safe="")
     headers["X-Palink-Is-Admin"] = "1" if str(user.role or "").lower() == "admin" else "0"
     header_map = {
@@ -4803,7 +4812,6 @@ def _build_proxy_request_headers(
         value = str(session_payload.get(key) or "").strip()
         if value:
             headers[header] = quote(value, safe="")
-    service_key = str(app_settings.ST_NATIVE_SERVICE_KEY or "").strip()
     if service_key:
         headers["Authorization"] = f"Bearer {service_key}"
     return headers

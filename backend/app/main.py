@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import Depends, FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import text
@@ -18,7 +18,9 @@ except ImportError:
 from .core import settings, engine, run_migrations, ensure_runtime_schema_compat, get_password_hash, verify_password, SessionLocal
 from .core.exceptions import ServiceError
 from .core.log_sanitizer import setup_sanitized_logging
+from .core.security import UPLOAD_TOKEN_TTL_SECONDS, create_upload_token
 from .api import api_router
+from .api.dependencies import get_current_user
 from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
 
@@ -331,6 +333,10 @@ async def _verify_upload_access(
         _jti = payload.get("jti")
         if _jti and is_blacklisted(_jti):
             raise HTTPException(status_code=401, detail="Token has been revoked")
+        # [N-7] 附件凭据必须是 upload-scope 短时效令牌（POST /api/uploads/token
+        # 签发，5 分钟过期）。主 JWT 无 scope claim，从此不得出现在附件 URL。
+        if payload.get("scope") != "upload":
+            raise HTTPException(status_code=401, detail="Invalid upload token scope")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -343,6 +349,15 @@ async def _verify_upload_access(
         return user
     finally:
         db.close()
+
+
+@app.post("/api/uploads/token")
+async def issue_upload_access_token(user: User = Depends(get_current_user)):
+    """[N-7] 为已认证用户签发附件专用 upload-scope 短时效令牌。
+
+    前端渲染附件 URL 前先取此短令牌拼 query，主 JWT 不再进入 URL。
+    """
+    return {"token": create_upload_token(user.username), "expires_in": UPLOAD_TOKEN_TTL_SECONDS}
 
 
 def _safe_serve_upload(file_path: str, user_id: int) -> FileResponse:

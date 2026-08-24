@@ -6,9 +6,30 @@ import { Button } from '@/components/ui/button';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
-import { appendUploadToken } from '@/lib/uploadUrls';
+import { getUploadUrl } from '@/lib/uploadUrls';
 import { api } from '@/services/api';
 import type { ImageGenerationConfig, ImageGenerationProvider } from '@/types/imageGeneration';
+
+/** N-7: 上传路径先异步换短时效令牌再渲染（主 JWT 不进入 URL）。 */
+function AsyncUploadPreview({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolvedSrc(src);
+    if (!src) return;
+    getUploadUrl(src)
+      .then((url) => {
+        if (!cancelled) setResolvedSrc(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  return <img src={resolvedSrc} alt={alt} className={className} />;
+}
 
 interface ImageGenerationManagementTabProps {
   isAdmin: boolean;
@@ -296,7 +317,7 @@ export function ImageGenerationManagementTab({ isAdmin }: ImageGenerationManagem
             {testing ? '生成中...' : '生成测试图片'}
           </Button>
           {previewUrl && (
-            <img src={appendUploadToken(previewUrl)} alt="图像生成预览" className="max-w-full max-h-96 rounded-xl border object-contain" />
+            <AsyncUploadPreview src={previewUrl} alt="图像生成预览" className="max-w-full max-h-96 rounded-xl border object-contain" />
           )}
         </GlassCard>
       </div>

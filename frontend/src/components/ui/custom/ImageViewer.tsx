@@ -1,6 +1,6 @@
-﻿import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { X, ZoomIn, ZoomOut, ChevronLeft, ChevronRight } from 'lucide-react';
-import { appendUploadToken } from '@/lib/uploadUrls';
+import { getUploadUrl } from '@/lib/uploadUrls';
 import { cn } from '@/lib/utils';
 
 interface ImageItem {
@@ -12,6 +12,50 @@ interface ImageViewerProps {
   images: ImageItem[];
   onFullscreen?: (index: number) => void;
   compact?: boolean;
+}
+
+/** N-7: 上传路径先异步换短时效令牌再渲染（主 JWT 不进入 URL）。 */
+function AsyncUploadImg({
+  src,
+  alt,
+  className,
+  style,
+  draggable,
+  loading,
+}: {
+  src: string | undefined;
+  alt: string;
+  className?: string;
+  style?: React.CSSProperties;
+  draggable?: boolean;
+  loading?: 'lazy' | 'eager';
+}) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolvedSrc(src);
+    if (!src) return;
+    getUploadUrl(src)
+      .then((url) => {
+        if (!cancelled) setResolvedSrc(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  return (
+    <img
+      src={resolvedSrc}
+      alt={alt}
+      className={className}
+      style={style}
+      draggable={draggable}
+      loading={loading}
+    />
+  );
 }
 
 export function ImageThumbnails({ images, onFullscreen, compact = false }: ImageViewerProps) {
@@ -32,8 +76,8 @@ export function ImageThumbnails({ images, onFullscreen, compact = false }: Image
           )}
           onClick={() => onFullscreen?.(idx)}
         >
-          <img
-            src={appendUploadToken(img.url)}
+          <AsyncUploadImg
+            src={img.url}
             alt={img.name || `图片 ${idx + 1}`}
             className="w-full h-full object-cover"
             loading="lazy"
@@ -161,8 +205,8 @@ export function FullscreenImageViewer({
       )}
 
       <div className="max-w-[90vw] max-h-[85vh] flex items-center justify-center overflow-auto">
-        <img
-          src={currentImage ? appendUploadToken(currentImage.url) : undefined}
+        <AsyncUploadImg
+          src={currentImage?.url}
           alt={currentImage?.name || `图片 ${currentIndex + 1}`}
           className="max-w-full max-h-[85vh] object-contain transition-transform duration-200"
           style={{ transform: `scale(${zoom})` }}

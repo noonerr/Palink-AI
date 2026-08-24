@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,7 +8,7 @@ import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import { encodeStyleTags, decodeStyleTags } from '@/lib/sillytavern/formatting';
 import { cn } from '@/lib/utils';
-import { appendUploadToken } from '@/lib/uploadUrls';
+import { bareUploadHref, getUploadUrl, isUploadPath } from '@/lib/uploadUrls';
 import { CodeBlock } from './CodeBlock';
 import { CharacterCardRenderer, looksLikeSmartCardHtml } from './CharacterCardRenderer';
 
@@ -27,6 +27,70 @@ function ensureKatexCss() {
 
 const REMARK_PLUGINS = [remarkGfm, remarkMath];
 const REHYPE_PLUGINS = [rehypeRaw, rehypeKatex];
+
+/** N-7: Markdown 图片先异步换短时效令牌再渲染（主 JWT 不进入 URL）。 */
+function AsyncMarkdownImage({
+  rawSrc,
+  alt,
+  renderImage,
+  imgProps,
+}: {
+  rawSrc: string;
+  alt: string;
+  renderImage?: (src: string, alt: string) => React.ReactNode;
+  imgProps: Record<string, unknown>;
+}) {
+  const [imageSrc, setImageSrc] = useState(rawSrc);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageSrc(rawSrc);
+    if (!rawSrc) return;
+    getUploadUrl(rawSrc)
+      .then((url) => {
+        if (!cancelled) setImageSrc(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [rawSrc]);
+
+  if (renderImage) {
+    return <>{renderImage(imageSrc, alt)}</>;
+  }
+
+  const fallbackHref = bareUploadHref(rawSrc);
+  return (
+    <img
+      src={imageSrc}
+      alt={alt}
+      className="my-2 max-w-full rounded-xl border border-border/50"
+      loading="lazy"
+      onError={(e) => {
+        const target = e.target as HTMLImageElement;
+        target.style.display = 'none';
+        const parent = target.parentElement;
+        const hasFallback = parent
+          ? Array.from(parent.querySelectorAll<HTMLAnchorElement>('a[data-palink-image-fallback="true"]'))
+              .some((link) => link.getAttribute('href') === fallbackHref)
+          : false;
+        if (parent && !hasFallback) {
+          // N-7: 回退链接只放去 token 的裸路径，DOM 中不出现任何 token=
+          const fallback = document.createElement('a');
+          fallback.href = fallbackHref;
+          fallback.target = '_blank';
+          fallback.rel = 'noopener noreferrer nofollow';
+          fallback.dataset.palinkImageFallback = 'true';
+          fallback.textContent = rawSrc;
+          fallback.className = 'break-words underline decoration-border underline-offset-2 transition-colors hover:text-primary text-purple-700 dark:text-purple-300 italic';
+          parent.appendChild(fallback);
+        }
+      }}
+      {...imgProps}
+    />
+  );
+}
 
 const HTML_TAG_PATTERN = /<[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?\/?>/;
 const MARKDOWN_PATTERN = /(```|`[^`\n]+`|!\[[^\]]*]\([^)]+\)|\[[^\]]+]\([^)]+\)|^\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)|[*_~]{1,3}[^*_~]+[*_~]{1,3}|\|[^\n]*\||\$\$?)/m;
@@ -155,7 +219,10 @@ function MarkdownContentRenderer({
       <p className="break-words overflow-wrap-anywhere" {...props}>{children}</p>
     ),
     a: ({ node: _node, href, children, ...props }) => {
-      const safeHref = typeof href === 'string' ? appendUploadToken(href) : '';
+      // N-7: <a href> 永不携带 token——上传路径只放去 token 的裸路径，
+      // 点击改为复制原始路径（外部链接行为不变）。
+      const safeHref = typeof href === 'string' ? bareUploadHref(href) : '';
+      const isUploadLink = typeof href === 'string' && isUploadPath(href);
       return (
         <a
           href={safeHref}
@@ -163,6 +230,18 @@ function MarkdownContentRenderer({
           rel="noopener noreferrer nofollow"
           className="break-words underline decoration-border underline-offset-2 transition-colors hover:text-primary"
           {...props}
+          onClick={(e) => {
+            if (isUploadLink) {
+              e.preventDefault();
+              try {
+                void navigator.clipboard?.writeText(safeHref);
+              } catch {
+                /* 剪贴板不可用时静默忽略 */
+              }
+              return;
+            }
+            (props as { onClick?: React.MouseEventHandler<HTMLAnchorElement> }).onClick?.(e);
+          }}
         >
           {children}
         </a>
@@ -199,39 +278,14 @@ function MarkdownContentRenderer({
     },
     img: ({ node: _node, src, alt, ...props }) => {
       const rawSrc = typeof src === 'string' ? src : '';
-      const imageSrc = appendUploadToken(rawSrc);
       const imageAlt = typeof alt === 'string' ? alt : 'image';
 
-      if (renderImage) {
-        return <>{renderImage(imageSrc, imageAlt)}</>;
-      }
-
       return (
-        <img
-          src={imageSrc}
+        <AsyncMarkdownImage
+          rawSrc={rawSrc}
           alt={imageAlt}
-          className="my-2 max-w-full rounded-xl border border-border/50"
-          loading="lazy"
-          onError={(e) => {
-            const target = e.target as HTMLImageElement;
-            target.style.display = 'none';
-            const parent = target.parentElement;
-            const hasFallback = parent
-              ? Array.from(parent.querySelectorAll<HTMLAnchorElement>('a[data-palink-image-fallback="true"]'))
-                  .some((link) => link.getAttribute('href') === imageSrc)
-              : false;
-            if (parent && !hasFallback) {
-              const fallback = document.createElement('a');
-              fallback.href = imageSrc;
-              fallback.target = '_blank';
-              fallback.rel = 'noopener noreferrer nofollow';
-              fallback.dataset.palinkImageFallback = 'true';
-              fallback.textContent = rawSrc;
-              fallback.className = 'break-words underline decoration-border underline-offset-2 transition-colors hover:text-primary text-purple-700 dark:text-purple-300 italic';
-              parent.appendChild(fallback);
-            }
-          }}
-          {...props}
+          renderImage={renderImage}
+          imgProps={props as Record<string, unknown>}
         />
       );
     },

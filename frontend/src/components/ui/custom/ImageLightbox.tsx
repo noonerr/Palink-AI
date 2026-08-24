@@ -1,6 +1,6 @@
-﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download } from 'lucide-react';
-import { appendUploadToken } from '@/lib/uploadUrls';
+import { getUploadUrl } from '@/lib/uploadUrls';
 
 interface ImageLightboxProps {
   images: string[];
@@ -24,6 +24,24 @@ export function ImageLightbox({
   const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const downloadAbortRef = useRef<AbortController | null>(null);
+
+  // N-7: 上传路径先异步换短时效令牌再渲染（主 JWT 不进入 URL）
+  const [resolvedImageSrc, setResolvedImageSrc] = useState<string>(images[activeIndex] ?? '');
+
+  useEffect(() => {
+    let cancelled = false;
+    const rawSrc = images[activeIndex] ?? '';
+    setResolvedImageSrc(rawSrc);
+    if (!rawSrc) return;
+    getUploadUrl(rawSrc)
+      .then((url) => {
+        if (!cancelled) setResolvedImageSrc(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeIndex, images]);
 
   useEffect(() => {
     const maxIndex = Math.max(images.length - 1, 0);
@@ -107,7 +125,7 @@ export function ImageLightbox({
     let objectUrl: string | null = null;
     setDownloading(true);
     try {
-      const response = await fetch(appendUploadToken(images[activeIndex]), {
+      const response = await fetch(await getUploadUrl(images[activeIndex]), {
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -161,8 +179,6 @@ export function ImageLightbox({
   }, [touchStart, navigatePrev, navigateNext]);
 
   if (!isOpen || images.length === 0) return null;
-
-  const currentImage = images[activeIndex];
 
   return (
     <div
@@ -227,7 +243,7 @@ export function ImageLightbox({
         </div>
 
         <img
-          src={appendUploadToken(currentImage)}
+          src={resolvedImageSrc}
           alt={`Image ${activeIndex + 1} of ${images.length}`}
           className={`lightbox-image ${isZoomed ? 'zoomed' : ''}`}
           onClick={toggleZoom}

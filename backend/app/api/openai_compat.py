@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..core import get_db, settings
 from ..core.database import SessionLocal
 from ..core.exceptions import ServiceError
+from ..core.security import verify_service_user_id
 from ..models import User
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
 from ..services.provider_registry import get_providers
@@ -98,24 +99,37 @@ async def get_openai_compat_user(request: Request, db: Session = Depends(get_db)
     if service_key and token == service_key:
         # M-4 修复: service key 认证后优先按 ST sidecar 注入的 X-Palink-User-Id
         # 解析真实用户，避免多 ST 用户共用一个后端时全部固定以 admin 身份执行。
-        # ST sidecar（PALINK_ST_NATIVE_USER_HEADER_ENABLED）转发时携带该头；
-        # 未携带时回退 admin（向后兼容直连调用）。
+        # [N-6] 该头必须同时携带 HMAC 签名头 X-Palink-User-Sig（见
+        # security.sign_service_user_id）；签名不符视为伪造——忽略该头并记
+        # warning，落入无头回退路径（admin），不返回 403 以免提供探测信号。
         header_user_id = (
             request.headers.get("X-Palink-User-Id")
             or request.headers.get("x-palink-user-id")
         )
         if header_user_id:
+            header_sig = (
+                request.headers.get("X-Palink-User-Sig")
+                or request.headers.get("x-palink-user-sig")
+            )
             try:
                 uid = int(str(header_user_id).strip())
             except (TypeError, ValueError):
                 uid = None
             if uid:
-                scoped_user = db.query(User).filter(
-                    User.id == uid,
-                    User.is_active == True,  # noqa: E712
-                ).first()
-                if scoped_user:
-                    return scoped_user
+                if not verify_service_user_id(uid, header_sig):
+                    logger.warning(
+                        "Rejected forged X-Palink-User-Id header (uid=%s, sig=%s) "
+                        "on OpenAI-compat endpoint; falling back to default user.",
+                        uid,
+                        "present" if header_sig else "missing",
+                    )
+                else:
+                    scoped_user = db.query(User).filter(
+                        User.id == uid,
+                        User.is_active == True,  # noqa: E712
+                    ).first()
+                    if scoped_user:
+                        return scoped_user
         user = db.query(User).filter(User.username == "admin").first()
         if not user:
             user = db.query(User).filter(User.is_active == True).order_by(User.id.asc()).first()  # noqa: E712

@@ -1,11 +1,18 @@
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
+import hashlib
+import hmac
 import uuid
 import jwt
 import bcrypt
 from .config import settings
 
 ALGORITHM = "HS256"
+
+# [N-6] service_key 分支的 X-Palink-User-Id 头签名消息格式
+SERVICE_USER_MSG_PREFIX = "palink-user:"
+# [N-7] 上传短时效令牌有效期（秒）
+UPLOAD_TOKEN_TTL_SECONDS = 300
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not plain_password or not hashed_password:
@@ -58,3 +65,38 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return payload
     except jwt.PyJWTError:
         return None
+
+
+def sign_service_user_id(uid: int) -> str:
+    """[N-6] 计算 X-Palink-User-Sig 签名头。
+
+    hex(hmac_sha256(key=ST_NATIVE_SERVICE_KEY, msg=f"palink-user:{uid}"))。
+    供 ST sidecar / 代理注入侧与 openai_compat 校验侧共用同一格式，
+    防止 SERVICE_KEY 持有者经未签名头冒充任意用户。
+    """
+    msg = f"{SERVICE_USER_MSG_PREFIX}{uid}".encode("utf-8")
+    key = (settings.ST_NATIVE_SERVICE_KEY or "").encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def verify_service_user_id(uid: int, sig: Optional[str]) -> bool:
+    """[N-6] 校验 X-Palink-User-Sig 签名头（compare_digest 防时序侧信道）。"""
+    if not sig:
+        return False
+    expected = sign_service_user_id(uid)
+    return hmac.compare_digest(expected, str(sig).strip())
+
+
+def create_upload_token(username: str) -> str:
+    """[N-7] 签发附件专用 upload-scope 短时效令牌。
+
+    claims 仅含 {sub, scope:"upload", exp:now+300}——不放长效 exp、不放
+    jti（5 分钟自然过期，无需黑名单）。主 JWT 无 scope claim，二者不可互换。
+    """
+    expire = datetime.now(timezone.utc) + timedelta(seconds=UPLOAD_TOKEN_TTL_SECONDS)
+    payload = {
+        "sub": username,
+        "scope": "upload",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
