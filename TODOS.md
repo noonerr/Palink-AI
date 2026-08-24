@@ -7,6 +7,61 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成] 运行时强制封存 st-compat / st-native（[MODE-SEALED] 2026-08-24 用户拍板）
+- **决策**: 除 palink-native 外的模式暂时全部封存不许调用，隐患排除后完全删除
+- **封存机制**（三层，标签 [MODE-SEALED]）:
+  1. 装配入口: `roleplay_prompt_assembly.py` 新增 `SEALED_ST_MODES` + `_st_mode_effective()`，三个消费点（世界书扫描 L3552 / 主装配分支 L3728 / 群聊策略 L2697）归一化——DB 存量值 st-compat 也强制走 palink-native 管线。**注意：`_is_st_compat_mode` 函数契约保持原样**（st-compat 函数族是被固化测试直调的纯函数，随代码一起待删）
+  2. API 出口/入口: `users.py` 与 `silly_tavern.py` 的 `_normalize_silly_tavern_mode` 封存重定向——GET 一律报告 palink-native（前端分支自然走主攻模式），PUT 提交封存值直接落库为 palink-native
+  3. 设置 UI: `SettingsView.tsx` 模式选择器禁用 st-compat/st-native 两项（灰化+toast 提示）
+- **可逆性**: DB 存量值不回写（admin 仍存 st-compat 但运行时等效 palink-native）；解封 = 从各 `SEALED_ST_MODES` 移除对应值并恢复 normalize 合法集
+- **测试**: `test_st_mode_normalization.py` 重写为封存语义（normalize 重定向 + 入口归一化 + 三处集合一致性守卫）；`test_group_speaker_selection.py` 两个 TALKATIVE/VOTING 降级测试改写为封存语义正向验证；e2e phase6 subtask_6_1_4 与 convergence 测试同步更新
+- **验证**: 定向 82 过；全量 pytest **905 过/4 存量失败零新增**（mvu_engine/p1_fixes/st_contract/st_plugin_import 与基线逐一对应）；tsc 干净；容器重建 healthy；容器内运行时验证 11/11 PASS（存量不回写+GET/PUT/入口三处封死）
+- **附带效果**: 原计划 R2「admin 切 palink-native 实测」被本机制自动涵盖——admin 存量 st-compat 已在装配入口归一化为 palink-native，死循环诱因层（无 balance_custom_tags 守卫的装配管线）已不可达
+- **AGENTS.md** 状态表与约定已同步更新
+
+### [已完成·已验收] 角色扮演动作流 reasoning-only 防护（思考链死循环落库，2026-08-24）
+- **spec**: `docs/SPEC_动作流reasoning_only防护_2026-08-24.md`（含完整证据链/方案/测试要求/验收清单）
+- **事故**: 2026-08-23 消息 2248——「我被猫娘包围了！」卡 swipe 重roll 落库空正文 + 2060 字复读思考链
+- **根因三层**: ① st-compat 装配无 balance_custom_tags 守卫 + 卡主体字段全空/EJS 条目被剥空/脏标签裸进 prompt → 模型身份锚点真空自发复读（诱因层，已被 MODE-SEALED 封存消除）；② `StreamResult.has_content` 把 reasoning 计入"有内容"；③ `_run_action_stream` finally 判定放行 → `/swipe`、`/regenerate` 的 persist_fn 无校验落库空 final（websocket 主路径有 [NO-CONTENT-FINAL] 守卫，SSE 动作流是唯一漏网出口）
+- **R1（代码，修复 agent 施工，审计线 2026-08-24 验收通过）**: character_ext.py `_run_action_stream` finally 改为仅正文才持久化 + reasoning-only 发 N12 格式 error 事件（`[NO-CONTENT-FINAL-ACTION]` 日志标签）；单点覆盖 continue/regenerate/swipe 三端点；has_content 本身未动。前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast 消费（原解析器静默吞掉该事件，顺带修复 N12 error 此前同样被吞的问题）
+- **R2（运维）**: 已被 MODE-SEALED 自动涵盖——admin 存量 st-compat 在装配入口归一化为 palink-native，死循环诱因层不可达
+- **R3（数据）**: ✅ 已删除（2026-08-24 用户拍板「直接删了吧」）——消息 2248 经 DB 脚本 `_delete_msg_2248.py` 删除并验证归零；其所属会话 76732b7d 随之成为空会话（0 条消息），可留可删
+- **⏸ 挂起项（2026-08-24 用户指示暂不动，后续择机处理）**: ① 全部未提交改动分批 git commit（封存 MODE-SEALED + R1 防护 + 测试 + 文档）；② 「我被猫娘包围了！」卡同卡 swipe 重roll 体感实测（守卫已上线，实测仅作体感确认）
+- **验收记录（2026-08-24 审计线）**: git diff 核对 spec §R1 逐行一致 + 红线四文件零改动 ✓；新测试 3 例复跑全过 ✓；全量 pytest 905 过/4 存量失败零新增 ✓；tsc 干净 ✓；后端守卫已在运行镜像内（GUARD-IN-IMAGE: True）✓
+- **⚠️ 部署知识（重要）**: frontend 服务是 `./frontend/dist:/usr/share/nginx/html:ro` bind mount——**重建 frontend 镜像不更新前端**；更新前端唯一正确方式 = 本地 `cd frontend && npm run build`（卷直挂即时生效）。本次验收发现修复 agent 未跑本地 build 导致前端改动未上线，已补构建并 HTTP 冒烟通过（SettingsView chunk 新 hash 2WpH_asK 在线服务正常）。另注意：ripgrep/Grep 工具对 minified 长行 JS 有 binary 误判，搜 dist 产物请用 PowerShell Select-String
+- **施工记录（2026-08-24 修复 agent）**: R1 已完成——character_ext.py `_run_action_stream` finally 单点守卫 + 前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast（解析器原本不识别该事件）；新增 `backend/tests/test_action_stream_no_content_guard.py` 3 例（TDD 先红后绿）；全量回归 905 passed / 4 存量失败零新增；tsc 干净。未 commit，待审计线按 §5 验收
+
+### [已完成·已验收] HOTFIX 安全批次六项（N-1 XSS / N-2 NameError / U-1 / U-2 / U-5 / U-7，2026-08-24）
+- **spec**: `docs/SPEC_修复验证与系统检查_2026-08-24.md` §6（含审计线复核修正横幅与 §6.3「容器内 pytest 不可作基线」纠偏）
+- **完工报告**: `docs/HOTFIX完工报告_安全批次六项_2026-08-24.md`
+- **验收记录（2026-08-24 审计线独立复核）**:
+  - N-1 XSS 四入口逐一核验合格：Popup.tsx DISPLAY 分支 DOMPurify 消费点兜底 + SmartCardCompatController/getContext/sandbox 三入口仅 DISPLAY 条件消毒，TEXT/CONFIRM/INPUT 未动 ✓
+  - N-2 三 hunk 合格：签名补 reasoning_effort/provider_id + ws_chat 解析 + _gen 透传；新增 test_ws_chat_generation_signature.py 4 例守卫 ✓
+  - U-1 persist 失败补 error 事件 / U-5 两分支统一 type:'error' 契约 / U-2 三模块封存集合一致性断言 / U-7 九探针删除+两工具保留 ✓
+  - 宿主全量 **930 passed / 4 failed 零新增**（勾稽 925+5=930）；定向 23 过；tsc 干净
+- **⚠️ 验收中拦截一次未授权回归**: 工作区 formatting.ts 被静默回退掉 F-1 LaTeX 修复（renderMathInHtml + KaTeX MathML 白名单整体删除，P1#4/commit 70ef261 的成果），不在任何任务书内且完工报告未提及——审计线已 `git checkout` 还原至 HEAD 并重新 `npm run build`（修复 agent 此前的 build 是在回退态做的，产物缺 LaTeX）。还原零风险（内容即 HEAD 已提交代码）。**教训：多 agent 并行时验收必须 diff 全量改动面，报告未列的文件也要查**
+- **运行时终检**: ✅ 已闭环（2026-08-24）——后端容器重建 **healthy**；镜像内 N2 签名/U-5×2+U-1 标签在位，`run_chat_generation` 运行时签名含 reasoning_effort/provider_id 实测通过
+
+### [已完成·已验收] 消息编辑 × 向量记忆同步：message_id 关联体系（2026-08-24 spec 就绪 + 当日施工验收通过）
+- **spec**: `docs/SPEC_消息编辑与向量记忆同步_2026-08-24.md`（ST 对照研究 + 完整方案 + 测试要求 + 验收清单）
+- **动机**: 用户后期开放 ST 式消息编辑；现状编辑后旧文本记忆残留且持续被召回（左右脑互搏素材）
+- **核心不变式**: 记忆 = 消息当前内容的镜像。conversation_memories 加 message_id 列，所有内容变化操作（生成/续写/swipe 写入/重试）统一「upsert by message_id」，编辑钩子删旧+后台重嵌
+- **顺带修复**: P3 continue 记忆重叠双份、P4 swipe 重roll 旧内容残留、单条消息删除记忆级联（第五条删除路径补全）
+- **关键决策**: 用真实主键 message_id 而非 ST 式内容 hash（我们有 DB 主键）；存量 NULL 行不回填（声明边界）；turn_hash 不动（P2 放弃修复，理由在 spec §5）
+- **分工**: 施工归修复 agent；审计线验收
+- **施工记录（2026-08-24 修复 agent）**: A-E 五块全部落地——storage.py（message_id 列迁移幂等 + idx_memory_message_id 索引 + delete_by_message_id 统一助手；顺带修复 _init_tables 迁移先于索引的顺序缺陷与 SQLite 探测/ALTER 异常路径 rollback 波及同连接在途数据的问题）+ store/store_chunks/store_memory 透传；四处写入点 [MEM-UPSERT]（run_chat_generation / run_character_chat_generation / SSE 主对话流 finally / _run_action_stream persist_fn 后，后三者含 continue(P3)/swipe 重roll(P4) 收敛）；编辑钩子 [MEM-SYNC-ON-EDIT] ×2（edit_character_message + sessions.update_message，删旧→后台 asyncio.to_thread 重嵌、失败宁缺勿错、branch_id 随消息原值回写）；delete_character_message 单条删除级联。**复核修正（同日）**: ws_character_chat finally 的 assistant 记忆源由 result.full_content（续写场景=仅增量）改为读 DB 消息最终显示内容，确保 P3 场景记忆=合并全文符合 spec §4 不变式。swipe 切换路径验证结论：重roll（POST /swipe）已被动作流 upsert 覆盖 ✓；**插件路径 PATCH /messages/{mid}/swipe 与主 UI 本地 messageManager.swipe() 均不经 PUT messages/{mid}**——PATCH 会改 DB content 使记忆过时，按 spec §3.4 登记二期。新增 backend/tests/test_memory_message_link.py 20 例（TDD 先红后绿）；复核后复跑全量回归 925 passed / 4 存量失败零新增；py_compile 通过。未 commit，待审计线验收；**后端镜像需重建方可生效**
+- **二期候选**: swipe 切换 PATCH /messages/{mid}/swipe 端点（switch_message_swipe）的记忆同步钩子
+- **验收记录（2026-08-24 审计线独立复核）**: git diff 逐块核查 A–E 全合格（含发现1 continue 记忆源改读 DB 最终内容——对 spec 不变式的正确捍卫；发现2/3 基建修复合理）；定向 38 passed + 全量 pytest **925 passed / 4 存量失败零新增**（勾稽 905+20=925 ✓）；5 文件 py_compile 过；红线七条全过（无 content_hash/turn_hash 未动/get_context 未碰/st-vec 零改动）；后端容器重建 **healthy**，镜像内三标签在位，DB 实测 message_id 列 + idx_memory_message_id 索引迁移生效、记忆表归零。⏸ 剩余：真实对话体感实测（编辑消息→记忆替换）待用户择机
+
+### [已完成] 记忆向量孤儿数据：角色扮演三条删除路径级联清理（2026-08-24 排查实锤 + 当日修复上线）
+- **现象**: 全库 44 条 conversation_memories **100% 为孤儿**（所属会话均已删除），来自冒烟测试员二(2)/冒烟测试员(2)/桃汐卡会话(9)/更早两个会话(31)；content 约 10KB + embedding text 列（每条 1024 维 JSON 文本约 15-25KB），合计约 1MB 且持续增长
+- **根因**: `conversation_memories` 表 session_id/branch_id 均为裸 TEXT 无外键；角色扮演三条删除路径全部漏清——① `character_service.delete_character`（整角色，L116-192 只清 messages/branches/chat_variables/sessions/世界书/群聊引用/ST 文件）② `character_ext.delete_character_session`（单会话 L2719+）③ `character_ext.delete_branch`(L3887-3954)。对照组：普通聊天 `sessions.py:130 delete_session_memories` 有清理——角色扮演路径漏抄
+- **功能影响**: 零——记忆检索按 user_id+session_id 过滤（storage.py get_context），死记忆永不召回；纯存储占用 + 隐私残留
+- **已排除的嫌疑**: 消息/分支/变量/世界书/会话孤儿 = 0（手动级联完整）；Ollama 纯计算无持久存储；ST DATA_ROOT 未配置（st_sync 未启用，文件侧干净）；silly_tavern.py 的 DELETE 均为 ST vectors 插件手动 purge 端点非级联
+- **修复方案（待用户拍板）**: ① 三处删除路径补 `DELETE FROM conversation_memories WHERE session_id IN (...)`（分支删除按 branch_id 圈定）② 一次性清现存 44 条孤儿 ③ 可选长期机制：FK ON DELETE CASCADE 或定期孤儿清扫
+- **实施记录（2026-08-24，用户拍板「直接动手」）**: 三处级联已上线（标签 [ORPHAN-MEM-FIX]）——① `character_ext.delete_character_session` 按 session_id 清 ② `character_ext.delete_branch` 按被删分支集合 branch_id 清 ③ `character_service.delete_character` 批量循环内按 session 批量清（`character_service.py` 补 `from sqlalchemy import text`）。存量清理脚本 `_cleanup_orphan_memories.py` 已执行：44 条全删、记忆表归零。验证：py_compile 过；全量 pytest 905/4 零新增；后端容器重建 healthy 且 GUARD-IN-IMAGE: True。此后删角色/会话/分支不再产生记忆孤儿
+- **诊断脚本留档**: `backend/scripts/_diag_orphan_scan.py`（全库引用完整性扫描）、`_diag_orphan_detail.py`（孤儿明细）、`_diag_stdata_stale.py`（ST 文件差集）
+
 ### [已完成] 思考/正文分离存储（2026-08-23 六步实施 + 四项遗留处置全部收尾）
 - **实施交接文件**: `HANDOFF_分离存储实施_2026-08-22.md`（六步全部执行完毕）
 - **Step 0 备份** ✅: `_backup/20260823_separate_storage/`（DB 26 行全量导出 SHA256 校验一致 + 12 文件快照）
