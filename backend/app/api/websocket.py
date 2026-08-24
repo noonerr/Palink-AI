@@ -2279,8 +2279,19 @@ async def ws_character_chat(websocket: WebSocket):
                 tc_session_id = raw.get("session_id") or conn.session_id or ""
                 tc_tool_call_id = raw.get("tool_call_id", "")
                 tc_result = raw.get("result", "")
+                # [N-5] 归属校验：认证用户只能向自己的会话投递 tool 结果——
+                # 此前任意认证用户可指定他人 session_id 注入恶意 tool 结果
+                # 进对方 LLM 流。归属取 StreamSession.user_id（create 时落）。
                 if tc_session_id:
-                    ws_manager.submit_tool_response(tc_session_id, tc_tool_call_id, tc_result)
+                    _tc_ss = ws_manager.get_stream_session(tc_session_id)
+                    if _tc_ss is None or _tc_ss.user_id != user.id:
+                        logger.warning(
+                            "[N-5] tool_call_response rejected (ownership mismatch): "
+                            "user=%s session=%s",
+                            user.id, tc_session_id,
+                        )
+                    else:
+                        ws_manager.submit_tool_response(tc_session_id, tc_tool_call_id, tc_result)
 
             elif msg_type == "cancel":
                 active_ss = None

@@ -48,6 +48,7 @@ class Connection:
 class StreamSession:
     stream_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = ""
+    user_id: Optional[int] = None  # [N-5] 会话归属用户，tool_call_response 越权校验用
     full_content: str = ""
     full_reasoning: str = ""
     status: str = "streaming"
@@ -193,7 +194,7 @@ class WebSocketManager:
                 # 前端无任何错误提示）。
                 raise StreamSessionBusyError(session_id)
 
-            ss = StreamSession(session_id=session_id)
+            ss = StreamSession(session_id=session_id, user_id=user_id)
             self.stream_sessions[session_id] = ss
 
         async with self._room_lock:

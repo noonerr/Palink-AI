@@ -31,6 +31,17 @@
 - **⚠️ 部署知识（重要）**: frontend 服务是 `./frontend/dist:/usr/share/nginx/html:ro` bind mount——**重建 frontend 镜像不更新前端**；更新前端唯一正确方式 = 本地 `cd frontend && npm run build`（卷直挂即时生效）。本次验收发现修复 agent 未跑本地 build 导致前端改动未上线，已补构建并 HTTP 冒烟通过（SettingsView chunk 新 hash 2WpH_asK 在线服务正常）。另注意：ripgrep/Grep 工具对 minified 长行 JS 有 binary 误判，搜 dist 产物请用 PowerShell Select-String
 - **施工记录（2026-08-24 修复 agent）**: R1 已完成——character_ext.py `_run_action_stream` finally 单点守卫 + 前端 useCharacterChat.ts 三处 action SSE 回调补 `type:'error'` toast（解析器原本不识别该事件）；新增 `backend/tests/test_action_stream_no_content_guard.py` 3 例（TDD 先红后绿）；全量回归 905 passed / 4 存量失败零新增；tsc 干净。未 commit，待审计线按 §5 验收
 
+### [进行中] 安全加固第二批（N-6/N-7/N-8，2026-08-24 spec 就绪）
+- **spec**: `docs/SPEC_安全加固第二批_N6_N7_N8_2026-08-24.md`
+- **N-6**: openai_compat service_key 分支的 X-Palink-User-Id 改 HMAC-SHA256 签名头校验（未签名视为伪造忽略落 admin 回退；sidecar 注入侧同步）——派修复 agent
+- **N-7**: 附件 URL 去主 JWT 化——新增 upload-scope 短时效令牌端点（5min），_verify_upload_access 强制 scope 检查，appendUploadToken 12 调用点适配，MarkdownRenderer `<a href>` 去 token——派修复 agent
+- **N-8**: JWT localStorage → HttpOnly Cookie 架构级迁移，本批仅设计确认（双轨过渡+CSRF 配套+短期止血），实施前单独细化
+- **已完成前置（审计线直接修复，2026-08-24）**:
+  - [N-5] WS tool_call_response 归属校验——StreamSession 落 user_id（create_stream_session 传入），handler 按 _tc_ss.user_id != user.id 拒绝投递并 warning；test_n5_tool_response_ownership.py 2 例守卫
+  - [N-14] _verify_upload_access 补 jti 黑名单检查（登出/封禁后旧 query token 失效）
+  - 验证：py_compile 过；宿主全量 **932 passed / 4 存量失败零新增**；后端容器重建 healthy，镜像内 N5/N14 在位
+- **已推送远端**: 分支 st-plugin-compat-20260727 于 2026-08-24 首次推送 GitHub（含 MODE-SEALED/R1/记忆体系/HOTFIX 等全部积压成果）
+
 ### [已完成·已验收] HOTFIX 安全批次六项（N-1 XSS / N-2 NameError / U-1 / U-2 / U-5 / U-7，2026-08-24）
 - **spec**: `docs/SPEC_修复验证与系统检查_2026-08-24.md` §6（含审计线复核修正横幅与 §6.3「容器内 pytest 不可作基线」纠偏）
 - **完工报告**: `docs/HOTFIX完工报告_安全批次六项_2026-08-24.md`

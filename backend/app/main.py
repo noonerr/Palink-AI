@@ -325,6 +325,12 @@ async def _verify_upload_access(
         username: str = payload.get("sub")
         if username is None:
             raise HTTPException(status_code=401, detail="Invalid token")
+        # [N-14] query token 同样受 jti 黑名单约束——登出/封禁后旧 token
+        # 不得继续拉取附件（对齐 dependencies.get_current_user 行为）
+        from .core.token_blacklist import is_blacklisted
+        _jti = payload.get("jti")
+        if _jti and is_blacklisted(_jti):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
