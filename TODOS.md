@@ -53,13 +53,16 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
-### [进行中] N-8 本体立项：JWT 迁移 HttpOnly Cookie + CSRF 配套（2026-08-25 spec 就绪）
+### [进行中] N-8 本体立项：JWT 迁移 HttpOnly Cookie + CSRF 配套（N8-a 已验收，待 N8-b）
 - **spec**: `docs/SPEC_N8_HttpOnly_Cookie_立项_2026-08-25.md`（目标架构/后端前端改动清单/18 处直读分派表/三批提交时间线/安全评审清单）
 - **架构**: 登录双发（响应体保留+Set-Cookie palink_session HttpOnly）→ 双轨鉴权（Bearer 与 Cookie 并存）→ CSRF 中间件（mutating 要求 X-CSRF-Token==cookie 配对）→ 续期 Cookie 化 → 终态移除 localStorage 兼容
-- **三批时间线**: N8-a 后端全量（独立可回滚）/ N8-b 前端适配 18 处直读分派 / N8-c 终态切换 grep 归零；N8-a/b 之间可任意停留
+- **[已完成·已验收] N8-a 后端全量（2026-08-25 施工 + 当日验收通过）**: auth.py 登录双 Set-Cookie（palink_session HttpOnly/Max-Age=43200/SameSite=lax + palink_csrf 非 HttpOnly token_urlsafe(32)，响应体保留 access_token）/登出清两枚 Cookie+jti 拉黑双通道；dependencies.py 双轨提取（Bearer 优先、显式无效 Bearer 不回退 Cookie、续期收窄仅 Bearer 通道）；main.py CSRF 中间件（准入收窄：仅携带 palink_session 才进强制区，OWASP 口径；Bearer 豁免对齐 csrf_guard.py；Origin 兜底 host 相等+CORS 白名单显式项，* 不参与、Origin:null 拒）+ 续期中间件 set_session_cookie 同步下发。新增 test_n8_cookie_auth.py 29 例。**验收实证**: 宿主全量 pytest 1050 passed / 0 failed；容器重建 healthy；端到端冒烟 26/26 全绿（登录双 Cookie 属性/Cookie 通路 /api/users/me/CSRF 五态/Bearer 豁免与优先级/续期双出/登出清理+jti replay 401）。备份 backup/2026-08-25_n8a-backend/（3×.bak+MANIFEST sha256，随批入库）。甄别记录: CSRF 准入收窄系首跑 24 failed 后按 OWASP 口径修正的合理取舍；遗留风险移交 N8-c（开发模式 CORS_ORIGINS=* 下 vite 直连同源兜底失配需 proxy 或显式白名单配合）
+- **[待派发] N8-b 前端适配**: credentials/withCredentials、X-CSRF-Token 头注入、登录登出适配、18 处 localStorage 直读分派（含 smart-card primitives:746 个案评估）、契约测试
+- **[终态] N8-c 切换**: 移除 localStorage 兼容、grep 归零、CORS_ORIGINS 遗留风险处理
 - **特殊通道**: smart-card iframe 内 primitives:746 无法依赖父域 Cookie——施工时单独评估取舍并报告
 - **风险已评估**: CORS credentials 组合/SameSite 升级条件/第三方 WebView 盘点（spec §6）
-- **基线**: 宿主 pytest **1021 passed / 0 failed** 全绿
+- **基线**: 宿主 pytest **1050 passed / 0 failed** 全绿
+- **环境注意**: Windows WinNAT 动态保留段曾吞 frontend 容器 3000 端口映射（2934-3033，Docker 引擎崩溃重启后遗症）；修复需管理员执行 `net stop winnat` → `netsh int ipv4 add excludedportrange protocol=tcp startport=3000 numberofports=1 store=persistent` → `net start winnat`（永久预留防再占），普通权限终端无法操作
 
 ### [已完成·已验收] 二期批次：世界书 vectorized 接线 + N-8 止血滑动续期（2026-08-25 施工 + 当日验收通过）
 - **spec**: `docs/SPEC_二期_vectorized接线与N8止血_2026-08-25.md`（含强制备份要求 §4）
