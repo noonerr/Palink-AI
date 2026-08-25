@@ -53,7 +53,15 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
-### [进行中] 二期批次：世界书 vectorized 接线 + N-8 止血滑动续期（2026-08-25 spec 就绪）
+### [进行中] N-8 本体立项：JWT 迁移 HttpOnly Cookie + CSRF 配套（2026-08-25 spec 就绪）
+- **spec**: `docs/SPEC_N8_HttpOnly_Cookie_立项_2026-08-25.md`（目标架构/后端前端改动清单/18 处直读分派表/三批提交时间线/安全评审清单）
+- **架构**: 登录双发（响应体保留+Set-Cookie palink_session HttpOnly）→ 双轨鉴权（Bearer 与 Cookie 并存）→ CSRF 中间件（mutating 要求 X-CSRF-Token==cookie 配对）→ 续期 Cookie 化 → 终态移除 localStorage 兼容
+- **三批时间线**: N8-a 后端全量（独立可回滚）/ N8-b 前端适配 18 处直读分派 / N8-c 终态切换 grep 归零；N8-a/b 之间可任意停留
+- **特殊通道**: smart-card iframe 内 primitives:746 无法依赖父域 Cookie——施工时单独评估取舍并报告
+- **风险已评估**: CORS credentials 组合/SameSite 升级条件/第三方 WebView 盘点（spec §6）
+- **基线**: 宿主 pytest **1021 passed / 0 failed** 全绿
+
+### [已完成·已验收] 二期批次：世界书 vectorized 接线 + N-8 止血滑动续期（2026-08-25 施工 + 当日验收通过）
 - **spec**: `docs/SPEC_二期_vectorized接线与N8止血_2026-08-25.md`（含强制备份要求 §4）
 - **V 线 vectorized 接线**（孤岛激活）: V-1 同步触发三处（编辑 API commit 后/导入对齐/装配兜底懒同步二选一）/ V-2 检索注入（最近 4 条对话为查询，top5 阈值 0.25 命中跳关键词直进激活管线，嵌入失败静默降级）/ V-3 开关 vectorized_enabled 默认 false 存量零突变——基建三件套早已就绪只缺两个调用点
 - **S 线 N-8 止血滑动续期**: 后端 get_current_user 剩余寿命 <1/3 时签发新 token 走 X-Palink-Token-Refresh 响应头 + 前端拦截器落地 localStorage——活跃用户永不掉线、被盗窗口有界 12h、零 refresh 架构成本；12h 默认保持 env 可配
