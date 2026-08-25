@@ -300,8 +300,26 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=not (len(_cors_origins) == 1 and _cors_origins[0] == "*"),
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    # [S-1] N-8 止血滑动续期头需暴露给跨域前端 JS（同源场景天然可读）
+    expose_headers=["X-Palink-Token-Refresh"],
 )
+
+
+@app.middleware("http")
+async def token_refresh_header_middleware(request: Request, call_next):
+    """[S-1 N-8 止血] 滑动续期响应头输出。
+
+    get_current_user 鉴权成功且剩余寿命 < 有效期/3 时，将新签发的 JWT 挂在
+    request.state.token_refresh；此处统一读取并写入 X-Palink-Token-Refresh
+    响应头（Depends 内无 response 句柄，故采用中间件方案）。
+    前端 services/api.ts 拦截该头后落地 localStorage 完成无感续期。
+    """
+    response = await call_next(request)
+    new_token = getattr(request.state, "token_refresh", None)
+    if new_token:
+        response.headers["X-Palink-Token-Refresh"] = new_token
+    return response
 
 app.include_router(api_router)
 

@@ -128,6 +128,20 @@ function getToken(): string | null {
   return localStorage.getItem('palink_token');
 }
 
+// ── N-8 止血：滑动续期令牌落地 ────────────────────────────
+// 后端在令牌剩余寿命 < 1/3 时随响应下发 X-Palink-Token-Refresh（新 JWT），
+// 此处检测到即覆盖 localStorage，活跃用户无感续期；其余逻辑（401 处理等）不动。
+function applyTokenRefresh(res: Response): void {
+  try {
+    const renewed = res.headers.get('X-Palink-Token-Refresh');
+    if (renewed) {
+      localStorage.setItem('palink_token', renewed);
+    }
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默跳过，不影响响应处理
+  }
+}
+
 function dispatchAuthFailure() {
   // 使用统一事件总线派发认证失败事件
   emitEvent('auth:failure', undefined as any);
@@ -180,6 +194,8 @@ async function request<T = any>(
 
     try {
       const res = await fetch(url, { ...fetchOptions, method, headers, signal });
+
+      applyTokenRefresh(res);
 
       // 401 → 派发统一登出事件
       if (res.status === 401) {
