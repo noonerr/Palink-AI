@@ -64,6 +64,7 @@ function uploadCharacterCardWithProgress(
     formData.append('file', file);
 
     xhr.open('POST', '/api/characters/import');
+    xhr.withCredentials = true;
     const token = localStorage.getItem('palink_token');
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);

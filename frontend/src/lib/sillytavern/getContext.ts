@@ -2160,6 +2160,7 @@ export function getContext(): StGetContext {
         const xhr = new XMLHttpRequest();
         // 同步请求对齐 ST 的同步 ajax 语义（token-counter debounce 后调用，量小）
         xhr.open('POST', '/api/tokenizers/encode', false);
+        xhr.withCredentials = true;
         xhr.setRequestHeader('Content-Type', 'application/json');
         if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
         xhr.send(JSON.stringify({ text, tokenizer }));
@@ -3011,6 +3012,7 @@ export async function writeExtensionFieldCompat(
       typeof localStorage !== 'undefined' ? localStorage.getItem('palink_token') : null;
     const resp = await fetch('/api/characters/merge-attributes', {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),

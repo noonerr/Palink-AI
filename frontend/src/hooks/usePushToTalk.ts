@@ -100,6 +100,7 @@ export function usePushToTalk(options: UsePushToTalkOptions = {}): UsePushToTalk
 
         const response = await fetch('/api/stt', {
           method: 'POST',
+          credentials: 'include',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData,
         });

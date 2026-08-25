@@ -44,6 +44,7 @@ async function fetchWsTicket(signal?: AbortSignal): Promise<string | null> {
     const resp = await fetch(`${httpProtocol}//${host}/api/ws/ticket`, {
       method: 'POST',
       signal,
+      credentials: 'include',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',

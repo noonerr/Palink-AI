@@ -1,0 +1,12 @@
+﻿# N8-b frontend backup (2026-08-25) — HttpOnly Cookie 双轨期·前端适配
+# format: <sha256>  <repo-relative-path> -> <bak-filename>
+
+240a302ebeb293f96322014a4c89ac358c6a4a6f8e47a0d9d7fab11d777a63dc  frontend/src/services/api.ts -> services__api.ts.bak
+61ace1539992b05627a63f82e9b26e352a5599e6bc23a5a9143f7c8cd7a1ee18  frontend/src/hooks/useChatWebSocket.ts -> hooks__useChatWebSocket.ts.bak
+28d14bffd503d26d1939e933dac31512f37c34c3aef947ec241026281434e923  frontend/src/components/sillytavern/SillyTavernIframe.tsx -> components__sillytavern__SillyTavernIframe.tsx.bak
+2cba0c2cf7420a5969d8e142e8cc5327686d04bb27a21e6fb9ffce9c333ecc40  frontend/src/lib/sillytavern/getContext.ts -> lib__sillytavern__getContext.ts.bak
+4831710ac58dac55cc6939ec0ef2ddbac1f76625a3c2b3daa72409e275e48228  frontend/src/utils/sillyTavernPluginRuntime.ts -> utils__sillyTavernPluginRuntime.ts.bak
+43c55de597f7f23e93e4fde888eae98d86338a200a561fe8eed8a36d85cd48c5  frontend/src/services/tts.ts -> services__tts.ts.bak
+5c10a1e1658901559691aca1b0099981cd94486b40c3216c4dbf32c8d84e0550  frontend/src/hooks/usePushToTalk.ts -> hooks__usePushToTalk.ts.bak
+4a6b46ca21237b96a0a6e0cab79d365983a19027b780f54a3ca1c2b93ebdbb4a  frontend/src/components/views/CharacterView.tsx -> components__views__CharacterView.tsx.bak
+44f1dc3a6233a32c5da838fa1468e443b2fc91c65ba36a374b9edde6411c86b4  frontend/package.json -> frontend__package.json.bak

@@ -127,9 +127,14 @@ function installGlobalFetchGuard(): void {
             headers.set('Authorization', `Bearer ${token}`);
             if (input instanceof Request) {
               // Request 的 headers 不可变，需重建（body 已消费时抛错，回退原样发送）
-              nextInput = new Request(input, { headers });
+              // N8-b：重建时补 Cookie 携带（原 credentials 为 omit 时保持不动）
+              nextInput = new Request(input, {
+                headers,
+                credentials: input.credentials === 'omit' ? undefined : 'include',
+              });
             } else {
-              nextInit = { ...init, headers };
+              // N8-b：同源插件请求补 Cookie 携带（调用方显式传值时尊重不覆盖）
+              nextInit = { ...init, headers, credentials: init?.credentials ?? 'include' };
             }
           }
         }

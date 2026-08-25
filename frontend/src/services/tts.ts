@@ -290,6 +290,7 @@ class TTSService {
       const baseUrl = window.location.origin;
       const response = await fetch(`${baseUrl}${preview ? '/api/tts/preview/audio' : '/api/tts/audio'}`, {
         method: 'POST',
+        credentials: 'include',
         signal: signal ?? this.abortController?.signal,
         headers: {
           'Content-Type': 'application/json',

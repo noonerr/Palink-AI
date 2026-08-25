@@ -147,6 +147,18 @@ function dispatchAuthFailure() {
   emitEvent('auth:failure', undefined as any);
 }
 
+// ── N8-b：CSRF 双提交令牌（palink_csrf 为可读 Cookie，登录时随 palink_session 下发）──
+function getCsrfToken(): string {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)palink_csrf=([^;]*)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 // ── 内部统一请求 ──────────────────────────────────────────
 interface RequestOptions extends RequestInit {
   /** 跳过自动注入 Authorization 头 */
@@ -159,7 +171,7 @@ async function request<T = any>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { skipAuth, cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', ...fetchOptions } = options;
+  const { skipAuth, cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', credentials, ...fetchOptions } = options;
 
   // 仅对幂等 GET（且调用方未提供 signal）启用超时 + 自动重试；
   // 其他方法一律不重试（避免重复写入），调用方 signal 的取消语义需被尊重。
@@ -178,6 +190,11 @@ async function request<T = any>(
       }
     }
 
+    // N8-b：mutating 方法自动注入 CSRF 双提交头（调用方显式传入 X-CSRF-Token 时尊重不覆盖）
+    if (MUTATING_METHODS.has(method) && !headers.has('X-CSRF-Token')) {
+      headers.set('X-CSRF-Token', getCsrfToken());
+    }
+
     // JSON 请求自动设置 Content-Type（FormData 除外）
     if (
       fetchOptions.body &&
@@ -193,7 +210,7 @@ async function request<T = any>(
     const signal = combineAbort(fetchOptions.signal ?? undefined, controller);
 
     try {
-      const res = await fetch(url, { ...fetchOptions, method, headers, signal });
+      const res = await fetch(url, { ...fetchOptions, method, headers, signal, credentials: credentials ?? 'include' });
 
       applyTokenRefresh(res);
 
@@ -271,11 +288,19 @@ async function stream(
     headers.set('Content-Type', 'application/json');
   }
 
+  const streamMethod = options?.method ?? 'POST';
+
+  // N8-b：mutating 方法自动注入 CSRF 双提交头（调用方显式传入 X-CSRF-Token 时尊重不覆盖）
+  if (MUTATING_METHODS.has(streamMethod) && !headers.has('X-CSRF-Token')) {
+    headers.set('X-CSRF-Token', getCsrfToken());
+  }
+
   const res = await fetch(url, {
     ...options,
-    method: options?.method ?? 'POST',
+    method: streamMethod,
     headers,
     body: body instanceof FormData ? body : JSON.stringify(body),
+    credentials: options?.credentials ?? 'include',
   });
 
   if (res.status === 401) {
@@ -365,7 +390,12 @@ export const api = {
       const token = getToken();
       if (token) headers.set('Authorization', `Bearer ${token}`);
     }
-    const res = await fetch(url, { ...fetchOptions, headers });
+    // N8-b：mutating 方法自动注入 CSRF 双提交头（raw 未固定 method，默认 GET 不注入）
+    const rawMethod = fetchOptions.method ?? 'GET';
+    if (MUTATING_METHODS.has(rawMethod) && !headers.has('X-CSRF-Token')) {
+      headers.set('X-CSRF-Token', getCsrfToken());
+    }
+    const res = await fetch(url, { ...fetchOptions, headers, credentials: fetchOptions.credentials ?? 'include' });
     if (res.status === 401) {
       dispatchAuthFailure();
       throw new ApiError(401, 'Unauthorized', analyzeError(new Error('401')));
