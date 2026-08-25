@@ -79,9 +79,20 @@ token 来源优先级：Authorization Bearer 头 → palink_session Cookie
 
 ```
 mutating method 且路径非 /api/uploads/*（短令牌自有隔离）且非 /api/token（登录本身）:
-  cookie palink_csrf 必须存在 且 header X-CSRF-Token == 其值，否则 403
+  通过条件（满足其一即可，OR 语义）：
+  a) header X-CSRF-Token == cookie palink_csrf 值（标准双提交校验）
+  b) [插件兼容兜底] Origin 头存在且 host 与部署站点同源
+     ——浏览器对同源 fetch 必带同源 Origin；跨站表单/img 伪造必带外站 Origin
+       或不带 Origin，故此兜底不削弱防护强度
+  否则 403
 GET/HEAD/OPTIONS 豁免
 ```
+
+**Origin 兜底的必要性（插件兼容性评审结论，2026-08-25）**：主页面上下文插件
+（getContext/沙箱轨）可能绕过 api.ts 以裸 `fetch(..., {method:'POST'})` 发起
+mutating 请求——不会携带 X-CSRF-Token 头。若无 Origin 兜底，此类插件在终态后
+批量 403。同源 Origin 校验对真正的跨站 CSRF（外站表单）依然有效，防护不打折，
+插件零适配。trusted-native 同源 iframe 内的裸 POST 同样被覆盖。
 
 - 滑动续期中间件保持不动；续期头照常输出（前端落地的是新 JWT 到 Cookie 的更新由
   §2.4 承担，见下）
