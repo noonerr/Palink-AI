@@ -45,7 +45,7 @@
 - **T-2**: U-3 封存端点级回归——PUT 落库重定向 / GET 报告不回写两场景 DB fixture 测试
 - **目标**: 宿主全量 0 failed 全绿；派修复 agent
 
-### [进行中] 性能与体验批次（N-3/N-9/N-12，与安全第二批并行零冲突，2026-08-24 spec 就绪）
+### [已完成·已验收→归档] 性能与体验批次（N-3/N-9/N-12，2026-08-24 spec 就绪，同日验收通过——详见下方「性能与体验批次」完成条目）
 - **spec**: `docs/SPEC_性能与体验批次_N3_N9_N12_2026-08-24.md`——文件级零重叠设计（禁改 N-6/7 占用的 8 个文件），纯前端后端零改动
 - **P-1[N-9]**: 切换会话即中止旧流（abort + wsSendCancel + 生成态复位）+ 回调代次比对双保险
 - **P-2[N-3]**: 三重 memo 击穿修复——smartCardChatMessages 稳定切片（历史冻结快照+尾部 K 条实时）/ sanitizeStCompatHtml 入 useMemo / memo 比较器维持现状
@@ -53,7 +53,7 @@
 - **约束**: 不执行 npm run build 不 commit（审计线在两并行批次落地后统一构建，避免构建竞态）
 - **派单**: 与 N-6/N-7 同步交修复 agent
 
-### [进行中] N-8 本体立项：JWT 迁移 HttpOnly Cookie + CSRF 配套（N8-a 已验收，待 N8-b）
+### [进行中] N-8 本体立项：JWT 迁移 HttpOnly Cookie + CSRF 配套（N8-a/N8-b 均已验收，仅剩 N8-c 终态切换）
 - **spec**: `docs/SPEC_N8_HttpOnly_Cookie_立项_2026-08-25.md`（目标架构/后端前端改动清单/18 处直读分派表/三批提交时间线/安全评审清单）
 - **架构**: 登录双发（响应体保留+Set-Cookie palink_session HttpOnly）→ 双轨鉴权（Bearer 与 Cookie 并存）→ CSRF 中间件（mutating 要求 X-CSRF-Token==cookie 配对）→ 续期 Cookie 化 → 终态移除 localStorage 兼容
 - **[已完成·已验收] N8-a 后端全量（2026-08-25 施工 + 当日验收通过）**: auth.py 登录双 Set-Cookie（palink_session HttpOnly/Max-Age=43200/SameSite=lax + palink_csrf 非 HttpOnly token_urlsafe(32)，响应体保留 access_token）/登出清两枚 Cookie+jti 拉黑双通道；dependencies.py 双轨提取（Bearer 优先、显式无效 Bearer 不回退 Cookie、续期收窄仅 Bearer 通道）；main.py CSRF 中间件（准入收窄：仅携带 palink_session 才进强制区，OWASP 口径；Bearer 豁免对齐 csrf_guard.py；Origin 兜底 host 相等+CORS 白名单显式项，* 不参与、Origin:null 拒）+ 续期中间件 set_session_cookie 同步下发。新增 test_n8_cookie_auth.py 29 例。**验收实证**: 宿主全量 pytest 1050 passed / 0 failed；容器重建 healthy；端到端冒烟 26/26 全绿（登录双 Cookie 属性/Cookie 通路 /api/users/me/CSRF 五态/Bearer 豁免与优先级/续期双出/登出清理+jti replay 401）。备份 backup/2026-08-25_n8a-backend/（3×.bak+MANIFEST sha256，随批入库）。甄别记录: CSRF 准入收窄系首跑 24 failed 后按 OWASP 口径修正的合理取舍；遗留风险移交 N8-c（开发模式 CORS_ORIGINS=* 下 vite 直连同源兜底失配需 proxy 或显式白名单配合）
@@ -97,7 +97,7 @@
 - **成果**: 宿主全量 pytest **952 passed / 0 failed 历史性全绿**（F1 断言跟随 _p1-split 拆分【B】/ F2 bridge.js 白名单补 20 端点【A】/ F3 settings.html 断言更新【B】+ U-3 封存端点级回归 PUT 重定向/GET 不回写两场景）
 - **意义**: 此后所有批次验收不再背存量失败豁免清单
 
-### [进行中] 安全加固第二批（N-6/N-7/N-8，2026-08-24 spec 就绪）
+### [已完成·已验收→归档] 安全加固第二批（N-5/N-6/N-7/N-14 均落地；N-8 升级为独立立项线——见上方「N-8 本体立项」）
 - **spec**: `docs/SPEC_安全加固第二批_N6_N7_N8_2026-08-24.md`
 - **N-6**: openai_compat service_key 分支的 X-Palink-User-Id 改 HMAC-SHA256 签名头校验（未签名视为伪造忽略落 admin 回退；sidecar 注入侧同步）——派修复 agent
 - **N-7**: 附件 URL 去主 JWT 化——新增 upload-scope 短时效令牌端点（5min），_verify_upload_access 强制 scope 检查，appendUploadToken 12 调用点适配，MarkdownRenderer `<a href>` 去 token——派修复 agent
