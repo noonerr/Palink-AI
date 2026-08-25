@@ -137,6 +137,8 @@ services:
     env_file:
       - .env
     environment:
+      # 时间宏（{{time}}/{{date}} 等）的本地时区基准；.env 可覆盖
+      - TZ=${TZ:-Asia/Shanghai}
       - DATABASE_URL=postgresql://${DB_USER:-ai_user}:${DB_PASSWORD:?请在.env中设置DB_PASSWORD}@db:5432/${DB_NAME:-ai_hub}
       - HF_ENDPOINT=https://hf-mirror.com
       - HF_HUB_DISABLE_XET=1

@@ -347,12 +347,16 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
         return env.char_name
     if name_lower == "input":
         return env.input_text
-    if name_lower in ("time", "time_utc"):
+    # {{time}} 为站点本地时区（对齐 ST 本地时间语义；容器需 TZ 环境变量配合），
+    # {{time_utc}} 保持 UTC 语义——两者此前被误并为同一 UTC 分支
+    if name_lower == "time":
+        return datetime.now().strftime("%H:%M")
+    if name_lower == "time_utc":
         return datetime.utcnow().strftime("%H:%M")
     if name_lower == "date":
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        return datetime.now().strftime("%Y-%m-%d")
     if name_lower == "datetime":
-        return datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
     if name_lower in ("br", "newline"):
         return "\n"
     if name_lower == "ln":
@@ -364,13 +368,13 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
     if name_lower == "noop":
         return ""
 
-    # ST 1.18.0 日期/时间宏 (macros.js:660-667)
+    # ST 1.18.0 日期/时间宏 (macros.js:660-667)——本地时区语义
     if name_lower == "weekday":
-        return datetime.utcnow().strftime("%A")
+        return datetime.now().strftime("%A")
     if name_lower == "isotime":
-        return datetime.utcnow().strftime("%H:%M")
+        return datetime.now().strftime("%H:%M")
     if name_lower == "isodate":
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        return datetime.now().strftime("%Y-%m-%d")
 
     # ST 1.18.0 token 限制宏 (macros.js:643-648)
     if name_lower in ("maxprompt", "maxprompttokens"):
@@ -719,7 +723,7 @@ def _resolve_complex_macro(parts: list[str], env: MacroEnv) -> Optional[str]:
         fmt = fmt.replace("mm", "%M").replace("ss", "%S")
         fmt = fmt.replace("A", "%p")
         try:
-            return datetime.utcnow().strftime(fmt)
+            return datetime.now().strftime(fmt)
         except (ValueError, TypeError):
             return ""
 
