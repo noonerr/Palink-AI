@@ -758,6 +758,10 @@ function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    // N8-b 验收补充：best-effort 服务端登出——清 palink_session/palink_csrf Cookie
+    // 双件套 + jti 拉黑（api.post 自动携带 credentials 与 X-CSRF-Token，双轨期
+    // Bearer/Cookie 任一通道可鉴权）。失败不阻塞本地清理，Cookie 由 Max-Age 兜底过期。
+    void api.post('/api/auth/logout').catch(() => {});
     setPrivateConfigReady(false);
     setToken(null);
     localStorage.removeItem('palink_token');
