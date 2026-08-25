@@ -133,15 +133,16 @@ class WorldBookVectorService:
                     for i, (entry_id, _content, ch) in enumerate(to_embed):
                         try:
                             vec = _flatten_embedding(embeddings[i])
+                            vec_str = _vector_to_pgstr(vec)
                             existing = existing_map.get(entry_id)
                             if existing:
                                 existing.content_hash = ch
-                                existing.embedding = vec
+                                existing.embedding = vec_str
                             else:
                                 self.db.add(WorldBookEntryVector(
                                     entry_id=entry_id,
                                     content_hash=ch,
-                                    embedding=vec,
+                                    embedding=vec_str,
                                 ))
                             synced += 1
                         except Exception as e:
@@ -152,15 +153,16 @@ class WorldBookVectorService:
                     for entry_id, content, ch in to_embed:
                         try:
                             vec = _flatten_embedding(embed_text(content))
+                            vec_str = _vector_to_pgstr(vec)
                             existing = existing_map.get(entry_id)
                             if existing:
                                 existing.content_hash = ch
-                                existing.embedding = vec
+                                existing.embedding = vec_str
                             else:
                                 self.db.add(WorldBookEntryVector(
                                     entry_id=entry_id,
                                     content_hash=ch,
-                                    embedding=vec,
+                                    embedding=vec_str,
                                 ))
                             synced += 1
                         except Exception as e2:

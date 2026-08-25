@@ -1,5 +1,7 @@
 """World Book API routes — CRUD, import, session association, keyword-trigger."""
+import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -28,6 +30,101 @@ from ..schemas.worldbook import (
 
 router = APIRouter(prefix="/api/worldbooks", tags=["worldbooks"])
 router_session_wb = APIRouter(prefix="/api/character-sessions", tags=["session-worldbook"])
+
+logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────
+# V-1 (2026-08-25): 世界书向量库同步触发（fire-and-forget，失败仅 warning）
+# ──────────────────────────────────────────────
+
+_PENDING_VECTOR_SYNC_TASKS: set = set()
+
+
+def _vector_sync_worker(world_book_id: str) -> None:
+    """在独立线程/会话中执行向量同步（请求会话随后会被关闭，必须用新 SessionLocal）。"""
+    from ..core.database import SessionLocal
+    from ..services.worldbook_vector_service import WorldBookVectorService
+
+    svc = WorldBookVectorService(SessionLocal())
+    try:
+        result = svc.sync_worldbook_vectors(world_book_id)
+        if isinstance(result, dict) and result.get("error"):
+            logger.warning(
+                "worldbook vector sync degraded (book=%s): %s",
+                world_book_id, result.get("error"),
+            )
+    finally:
+        try:
+            svc.db.close()
+        except Exception:
+            pass
+
+
+def _fire_vector_sync(world_book_id: str) -> None:
+    """后台 fire-and-forget 调度 sync_worldbook_vectors；失败仅 warning。"""
+    async def _run():
+        try:
+            await asyncio.to_thread(_vector_sync_worker, world_book_id)
+        except Exception as exc:
+            logger.warning("worldbook vector sync failed (book=%s): %s", world_book_id, exc)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_run())
+    _PENDING_VECTOR_SYNC_TASKS.add(task)
+    task.add_done_callback(_PENDING_VECTOR_SYNC_TASKS.discard)
+
+
+def _vector_delete_worker(world_book_id: str) -> None:
+    from ..core.database import SessionLocal
+    from ..services.worldbook_vector_service import WorldBookVectorService
+
+    svc = WorldBookVectorService(SessionLocal())
+    try:
+        svc.delete_vectors(world_book_id)
+    finally:
+        try:
+            svc.db.close()
+        except Exception:
+            pass
+
+
+def _fire_vector_delete(world_book_id: str) -> None:
+    """世界书删除后清空其向量行（Postgres 侧另有 FK CASCADE 兜底）。"""
+    async def _run():
+        try:
+            await asyncio.to_thread(_vector_delete_worker, world_book_id)
+        except Exception as exc:
+            logger.warning("worldbook vector cleanup failed (book=%s): %s", world_book_id, exc)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_run())
+    _PENDING_VECTOR_SYNC_TASKS.add(task)
+    task.add_done_callback(_PENDING_VECTOR_SYNC_TASKS.discard)
+
+
+def _schedule_worldbook_vector_sync(db: Session, world_book_id: str) -> None:
+    """commit 后调用：该书存在任一 vectorized=true 条目才触发后台同步（存量零突变）。"""
+    try:
+        has_vectorized = (
+            db.query(WorldBookStage.id)
+            .filter(
+                WorldBookStage.world_book_id == world_book_id,
+                WorldBookStage.vectorized.is_(True),
+            )
+            .first()
+            is not None
+        )
+    except Exception as exc:
+        logger.debug("worldbook vectorized probe failed (book=%s): %s", world_book_id, exc)
+        return
+    if has_vectorized:
+        _fire_vector_sync(world_book_id)
 
 
 def _utc_now():
@@ -232,6 +329,9 @@ async def update_worldbook(
     db.refresh(wb)
     invalidate_cache(f"worldbook_list:user={user.id}")
 
+    # V-1: 世界书保存后同步向量库（存在 vectorized 条目才触发，fire-and-forget）
+    _schedule_worldbook_vector_sync(db, world_book_id)
+
     # 触发 ST DATA_ROOT 同步（后台非阻塞）
     try:
         from ..services.st_sync_service import trigger_async_sync
@@ -261,6 +361,9 @@ async def delete_worldbook(
     db.delete(wb)
     db.commit()
     invalidate_cache(f"worldbook_list:user={user.id}")
+
+    # V-1: 删除世界书时清空其向量行（fire-and-forget；Postgres 侧 FK CASCADE 兜底）
+    _fire_vector_delete(world_book_id)
 
     # 级联清理 ST DATA_ROOT 中的 worlds 文件
     try:
@@ -466,6 +569,10 @@ async def import_worldbook(
     db.commit()
     db.refresh(wb)
     invalidate_cache(f"worldbook_list:user={user.id}")
+
+    # V-1: 导入含 vectorized 条目时同步向量库（ST 导入对齐，fire-and-forget）
+    _schedule_worldbook_vector_sync(db, wb.id)
+
     return _wb_to_response(wb, stage_index)
 
 

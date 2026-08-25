@@ -107,6 +107,26 @@ class WorldBookStage(Base):
     world_book = relationship("WorldBook", back_populates="entries")
 
 
+class WorldBookEntryVector(Base):
+    """世界书条目向量行（pgvector 检索基建，V 线 vectorized 接线补齐 ORM）。
+
+    生产 Postgres 由 ``services/worldbook_vector_service.ensure_table`` 以原生
+    ``vector(dim)`` 列建表；此模型与该 DDL 列一一对应，供同步/清理路径读写
+    与 SQLite 测试建表。embedding 统一以 ``[f1,f2,...]`` 字符串承载：
+    psycopg 文本字面量在 Postgres 上可隐式转换为 vector 类型，
+    SQLite/单测环境下按 Text 原样存储。
+    """
+    __tablename__ = "world_book_entry_vectors"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entry_id = Column(String, ForeignKey("world_book_stages.id", ondelete="CASCADE"), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    embedding = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+
+    entry = relationship("WorldBookStage")
+
+
 class SessionWorldBook(Base):
     __tablename__ = "session_world_books"
     __table_args__ = (
