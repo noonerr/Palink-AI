@@ -4515,6 +4515,8 @@ def _append_worldbook_context(
         # 存量用户显式配置过的值原样生效（仅未配置时取 ST 默认）。
         wi_world_info_depth = 2
         wi_recursive = True
+        # V-3 (2026-08-25): 世界书向量检索总开关，默认 false 存量零突变
+        wi_vectorized_enabled = False
         try:
             us = req.db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
             if us:
@@ -4540,6 +4542,9 @@ def _append_worldbook_context(
                                 # A4 修复: world_info_depth（ST 默认 2）+ recursive 总开关（ST 默认 true）
                                 wi_world_info_depth = int(_wis.get("world_info_depth", 2) or 2)
                                 wi_recursive = bool(_wis.get("world_info_recursive", True))
+                                # V-3 (2026-08-25): vectorized 检索总开关（默认 false，
+                                # 用户显式开启才生效；top_k/threshold 由 env 覆盖）
+                                wi_vectorized_enabled = bool(_wis.get("vectorized_enabled", False))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         pass
         except Exception as exc:
@@ -4618,6 +4623,8 @@ def _append_worldbook_context(
             # A4 修复: world_info_depth 全局扫描深度 + recursive 总开关
             world_info_depth=wi_world_info_depth,
             enable_recursive=wi_recursive,
+            # V-2/V-3 (2026-08-25): vectorized 检索开关透传（top_k/threshold 走 env 默认）
+            vectorized_enabled=wi_vectorized_enabled,
             # A5 修复: 百分比预算基数传真实上下文上限（16000 仅作兜底）
             max_context_tokens=max_context_tokens,
         )

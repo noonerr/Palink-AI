@@ -279,11 +279,19 @@ async def get_user_chats(user_id: int, user: User = Depends(get_admin), db: Sess
 
 
 @router.get("/sessions/{sid}/messages")
-async def get_admin_session_messages(sid: str, user: User = Depends(get_admin), db: Session = Depends(get_db)):
+async def get_admin_session_messages(
+    sid: str,
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(get_admin),
+    db: Session = Depends(get_db),
+):
     messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == sid)
         .order_by(ChatMessage.created_at)
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [{"id": m.id, "role": m.role, "content": m.content, "model": m.model, "created_at": m.created_at} for m in messages]
