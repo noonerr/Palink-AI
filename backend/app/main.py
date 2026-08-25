@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import text
 import logging
 import os
+import secrets
 import uuid
 import anyio.to_thread
 import json
@@ -15,12 +16,19 @@ try:
 except ImportError:
     fcntl = None
 
+from urllib.parse import urlparse
+
 from .core import settings, engine, run_migrations, ensure_runtime_schema_compat, get_password_hash, verify_password, SessionLocal
 from .core.exceptions import ServiceError
 from .core.log_sanitizer import setup_sanitized_logging
 from .core.security import UPLOAD_TOKEN_TTL_SECONDS, create_upload_token
 from .api import api_router
-from .api.dependencies import get_current_user
+from .api.dependencies import (
+    get_current_user,
+    set_session_cookie,
+    SESSION_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+)
 from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
 
@@ -314,12 +322,103 @@ async def token_refresh_header_middleware(request: Request, call_next):
     request.state.token_refresh；此处统一读取并写入 X-Palink-Token-Refresh
     响应头（Depends 内无 response 句柄，故采用中间件方案）。
     前端 services/api.ts 拦截该头后落地 localStorage 完成无感续期。
+    [N8-a §2.4] 写头的同时以登录同款属性重设 palink_session Cookie——
+    Cookie 通道的续期无需 JS 参与，这正是 HttpOnly 的架构优势。
     """
     response = await call_next(request)
     new_token = getattr(request.state, "token_refresh", None)
     if new_token:
         response.headers["X-Palink-Token-Refresh"] = new_token
+        set_session_cookie(response, new_token)
     return response
+
+
+# [N8-a §2.3] CSRF 防护豁免表
+_CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_CSRF_EXEMPT_PATHS = {"/api/token"}
+_CSRF_EXEMPT_PREFIXES = ("/api/uploads",)
+
+
+def _origin_same_site(origin: str, request: Request) -> bool:
+    """[插件兼容兜底] Origin 与部署站点同源判定。
+
+    浏览器对同源 fetch/XHR 的 mutating 请求必带同源 Origin；跨站表单/img 伪造
+    必带外站 Origin 或不带 Origin，故此兜底不削弱防护强度。判定口径：
+    1) Origin host == 请求 Host（同源部署主路径）；
+    2) Origin 命中 CORS_ORIGINS 显式白名单（多第一方域名部署）；"*" 不参与
+       （开发通配不得等价于放行任意外站 Origin）。
+    """
+    parsed = urlparse(origin)
+    origin_host = (parsed.netloc or "").lower()
+    if not origin_host:
+        return False
+    site_host = (request.headers.get("host") or "").lower()
+    if site_host and origin_host == site_host:
+        return True
+    allowed = settings.cors_origins_list
+    if "*" in allowed:
+        return False
+    origin_norm = f"{parsed.scheme}://{parsed.netloc}".lower()
+    for item in allowed:
+        if item.strip().rstrip("/").lower() == origin_norm:
+            return True
+    return False
+
+
+@app.middleware("http")
+async def csrf_protection_middleware(request: Request, call_next):
+    """[N8-a §2.3] 全局 CSRF 中间件（与滑动续期中间件并存）。
+
+    覆盖全部 mutating 方法（POST/PUT/PATCH/DELETE），GET/HEAD/OPTIONS 豁免；
+    /api/uploads/*（N-7 短令牌自有隔离）与 /api/token（登录本身）豁免。
+
+    Authorization Bearer 请求豁免：Bearer 头是攻击者跨站无法伪造的显式凭据，
+    天然免疫 CSRF（项目既有语义，见 core/csrf_guard.py）。
+
+    强制区准入：请求携带 palink_session 会话 Cookie（OWASP 口径——CSRF 攻击
+    模型是"浏览器自动附带的环境凭据被跨站借用"；无会话 Cookie 的请求没有
+    可被伪造的权威，放行至认证层自然拒绝，不存在防护缺口）。
+
+    强制区通过条件（OR 语义）：
+    a) 标准双提交：X-CSRF-Token 头 == palink_csrf cookie；
+    b) [插件兼容兜底] Origin 同源（见 _origin_same_site）——主页面插件裸
+       fetch 同源必带同源 Origin，跨站伪造必带外站 Origin 或不带。
+    否则 403。
+
+    无会话 Cookie 但带 X-CSRF-Token 的 ST 兼容流量仍由 core/csrf_guard.py
+    端点级守卫按原语义处理（分层不重复、互不削弱）。
+    """
+    if request.method in _CSRF_SAFE_METHODS:
+        return await call_next(request)
+    path = request.url.path
+    if path in _CSRF_EXEMPT_PATHS or path.startswith(_CSRF_EXEMPT_PREFIXES):
+        return await call_next(request)
+    auth_scheme = request.headers.get("Authorization", "").split(" ", 1)[0].lower()
+    if auth_scheme == "bearer":
+        return await call_next(request)
+
+    session_cookie = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if not session_cookie:
+        return await call_next(request)
+
+    header_token = request.headers.get("x-csrf-token", "")
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME, "")
+    if (
+        cookie_token
+        and header_token
+        and secrets.compare_digest(header_token, cookie_token)
+    ):
+        return await call_next(request)
+
+    origin = request.headers.get("origin")
+    if origin and _origin_same_site(origin, request):
+        return await call_next(request)
+
+    request_id = getattr(request.state, "request_id", "unknown")
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "CSRF validation failed", "request_id": request_id},
+    )
 
 app.include_router(api_router)
 

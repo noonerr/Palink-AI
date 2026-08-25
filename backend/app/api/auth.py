@@ -1,8 +1,10 @@
 import json
 import logging
+import secrets
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, field_validator
@@ -21,7 +23,12 @@ from ..core.token_blacklist import add_to_blacklist
 from ..core.rate_limit import enforce_rate_limit
 from ..core.auth_config import get_auth_config, get_public_auth_config
 from ..core.ws_ticket import create_ticket
-from ..api.dependencies import get_current_user
+from ..api.dependencies import (
+    get_current_user,
+    set_session_cookie,
+    SESSION_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+)
 from ..models import User
 from ..services.oauth_service import (
     build_authorize_url,
@@ -137,7 +144,21 @@ async def login(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     token = create_access_token({"sub": user.username, "role": user.role})
-    return {"access_token": token, "token_type": "bearer"}
+    # [N8-a §2.1] 登录成功双 Set-Cookie：palink_session（HttpOnly 主 JWT）+
+    # palink_csrf（非 HttpOnly，CSRF 双提交配对值）。响应体保留 access_token
+    # （双轨期旧前端兼容）。Secure 仅 production（本地 http 调试可携带）。
+    max_age = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    resp = JSONResponse(content={"access_token": token, "token_type": "bearer"})
+    set_session_cookie(resp, token)
+    resp.set_cookie(
+        CSRF_COOKIE_NAME,
+        secrets.token_urlsafe(32),
+        max_age=max_age,
+        httponly=False,
+        samesite="lax",
+        path="/",
+    )
+    return resp
 
 
 @router.post("/register")
@@ -226,9 +247,15 @@ async def change_my_password(req: ChangePassword, user: User = Depends(get_curre
 
 @router.post("/auth/logout")
 async def logout(request: Request, user: User = Depends(get_current_user)):
+    # [N8-a §2.1] jti 拉黑保留既有 Bearer 逻辑；双轨期补充 Cookie 通道回退
+    # （终态前端无 localStorage token，仅凭 palink_session Cookie 登出）。
+    token: Optional[str] = None
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
+    if not token:
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
         try:
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
             jti = payload.get("jti")
@@ -237,7 +264,10 @@ async def logout(request: Request, user: User = Depends(get_current_user)):
                 add_to_blacklist(jti, exp)
         except Exception:
             pass
-    return {"status": "ok"}
+    resp = JSONResponse(content={"status": "ok"})
+    resp.delete_cookie(SESSION_COOKIE_NAME)
+    resp.delete_cookie(CSRF_COOKIE_NAME)
+    return resp
 
 
 @router.get("/auth/oauth/{provider}/login-url")
