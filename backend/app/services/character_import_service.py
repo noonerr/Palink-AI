@@ -650,7 +650,10 @@ class CharacterImportService:
         wb_description = character_book.get("description", "")
 
         raw_parts = []
-        for _key, entry in sorted(entries.items(), key=lambda x: x[1].get("order", 0)):
+        for _key, entry in sorted(
+            entries.items(),
+            key=lambda x: x[1].get("insertion_order", x[1].get("order", 0)),
+        ):
             if entry_is_disabled(entry):
                 continue
             comment = entry.get("comment", "")
@@ -677,7 +680,12 @@ class CharacterImportService:
 
         MAX_IMPORT_ENTRIES = 500
         stage_index = 0
-        for _key, entry in sorted(entries.items(), key=lambda x: x[1].get("order", 0)):
+        # V2 charbook 规范排序字段是 insertion_order（ST world-info.js order: entry.insertion_order），
+        # 旧卡/导出器可能写 order——双读兼容，否则规范卡所有条目排序静默归 0
+        for _key, entry in sorted(
+            entries.items(),
+            key=lambda x: x[1].get("insertion_order", x[1].get("order", 0)),
+        ):
             if stage_index >= MAX_IMPORT_ENTRIES:
                 break
             if entry_is_disabled(entry):
@@ -700,13 +708,21 @@ class CharacterImportService:
             for _ek, _ev in ext.items():
                 if _ek not in (
                     "excludeRecursion", "preventRecursion", "delayUntilRecursion",
-                    "depth", "selectiveLogic", "outletName", "groupOverride",
+                    "exclude_recursion", "prevent_recursion", "delay_until_recursion",
+                    "depth", "selectiveLogic", "selective_logic", "outletName",
+                    "groupOverride", "group_override",
                     "groupWeight", "caseSensitive", "matchWholeWords",
-                    "useGroupScoring", "automationId", "role", "vectorized",
-                    "sticky", "cooldown", "delay", "matchPersonaDescription",
-                    "matchCharacterDescription", "matchCharacterPersonality",
-                    "matchCharacterDepthPrompt", "matchScenario", "matchCreatorNotes",
+                    "case_sensitive", "match_whole_words",
+                    "useGroupScoring", "use_group_scoring", "automationId", "role",
+                    "vectorized",
+                    "matchPersonaDescription", "matchCharacterDescription",
+                    "matchCharacterPersonality", "matchCharacterDepthPrompt",
+                    "matchScenario", "matchCreatorNotes",
+                    "match_persona_description", "match_character_description",
+                    "match_character_personality", "match_character_depth_prompt",
+                    "match_scenario", "match_creator_notes",
                     "triggers", "ignoreBudget", "useProbability", "displayIndex",
+                    "sticky", "cooldown", "delay", "probability", "scan_depth",
                 ):
                     ext_json_data[_ek] = _ev
             # 保留一些有用的扩展字段
@@ -726,38 +742,67 @@ class CharacterImportService:
                 token_count=len(entry_content) // 4,
                 keys=json.dumps(entry_keys(entry)),
                 secondary_keys=json.dumps(entry_secondary_keys(entry)),
-                scan_depth=entry.get("scanDepth", ext.get("depth", 4)),
+                scan_depth=(
+                    entry.get("scanDepth")
+                    or ext.get("scan_depth")
+                    or ext.get("depth", 4)
+                ),
                 position=normalize_worldbook_position(entry.get("position", 4)),
                 selective=entry.get("selective", False),
-                probability=entry.get("probability", 100),
+                # V2 规范 probability/useProbability 位于顶层，部分导出器写进 extensions——双读
+                probability=entry.get("probability", ext.get("probability", 100)),
                 constant=is_constant,
                 group=entry.get("group", None),
                 created_at=now,
-                # ST V3 兼容字段
+                # ST V2/V3 兼容字段：规范为 extensions 下 snake_case（world-info.js:5533-5534），
+                # 旧导出器常见 camelCase——全部双读
                 enabled=not is_disabled,
-                case_sensitive=ext.get("caseSensitive", False),
-                match_whole_words=ext.get("matchWholeWords", False),
-                selective_logic=ext.get("selectiveLogic", 0),
+                case_sensitive=ext.get("case_sensitive", ext.get("caseSensitive", False)),
+                match_whole_words=ext.get(
+                    "match_whole_words", ext.get("matchWholeWords", False)
+                ),
+                selective_logic=ext.get("selective_logic", ext.get("selectiveLogic", 0)),
                 sticky=ext.get("sticky", 0) or 0,
                 cooldown=ext.get("cooldown", 0) or 0,
                 delay=ext.get("delay", 0) or 0,
                 depth=ext.get("depth", 4),
-                order=entry.get("order", 0) or 0,
-                exclude_recursion=ext.get("excludeRecursion", False),
-                prevent_recursion=ext.get("preventRecursion", False),
-                match_persona_description=ext.get("matchPersonaDescription", False),
-                match_character_description=ext.get("matchCharacterDescription", False),
-                match_character_personality=ext.get("matchCharacterPersonality", False),
-                match_character_depth_prompt=ext.get("matchCharacterDepthPrompt", False),
-                match_scenario=ext.get("matchScenario", False),
-                match_creator_notes=ext.get("matchCreatorNotes", False),
+                order=entry.get("insertion_order", entry.get("order", 0)) or 0,
+                exclude_recursion=ext.get(
+                    "exclude_recursion", ext.get("excludeRecursion", False)
+                ),
+                prevent_recursion=ext.get(
+                    "prevent_recursion", ext.get("preventRecursion", False)
+                ),
+                match_persona_description=ext.get(
+                    "match_persona_description", ext.get("matchPersonaDescription", False)
+                ),
+                match_character_description=ext.get(
+                    "match_character_description",
+                    ext.get("matchCharacterDescription", False),
+                ),
+                match_character_personality=ext.get(
+                    "match_character_personality",
+                    ext.get("matchCharacterPersonality", False),
+                ),
+                match_character_depth_prompt=ext.get(
+                    "match_character_depth_prompt",
+                    ext.get("matchCharacterDepthPrompt", False),
+                ),
+                match_scenario=ext.get("match_scenario", ext.get("matchScenario", False)),
+                match_creator_notes=ext.get(
+                    "match_creator_notes", ext.get("matchCreatorNotes", False)
+                ),
                 vectorized=ext.get("vectorized", False),
-                group_override=ext.get("groupOverride", False),
-                group_weight=ext.get("groupWeight", 0) or 0,
+                group_override=ext.get("group_override", ext.get("groupOverride", False)),
+                group_weight=ext.get("group_weight", ext.get("groupWeight", 0)) or 0,
                 add_memo=bool(entry.get("addMemo", False)),
                 triggers=json.dumps(ext.get("triggers", [])) if ext.get("triggers") else None,
                 outlet_name=ext.get("outletName", None),
-                delay_until_recursion=ext.get("delayUntilRecursion", 0) or 0,
+                delay_until_recursion=(
+                    ext.get("delay_until_recursion")
+                    or ext.get("delayUntilRecursion")
+                    or 0
+                ),
                 # Bug #6: ST 1.18.0 ignoreBudget — 顶层优先，回退 extensions.ignore_budget
                 ignore_budget=bool(
                     entry.get("ignoreBudget")

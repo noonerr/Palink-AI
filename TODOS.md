@@ -222,7 +222,12 @@
   4. ~~核对 `setExtensionPrompt` 沙箱签名与 ST 七参一致性~~ → **已完成（2026-08-23 核对关闭）**：sandbox.ts:3199 七参与 ST script.js:8866 一致（identifier/content/position/depth/scan/role/filter）；role 兼容字符串为超集；prompt-injection.ts:30-37 同构
   5. 补齐未覆盖对比：memory_module/、worldbook_vector_service.py、前端 regex、sillyTavernPluginRuntime.ts、st-plugins/、plugins.py（memory_module 代码虽经语义切分演进，「与 ST vectors 对比」本身仍未做）
 - **⚠️ 新增待办池（2026-08-23）**: 见 `docs/SILLYTAVERN_COMPAT_SPEC_2026-08-23.md` §11 —— 9 项 P1 问题（世界书 delay 条目永久沉默死锁、前端正则三分支漏判、智能卡 $N 双反斜杠损坏、LaTeX 流式/完成态断裂、worldbooks/import 字段丢失、经典轨 getContext 缩水、triggerSlash stub 倒挂、writeExtensionField 三轨三义、scanner selectiveLogic 错位）+ P2 批次择要；§12 要求分离存储完工后复核模块 C persist 正则与模块 F 渲染剥离消费点（已于同日复核通过：persist 侧三层正则链在 `_apply_reasoning_regex` 重构中完整保留且思考正则只作用于 extra.reasoning；渲染侧 Message.tsx memo 新格式直读 extra.reasoning 不再重复提取，旧格式 parse 路径不变）。**分工（2026-08-23 用户指定）：该 SPEC 的 P1/P2 修复由其他 agent 执行；本线 agent 只承担审计复核与提示词/交接撰写，不直接改 P1**
-- ✅ **上述 9 项 P1 已全部修复（2026-08-23，见顶部「SPEC 9 项 P1 修复」条目；#3 经复核为 SPEC 误报）——P2 批次仍未开始**
+- ✅ **上述 9 项 P1 已全部修复（2026-08-23，见顶部「SPEC 9 项 P1 修复」条目；#3 经复核为 SPEC 误报）**
+- **P2 存活性甄别（2026-08-25 审计线逐项核对代码现状）**:
+  - **已顺带修复无需再做（10 项）**: B-2 mes_example 拆块/B-3 V3 jailbreak/B-5 creator_notes/D-3 prevent_recursion/D-4 useProbability/D-5 WI 全局设置/D-6 预算基数（清理批次总案）；D-7 vectorized（二期接线）；C-3 空 placement 语义 + C-4 深度豁免 ST 主链路（P1 批顺带，pipeline.ts shouldSkipStScript）；F-1 LaTeX（hotfix+契约守卫）
+  - **本次直接修（B-6）**: character_book 导入条目级保真——insertion_order 双读排序、extensions 子字段 snake_case/camelCase 全量双读（case_sensitive/match_whole_words/selective_logic/exclude|prevent_recursion/match_*×6/scan_depth/probability/group_*/delay_until_recursion），raw_content 预览顺序同步统一；新增 test_b6_charbook_import_fidelity.py 3 例；基线升至 1053/0
+  - **仍开放·需拍板或按需做**: A-4 addOneMessage 双事件同发（getContext.ts:1507）/ A-5 半兼容字段集（tokenizers 枚举等六字段）/ A-6 经典轨缺 window.setExtensionPrompt 全局 / A-7 多租户隔离 M-3（单用户自部署无害，多用户部署才有意义——设计决策）/ B-4 system_prompt 合并注入 vs main 槽 override（设计取舍确认）/ C-4 后半 trimStrings 宏替换（前端 engine.ts）/ C-5 ESCAPED 宏子集 + 卡内正则白名单默认放行（安全向）/ D-9 前后端并行注入结构性风险（需实测触发频率）/ F-2 rehypeRaw 兜底分支未消毒（窄触发 `<object>` 理论穿透）
+  - **建议不做（设计权衡/收益低）**: C-6 流式不实时应用正则（结果收敛已文档化）/ F-3 消毒严于 ST（安全更优是特性）/ F-4 流式中间态突变（改动面大收益小）/ F-5 ST media 体系（新功能非兼容债）
 - **约束**: st-compat 已封存保持冻结；主攻 palink-native
 - ⚠️ **已更正（2026-08-20 核对）**：对比报告原"缺失宏 `{{banned}}`/`{{reverse}}`/`{{roll}}`"结论错误——三者均已在 `backend/app/services/macro_service.py` 实现（L570/705/673）。请勿据此重复实现。
 - ⚠️ **报告 §8/§9/§10 部分缺失项声明已过时（2026-08-22 核对）**：`renderExtensionTemplateAsync` 已实现（sandbox.ts P-8）；tokenizers 已实现（K-9）；jailbreak 在 palink-native 有 PHI+模板等价物（st-compat 有完整 D1 合并链）；`{{/regex}}` 宏两边源码均不存在。实施前请勿照抄报告缺失清单。
