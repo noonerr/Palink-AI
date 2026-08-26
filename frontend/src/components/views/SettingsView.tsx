@@ -883,9 +883,8 @@ export function SettingsView({
       toast.error('上传超时，请检查网络连接并重试');
     });
 
-    // 发送请求
+    // 发送请求（同源 XHR 自动携带 palink_session Cookie 鉴权）
     xhr.open('POST', '/api/admin/models/local/upload');
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.send(formData);
 
     // 重置文件输入

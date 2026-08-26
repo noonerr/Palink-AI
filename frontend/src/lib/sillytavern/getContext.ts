@@ -2156,13 +2156,12 @@ export function getContext(): StGetContext {
       // memory 插件 token 预算恒 0、token-counter ids 显示 "—"。
       if (!text) return [];
       try {
-        const token = localStorage.getItem('palink_token') || '';
         const xhr = new XMLHttpRequest();
         // 同步请求对齐 ST 的同步 ajax 语义（token-counter debounce 后调用，量小）
+        // N8-c 终态：同源 XHR 自动携带 palink_session Cookie，无需凭据头
         xhr.open('POST', '/api/tokenizers/encode', false);
         xhr.withCredentials = true;
         xhr.setRequestHeader('Content-Type', 'application/json');
-        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
         xhr.send(JSON.stringify({ text, tokenizer }));
         if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
           const data = JSON.parse(xhr.responseText);
@@ -3008,14 +3007,12 @@ export async function writeExtensionFieldCompat(
   }
 
   try {
-    const token =
-      typeof localStorage !== 'undefined' ? localStorage.getItem('palink_token') : null;
+    // N8-c 终态：同源 fetch 自动携带 palink_session Cookie，无需凭据头
     const resp = await fetch('/api/characters/merge-attributes', {
       method: 'POST',
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
         avatar: target.avatar,

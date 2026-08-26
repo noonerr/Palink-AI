@@ -1066,7 +1066,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
 
   // P1-1 修复（问题 4）：智能卡 iframe 同源沙箱可逃逸。
   // 此前一律 `allow-scripts allow-same-origin`：同源 iframe 内卡片脚本可直读
-  // 父页面 `parent.localStorage`（含 JWT palink_token）/cookie，任意被投毒角色卡
+  // 父页面 `parent.localStorage`/cookie 中的会话凭据，任意被投毒角色卡
   // （PNG 内嵌 HTML+JS）可窃取会话（浏览器实测警告 "can escape its sandboxing"）。
   // 现在：
   //   - trusted-native（用户显式信任的卡）：保留 allow-same-origin（脚本需读

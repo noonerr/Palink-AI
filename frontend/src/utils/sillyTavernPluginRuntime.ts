@@ -81,9 +81,9 @@ export interface SillyTavernContext {
 // ============================================================
 // 经典脚本插件运行在主 window，其 fetch 即 window.fetch。守卫在插件注入期间
 // 替换 window.fetch：
-// - 同源请求：未携带 Authorization 时注入 Bearer token（getRequestHeaders 已
-//   不再向插件暴露 token，插件的同源 API 调用由这里补认证；应用自身已带
-//   认证头的请求不受影响）
+// - 同源请求：补 Cookie 携带（credentials: include）保证登录态送达（N8-c 终态，
+//   认证唯一依赖 HttpOnly Cookie，不再注入 Bearer token；应用的登录态由浏览器
+//   按同源 Cookie 规则自动附带，getRequestHeaders 已不再向插件暴露凭据）
 // - 跨源请求：套用与 ESM 沙箱同一套域名白名单（isUrlAllowedByPluginWhitelist，
 //   默认 CDN + localStorage palink_plugin_fetch_whitelist 用户配置），白名单外
 //   拒绝并登记降级统计
@@ -116,29 +116,24 @@ function installGlobalFetchGuard(): void {
     if (parsed.origin === window.location.origin) {
       let nextInput: RequestInfo | URL = input;
       let nextInit = init;
+      // N8-c 终态：不再向同源请求注入 Bearer token（认证唯一依赖 HttpOnly Cookie）；
+      // 仍为插件请求补 Cookie 携带（credentials: include），保证登录态随请求送达。
       try {
         const headers = new Headers(
           init?.headers ?? (input instanceof Request ? input.headers : undefined),
         );
-        if (!headers.has('Authorization')) {
-          let token = '';
-          try { token = localStorage.getItem('palink_token') || ''; } catch { /* ignore */ }
-          if (token) {
-            headers.set('Authorization', `Bearer ${token}`);
-            if (input instanceof Request) {
-              // Request 的 headers 不可变，需重建（body 已消费时抛错，回退原样发送）
-              // N8-b：重建时补 Cookie 携带（原 credentials 为 omit 时保持不动）
-              nextInput = new Request(input, {
-                headers,
-                credentials: input.credentials === 'omit' ? undefined : 'include',
-              });
-            } else {
-              // N8-b：同源插件请求补 Cookie 携带（调用方显式传值时尊重不覆盖）
-              nextInit = { ...init, headers, credentials: init?.credentials ?? 'include' };
-            }
-          }
+        if (input instanceof Request) {
+          // Request 的 headers 不可变，需重建（body 已消费时抛错，回退原样发送）。
+          // N8-b：重建时补 Cookie 携带（原 credentials 为 omit 时保持不动）。
+          nextInput = new Request(input, {
+            headers,
+            credentials: input.credentials === 'omit' ? undefined : 'include',
+          });
+        } else {
+          // N8-b：同源插件请求补 Cookie 携带（调用方显式传值时尊重不覆盖）。
+          nextInit = { ...init, headers, credentials: init?.credentials ?? 'include' };
         }
-      } catch { /* 认证注入失败按原参数发送 */ }
+      } catch { /* 参数处理失败按原参数发送 */ }
       return nativeFetch(nextInput as RequestInfo, nextInit);
     }
 
@@ -694,9 +689,9 @@ export class SillyTavernPluginRuntime {
 
         // ST 兼容：Galgame 等插件通过 window.getRequestHeaders / SillyTavern.getRequestHeaders
         // 构造请求头后调用 /api/characters/chats、/api/chats/get 等 ST 端点。
-        // 阶段2 安全模型：不再把 palink_token 明文递给插件代码 — 同源请求的 Bearer
-        // 认证由 fetch 守卫（installGlobalFetchGuard）统一注入，插件把请求头发给
-        // 第三方或写入日志都不会泄露凭据。
+        // N8-c 终态：前端不再持有明文凭据，同源请求凭据由 HttpOnly Cookie 自动携带；
+        // fetch 守卫（installGlobalFetchGuard）只负责补 Cookie credentials，不注入 Bearer，
+        // 插件把请求头发给第三方或写入日志都不会泄露凭据。
         window.getRequestHeaders = window.getRequestHeaders || function() {
           return {
             'Content-Type': 'application/json',

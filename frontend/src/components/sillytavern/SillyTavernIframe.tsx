@@ -83,9 +83,6 @@ export function SillyTavernIframe({
     setNativeStError('');
     fetch('/api/st/native/status', {
       credentials: 'include',
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem('palink_token') || ''}`,
-      },
     })
       .then(async (res) => {
         if (res.ok) return res.json();

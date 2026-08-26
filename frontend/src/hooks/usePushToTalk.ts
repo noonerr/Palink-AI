@@ -93,7 +93,6 @@ export function usePushToTalk(options: UsePushToTalkOptions = {}): UsePushToTalk
       setIsTranscribing(true);
       setError(null);
       try {
-        const token = localStorage.getItem('palink_token');
         const formData = new FormData();
         formData.append('file', blob, `recording.${blobExtension(blob.type)}`);
         formData.append('language', language);
@@ -101,7 +100,6 @@ export function usePushToTalk(options: UsePushToTalkOptions = {}): UsePushToTalk
         const response = await fetch('/api/stt', {
           method: 'POST',
           credentials: 'include',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData,
         });
 

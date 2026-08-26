@@ -60,10 +60,11 @@ function _headersKey(headers?: HeadersInit): string {
 }
 
 function _cacheKey(url: string, options?: Pick<RequestOptions, 'headers' | 'skipAuth'>): string {
+  // N8-c 终态：认证唯一依赖 HttpOnly Cookie（浏览器级、无 JS 可读凭据），
+  // 缓存键不再按 token 分域——同浏览器内登录态切换由 invalidateCache 全局失效兜底。
   const authScope = options?.skipAuth ? 'skip-auth' : 'auth';
-  const tokenScope = options?.skipAuth ? 'anonymous' : getToken() ?? 'anonymous';
   const headerScope = _headersKey(options?.headers);
-  return `GET:${authScope}:${tokenScope}:${url}:${headerScope}`;
+  return `GET:${authScope}:${url}:${headerScope}`;
 }
 
 export function isAbortError(e: unknown): boolean {
@@ -124,23 +125,9 @@ export class ApiError extends Error {
 // @deprecated 使用事件总线 emitEvent('auth:failure') 替代
 export const AUTH_FAILURE_EVENT = 'api:auth-failure';
 
-function getToken(): string | null {
-  return localStorage.getItem('palink_token');
-}
-
-// ── N-8 止血：滑动续期令牌落地 ────────────────────────────
-// 后端在令牌剩余寿命 < 1/3 时随响应下发 X-Palink-Token-Refresh（新 JWT），
-// 此处检测到即覆盖 localStorage，活跃用户无感续期；其余逻辑（401 处理等）不动。
-function applyTokenRefresh(res: Response): void {
-  try {
-    const renewed = res.headers.get('X-Palink-Token-Refresh');
-    if (renewed) {
-      localStorage.setItem('palink_token', renewed);
-    }
-  } catch {
-    // localStorage 不可用（隐私模式等）时静默跳过，不影响响应处理
-  }
-}
+// ── N8-c 终态：前端凭据直读/续期落地已整体退役 ──
+// 认证唯一依赖 HttpOnly Cookie（palink_session），前端不再持有任何可读凭据；
+// 滑动续期由服务端续期中间件直接 Set-Cookie 覆盖，前端无需再消费续期响应头。
 
 function dispatchAuthFailure() {
   // 使用统一事件总线派发认证失败事件
@@ -161,7 +148,7 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 // ── 内部统一请求 ──────────────────────────────────────────
 interface RequestOptions extends RequestInit {
-  /** 跳过自动注入 Authorization 头 */
+  /** 已退役（N8-c）：不再注入 Authorization，仅为既有调用方兼容保留；仍参与 GET 缓存键作用域 */
   skipAuth?: boolean;
   /** GET 请求缓存时长（毫秒），设置后启用缓存 */
   cacheTtlMs?: number;
@@ -171,7 +158,7 @@ async function request<T = any>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { skipAuth, cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', credentials, ...fetchOptions } = options;
+  const { cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', credentials, ...fetchOptions } = options;
 
   // 仅对幂等 GET（且调用方未提供 signal）启用超时 + 自动重试；
   // 其他方法一律不重试（避免重复写入），调用方 signal 的取消语义需被尊重。
@@ -181,14 +168,6 @@ async function request<T = any>(
   let lastError: any = null;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const headers = new Headers(rawHeaders);
-
-    // 自动注入 token
-    if (!skipAuth) {
-      const token = getToken();
-      if (token) {
-        headers.set('Authorization', `Bearer ${token}`);
-      }
-    }
 
     // N8-b：mutating 方法自动注入 CSRF 双提交头（调用方显式传入 X-CSRF-Token 时尊重不覆盖）
     if (MUTATING_METHODS.has(method) && !headers.has('X-CSRF-Token')) {
@@ -211,8 +190,6 @@ async function request<T = any>(
 
     try {
       const res = await fetch(url, { ...fetchOptions, method, headers, signal, credentials: credentials ?? 'include' });
-
-      applyTokenRefresh(res);
 
       // 401 → 派发统一登出事件
       if (res.status === 401) {
@@ -281,9 +258,7 @@ async function stream(
   body?: unknown,
   options?: RequestInit,
 ): Promise<Response> {
-  const token = getToken();
   const headers = new Headers(options?.headers);
-  if (token) headers.set('Authorization', `Bearer ${token}`);
   if (body && !(body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
@@ -384,12 +359,8 @@ export const api = {
 
   /** 原始请求，返回 Response 对象（用于 blob 下载等场景） */
   raw: async (url: string, options?: RequestOptions): Promise<Response> => {
-    const { skipAuth, headers: rawHeaders, ...fetchOptions } = options ?? {};
+    const { headers: rawHeaders, ...fetchOptions } = options ?? {};
     const headers = new Headers(rawHeaders);
-    if (!skipAuth) {
-      const token = getToken();
-      if (token) headers.set('Authorization', `Bearer ${token}`);
-    }
     // N8-b：mutating 方法自动注入 CSRF 双提交头（raw 未固定 method，默认 GET 不注入）
     const rawMethod = fetchOptions.method ?? 'GET';
     if (MUTATING_METHODS.has(rawMethod) && !headers.has('X-CSRF-Token')) {
@@ -480,10 +451,10 @@ export const api = {
 };
 
 export function ws(path: string): string {
+  // N8-c 终态：不再向 URL 追加 query token（前端无可读凭据）；
+  // WS 握手为同源请求，浏览器自动携带 palink_session Cookie。
   const { protocol, host } = window.location;
   const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-  const token = getToken();
   const url = new URL(path, `${wsProtocol}//${host}`);
-  if (token) url.searchParams.set('token', token);
   return url.toString();
 }

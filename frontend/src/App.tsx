@@ -362,40 +362,23 @@ const ProviderEditPage = lazy(() =>
 );
 
 const USER_FETCH_TIMEOUT_MS = 5000;
+// N8-c 终态：不再缓存用户快照（旧凭据 localStorage palink_user_snapshot 兜底已随
+// localStorage 鉴权一并退役）。启动一律静默探测 /api/users/me，缓存读取副作用已无。
 const LEGACY_USER_CACHE_KEY = 'palink_user_snapshot';
-const USER_CACHE_PREFIX = `${LEGACY_USER_CACHE_KEY}:`;
 
-function tokenCacheKey(token: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < token.length; i += 1) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${USER_CACHE_PREFIX}${(hash >>> 0).toString(36)}`;
-}
-
-function clearCachedUserSnapshot(token?: string | null): void {
-  if (token) localStorage.removeItem(tokenCacheKey(token));
-  localStorage.removeItem(LEGACY_USER_CACHE_KEY);
-}
-
-function readCachedUserSnapshot(token: string | null): User | null {
-  if (!token) return null;
-  const key = tokenCacheKey(token);
-  const cached = localStorage.getItem(key);
-  localStorage.removeItem(LEGACY_USER_CACHE_KEY);
-  if (!cached) return null;
+// 迁移：清除双轨期残留的用户快照缓存（含按 token 派生的旧键）。仅保留该 key，
+// 一旦清理完成即可整体退役。
+function clearCachedUserSnapshot(): void {
   try {
-    return JSON.parse(cached) as User;
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && (key === LEGACY_USER_CACHE_KEY || key.startsWith(`${LEGACY_USER_CACHE_KEY}:`))) {
+        localStorage.removeItem(key);
+      }
+    }
   } catch {
-    localStorage.removeItem(key);
-    return null;
+    // localStorage 不可用时静默跳过
   }
-}
-
-function writeCachedUserSnapshot(token: string, user: User): void {
-  localStorage.setItem(tokenCacheKey(token), JSON.stringify(user));
-  localStorage.removeItem(LEGACY_USER_CACHE_KEY);
 }
 
 function shouldIgnoreConfigError(e: unknown): boolean {
@@ -410,8 +393,10 @@ const RouteFallback = () => (
 
 function App() {
   const isMobile = useIsMobile();
-  const [token, setToken] = useState<string | null>(localStorage.getItem('palink_token'));
-  const [user, setUser] = useState<User | null>(() => readCachedUserSnapshot(token));
+  // N8-c 终态：哨兵值驱动既有渲染门控（/api/users/me 探测判定登录态）。
+  // 值为常量 _ 即可满足类型断言，不影响被下发子组件（其默认已不消费凭据）。
+  const [token] = useState<string | null>('_');
+  const [user, setUser] = useState<User | null>(null);
   const [themeMode, setThemeMode] = useState<Theme>((localStorage.getItem('theme') as Theme) || 'auto');
   const [systemPrefersDark, setSystemPrefersDark] = useState<boolean>(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return false;
@@ -423,7 +408,11 @@ function App() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [systemDefaults, setSystemDefaults] = useState<any>({});
   const [privateConfigReady, setPrivateConfigReady] = useState(false);
-  const [loading, setLoading] = useState(() => Boolean(token && !user));
+  // N8-c 终态：初始 loading=true —— 首屏挂载即进入探测 loading 态，直到 /api/users/me
+  // 判定（auth:ready → false；auth:unauthorized → false 停留登录页），防闪烁。
+  const [loading, setLoading] = useState(true);
+  // N8-c 终态：登录后触发的重新探测计数（handleLogin 自增，驱动 /api/users/me 探测 effect 重跑）
+  const [authProbeKey, setAuthProbeKey] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [dockOffset, setDockOffset] = useState(0);
   const { isKeyboardOpen } = useVirtualKeyboard();
@@ -643,67 +632,61 @@ function App() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), USER_FETCH_TIMEOUT_MS);
 
-    if (token) {
-      setPrivateConfigReady(false);
-      const cachedUser = readCachedUserSnapshot(token);
-      if (cachedUser) {
-        setUser(cachedUser);
-        setLoading(false);
-      }
+    // N8-c 终态：启动无 token，一律携带 palink_session Cookie 静默探测 /api/users/me。
+    // 200 → 有登录态，无感进入主界面；401 → 无登录态，清应用状态后停留登录页。
+    setPrivateConfigReady(false);
+    setUser(null);
+    setLoading(true);
 
-      api.get<User>('/api/users/me', { signal: controller.signal })
-        .then(u => {
-          if (!isMounted) return;
-          setUser(u);
-          writeCachedUserSnapshot(token, u);
-          setPrivateConfigReady(true);
-        })
-        .catch(e => {
-          if (!isMounted) return;
-          if (isAbortError(e)) {
-            if (cachedUser) setPrivateConfigReady(true);
-            return;
-          }
-          setPrivateConfigReady(false);
-          setToken(null);
-          setUser(null);
-          localStorage.removeItem('palink_token');
-          clearCachedUserSnapshot(token);
-        })
-        .finally(() => {
-          if (!isMounted) return;
-          clearTimeout(timeoutId);
-          setLoading(false);
-        });
-    } else {
-      setPrivateConfigReady(false);
-      setUser(null);
-      clearCachedUserSnapshot();
-      localStorage.removeItem('palink-silly-tavern-mode');
-      localStorage.removeItem('palink-silly-tavern-theme');
-      setModels([]);
-      setProviders([]);
-      setSystemDefaults({});
-      setCurrentModel('');
-      setLoading(false);
-      clearTimeout(timeoutId);
-    }
+    api.get<User>('/api/users/me', { signal: controller.signal })
+      .then(u => {
+        if (!isMounted) return;
+        setUser(u);
+        setPrivateConfigReady(true);
+        setLoading(false);
+      })
+      .catch(e => {
+        if (!isMounted) return;
+        // 探测失败统一视为未登录：清理应用级状态并停留登录页。
+        // 401 由 api.ts 派发 'auth:failure' 兜底清理；此处对 abort/网络错误同样降级登出态。
+        setPrivateConfigReady(false);
+        setUser(null);
+        clearCachedUserSnapshot();
+        localStorage.removeItem('palink-silly-tavern-mode');
+        localStorage.removeItem('palink-silly-tavern-theme');
+        setModels([]);
+        setProviders([]);
+        setSystemDefaults({});
+        setCurrentModel('');
+        setLoading(false);
+        if (!isAbortError(e)) {
+          console.warn(
+            '[App] /api/users/me 探测失败，按未登录处理:',
+            e instanceof ApiError ? e.status : e,
+          );
+        }
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        clearTimeout(timeoutId);
+      });
 
     return () => {
       isMounted = false;
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [token]);
+    // authProbeKey：挂载时执行一次（初始 0），登录成功后 handleLogin 自增触发重跑——
+    // 重新静默探测 /api/users/me，使登录态的 user 状态更新、进入主界面。
+  }, [authProbeKey]);
 
   useEffect(() => {
     const onAuthFailure = () => {
+      // 认证失效（401）：清应用级状态回到未登录。Cookie 由服务端登出/过期负责清理。
       setPrivateConfigReady(false);
-      setToken(null);
-      localStorage.removeItem('palink_token');
       localStorage.removeItem('palink-silly-tavern-mode');
       localStorage.removeItem('palink-silly-tavern-theme');
-      clearCachedUserSnapshot(token);
+      clearCachedUserSnapshot();
       setUser(null);
       setModels([]);
       setProviders([]);
@@ -731,7 +714,7 @@ function App() {
       window.removeEventListener('userSettingsUpdated', onUserSettingsUpdated);
       window.removeEventListener('modelsUpdated', onModelsUpdated);
     };
-  }, [fetchProviders, loadModels, token]);
+  }, [fetchProviders, loadModels]);
 
   useEffect(() => {
     loadConfig();
@@ -745,35 +728,36 @@ function App() {
     }
   }, [models, systemDefaults.default_chat_model, currentModel]);
 
-  const handleLogin = useCallback((data: { access_token: string }) => {
+  // N8-c 终态：登录态由服务端 Set-Cookie 建立。前端不再落盘凭据，handleLogin
+  // 仅负责从登录页跳回已进入的探测流程：清应用级状态 + 触发全新 /api/users/me 探测。
+  // 签名保留 access_token 入参以兼容 AuthScreen 既有 onLogin(data) 调用，忽略其值。
+  const handleLogin = useCallback((_data?: { access_token?: string }) => {
     setPrivateConfigReady(false);
     setUser(null);
     setModels([]);
     setProviders([]);
     setSystemDefaults({});
     setCurrentModel('');
-    setToken(data.access_token);
-    localStorage.setItem('palink_token', data.access_token);
     setLoading(true);
+    setAuthProbeKey((k) => k + 1);
   }, []);
 
   const handleLogout = useCallback(() => {
     // N8-b 验收补充：best-effort 服务端登出——清 palink_session/palink_csrf Cookie
-    // 双件套 + jti 拉黑（api.post 自动携带 credentials 与 X-CSRF-Token，双轨期
-    // Bearer/Cookie 任一通道可鉴权）。失败不阻塞本地清理，Cookie 由 Max-Age 兜底过期。
+    // 双件套 + jti 拉黑（api.post 自动携带 credentials 与 X-CSRF-Token）。失败不阻塞
+    // 本地清理，Cookie 由 Max-Age 兜底过期。
     void api.post('/api/auth/logout').catch(() => {});
     setPrivateConfigReady(false);
-    setToken(null);
-    localStorage.removeItem('palink_token');
     localStorage.removeItem('palink-silly-tavern-mode');
     localStorage.removeItem('palink-silly-tavern-theme');
-    clearCachedUserSnapshot(token);
+    clearCachedUserSnapshot();
     setUser(null);
     setModels([]);
     setProviders([]);
     setSystemDefaults({});
     setCurrentModel('');
-  }, [token]);
+    setLoading(false);
+  }, [clearCachedUserSnapshot]);
 
   const toggleTheme = useCallback(() => {
     // 侧栏快速切换：在亮色/暗色之间切换（跳出 auto 模式）

@@ -743,9 +743,7 @@ export function postSmartCardAssetPrefetch(urls: string[]): void {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
   if (urls.length === 0) return;
   urls.forEach((url) => smartCardPrefetchedAssetUrls.add(url));
-  const token = window.localStorage.getItem('palink_token');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
 
   fetch(SMART_CARD_ASSET_PREFETCH_ENDPOINT, {
     method: 'POST',

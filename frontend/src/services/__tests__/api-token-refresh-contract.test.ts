@@ -1,8 +1,9 @@
 /*
- * N-8 止血：滑动续期前端落地契约守卫。
+ * N8-c 终态契约守卫：滑动续期前端落地已整体退役。
  *
- * 锁定 services/api.ts 的源码契约：响应处理中必须检测
- * X-Palink-Token-Refresh 响应头并写入 localStorage 'palink_token'。
+ * 新不变式（N8-c）：前端不再消费 X-Palink-Token-Refresh 响应头，也不再把
+ * 任何凭据写入 localStorage 'palink_token'。滑动续期已由服务端续期中间件
+ * 直接 Set-Cookie 覆盖 palink_session（HttpOnly），前端无 JS 侧工作。
  * 任何整文件回退（同 formatting.ts 事故模式）立即红灯。
  *
  * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/services/__tests__/api-token-refresh-contract.test.ts
@@ -48,33 +49,27 @@ const SOURCE = readFileSync(
 );
 
 // ============================================================
-// 契约断言
+// 契约断言 —— N8-c 终态：续期前端落地退役
 // ============================================================
 
-it('检测 X-Palink-Token-Refresh 响应头', () => {
-  expect(SOURCE.includes("res.headers.get('X-Palink-Token-Refresh')")).toBe(true);
+it('终态：applyTokenRefresh 函数已删除', () => {
+  expect(SOURCE.indexOf('function applyTokenRefresh')).toBe(-1);
 });
 
-it('命中头时写入 localStorage palink_token', () => {
-  const detectSite = SOURCE.indexOf("X-Palink-Token-Refresh");
-  expect(detectSite).toBeGreaterThan(-1);
-  const setItemSite = SOURCE.indexOf("localStorage.setItem('palink_token'", detectSite);
-  expect(setItemSite).toBeGreaterThan(detectSite);
+it('终态：request() 不再调用 applyTokenRefresh', () => {
+  expect(SOURCE.indexOf('applyTokenRefresh(res);')).toBe(-1);
 });
 
-it('续期落地位于统一 request() 的 fetch 之后、401 处理之前', () => {
-  const applySite = SOURCE.indexOf('applyTokenRefresh(res);');
-  expect(applySite).toBeGreaterThan(-1);
-  const unauthorizedSite = SOURCE.indexOf("res.status === 401", applySite);
-  expect(unauthorizedSite).toBeGreaterThan(applySite);
+it('终态：不再读取/消费 X-Palink-Token-Refresh 响应头', () => {
+  expect(SOURCE.indexOf('X-Palink-Token-Refresh')).toBe(-1);
 });
 
-it('续期读取失败不阻断响应处理（try/catch 包裹）', () => {
-  const fnSite = SOURCE.indexOf('function applyTokenRefresh');
-  const bodyEnd = SOURCE.indexOf('\n}', fnSite);
-  const body = SOURCE.slice(fnSite, bodyEnd);
-  expect(body.includes('try {')).toBe(true);
-  expect(body.includes('catch')).toBe(true);
+it('终态：不再向 localStorage 写入 palink_token 凭据', () => {
+  expect(SOURCE.indexOf("localStorage.setItem('palink_token'")).toBe(-1);
+});
+
+it('终态：服务端续期走 Cookie 通道，api.ts 无 JS 侧凭据读写', () => {
+  expect(SOURCE.indexOf('palink_token')).toBe(-1);
 });
 
 // ============================================================

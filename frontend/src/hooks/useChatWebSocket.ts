@@ -30,14 +30,9 @@ const HEARTBEAT_INTERVAL = 30000;
 const HEARTBEAT_TIMEOUT = 10000;
 const WS_TICKET_TIMEOUT = 10000;
 
-function getToken(): string | null {
-  return localStorage.getItem('palink_token');
-}
-
+// N8-c 终态：不再读取 localStorage 凭据。WS ticket 经 POST /api/ws/ticket 获取，
+// 同源请求自动携带 palink_session Cookie 鉴权（spec §2.5）。
 async function fetchWsTicket(signal?: AbortSignal): Promise<string | null> {
-  const token = getToken();
-  if (!token) return null;
-
   try {
     const { protocol, host } = window.location;
     const httpProtocol = protocol === 'https:' ? 'https:' : 'http:';
@@ -46,7 +41,6 @@ async function fetchWsTicket(signal?: AbortSignal): Promise<string | null> {
       signal,
       credentials: 'include',
       headers: {
-        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
     });

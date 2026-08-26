@@ -286,7 +286,6 @@ class TTSService {
     signal?: AbortSignal;
   }): Promise<void> {
     try {
-      const token = localStorage.getItem('palink_token');
       const baseUrl = window.location.origin;
       const response = await fetch(`${baseUrl}${preview ? '/api/tts/preview/audio' : '/api/tts/audio'}`, {
         method: 'POST',
@@ -294,7 +293,6 @@ class TTSService {
         signal: signal ?? this.abortController?.signal,
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           text,

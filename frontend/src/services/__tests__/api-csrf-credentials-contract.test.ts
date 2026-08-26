@@ -145,25 +145,36 @@ it('raw() 未固定 method，默认 GET 不触发注入', () => {
 });
 
 // ============================================================
-// 契约断言 —— 防误删守卫（双轨期只增不删）
+// 契约断言 —— 归零守卫（N8-c 终态：api.ts 源码中不得再出现 palink_token）
 // ============================================================
 
-it('防误删：palink_token 直读（getToken）未被删除', () => {
-  expect(SOURCE.indexOf("localStorage.getItem('palink_token')")).toBeGreaterThan(-1);
+it('终态：api.ts 不再出现 palink_token 直读（getToken 已退役）', () => {
+  expect(SOURCE.indexOf("localStorage.getItem('palink_token')")).toBe(-1);
 });
 
-it('防误删：滑动续期写入 localStorage palink_token 未被删除', () => {
-  expect(SOURCE.indexOf("localStorage.setItem('palink_token'")).toBeGreaterThan(-1);
+it('终态：api.ts 不再出现 palink_token 写入（滑动续期落地已退役）', () => {
+  expect(SOURCE.indexOf("localStorage.setItem('palink_token'")).toBe(-1);
 });
 
-it('防误删：applyTokenRefresh 与 401 派发逻辑未被删除', () => {
-  expect(SOURCE.indexOf('function applyTokenRefresh')).toBeGreaterThan(-1);
-  expect(SOURCE.indexOf('function dispatchAuthFailure')).toBeGreaterThan(-1);
-  expect(countOccurrences(SOURCE, 'res.status === 401')).toBeGreaterThanOrEqual(2);
+it('终态：getToken / applyTokenRefresh 函数已删除', () => {
+  expect(SOURCE.indexOf('function getToken')).toBe(-1);
+  expect(SOURCE.indexOf('function applyTokenRefresh')).toBe(-1);
+  expect(SOURCE.indexOf('applyTokenRefresh(res);')).toBe(-1);
 });
 
-it('防误删：既有 Authorization Bearer 拼接全部保留（三通道）', () => {
-  expect(countOccurrences(SOURCE, '`Bearer ${token}`')).toBe(3);
+it('终态：三通道 Authorization Bearer 头拼接全部移除', () => {
+  expect(SOURCE.indexOf('`Bearer ${token}`')).toBe(-1);
+  expect(SOURCE.indexOf('headers.set(\'Authorization\'')).toBe(-1);
+});
+
+it('终态：api.ts 中不存在 palink_token 字样', () => {
+  let count = 0;
+  let pos = SOURCE.indexOf('palink_token');
+  while (pos !== -1) {
+    count += 1;
+    pos = SOURCE.indexOf('palink_token', pos + 1);
+  }
+  expect(count === 0).toBe(true);
 });
 
 // ============================================================
