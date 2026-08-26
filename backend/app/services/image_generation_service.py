@@ -166,7 +166,7 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
         parsed = urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("Image generation Base URL must be a valid HTTP(S) URL")
-        if provider_type == "openai_compatible" and not _is_safe_mcp_url(base_url):
+        if not _is_safe_mcp_url(base_url):
             raise ValueError("Image generation Base URL must not point to a private/internal network address")
         base_url = base_url.rstrip("/")
 
@@ -263,6 +263,12 @@ def _decode_data_url(data_url: str) -> bytes:
 
 
 async def _download_image(url: str, timeout_seconds: int) -> bytes:
+    """Download a remote image URL.
+
+    Note: ``follow_redirects=True`` skips re-validating redirect targets
+    against the private-network guard; redirect-based SSRF is a known,
+    accepted residual risk here (legitimate image CDNs commonly redirect).
+    """
     async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()
