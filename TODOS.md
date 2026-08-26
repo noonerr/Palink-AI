@@ -226,7 +226,9 @@
 - **P2 存活性甄别（2026-08-25 审计线逐项核对代码现状）**:
   - **已顺带修复无需再做（10 项）**: B-2 mes_example 拆块/B-3 V3 jailbreak/B-5 creator_notes/D-3 prevent_recursion/D-4 useProbability/D-5 WI 全局设置/D-6 预算基数（清理批次总案）；D-7 vectorized（二期接线）；C-3 空 placement 语义 + C-4 深度豁免 ST 主链路（P1 批顺带，pipeline.ts shouldSkipStScript）；F-1 LaTeX（hotfix+契约守卫）
   - **本次直接修（B-6）**: character_book 导入条目级保真——insertion_order 双读排序、extensions 子字段 snake_case/camelCase 全量双读（case_sensitive/match_whole_words/selective_logic/exclude|prevent_recursion/match_*×6/scan_depth/probability/group_*/delay_until_recursion），raw_content 预览顺序同步统一；新增 test_b6_charbook_import_fidelity.py 3 例；基线升至 1053/0
-  - **仍开放·需拍板或按需做**: A-4 addOneMessage 双事件同发（getContext.ts:1507）/ A-5 半兼容字段集（tokenizers 枚举等六字段）/ A-6 经典轨缺 window.setExtensionPrompt 全局 / A-7 多租户隔离 M-3（单用户自部署无害，多用户部署才有意义——设计决策）/ B-4 system_prompt 合并注入 vs main 槽 override（设计取舍确认）/ C-4 后半 trimStrings 宏替换（前端 engine.ts）/ C-5 ESCAPED 宏子集 + 卡内正则白名单默认放行（安全向）/ D-9 前后端并行注入结构性风险（需实测触发频率）/ F-2 rehypeRaw 兜底分支未消毒（窄触发 `<object>` 理论穿透）
+  - **仍开放·需拍板或按需做**: A-4 addOneMessage 双事件同发（getContext.ts:1507）/ A-5 半兼容字段集（tokenizers 枚举等六字段）/ A-6 经典轨缺 window.setExtensionPrompt 全局 / A-7 多租户隔离 M-3（单用户自部署无害，多用户部署才有意义——设计决策）/ B-4 system_prompt 合并注入 vs main 槽 override（设计取舍确认）/ C-4 后半 trimStrings 宏替换（前端 engine.ts）/ C-5 ESCAPED 宏子集 + 卡内正则白名单默认放行（安全向）/ D-9 前后端并行注入结构性风险（需实测触发频率）
+  - **F-2 已修（2026-08-26）**: Message.tsx 兜底 markdown 分支接入 sanitizeMarkdownSource（DOMPurify 源串预消毒 + 300 条缓存），rehypeRaw 前剥除 script/object/embed/on* 载体；tsc/test:contract/build 三连复验通过
+  - **SD 链路安全补全（2026-08-26，子 Agent 施工+审计线验收）**: image_generation_service.py L169 内网校验统一应用于三种 provider 类型（原仅 openai_compatible），新增 test_sd_provider_ssrf.py 12 例（三类型×内网拒绝/公网放行/masked 跳过）；_download_image 重定向 SSRF 为已标注残留风险（follow_redirects=True 不逐跳复检，收敛方案留待需要时做）；基线升至 **1065/0**
   - **建议不做（设计权衡/收益低）**: C-6 流式不实时应用正则（结果收敛已文档化）/ F-3 消毒严于 ST（安全更优是特性）/ F-4 流式中间态突变（改动面大收益小）/ F-5 ST media 体系（新功能非兼容债）
 - **约束**: st-compat 已封存保持冻结；主攻 palink-native
 - ⚠️ **已更正（2026-08-20 核对）**：对比报告原"缺失宏 `{{banned}}`/`{{reverse}}`/`{{roll}}`"结论错误——三者均已在 `backend/app/services/macro_service.py` 实现（L570/705/673）。请勿据此重复实现。
