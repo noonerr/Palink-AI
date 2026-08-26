@@ -269,8 +269,6 @@ def build_default_character_prompt(
 
     # 第二层：角色属性
     attributes_parts = []
-    if custom_prompt:
-        attributes_parts.append(labels["system_prompt"] + custom_prompt)
     if personality:
         attributes_parts.append(labels["personality"] + personality)
     if background:
@@ -287,6 +285,15 @@ def build_default_character_prompt(
         dialogue_mode=dialogue_text.format(name=char_name),
         attributes=attributes_text
     )
+
+    # [B-4 A 方案对齐 ST] 角色卡 system_prompt 作为 main 槽头部 override（charPrompt 语义）：
+    # ST 中角色 system_prompt 非空时优先决定 system 槽（prefer_character_prompt=true 默认），
+    # 而非与 personality/description 等属性平级并接。此处置于核心规则层之上（最前），
+    # 与"角色自己的总纲"语义一致；系统提示顺序：角色自定义 → 核心不变规则 → 属性 → 输出格式。
+    if custom_prompt:
+        character_override = labels["system_prompt"] + custom_prompt + "\n"
+    else:
+        character_override = ""
 
     # 第三层：输出格式
     output_format = format_template.format(name=char_name)
@@ -317,6 +324,6 @@ def build_default_character_prompt(
         except Exception:
             pass
 
-    # 组装三层结构
-    prompt_parts = [core_rules, character_attributes, output_format]
+    # 组装整体结构（B-4 A 方案：角色自定义 system_prompt 在 main 槽最前）
+    prompt_parts = [character_override, core_rules, character_attributes, output_format]
     return "\n\n".join(part for part in prompt_parts if part.strip())

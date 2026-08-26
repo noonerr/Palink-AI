@@ -2050,6 +2050,21 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
 
     # Build system prompt using default config
     from ..core.default_prompts import build_default_character_prompt
+
+    # [B-4 A 方案对齐 ST] prefer_character_prompt（ST power_user.prefer_character_prompt，
+    # 默认 true）决定角色卡 system_prompt 是否作为 main 槽头部 override：
+    # - true（默认）且角色 system_prompt 非空 → 作为角色设定总纲置于核心规则层之上
+    #   （ST 语义：charPrompt 决定 system 槽，角色设定优先于用户全局）；
+    # - false（或空）→ 忽略角色 system_prompt，回落默认三层模板（ST：退回用户全局 sysprompt）。
+    prefer_char_prompt = True
+    if user_setting and user_setting.power_user:
+        try:
+            _pu = json.loads(user_setting.power_user) if isinstance(user_setting.power_user, str) else user_setting.power_user
+            if isinstance(_pu, dict):
+                prefer_char_prompt = bool(_pu.get("prefer_character_prompt", True))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    effective_char_prompt = char.system_prompt if prefer_char_prompt else ""
     system_prompt = build_default_character_prompt(
         char_name=char.name or "Character",
         user_nickname=user_nickname,
@@ -2059,7 +2074,7 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
         background=char.background,
         scenario=char.scenario,
         description=char.description,
-        custom_prompt=char.system_prompt,
+        custom_prompt=effective_char_prompt or "",
         show_character_status=show_character_status,
         creator_notes=char.creator_notes or "",
         char=char
