@@ -362,8 +362,22 @@ async def oauth_callback(
             if allowed_origin:
                 frontend_url = allowed_origin
 
+        # [N8-c 适配] OAuth 登录与用户名密码登录必须同一 Cookie 化路径：在此以登录同款
+        # 双 Set-Cookie（palink_session HttpOnly + palink_csrf）建立会话凭据，redirect 回跳
+        # 前端仅携带 # 标记触发 User 探测；不再依赖前端落盘 access_token（终态已退役）。
+        # 保留 #access_token 仅为上一版前端兼容（终态前端忽略其值）。
+        max_age = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
         redirect_url = f"{frontend_url}#access_token={jwt_token}"
         response = RedirectResponse(url=redirect_url)
+        set_session_cookie(response, jwt_token)
+        response.set_cookie(
+            CSRF_COOKIE_NAME,
+            secrets.token_urlsafe(32),
+            max_age=max_age,
+            httponly=False,
+            samesite="lax",
+            path="/",
+        )
         response.delete_cookie(key="oauth_state")
         return response
 
