@@ -73,6 +73,20 @@ function isImageUrl(url: string): boolean {
   return false;
 }
 
+// [F-2] 兜底 markdown 分支经 rehypeRaw 直通渲染原始 HTML——先以 DOMPurify 消毒源串，
+// 剥离 script/object/embed/iframe/form 与 on* 事件载体；其余文本与 Markdown/KaTeX 语法
+// 原样保留（含代码块内的字面 HTML 示例会被剥除，属可接受取舍）。
+// 带上限缓存：流式期间同串反复重渲染不重复消毒。
+const _mdSanitizeCache = new Map<string, string>();
+function sanitizeMarkdownSource(text: string): string {
+  const cached = _mdSanitizeCache.get(text);
+  if (cached !== undefined) return cached;
+  const out = DOMPurify.sanitize(text);
+  if (_mdSanitizeCache.size >= 300) _mdSanitizeCache.clear();
+  _mdSanitizeCache.set(text, out);
+  return out;
+}
+
 function preprocessImageUrls(text: string): string {
   const lines = text.split('\n');
   const processed = lines.map(line => {
@@ -1405,7 +1419,7 @@ function MessageInner({
                     rehypePlugins={[...REHYPE_PLUGINS, rehypeRaw]}
                     components={markdownComponents}
                   >
-                    {preprocessImageUrls(pipelineResult?.content || displayContent)}
+                    {preprocessImageUrls(sanitizeMarkdownSource(pipelineResult?.content || displayContent))}
                   </ReactMarkdown>
                 </div>
               )}
