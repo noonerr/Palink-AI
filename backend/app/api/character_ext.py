@@ -1168,6 +1168,15 @@ def _run_regex_script(script: dict, text: str, *, user_name: str = "User", char_
         _substitute_regex_params(replace_with or "", user_name, char_name),
         flags=re.IGNORECASE,
     )
+    # [C-5 B 方案] 默认放行、危险模式拦截：角色卡正则替身串里出现全局变量读写类宏
+    # （getvar/setvar/addvar/if 等）时剥除，避免模板/装配链潜在展开泄露全局数据。
+    # 与 _generic_character_text_sanitize（L781-785）同 semantics：{{user}}/{{char}}/
+    # {{match}}/时间宏等合法宏不受影响。
+    replace_template = re.sub(r"\{\{getvar::[^}]*\}\}", "", replace_template, flags=re.IGNORECASE)
+    replace_template = re.sub(r"\{\{setvar::[^}]*\}\}", "", replace_template, flags=re.IGNORECASE)
+    replace_template = re.sub(r"\{\{addvar::[^}]*\}\}", "", replace_template, flags=re.IGNORECASE)
+    replace_template = re.sub(r"\{\{(?:get|set|inc|del)globalvar::[^}]*\}\}", "", replace_template, flags=re.IGNORECASE)
+    replace_template = re.sub(r"\{\{if::[^}]*\}\}[^{]*\{\{endif\}\}", "", replace_template, flags=re.IGNORECASE)
     trim_strings = _normalize_regex_trim_strings(script.get("trimStrings", script.get("trim_strings", [])))
     pattern, flags = _parse_regex_pattern_cached(find_pattern)
 

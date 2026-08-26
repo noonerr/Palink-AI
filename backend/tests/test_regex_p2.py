@@ -176,6 +176,45 @@ def test_apply_regex_scripts_whitelist_empty_list_blocks_all():
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: C-5 B 方案——正则替身串危险模式拦截
+# ---------------------------------------------------------------------------
+
+def test_regex_replace_strips_getvar_macro():
+    """替身串中的 {{getvar::x}} 应被剥除，不得进入输出。"""
+    from app.api.character_ext import _run_regex_script
+
+    script = {"findRegex": "(foo)", "replaceString": "{{getvar::secret}}[$1]"}
+    result = _run_regex_script(script, "foo")
+    assert result == "[foo]"
+
+
+def test_regex_replace_strips_setvar_and_globalvar():
+    """setvar/addvar/globalvar 读写宏同样被剥除。"""
+    from app.api.character_ext import _run_regex_script
+
+    script = {
+        "findRegex": "(foo)",
+        "replaceString": "{{setvar::a::1}}{{getglobalvar::b}}[$1]",
+    }
+    result = _run_regex_script(script, "foo")
+    # setvar/getglobalvar 均被剥除，$1 组引用正常
+    assert result == "[foo]"
+    assert "setvar" not in result and "getglobalvar" not in result
+
+
+def test_regex_replace_keeps_safe_macros():
+    """{{user}}/{{char}} 等合法宏不受拦截影响，$N 组引用正常。"""
+    from app.api.character_ext import _run_regex_script
+
+    script = {
+        "findRegex": "(foo)",
+        "replaceString": "Hi {{user}}, you said $1",
+    }
+    result = _run_regex_script(script, "foo", user_name="Alice", char_name="Bob")
+    assert result == "Hi Alice, you said foo"
+
+
+# ---------------------------------------------------------------------------
 # Test 3: invalidate_user_cache 用户级隔离
 # ---------------------------------------------------------------------------
 
