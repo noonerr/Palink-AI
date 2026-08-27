@@ -5474,6 +5474,34 @@ def _resolve_action_model(req: _ActionRequest, fallback_msg: Optional[CharacterC
     return model
 
 
+def _ensure_conversation_anchor(messages: List[Dict[str, Any]], char: Character) -> None:
+    """[OPENING-REGEN] 重 roll/swipe 开场白时的对话锚点（对齐 ST）。
+
+    移除目标开场白后 messages 无任何 user/assistant 轮（全 system 收尾），
+    模型没有"正在对话"的锚点——弱模型会把角色卡定义堆当成待说明材料，
+    输出「角色卡设定与扮演规划」类元信息而非剧情（2026-08-27 会话实测）。
+    ST script.js:4780 "hack for regeneration of the first message" 空历史时
+    补一条空 user 轮，其 OAI 路径更以 user 角色注入 jailbreak 作锚——此处
+    对齐该语义，按卡片语言补一条显式开场指令的 user 轮。
+    """
+    if any(m.get("role") in ("user", "assistant") for m in messages):
+        return
+    char_name = (char.name or "角色").strip() or "角色"
+    is_zh = _contains_chinese((char.name or "") + (char.description or ""))
+    if is_zh:
+        anchor = (
+            f"（对话刚刚开始。请以{char_name}的身份，直接输出一段全新的开场白，"
+            "从角色视角展开剧情；不要输出任何说明、规划或元信息。）"
+        )
+    else:
+        anchor = (
+            f"(The conversation has just started. As {char_name}, write a brand-new "
+            "opening message in character, launching the scene from the character's "
+            "perspective. Do not output any explanations, plans, or meta information.)"
+        )
+    messages.append({"role": "user", "content": anchor})
+
+
 def _load_context_template_name(db: Session, user: User, preset_id: Optional[int]) -> Optional[str]:
     if not preset_id:
         return None
@@ -5882,6 +5910,9 @@ async def regenerate_message(
     if last_asst_idx is not None:
         messages = messages[:last_asst_idx] + messages[last_asst_idx + 1:]
 
+    # [OPENING-REGEN] 重 roll 开场白：移除后无任何对话轮 → 补锚点防元信息输出
+    _ensure_conversation_anchor(messages, char)
+
     target_msg_id = target_msg.id
 
     def persist_fn(save_db, result):
@@ -6125,6 +6156,9 @@ async def swipe_message(
             break
     if last_asst_idx is not None:
         messages = messages[:last_asst_idx] + messages[last_asst_idx + 1:]
+
+    # [OPENING-REGEN] swipe 开场白：移除后无任何对话轮 → 补锚点防元信息输出
+    _ensure_conversation_anchor(messages, char)
 
     target_msg_id = target_msg.id
 
