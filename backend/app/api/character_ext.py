@@ -47,6 +47,7 @@ from ..services.inference_dispatcher import (
 from ..services.generation_service import _build_logit_bias
 from ..core.default_prompts import build_default_character_prompt
 from ..services.character_message_builder import (
+    _ST_DEFAULT_NEW_CHAT_PROMPT,
     build_character_chat_messages,
     clean_smart_card_trigger_context,
     is_smart_card_trigger_message,
@@ -5475,17 +5476,44 @@ def _resolve_action_model(req: _ActionRequest, fallback_msg: Optional[CharacterC
 
 
 def _ensure_conversation_anchor(messages: List[Dict[str, Any]], char: Character) -> None:
-    """[OPENING-REGEN] 重 roll/swipe 开场白时的对话锚点（对齐 ST）。
+    """[OPENING-REGEN] 重 roll/swipe 开场白时的对话锚点（对齐 ST 1.18.0）。
 
     移除目标开场白后 messages 无任何 user/assistant 轮（全 system 收尾），
     模型没有"正在对话"的锚点——弱模型会把角色卡定义堆当成待说明材料，
     输出「角色卡设定与扮演规划」类元信息而非剧情（2026-08-27 会话实测）。
-    ST script.js:4780 "hack for regeneration of the first message" 空历史时
-    补一条空 user 轮，其 OAI 路径更以 user 角色注入 jailbreak 作锚——此处
-    对齐该语义，按卡片语言补一条显式开场指令的 user 轮。
+
+    ST 同场景的双重机制（源码核实）：
+    1. newChatMessage "[Start a new Chat]"（openai.js:107 default_new_chat_prompt）
+       **无条件**插在 chatHistory 最前（openai.js:1069-1070 insertAtStart），
+       空历史（开场白重 roll）时也在场——"新对话开始"约定信号。本库
+       st-compat 路径 build_st_compat_messages L858-861 已同款实现；
+       palink-native 装配缺此标记（Default 模板直通 + 空历史时
+       _apply_context_template 的 chat_start 无插入点）。
+    2. 空 user 轮 hack（script.js:4780 "hack for regeneration of the first
+       message"：chat2.push('')）保证 prompt 以对话侧收尾。
+
+    palink-native 核心规则无 ST main prompt 的 "Write {{char}}'s next reply"
+    任务指令，故同时补一条显式开场指令的 user 轮（按卡片语言）补齐任务语义。
     """
     if any(m.get("role") in ("user", "assistant") for m in messages):
         return
+    # 1) ST newChatMessage 标记：插在尾部 system 块（最终提醒 ≈ ST post-history）
+    #    之前，对齐 ST "chat_start 在 chatHistory 最前、post-history 之前" 的顺序。
+    #    若模板 chat_start 已注入（装配时开场白仍在历史中，标记插在其前，
+    #    移除后保留）则不重复。
+    has_marker = any(
+        m.get("role") == "system"
+        and (m.get("content") or "").strip() == _ST_DEFAULT_NEW_CHAT_PROMPT
+        for m in messages
+    )
+    if not has_marker:
+        insert_idx = len(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "system":
+                insert_idx = i
+                break
+        messages.insert(insert_idx, {"role": "system", "content": _ST_DEFAULT_NEW_CHAT_PROMPT})
+    # 2) ST 空 user 轮 hack 的显式版：任务指令（ST main prompt 等价物）
     char_name = (char.name or "角色").strip() or "角色"
     is_zh = _contains_chinese((char.name or "") + (char.description or ""))
     if is_zh:
