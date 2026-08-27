@@ -2251,7 +2251,9 @@ ${bootHeader}
       : typeof script.replace_string === 'string'
         ? script.replace_string
         : '';
-    const trimStrings = normalizeTrimStringsCompat(script.trimStrings ?? script.trim_strings);
+    const trimStrings = normalizeTrimStringsCompat(script.trimStrings ?? script.trim_strings)
+      .map((trim) => substituteParamsCompat(String(trim || '')))
+      .filter((trim) => trim.length > 0);
     try {
       return String(text).replace(findRegex, function(match, ...args) {
         const groups = args[args.length - 1];

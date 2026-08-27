@@ -101,6 +101,7 @@ import {
   regex_placement,
   type RegexScript,
 } from '../runtime';
+import { applyRegexScripts, runRegexScript } from '../regex/engine';
 
 function mkScript(overrides: Partial<RegexScript>): RegexScript {
   return {
@@ -236,6 +237,47 @@ describe('Regex trimStrings Macro Substitution', () => {
       userName: 'Alice',
     });
     expect(result).toBe(' hello');
+  });
+});
+
+// ============================================================
+// E. [C-4b] trimStrings 宏替换 —— 直接 runRegexScript / applyRegexScripts 路径
+//
+// getRegexedString 主路径（D 组）经 regexPipeline.processFlatScripts 已修复；
+// 本组锁定 engine.ts 内直接调用 runRegexScript 的分支（applyRegexScripts）同样生效。
+// ============================================================
+describe('Regex trimStrings Macro Substitution (direct engine path)', () => {
+  it('runRegexScript substitutes {{char}} macro in trim string before removal', () => {
+    const script = mkScript({
+      findRegex: '^(.*)$',
+      replaceString: '$1',
+      trimStrings: ['{{char}}:'],
+    });
+    const result = runRegexScript(script, 'Rin: hello', { userName: 'User', characterName: 'Rin' });
+    expect(result).toBe(' hello');
+  });
+
+  it('applyRegexScripts substitutes {{user}} macro in trim string before removal', () => {
+    const scripts = [
+      mkScript({
+        findRegex: '^(.*)$',
+        replaceString: '$1',
+        trimStrings: ['{{user}}:'],
+      }),
+    ];
+    const result = applyRegexScripts('Alice: hello', scripts, { placement: AI_OUT, userName: 'Alice' });
+    expect(result).toBe(' hello');
+  });
+
+  it('unexpanded macro trim string (no matching params) does not erase content', () => {
+    const script = mkScript({
+      findRegex: '^(.*)$',
+      replaceString: '$1',
+      trimStrings: ['{{user}}:'],
+    });
+    // userName 缺省时宏替换为 "User"，原文不含 "User:" → 不 trim
+    const result = runRegexScript(script, 'Alice: hello', {});
+    expect(result).toBe('Alice: hello');
   });
 });
 

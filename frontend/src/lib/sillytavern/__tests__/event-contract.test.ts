@@ -805,6 +805,22 @@ describe('Event Argument Order', () => {
     }
   });
 
+  // [A-4] 经典轨发射面确认：emitAppReady 在共享 runtime 上发射 app_ready。
+  // App.tsx 在 pluginManager.init() resolve 后调用（与沙箱轨对齐）。
+  it('APP_READY is emitted by emitAppReady on classic runtime', () => {
+    setup();
+    try {
+      const captured: unknown[] = [];
+      eventSource.on('app_ready', (...args: unknown[]) => {
+        captured.push(args);
+      });
+      runtime.emitAppReady();
+      expect(captured.length).toBeGreaterThan(0);
+    } finally {
+      teardown();
+    }
+  });
+
   it('GENERATION_ENDED receives (type, options) from onGenerationEnded', () => {
     setup();
     try {

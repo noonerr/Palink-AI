@@ -7,6 +7,7 @@ import { sanitizePluginCss, isUrlAllowedByPluginWhitelist } from '@/lib/plugin-s
 import { generationEngine } from '@/services/generation-engine';
 import { getContext as getStContext } from '@/lib/sillytavern/getContext';
 import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
+import { promptInjection } from '@/services/prompt-injection';
 
 interface RuntimePluginResource {
   path?: string;
@@ -551,6 +552,29 @@ export class SillyTavernPluginRuntime {
     // 注入时预取世界书名称缓存（fire-and-forget，供插件同步读取）
     void palinkBridge.worldbookRefreshNames();
 
+    // ── [A-6] 经典轨 window.setExtensionPrompt 全局真实现 ──
+    // 桥接到 prompt-injection 服务（与沙箱轨 prompt-injection.ts 同源）。
+    // 数据结构：promptInjection._sources['sandbox'][identifier] =
+    //   { content, position, depth, scan, role, filter }，由
+    // useCharacterChat / CharacterChat 在装配时经 getPromptsForGeneration()
+    // 消费。BubbleDialogue 等卡内脚本引用全局 setExtensionPrompt(...) 此前
+    // ReferenceError，现由注入脚本（见 setupScript）转发到此桥。
+    (window as any).__palinkSetExtensionPrompt = (
+      identifier: string,
+      content: string,
+      position?: number,
+      depth?: number,
+      scan?: boolean,
+      role?: number | string,
+      filter?: any,
+    ) => {
+      try {
+        promptInjection.setExtensionPrompt(identifier, content, position as any, depth, scan, role, filter);
+      } catch (e) {
+        console.warn('[SillyTavernPluginRuntime] __palinkSetExtensionPrompt 失败:', e);
+      }
+    };
+
     // ── ST 生成 API 桥接：window.generateRaw / window.generate ──
     // Galgame 插件 COT 格式化（加强模式/独立开场白）在"第二次生成"时调用这两个全局
     // （ST 形状单对象签名），此前主窗口未暴露 → ReferenceError → 二次生成整体失败。
@@ -948,9 +972,32 @@ export class SillyTavernPluginRuntime {
         // 统一为同一实现（携带 Bearer token 的真实请求头）。此处不再提供
         // 返回空对象的兜底桩——那会在语句顺序变动时静默破坏插件认证。
 
-        // injectPrompts / setExtensionPrompt 兜底：BubbleDialogue 插件会尝试
-        // 用这两个 API 注入格式规则。Palink 暂不支持，让插件优雅降级（登记降级桩，
-        // 不再静默），不抛 ReferenceError 中断后续初始化。
+        // [A-6] window.setExtensionPrompt 全局真实现（对齐沙箱轨 prompt-injection.ts）：
+        // 入参校验 + 转发到 __palinkSetExtensionPrompt 桥（TS 侧注册到 prompt-injection
+        // 服务）。BubbleDialogue 等卡内脚本引用全局 setExtensionPrompt(...) 此前
+        // ReferenceError，现在七参签名与 ST script.js 完全一致，注册项供装配期消费。
+        if (typeof window.setExtensionPrompt !== 'function') {
+          window.setExtensionPrompt = function(identifier, content, position, depth, scan, role, filter) {
+            if (typeof identifier !== 'string' || !identifier) {
+              if (typeof console !== 'undefined') {
+                console.warn('[Palink setExtensionPrompt] 无效 identifier:', identifier);
+              }
+              return;
+            }
+            if (typeof content !== 'string') {
+              if (typeof console !== 'undefined') {
+                console.warn('[Palink setExtensionPrompt] content 必须是字符串 (identifier=' + identifier + ')');
+              }
+              return;
+            }
+            if (typeof window.__palinkSetExtensionPrompt === 'function') {
+              window.__palinkSetExtensionPrompt(identifier, content, position, depth, scan, role, filter);
+            }
+          };
+        }
+
+        // injectPrompts 兜底：BubbleDialogue 插件会尝试用该 API 注入格式规则。
+        // Palink 暂不支持，让插件优雅降级（登记降级桩，不再静默），不抛 ReferenceError。
         if (typeof window.injectPrompts !== 'function') {
           window.injectPrompts = function() {
             if (runtime && typeof runtime.recordStubHit === 'function') {

@@ -23,6 +23,9 @@ class Plugin(Base):
     config = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+    # [A-7 多租户插件隔离] 用户作用域：NULL = 全局插件（所有用户可见）；
+    # 非 NULL = 仅该 user_id 可见。兼容列由 core/migrations.py 兜底添加。
+    user_id = Column(Integer, nullable=True)
 
 
 class PluginScript(Base):

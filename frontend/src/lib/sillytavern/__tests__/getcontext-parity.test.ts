@@ -537,6 +537,158 @@ describe('getContext Contract', () => {
 });
 
 // ============================================================
+// A-4: getContext addOneMessage 事件按角色分发（ST script.js 语义）
+//   message_sent 仅用户/系统消息；message_received 仅 AI 回复；
+//   无法判定角色时维持双发（向后兼容）。
+// ============================================================
+describe('getContext addOneMessage Event Dispatch (A-4)', () => {
+  function capture(...eventNames: string[]) {
+    const ctx = getContext();
+    const counts: Record<string, number> = {};
+    const unsubs: Array<() => void> = [];
+    for (const name of eventNames) {
+      counts[name] = 0;
+      unsubs.push(ctx.eventSource.on(name, () => { counts[name]++; }));
+    }
+    return {
+      ctx,
+      counts,
+      cleanup: () => { for (const u of unsubs) u(); },
+    };
+  }
+
+  it('user message emits ONLY message_sent', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'User', mes: 'hello', send_date: 1040001, is_user: true });
+      expect(counts['message_sent']).toBe(1);
+      expect(counts['message_received']).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it('role="user" message (no is_user flag) emits ONLY message_sent', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'User', mes: 'hello', send_date: 1040002, role: 'user' } as any);
+      expect(counts['message_sent']).toBe(1);
+      expect(counts['message_received']).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it('system message emits message_sent', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'System', mes: 'sys', send_date: 1040003, is_system: true });
+      expect(counts['message_sent']).toBe(1);
+      expect(counts['message_received']).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it('assistant message (is_user=false) emits ONLY message_received', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'Assistant', mes: 'hi', send_date: 1040004, is_user: false });
+      expect(counts['message_sent']).toBe(0);
+      expect(counts['message_received']).toBe(1);
+    } finally { cleanup(); }
+  });
+
+  it('role="assistant" message (no is_user flag) emits ONLY message_received', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'Assistant', mes: 'hi', send_date: 1040005, role: 'assistant' } as any);
+      expect(counts['message_sent']).toBe(0);
+      expect(counts['message_received']).toBe(1);
+    } finally { cleanup(); }
+  });
+
+  it('undeterminable role (no role/is_user/is_system) keeps double emit (backward compat)', () => {
+    const { ctx, counts, cleanup } = capture('message_sent', 'message_received');
+    try {
+      ctx.addOneMessage({ name: 'X', mes: 'hi', send_date: 1040006 } as any);
+      expect(counts['message_sent']).toBe(1);
+      expect(counts['message_received']).toBe(1);
+    } finally { cleanup(); }
+  });
+});
+
+// ============================================================
+// A-5: getContext 半兼容字段增强（tokenizers 枚举 / symbols / constants /
+//       executeSlashCommandsWithOptions 形状 / messageFormatter / registerFunctionTool）
+// ============================================================
+describe('getContext A-5 Half-Compat Fields', () => {
+  it('tokenizers exposes ST 1.18.0 numeric enum (OPENAI=2, CLAUDE=11, BEST_MATCH=99)', () => {
+    const ctx = getContext();
+    expect(ctx.tokenizers.OPENAI).toBe(2);
+    expect(ctx.tokenizers.CLAUDE).toBe(11);
+    expect(ctx.tokenizers.GPT2).toBe(1);
+    expect(ctx.tokenizers.MISTRAL).toBe(7);
+    expect(ctx.tokenizers.BEST_MATCH).toBe(99);
+    expect(typeof ctx.tokenizers.getTokenCount).toBe('function');
+    expect(typeof ctx.tokenizers.estimateTokenCount).toBe('function');
+  });
+
+  it('symbols.ignore aligns with ST IGNORE_SYMBOL and legacy accessor proxies', () => {
+    const ctx = getContext();
+    expect((ctx.symbols as any).ignore).toBe(Symbol.for('ignore'));
+    expect((ctx.symbols as any).IGNORE_SYMBOL).toBe(Symbol.for('ignore'));
+    expect((ctx.symbols as any).EMPTY_STRING).toBe('');
+  });
+
+  it('constants.unset aligns with ST UNSET_VALUE and legacy accessors proxy', () => {
+    const ctx = getContext();
+    expect((ctx.constants as any).unset).toBe('__@@UNSET@@__');
+    expect((ctx.constants as any).IGNORE_SYMBOL).toBe('__@@UNSET@@__');
+    expect((ctx.constants as any).MAX_CONTEXT_DEFAULT).toBe(16384);
+  });
+
+  it('executeSlashCommandsWithOptions returns { pipe, success } shape (sandbox-parity)', async () => {
+    const ctx = getContext();
+    const result = await ctx.executeSlashCommandsWithOptions('/echo hello');
+    expect(result).toBeDefined();
+    expect(typeof (result as any).pipe).toBe('string');
+    expect(typeof (result as any).success).toBe('boolean');
+  });
+
+  it('messageFormatter provides ST signature and messageFormatting runs hooks', () => {
+    const ctx = getContext();
+    const mf = (ctx as any).messageFormatter;
+    expect(typeof mf).toBe('object');
+    expect(typeof mf.addHook).toBe('function');
+    expect(typeof mf.runStage).toBe('function');
+    expect(mf.stage.AFTER_MARKDOWN).toBe('afterMarkdown');
+    expect(mf.order.NORMAL).toBe(50);
+    // addHook 默认 stage 生效于 messageFormatting（afterMarkdown）
+    mf.addHook((mes: string, hookCtx: any) => `[${hookCtx.characterName}]${mes}`, { order: 1 });
+    const formatted = ctx.messageFormatting('hello', 'Alice', false, false, 0);
+    expect(formatted).toBe('[Alice]hello');
+    // 无效入参校验：非函数 hook 抛 TypeError，未知 stage 抛 RangeError
+    let threwType = false;
+    try { mf.addHook('not-a-function' as any); } catch (e) { threwType = e instanceof TypeError; }
+    expect(threwType).toBe(true);
+    let threwRange = false;
+    try { mf.addHook((mes: string) => mes, { stage: 'unknownStage' }); } catch (e) { threwRange = e instanceof RangeError; }
+    expect(threwRange).toBe(true);
+  });
+
+  it('registerFunctionTool registers into real registry (object & legacy forms)', () => {
+    const ctx = getContext();
+    const tool = { name: '__palink_test_tool__', description: 'test', action: () => 'ok' };
+    expect(ctx.registerFunctionTool(tool)).toBe(true);
+    const entry = ctx.ToolManager.getToolByName('__palink_test_tool__');
+    expect(entry).toBeDefined();
+    expect(entry.description).toBe('test');
+    expect(typeof entry.handler).toBe('function');
+    // 旧位置参数形态 (name, description, parameters, action)
+    expect(ctx.registerFunctionTool('__palink_test_tool2__', 'd2', {}, () => 'ok')).toBe(true);
+    expect(ctx.ToolManager.getToolByName('__palink_test_tool2__')).toBeDefined();
+    // 清理，避免跨测试文件污染共享注册表
+    ctx.unregisterFunctionTool('__palink_test_tool__');
+    ctx.unregisterFunctionTool('__palink_test_tool2__');
+  });
+});
+
+// ============================================================
 // 自动运行测试（当未配置 vitest 时）
 // ============================================================
 void _runTests();

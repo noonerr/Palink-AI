@@ -138,4 +138,13 @@ describe('SmartCard Runtime $N Replace Contract', () => {
   });
 });
 
+// [C-4b] SmartCard runtime 内同构的 trimStrings 宏替换（与 regex/engine.ts /
+// regex-pipeline applyStScript 对齐）：trim 串先 substituteParams 再移除。
+describe('SmartCard Runtime trimStrings Macro Contract (C-4b)', () => {
+  it('generated shim substitutes macros in trimStrings before removal', () => {
+    expect(shim.includes('.map((trim) => substituteParamsCompat(String(trim || \'\')))')).toBeTruthy();
+    expect(shim.includes('.filter((trim) => trim.length > 0)')).toBeTruthy();
+  });
+});
+
 void _runTests();

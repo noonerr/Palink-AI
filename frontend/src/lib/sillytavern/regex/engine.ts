@@ -263,7 +263,12 @@ export function runRegexScript(
   if (!findRegex) return rawString;
 
   let replaceString = regexScript.replaceString || '';
-  const trimStrings = regexScript.trimStrings || [];
+  // [C-4b] trimStrings 先做 substituteParams 宏替换再参与 trim 判定（对齐后端
+  // _filter_trim_strings 与 ST regex-engine.js:460 / regex-pipeline applyStScript
+  // 既有修复）：含 {{user}}/{{char}} 的 trim 串在前端同样生效。
+  const trimStrings = (regexScript.trimStrings || [])
+    .map((trim) => substituteParams(String(trim || ''), params))
+    .filter((trim) => trim.length > 0);
 
   try {
     return rawString.replace(findRegex, function (match: string, ...args: any[]) {

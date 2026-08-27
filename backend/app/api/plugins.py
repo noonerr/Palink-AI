@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from ..models.plugin import Plugin, PluginScript
@@ -1090,13 +1091,24 @@ def _etag_matches(client_header: str | None, current_etag: str) -> bool:
 
 
 @cached(ttl_seconds=30, key_prefix=_RUNTIME_CONFIG_CACHE_PREFIX)
-def _build_sillytavern_runtime_config(db: Session) -> dict:
+def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -> dict:
     """拼装启用插件的 runtime payload（30s 内存缓存，插件 CRUD 时失效）。
 
-    runtime config 对所有用户一致（查询仅过滤 Plugin.enabled），故用单键缓存，
-    避免每次请求重复 DB 查询与 ~4.4MB JSON 序列化。
+    [A-7 多租户插件隔离] runtime config 按用户作用域隔离：
+    - 插件 user_id IS NULL（全局插件）对所有用户可见；
+    - 插件 user_id == 当前用户 仅该用户可见；
+    - 其他用户的插件不在此用户的 runtime 中。
+    单用户部署下存量插件全部为 NULL，行为与改造前完全一致（当前用户即全部）。
+    缓存键含 user_id（_build_key 对 int 参数自动入键），多用户互不串扰；
+    插件 CRUD 时 invalidate_cache(prefix) 仍能清掉全部用户变体。
     """
-    plugins = db.query(Plugin).filter(Plugin.enabled == True).order_by(Plugin.created_at.asc()).all()
+    scope_filter = or_(Plugin.user_id == user_id, Plugin.user_id.is_(None))
+    plugins = (
+        db.query(Plugin)
+        .filter(Plugin.enabled == True, scope_filter)
+        .order_by(Plugin.created_at.asc())
+        .all()
+    )
     runtime_plugins = []
     extension_settings: dict[str, Any] = {}
 
@@ -1170,7 +1182,7 @@ async def get_sillytavern_runtime_config(
     响应带强 ETag + Cache-Control(private, max-age=300)：插件内容未变时浏览器
     二次请求直接 304，弱网下不再重复下载全部插件代码。
     """
-    payload = _build_sillytavern_runtime_config(db)
+    payload = _build_sillytavern_runtime_config(db, user.id)
     etag = _runtime_config_etag(payload)
     headers = {
         "Cache-Control": "private, max-age=300",
@@ -1259,7 +1271,12 @@ async def get_plugin_asset(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    plugin = db.query(Plugin).filter(Plugin.id == plugin_id, Plugin.enabled == True).first()
+    # [A-7 多租户插件隔离] 资源访问同样按用户作用域过滤
+    plugin = db.query(Plugin).filter(
+        Plugin.id == plugin_id,
+        Plugin.enabled == True,
+        or_(Plugin.user_id == user.id, Plugin.user_id.is_(None)),
+    ).first()
     if not plugin:
         raise HTTPException(status_code=404, detail="插件不存在或已禁用")
     config = _plugin_config(plugin)
@@ -1299,7 +1316,11 @@ async def get_plugin_script_source(
     仅匹配 resources.js / resources.modules（zip 解包得到的源码成员），
     不暴露 assets（含 base64 的二进制资源走 /{plugin_id}/asset/{path}）。
     """
-    plugin = db.query(Plugin).filter(Plugin.id == plugin_id, Plugin.enabled == True).first()
+    plugin = db.query(Plugin).filter(
+        Plugin.id == plugin_id,
+        Plugin.enabled == True,
+        or_(Plugin.user_id == user.id, Plugin.user_id.is_(None)),
+    ).first()
     if not plugin:
         raise HTTPException(status_code=404, detail="插件不存在或已禁用")
     config = _plugin_config(plugin)
@@ -1517,10 +1538,13 @@ async def delete_plugin(
 
 @router.get("/active/regex")
 async def get_active_regex_scripts(
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # [A-7 多租户插件隔离] 正则脚本同样按用户作用域过滤（NULL=全局 + 本人）
     scripts = db.query(PluginScript).join(Plugin).filter(
         Plugin.enabled == True,
+        or_(Plugin.user_id == user.id, Plugin.user_id.is_(None)),
         PluginScript.enabled == True,
         PluginScript.script_type == "regex",
         PluginScript.find_regex != None,

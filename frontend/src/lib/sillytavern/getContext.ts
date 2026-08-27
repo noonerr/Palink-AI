@@ -33,7 +33,7 @@ import type { WorldBookEntry } from '@/lib/worldbook/types';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import { api } from '@/services/api';
 import { personaManager } from '@/lib/personas/manager';
-import { contextSetterRegistry } from '../plugin-system/sandbox';
+import { contextSetterRegistry, functionToolRegistry } from '../plugin-system/sandbox';
 import { toast } from 'sonner';
 import { i18nManager } from '../i18n';
 import Handlebars from 'handlebars';
@@ -127,6 +127,96 @@ const toastrAdapter = {
 };
 
 // ============================================================
+// [A-5] ST 1.18.0 MessageFormatter 兼容单例（message-formatter.js）
+// ============================================================
+// getContext().messageFormatter 提供 ST 签名：
+//   addHook(fn, { stage, order }) / runStage(stage, mes, base) / stage / order。
+// ST 的 MessageFormatter 在渲染管线三个 stage 上执行 hook；Palink 未逐 stage
+// 接入渲染管线，hook 经 messageFormatting()（实际渲染路径的格式化入口）在
+// 默认 stage（afterMarkdown）上执行，保持"注册 → 生效"闭环。
+const MESSAGE_FORMATTER_STAGE = {
+  BEFORE_REGEX: 'beforeRegex',
+  AFTER_REGEX: 'afterRegex',
+  AFTER_MARKDOWN: 'afterMarkdown',
+} as const;
+
+const MESSAGE_FORMATTER_ORDER = {
+  EARLIEST: 0,
+  EARLY: 10,
+  NORMAL: 50,
+  LATE: 90,
+  LATEST: 100,
+} as const;
+
+let _messageFormatterInstance: any = null;
+function getMessageFormatter(): any {
+  if (_messageFormatterInstance) return _messageFormatterInstance;
+  const buckets = new Map<string, Array<{ fn: (mes: string, ctx: any) => string; order: number }>>();
+  buckets.set(MESSAGE_FORMATTER_STAGE.BEFORE_REGEX, []);
+  buckets.set(MESSAGE_FORMATTER_STAGE.AFTER_REGEX, []);
+  buckets.set(MESSAGE_FORMATTER_STAGE.AFTER_MARKDOWN, []);
+  _messageFormatterInstance = {
+    stage: MESSAGE_FORMATTER_STAGE,
+    order: MESSAGE_FORMATTER_ORDER,
+    addHook(fn: any, options: any = {}) {
+      if (typeof fn !== 'function') throw new TypeError('MessageFormatter: hook must be a function');
+      const stage = options.stage ?? MESSAGE_FORMATTER_STAGE.AFTER_MARKDOWN;
+      const order = options.order ?? MESSAGE_FORMATTER_ORDER.NORMAL;
+      if (!buckets.has(stage)) throw new RangeError(`MessageFormatter: unknown stage '${stage}'`);
+      buckets.get(stage)!.push({ fn, order });
+    },
+    runStage(stage: string, mes: string, base: Record<string, any> = {}) {
+      const bucket = buckets.get(stage);
+      if (!bucket || bucket.length === 0) return mes;
+      const ctx = Object.freeze({ ...base, stage });
+      let result = mes;
+      const sorted = bucket.slice().sort((a, b) => a.order - b.order);
+      for (const { fn } of sorted) {
+        try {
+          const out = fn(result, ctx);
+          if (typeof out === 'string') result = out;
+        } catch (e) {
+          console.warn('[MessageFormatter] Hook error at stage:', stage, e);
+        }
+      }
+      return result;
+    },
+  };
+  return _messageFormatterInstance;
+}
+
+// ============================================================
+// [A-5] registerFunctionTool 注册表兼容入口（对象形态 + 旧位置参数形态）
+// ============================================================
+// 与沙箱轨共享 functionToolRegistry（按 name 索引），把 ST 插件注册的工具
+// 真实入表；管道（useCharacterChat.serializeFunctionTools）据此生成
+// tool calling 格式随请求提交。返回 true 表示已入表。
+function _registerFunctionToolCompat(...args: any[]): boolean {
+  if (args.length === 0) return false;
+  let name: any;
+  let description = '';
+  let handler: any = null;
+  const first = args[0];
+  if (first && typeof first === 'object' && !Array.isArray(first)) {
+    name = first.name;
+    description = first.description ?? '';
+    handler = first.action ?? first.handler ?? first.function ?? null;
+  } else {
+    // 旧位置参数形态 (name, description, parameters, action)
+    name = args[0];
+    description = args[1] ?? '';
+    handler = args[3] ?? args[2] ?? null;
+  }
+  if (typeof name !== 'string' || !name) return false;
+  functionToolRegistry.set(name, {
+    description: String(description || ''),
+    handler: typeof handler === 'function' ? handler : null,
+    pluginId: 'getContext',
+  });
+  return true;
+}
+
+// ============================================================
 // 类型定义
 // ============================================================
 
@@ -215,6 +305,13 @@ export interface StGetContext {
 
   // 格式化字段
   messageFormatting: (content: string, ...args: any[]) => string;
+  // [A-5] ST 1.18.0 message-formatter.js MessageFormatter 单例
+  messageFormatter: {
+    stage: Record<string, string>;
+    order: Record<string, number>;
+    addHook: (fn: (mes: string, ctx: any) => string, options?: { stage?: string; order?: number }) => void;
+    runStage: (stage: string, mes: string, base?: Record<string, any>) => string;
+  };
 
   // 存储字段
   accountStorage: {
@@ -230,6 +327,28 @@ export interface StGetContext {
   tokenizers: {
     getTokenCount: (text: string, tokenizer?: string) => number;
     estimateTokenCount: (text: string) => number;
+    // [A-5] ST 1.18.0 tokenizers.js 数字枚举（与 ST constants/tokenizers 对齐）
+    NONE: number;
+    GPT2: number;
+    OPENAI: number;
+    LLAMA: number;
+    NERD: number;
+    NERD2: number;
+    API_CURRENT: number;
+    MISTRAL: number;
+    YI: number;
+    API_TEXTGENERATIONWEBUI: number;
+    API_KOBOLD: number;
+    CLAUDE: number;
+    LLAMA3: number;
+    GEMMA: number;
+    JAMBA: number;
+    QWEN2: number;
+    COMMAND_R: number;
+    NEMO: number;
+    DEEPSEEK: number;
+    COMMAND_A: number;
+    BEST_MATCH: number;
   };
   getTokenCount: (text: string, tokenizer?: string) => number;
   getTokenCountAsync: (text: string, tokenizer?: string) => Promise<number>;
@@ -325,6 +444,31 @@ export interface StGetContext {
   SlashCommandNamedArgument: any;
   SlashCommandEnumValue: any;
   executeSlashCommandsWithOptions: (input: string, options?: any) => Promise<any>;
+
+  // [A-5] 工具注册（真实注册表，与沙箱轨共享 functionToolRegistry）
+  registerFunctionTool: (...args: any[]) => boolean;
+  unregisterFunctionTool: (name: string) => boolean;
+  ToolManager: {
+    registerFunctionTool: (...args: any[]) => boolean;
+    unregisterFunctionTool: (name: string) => boolean;
+    isToolCallingSupported: () => boolean;
+    canPerformToolCalls: () => boolean;
+    getAvailableTools: () => any[];
+    getToolByName: (name: string) => any;
+  };
+
+  // [A-5] ST 内部符号/常量对象
+  symbols: {
+    ignore: any;
+    IGNORE_SYMBOL: any;
+    EMPTY_STRING: string;
+  };
+  constants: {
+    unset: string;
+    IGNORE_SYMBOL: any;
+    MAX_CONTEXT_DEFAULT: number;
+    SWIPE_COUNT_DEFAULT: number;
+  };
 
   // 扩展模板 / Loader
   renderExtensionTemplate: (moduleName: string, templateName: string, data?: any) => string;
@@ -1503,9 +1647,29 @@ export function getContext(): StGetContext {
         (runtime as any).context.chat.push({ ...message } as any);
       }
       // 触发 ST 事件
-      const eventSource = runtime?.getEventSource();
-      eventSource?.emit('message_received', index, msg);
-      eventSource?.emit('message_sent', index, msg);
+      // [A-4] 按消息角色区分收发方向（对齐 ST script.js addOneMessage）：
+      //   role=user/系统消息 → message_sent；role=assistant → message_received。
+      //   无法判定角色（无 role 且无 is_user/is_system 显式标记）时维持现状双发
+      //   以保证兼容（订阅方据此区分收发方向的旧行为不受影响）。
+      // 事件源与上方案件系统字段暴露的 ctx.eventSource 同源：无 runtime 时回退
+      // 到模块级 fallback 单例，保证订阅方（含测试）能收到事件。
+      const eventSource = runtime?.getEventSource() ?? getFallbackEventSource();
+      const rawRole = (message as any)?.role;
+      const hasUserFlag = message.is_user !== undefined;
+      const hasSystemFlag = message.is_system !== undefined;
+      const isUserLike = rawRole === 'user' || rawRole === 'system'
+        || message.is_user === true || message.is_system === true;
+      const isAssistantLike = rawRole === 'assistant' || rawRole === 'character'
+        || (hasUserFlag && message.is_user === false && message.is_system !== true)
+        || (hasSystemFlag && message.is_system === false && message.is_user !== true);
+      if (isUserLike) {
+        eventSource?.emit('message_sent', index, msg);
+      } else if (isAssistantLike) {
+        eventSource?.emit('message_received', index, msg);
+      } else {
+        eventSource?.emit('message_received', index, msg);
+        eventSource?.emit('message_sent', index, msg);
+      }
       if (msg.is_user) {
         eventSource?.emit('user_message_rendered', index, msg);
       } else {
@@ -1645,11 +1809,31 @@ export function getContext(): StGetContext {
 
     // 格式化字段
     messageFormatting: (content: string, ...args: any[]) => {
+      let result: string;
       if (runtime?.messageFormatting) {
-        return runtime.messageFormatting(content, ...args);
+        result = runtime.messageFormatting(content, ...args);
+      } else {
+        result = content;
       }
-      return content;
+      // [A-5] 运行插件经 messageFormatter.addHook 注册的 hooks（默认 afterMarkdown stage）
+      try {
+        const [ch_name, isSystem, isUser, messageId] = args as [string?, boolean?, boolean?, number?];
+        result = getMessageFormatter().runStage(MESSAGE_FORMATTER_STAGE.AFTER_MARKDOWN, result, {
+          characterName: ch_name ?? '',
+          isSystem: !!isSystem,
+          isUser: !!isUser,
+          messageId: typeof messageId === 'number' ? messageId : -1,
+          isReasoning: false,
+        });
+      } catch {
+        // non-fatal
+      }
+      return result;
     },
+    // [A-5] ST 1.18.0 messageFormatter（message-formatter.js MessageFormatter 单例）：
+    // 提供 addHook(fn, {stage, order}) / runStage / stage / order。Palink 渲染管线
+    // 未逐 stage 接入，hooks 经 messageFormatting() 在默认 stage 上执行（见上方）。
+    messageFormatter: getMessageFormatter(),
 
     // 存储字段
     accountStorage: {
@@ -1675,7 +1859,10 @@ export function getContext(): StGetContext {
         }
       },
     },
-    // ST 插件通过 getRequestHeaders() 获取 API 请求头
+    // ST 插件通过 getRequestHeaders() 获取 API 请求头。
+    // [A-5] 过时注释更正：N8-c 终态后无需 Authorization —— 同源请求自动携带
+    // HttpOnly palink_session Cookie，带 Authorization 反而泄漏 Bearer。此处
+    // 如实只返回 Content-Type + CSRF 占位头，属正确行为，保留现状。
     getRequestHeaders: () => {
       return {
         'Content-Type': 'application/json',
@@ -1715,7 +1902,7 @@ export function getContext(): StGetContext {
     },
 
     // Token字段 — 优先使用缓存的后端精确计数，缓存未命中时回退到启发式估算并触发后台预取
-    tokenizers: {
+    tokenizers: Object.assign({
       getTokenCount: (text: string, tokenizer?: string) => {
         const key = _cacheKey(text || '', tokenizer);
         const cached = _tokenCountCache.get(key);
@@ -1727,7 +1914,33 @@ export function getContext(): StGetContext {
       estimateTokenCount: (text: string) => {
         return _heuristicTokenCount(text || '');
       },
-    },
+    }, {
+      // [A-5] ST 1.18.0 tokenizers.js:16-38 数字枚举（ctx.tokenizers.OPENAI===2 等）。
+      // 保留既有方法集作为附加能力，与 ST constants 完全一致。特此甄别：
+      // spec 附注 "OPENAI=0/Claude=1/.../Custom=8" 为旧版清单，此处以
+      // 仓库内 SillyTavern-1.18.0/public/scripts/tokenizers.js 实际枚举为准。
+      NONE: 0,
+      GPT2: 1,
+      OPENAI: 2,
+      LLAMA: 3,
+      NERD: 4,
+      NERD2: 5,
+      API_CURRENT: 6,
+      MISTRAL: 7,
+      YI: 8,
+      API_TEXTGENERATIONWEBUI: 9,
+      API_KOBOLD: 10,
+      CLAUDE: 11,
+      LLAMA3: 12,
+      GEMMA: 13,
+      JAMBA: 14,
+      QWEN2: 15,
+      COMMAND_R: 16,
+      NEMO: 17,
+      DEEPSEEK: 18,
+      COMMAND_A: 19,
+      BEST_MATCH: 99,
+    }),
     getTokenCount: (text: string, tokenizer?: string) => {
       const key = _cacheKey(text || '', tokenizer);
       const cached = _tokenCountCache.get(key);
@@ -2180,10 +2393,26 @@ export function getContext(): StGetContext {
     // 斜杠命令补全
     SlashCommandNamedArgument: StSlashCommandNamedArgument,
     SlashCommandEnumValue: StSlashCommandEnumValue,
-    executeSlashCommandsWithOptions: async (input: string, _options?: any) => {
-      // 委托到 SlashCommandEngine，返回执行结果对象
-      const result = await SlashCommandEngine.execute(input);
-      return result;
+    executeSlashCommandsWithOptions: async (input: any, options?: any) => {
+      // [A-5] 返回形状对齐沙箱轨（slash-commands.js 模块）：
+      // ST 语义 executeSlashCommandsWithOptions 返回 { pipe, success }，
+      // 插件据此读取管道输出并判断成败。
+      const text = String(
+        (typeof input === 'object' && input !== null)
+          ? (input.command ?? input.source ?? input.text ?? input.value ?? '')
+          : (input ?? ''),
+      );
+      try {
+        const result = await SlashCommandEngine.execute(text);
+        return { pipe: (result && result.output) || '', success: result?.success ?? true };
+      } catch (e) {
+        console.warn('[ST executeSlashCommandsWithOptions] 执行失败:', e);
+        const onError = options?.onError;
+        if (typeof onError === 'function') {
+          try { await onError(e); } catch { /* ignore */ }
+        }
+        return { pipe: '', success: false };
+      }
     },
 
     // 扩展模板 / Loader
@@ -2606,24 +2835,33 @@ export function getContext(): StGetContext {
     // ---- 第 2 类：需要真实实现（保守 stub） ----
     ToolManager: {
       // ST tool-calling.js ToolManager: 工具调用管理器
-      // Palink 当前不支持 function tool calling，提供 stub 兼容
-      // 注: 用 Boolean(0)/null as any 避免被 isNoOpFunction 识别为 no-op
-      registerFunctionTool: (_tool: any) => { void _tool; return Boolean(0); },
-      unregisterFunctionTool: (_name: string) => { void _name; return Boolean(0); },
+      // [A-5] getContext 轨由 stub 改为注册表真实入表（与沙箱轨共享
+      // functionToolRegistry，见下方 registerFunctionTool）；调用能力
+      // 依赖后端模型，isToolCallingSupported 如实为 false。
+      registerFunctionTool: (...args: any[]) => {
+        return _registerFunctionToolCompat(...args);
+      },
+      unregisterFunctionTool: (name: string) => {
+        if (typeof name === 'string') functionToolRegistry.delete(name);
+        return true;
+      },
       isToolCallingSupported: () => Boolean(0),
       canPerformToolCalls: () => Boolean(0),
-      getAvailableTools: () => [] as any[],
-      getToolByName: (_name: string) => { void _name; return null as any; },
+      getAvailableTools: () => Array.from(functionToolRegistry.values()) as any[],
+      getToolByName: (name: string) => functionToolRegistry.get(name) ?? null,
     },
-    registerFunctionTool: (_tool: any) => {
-      // ST ToolManager.registerFunctionTool 绑定
-      // Palink 不支持 tool calling，no-op 兼容
-      void _tool;
-      return Boolean(0);
+    registerFunctionTool: (...args: any[]) => {
+      // [A-5] 注册表真实入表（与沙箱轨一致），管道暂不消费：
+      // useCharacterChat.serializeFunctionTools() 会把注册表序列化为 OpenAI
+      // tool calling 格式随请求发送。支持 ST 两种调用形态（tool-calling.js
+      // ToolManager.registerFunctionTool）：
+      //   对象形态 { name, displayName, description, parameters, action, ... }
+      //   旧位置参数形态 (name, description, parameters, action)
+      return _registerFunctionToolCompat(...args);
     },
-    unregisterFunctionTool: (_name: string) => {
-      void _name;
-      return Boolean(0);
+    unregisterFunctionTool: (name: string) => {
+      if (typeof name === 'string') functionToolRegistry.delete(name);
+      return true;
     },
     isToolCallingSupported: () => Boolean(0),
     canPerformToolCalls: () => Boolean(0),
@@ -2703,20 +2941,22 @@ export function getContext(): StGetContext {
     symbols: {
       // ST 内部 symbols 对象（替代 Symbol() 常量）
       // 提供 ST 插件可能引用的常用 symbol 占位
-      // [A-5] 键名对齐 ST：symbols.ignore；旧键经存取器委托读写，兼容一版后移除
-      ignore: '<ignore>',
+      // [A-5] 键名对齐 ST：symbols.ignore（值对齐 ST 1.18.0 constants.js
+      // IGNORE_SYMBOL = Symbol.for('ignore')）；旧键经存取器委托读写，兼容一版后移除
+      ignore: (typeof Symbol !== 'undefined' ? Symbol.for('ignore') : '<ignore>'),
       EMPTY_STRING: '',
-      get IGNORE_SYMBOL(): string { return this.ignore; },
-      set IGNORE_SYMBOL(value: string) { this.ignore = value; },
+      get IGNORE_SYMBOL(): any { return this.ignore; },
+      set IGNORE_SYMBOL(value: any) { this.ignore = value; },
     },
     constants: {
       // ST constants.js 导出的常量
-      // [A-5] 键名对齐 ST：constants.unset；旧键经存取器委托读写，兼容一版后移除
-      unset: '<ignore>',
+      // [A-5] 键名对齐 ST：constants.unset（值对齐 ST 1.18.0 extensions.js
+      // UNSET_VALUE = '__@@UNSET@@__'）；旧键经存取器委托读写，兼容一版后移除
+      unset: '__@@UNSET@@__',
       MAX_CONTEXT_DEFAULT: 16384,
       SWIPE_COUNT_DEFAULT: 0,
-      get IGNORE_SYMBOL(): string { return this.unset; },
-      set IGNORE_SYMBOL(value: string) { this.unset = value; },
+      get IGNORE_SYMBOL(): any { return this.unset; },
+      set IGNORE_SYMBOL(value: any) { this.unset = value; },
     },
     loader: {
       // ST action-loader.js loader

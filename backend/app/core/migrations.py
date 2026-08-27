@@ -112,6 +112,10 @@ _RUNTIME_COMPAT_COLUMNS = (
     ("themes", "created_at", sa.DateTime()),
     # [REASONING-SEPARATE] 分离存储：messages 表 assistant 思考独立持久化列
     ("messages", "extra", sa.Text()),
+    # [A-7 多租户插件隔离] plugins 表用户作用域列：
+    # NULL = 全局插件（所有用户可见）；非 NULL = 仅该 user_id 可见。
+    # 存量插件全部为 NULL，单用户部署行为不变。
+    ("plugins", "user_id", sa.Integer()),
 )
 
 
