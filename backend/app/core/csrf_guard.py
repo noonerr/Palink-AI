@@ -23,8 +23,15 @@ async def csrf_guard(request: Request) -> None:
     if request.headers.get("authorization"):
         return
     token = request.headers.get("x-csrf-token", "")
-    if token != _PALINK_CSRF_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="CSRF token mismatch",
-        )
+    if token == _PALINK_CSRF_TOKEN:
+        return
+    # [N8-c 终态适配] Bearer 退役后 Palink 前端为纯 Cookie 认证，X-CSRF-Token
+    # 携带的是动态 palink_csrf cookie 值（N8-a 双提交，登录时随 palink_session
+    # 下发）。与 cookie 配对即放行——跨站攻击者无法同时伪造该 header 与配对
+    # cookie（SameSite=Lax）。静态值分支保留给 ST iframe/bridge 兼容流量。
+    if token and token == request.cookies.get("palink_csrf"):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="CSRF token mismatch",
+    )
