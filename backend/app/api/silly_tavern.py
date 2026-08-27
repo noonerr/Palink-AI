@@ -605,7 +605,13 @@ def _token_from_request(request: Request, token: Optional[str] = None) -> Option
     auth_header = request.headers.get("Authorization") or ""
     if auth_header.lower().startswith("bearer "):
         return auth_header.split(" ", 1)[1].strip()
-    return None
+    # [N8-c 终态适配] Bearer 退役后 Palink 前端为纯 Cookie 认证——加
+    # palink_session Cookie 兜底（N8-a 登录时下发，sub=username 与本函数
+    # 解码语义一致，jti 黑名单检查在 _user_from_request_token 内生效）。
+    # 显式携带但无效的 Bearer 仍不回退（凭据语义明确失败），与主依赖
+    # get_current_user 的双轨语义对齐。覆盖 get_st_current_user 全部
+    # 60+ 端点（导入/导出/tokenizer/merge-attributes 等）。
+    return request.cookies.get("palink_session") or None
 
 
 def _user_from_request_token(request: Request, db: Session, token: Optional[str] = None) -> User:

@@ -365,6 +365,62 @@ class TestRenewalCookie:
 
 
 # ---------------------------------------------------------------------------
+# 6.5 st_router Cookie 认证兜底（N8-c 尾巴修复）
+# ---------------------------------------------------------------------------
+class TestStRouterCookieAuth:
+    """st_router 60+ 端点（get_st_current_user → _token_from_request）纯 Cookie 认证。
+
+    N8-c 终态 Bearer 退役后，_token_from_request 原只认 Bearer/X-Palink-Token
+    头 → 导入等端点在 CSRF 修复后暴露 401 Authentication required。
+    现增加 palink_session Cookie 兜底（与主依赖 get_current_user 双轨语义对齐）。
+    """
+
+    TARGET = "/api/characters/import"
+
+    def _authed_cookies(self, client, test_user) -> dict:
+        token = create_access_token({"sub": test_user.username})
+        csrf_value = uuid.uuid4().hex + uuid.uuid4().hex
+        client.cookies.set(SESSION_COOKIE, token)
+        client.cookies.set(CSRF_COOKIE, csrf_value)
+        return {"session": token, "csrf": csrf_value}
+
+    def test_cookie_channel_passes_st_router_auth(self, client, test_user):
+        """纯 Cookie + 双提交 CSRF → 穿过 st_router 认证层。
+
+        空 multipart 预期 422（No file uploaded）——证明认证已通过，
+        请求到达端点业务逻辑而非 401/403。
+        """
+        creds = self._authed_cookies(client, test_user)
+        resp = client.post(self.TARGET, headers={"X-CSRF-Token": creds["csrf"]})
+        assert resp.status_code == 422, resp.text
+        assert "No file uploaded" in resp.json()["detail"]
+
+    def test_without_credentials_401(self, client):
+        """无任何凭据（静态 CSRF 值放行）→ 认证层 401 语义保持。"""
+        resp = client.post(self.TARGET, headers={"X-CSRF-Token": "palink-csrf"})
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Authentication required"
+
+    def test_invalid_session_cookie_401_after_csrf_passes(self, client, test_user):
+        """双提交配对通过但 session JWT 无效 → 401 Invalid or expired token。"""
+        csrf_value = uuid.uuid4().hex + uuid.uuid4().hex
+        client.cookies.set(SESSION_COOKIE, "not-a-jwt")
+        client.cookies.set(CSRF_COOKIE, csrf_value)
+        resp = client.post(self.TARGET, headers={"X-CSRF-Token": csrf_value})
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Invalid or expired token"
+
+    def test_bearer_channel_regression_on_st_router(self, client, test_user):
+        """Bearer 通道回归：显式 Bearer 仍优先且可用（st-native bridge 兼容）。"""
+        token = create_access_token({"sub": test_user.username})
+        resp = client.post(
+            self.TARGET,
+            headers={"Authorization": f"Bearer {token}", "X-CSRF-Token": "palink-csrf"},
+        )
+        assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
 # 7. 登出：Cookie 清理 + jti 拉黑（§2.1）
 # ---------------------------------------------------------------------------
 class TestLogout:
