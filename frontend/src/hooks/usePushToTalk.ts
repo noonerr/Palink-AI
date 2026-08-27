@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { getCsrfToken } from '@/services/api';
 
 export interface UsePushToTalkOptions {
   /** 语言代码，默认 "zh" */
@@ -100,6 +101,7 @@ export function usePushToTalk(options: UsePushToTalkOptions = {}): UsePushToTalk
         const response = await fetch('/api/stt', {
           method: 'POST',
           credentials: 'include',
+          headers: { ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}) },
           body: formData,
         });
 

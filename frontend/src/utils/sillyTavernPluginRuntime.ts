@@ -1,4 +1,4 @@
-import { api } from '@/services/api';
+import { api, getCsrfToken } from '@/services/api';
 import { toast } from 'sonner';
 import jQuery from 'jquery';
 import { recordStubHit } from '@/lib/plugin-system/compat-stub-registry';
@@ -719,7 +719,9 @@ export class SillyTavernPluginRuntime {
         window.getRequestHeaders = window.getRequestHeaders || function() {
           return {
             'Content-Type': 'application/json',
-            'X-CSRF-Token': 'palink-csrf'
+            // [CSRF] N8-c 终态：动态读 palink_csrf cookie（旧静态 'palink-csrf' 在新
+            // 双提交中间件下会 mismatch 403）
+            'X-CSRF-Token': getCsrfToken()
           };
         };
         window.SillyTavern.getRequestHeaders = window.getRequestHeaders;

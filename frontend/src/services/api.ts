@@ -135,7 +135,7 @@ function dispatchAuthFailure() {
 }
 
 // ── N8-b：CSRF 双提交令牌（palink_csrf 为可读 Cookie，登录时随 palink_session 下发）──
-function getCsrfToken(): string {
+export function getCsrfToken(): string {
   try {
     const match = document.cookie.match(/(?:^|;\s*)palink_csrf=([^;]*)/);
     return match ? decodeURIComponent(match[1]) : '';

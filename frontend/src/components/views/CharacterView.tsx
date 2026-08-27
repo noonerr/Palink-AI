@@ -6,7 +6,7 @@ import { Bot, ExternalLink, Settings2 } from 'lucide-react';
 import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { api, invalidateCache } from '@/services/api';
+import { api, invalidateCache, getCsrfToken } from '@/services/api';
 import { toast } from 'sonner';
 import { getOCData } from '@/components/ui/custom/OCSettings';
 
@@ -65,6 +65,11 @@ function uploadCharacterCardWithProgress(
 
     xhr.open('POST', '/api/characters/import');
     xhr.withCredentials = true;
+    // [CSRF] N8-c 终态后手动 XHR 通道无 Bearer，必须补 X-CSRF-Token 头（与 api.ts 同语义）
+    const csrf = getCsrfToken();
+    if (csrf) {
+      xhr.setRequestHeader('X-CSRF-Token', csrf);
+    }
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable || event.total <= 0) {

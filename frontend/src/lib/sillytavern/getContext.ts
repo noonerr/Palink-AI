@@ -31,7 +31,7 @@ import { worldbookApi } from '@/services/worldbookApi';
 import type { WorldBookManager } from '@/lib/worldbook';
 import type { WorldBookEntry } from '@/lib/worldbook/types';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
-import { api } from '@/services/api';
+import { api, getCsrfToken } from '@/services/api';
 import { personaManager } from '@/lib/personas/manager';
 import { contextSetterRegistry, functionToolRegistry } from '../plugin-system/sandbox';
 import { toast } from 'sonner';
@@ -2375,6 +2375,9 @@ export function getContext(): StGetContext {
         xhr.open('POST', '/api/tokenizers/encode', false);
         xhr.withCredentials = true;
         xhr.setRequestHeader('Content-Type', 'application/json');
+        // [CSRF] N8-c 终态后手动 XHR 通道补 X-CSRF-Token 头
+        const csrfT = getCsrfToken();
+        if (csrfT) xhr.setRequestHeader('X-CSRF-Token', csrfT);
         xhr.send(JSON.stringify({ text, tokenizer }));
         if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
           const data = JSON.parse(xhr.responseText);
@@ -3253,6 +3256,8 @@ export async function writeExtensionFieldCompat(
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
+        // [CSRF] N8-c 终态后手动 fetch 通道补 X-CSRF-Token 头
+        ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
       },
       body: JSON.stringify({
         avatar: target.avatar,

@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, getCsrfToken } from './api';
 import { toast } from 'sonner';
 import type { TTSBindingPayload, TTSPreviewRequest, TTSSegment } from '@/types/tts';
 
@@ -293,6 +293,8 @@ class TTSService {
         signal: signal ?? this.abortController?.signal,
         headers: {
           'Content-Type': 'application/json',
+          // [CSRF] N8-c 终态后手动 fetch 通道补 X-CSRF-Token 头
+          ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
         },
         body: JSON.stringify({
           text,
