@@ -1225,10 +1225,11 @@ export function useCharacterChat({
     try {
       // Task 7.2: 触发 ST GENERATION_STARTED 事件（带 type，区分 normal/regenerate/continue/swipe）
       const runtime = getGlobalSillyTavernRuntime();
-      // Task 7.4: 构建世界书上下文
-      const worldBookContext = buildWorldBookContextForChat();
-      // 注入世界书上下文到消息前（与 generationEngine._buildWorldBookContext 行为一致）
-      const effectiveMessage = worldBookContext ? worldBookContext + '\n' + messageForApi : messageForApi;
+      // Task 7.4: [D-9 修复] 不再在前端拼接世界书上下文——palink-native 后端
+      // _append_worldbook_context 已是唯一权威注入点（WS/SSE 路径行为一致）。
+      // 此前 SSE 降级路径会与后端扫描重复注入同批世界书，且污染落库的 user 消息。
+      // buildWorldBookContextForChat() 函数定义保留（供 UI 预览/调试），此处不调用。
+      const effectiveMessage = messageForApi;
 
       runtime?.emitGenerationStarted('normal', {
         character_id: selectedCharacter.id,
