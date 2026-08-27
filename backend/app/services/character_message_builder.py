@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Character, CharacterChatMessage, UserSetting
 from ..core import settings
+from ..utils import strip_inline_think
 
 
 def parse_system_commands(text: str) -> Tuple[str, List[str]]:
