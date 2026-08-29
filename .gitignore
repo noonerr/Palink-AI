@@ -215,3 +215,8 @@ _backup/
 _tmp_*.txt
 backend/_tmp_*.py
 frontend/scripts/_shim_check_probe.*
+
+# 2026-08-29 分段提交：插件脚本 dump 与审计截图（一次性调试产物，体积大）
+_bam_script_dump.js
+_bubble_script_dump.js
+scripts/st_audit_seraphina.png
