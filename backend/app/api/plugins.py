@@ -1123,7 +1123,14 @@ def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -
         # 所有角色，模型对无配套渲染正则的卡输出 @bubble 原始标记。复用现成三重判定
         # 函数（source_type / config 标记 / regex_scripts 命名模式）拦截，置于循环首位，
         # 优先于下方 tavern_helper 的 global_runtime 绕过逻辑。
-        if _is_character_card_extension_plugin(plugin):
+        # [GUARD-TH-EXEMPT]（2026-08-28 用户拍板）：tavern_helper 型插件豁免本守卫——
+        # 8-23 守卫上线后「酒馆助手」（内含对话渲染/数据库界面面板脚本）被整体拦停，
+        # 正文下方角色面板静默消失 5 天（#bam-container 不再挂载）。豁免依据：
+        # ① tavern_helper 是用户显式启用的扩展型插件（对齐 ST 全局扩展语义）；
+        # ② 泄漏面已收敛到脚本粒度（plugin_scripts.enabled 开关，用户可单独停用
+        #    BubbleDialogue 类脚本，见 _synthesize_tavern_helper_js_content 的
+        #    s.enabled 过滤）。非 tavern_helper 的卡内扩展来源插件维持拦截不变。
+        if _is_character_card_extension_plugin(plugin) and plugin.plugin_type != "tavern_helper":
             continue
         config = _plugin_config(plugin)
         # tavern_helper 类型绑定角色卡扩展，不走 global_runtime 开关，
