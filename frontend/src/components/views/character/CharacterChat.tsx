@@ -52,7 +52,8 @@ import type {
 } from '@/types';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import { getCachedGlobalRegexScripts, preloadGlobalRegexScripts, loadEngineConfig } from '@/utils/sillyTavernDisplayPipeline';
-import type { RegexScript } from '@/utils/regexEngine';
+// D 批清理: 类型改取自正则引擎正典定义（utils/regexEngine.ts 已删除）
+import type { RegexScript } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { extractReasoningTags } from '@/lib/sillytavern/formatting';
@@ -1349,6 +1350,62 @@ export function CharacterChat(props: CharacterChatProps) {
     const idx = displayedMessagesRef.current.findIndex((m) => String(m.id) === String(messageId));
     if (idx >= 0) handleEditMessageRef.current(String(messageId), idx, newContent);
   }, []);
+
+  // [批次B] swipe 候选切换（无分框模式）：循环计算目标索引（对齐分框模式
+  // messageManager.swipe 与 getContext swipe.to 的循环语义），调用后端
+  // PATCH /api/character-sessions/{sid}/messages/{mid}/swipe 落库（该端点会将
+  // 消息内容同步到选中的 swipe，见 character_ext.py switch_message_swipe），
+  // 成功后本地同步 swipe_id 与 content 驱动 memo 重渲染。
+  const handleSwipeAt = useCallback((messageId: string | number, direction: 'prev' | 'next') => {
+    if (!selectedSession || selectedSession.id === '__pending__') return;
+    const list = displayedMessagesRef.current;
+    const idx = list.findIndex((m) => String(m.id) === String(messageId));
+    if (idx < 0) return;
+    const msg = list[idx];
+    const swipes = Array.isArray(msg.swipes) ? msg.swipes : [];
+    if (swipes.length <= 1) return;
+    const current = msg.swipe_id ?? 0;
+    const next = direction === 'next'
+      ? (current >= swipes.length - 1 ? 0 : current + 1)
+      : (current <= 0 ? swipes.length - 1 : current - 1);
+    const persistedMessageId = Number(messageId);
+    void (async () => {
+      try {
+        if (Number.isInteger(persistedMessageId) && persistedMessageId > 0) {
+          await api.patch(`/api/character-sessions/${selectedSession.id}/messages/${persistedMessageId}/swipe`, { swipe_id: next });
+        }
+        setMessages(prev => prev.map(m => (
+          String(m.id) === String(messageId)
+            ? { ...m, swipe_id: next, content: swipes[next] ?? m.content }
+            : m
+        )));
+      } catch (e) {
+        console.error('Swipe message failed:', e);
+        toast.error('切换候选回复失败');
+      }
+    })();
+  }, [selectedSession, setMessages]);
+
+  // [批次B] 隐藏/取消隐藏（无分框模式）：PATCH 消息可见性端点（is_hidden 为顶层字段，
+  // 见 character_ext.py update_message_visibility），成功后本地同步顶层 is_hidden，
+  // 并兜底写入 extra.is_hidden 兼容任何读取该位置的下游逻辑；隐藏消息在装配层已被过滤。
+  const handleHideAt = useCallback(async (messageId: string | number, hidden: boolean) => {
+    if (!selectedSession || selectedSession.id === '__pending__') return;
+    const persistedMessageId = Number(messageId);
+    try {
+      if (Number.isInteger(persistedMessageId) && persistedMessageId > 0) {
+        await api.patch(`/api/character-sessions/${selectedSession.id}/messages/${persistedMessageId}`, { is_hidden: hidden });
+      }
+      setMessages(prev => prev.map(m => (
+        String(m.id) === String(messageId)
+          ? { ...m, is_hidden: hidden, extra: { ...(m.extra || {}), is_hidden: hidden } }
+          : m
+      )));
+    } catch (e) {
+      console.error('Hide message failed:', e);
+      toast.error(hidden ? '隐藏消息失败' : '取消隐藏失败');
+    }
+  }, [selectedSession, setMessages]);
   const mobileComposerClosedBottomPx = composerBottomPx > 0 ? composerBottomPx : 90;
   // iOS WebApp 键盘弹出时视口已自动缩小，输入框定位在 nav 上方（不需要 keyboardHeight）
   const mobileComposerKeyboardBottomPx = mobileComposerClosedBottomPx;
@@ -1906,7 +1963,14 @@ export function CharacterChat(props: CharacterChatProps) {
                 canRegenerate={msg.role === 'assistant' && !isGenerating}
                 showModelReasoning={showModelReasoning}
                 onEdit={msg.id != null ? handleEditAt : undefined}
-                canEdit={msg.role === 'assistant' && !isGenerating}
+                // [批次B] user 消息同样开放编辑入口（后端 PUT /messages/{mid} 对 user 消息同样支持）
+                canEdit={msg.id != null && !isGenerating}
+                // [批次B] swipe 候选切换 + 隐藏/取消隐藏接线（无分框模式交互补齐）
+                onSwipe={handleSwipeAt}
+                swipes={msg.swipes}
+                swipeId={msg.swipe_id}
+                onHide={msg.id != null ? handleHideAt : undefined}
+                isHidden={Boolean(msg.is_hidden ?? (msg.extra as Record<string, unknown> | undefined)?.is_hidden)}
                 onGenerateImage={msg.id != null ? handleGenerateImage : undefined}
                 isGeneratingImage={msg.id != null ? generatingImageMessageIds.has(String(msg.id)) : false}
                 onSmartCardAction={handleSmartCardAction}

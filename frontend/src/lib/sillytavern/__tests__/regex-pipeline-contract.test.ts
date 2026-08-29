@@ -101,7 +101,7 @@ import {
   regex_placement,
   type RegexScript,
 } from '../runtime';
-import { applyRegexScripts, runRegexScript } from '../regex/engine';
+import { runRegexScript } from '../regex/engine';
 
 function mkScript(overrides: Partial<RegexScript>): RegexScript {
   return {
@@ -241,10 +241,12 @@ describe('Regex trimStrings Macro Substitution', () => {
 });
 
 // ============================================================
-// E. [C-4b] trimStrings 宏替换 —— 直接 runRegexScript / applyRegexScripts 路径
+// E. [C-4b] trimStrings 宏替换 —— runRegexScript 直连路径
 //
 // getRegexedString 主路径（D 组）经 regexPipeline.processFlatScripts 已修复；
-// 本组锁定 engine.ts 内直接调用 runRegexScript 的分支（applyRegexScripts）同样生效。
+// 本组锁定 engine.ts runRegexScript 直连分支同样生效。
+// （D 批清理: applyRegexScripts 旧 placement 循环已删除，本组随迁改用
+//   runRegexScript 断言，trimStrings 宏替换契约保持不变。）
 // ============================================================
 describe('Regex trimStrings Macro Substitution (direct engine path)', () => {
   it('runRegexScript substitutes {{char}} macro in trim string before removal', () => {
@@ -257,15 +259,13 @@ describe('Regex trimStrings Macro Substitution (direct engine path)', () => {
     expect(result).toBe(' hello');
   });
 
-  it('applyRegexScripts substitutes {{user}} macro in trim string before removal', () => {
-    const scripts = [
-      mkScript({
-        findRegex: '^(.*)$',
-        replaceString: '$1',
-        trimStrings: ['{{user}}:'],
-      }),
-    ];
-    const result = applyRegexScripts('Alice: hello', scripts, { placement: AI_OUT, userName: 'Alice' });
+  it('runRegexScript substitutes {{user}} macro in trim string before removal', () => {
+    const script = mkScript({
+      findRegex: '^(.*)$',
+      replaceString: '$1',
+      trimStrings: ['{{user}}:'],
+    });
+    const result = runRegexScript(script, 'Alice: hello', { userName: 'Alice' });
     expect(result).toBe(' hello');
   });
 

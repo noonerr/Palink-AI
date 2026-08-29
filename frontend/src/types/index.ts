@@ -491,6 +491,9 @@ export interface CharacterChatMessage {
   swipes?: string[];
   swipe_id?: number;
   swipe_info?: Array<Record<string, unknown>>;
+  // 后端序列化消息时 is_hidden 为顶层字段（character_ext.py _serialize_character_message），
+  // 非 extra 内嵌；hidden 消息在装配层已被过滤，仅前端展示用
+  is_hidden?: boolean;
   extra?: Record<string, unknown>;
 }
 

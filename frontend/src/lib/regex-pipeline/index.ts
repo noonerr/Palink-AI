@@ -34,17 +34,3 @@ onEvent('regex:cache-invalidate', () => {
   regexProvider.clear();
 });
 
-/**
- * React Hook: useRegexPipeline
- */
-export function useRegexPipeline() {
-  return {
-    pipeline: regexPipeline,
-    provider: regexProvider,
-    process: regexPipeline.process.bind(regexPipeline),
-    addScript: regexPipeline.addScript.bind(regexPipeline),
-    removeScript: regexPipeline.removeScript.bind(regexPipeline),
-    exportScripts: regexPipeline.exportScripts.bind(regexPipeline),
-    importScripts: regexPipeline.importScripts.bind(regexPipeline),
-  };
-}

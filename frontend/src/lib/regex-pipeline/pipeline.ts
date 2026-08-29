@@ -5,13 +5,13 @@
 
 import type {
   RegexScript,
-  RegexProcessingOptions,
   RegexPipelineConfig,
   StRegexScript,
   StRegexProcessingOptions,
   SourcedRegexScript,
 } from './types';
-import { RegexPlacement, RegexScriptSource } from './types';
+// D 批清理: RegexProcessingOptions/RegexPlacement 仅被已删除的旧 process 链使用
+import { RegexScriptSource } from './types';
 import { regexProvider } from './provider';
 import { emitEvent } from '../event-bus';
 
@@ -52,6 +52,24 @@ function stSanitizeRegexMacro(text: string): string {
       default: return `\\${char}`;
     }
   });
+}
+
+/**
+ * ESCAPED（substituteRegex=2）专用：宏替换值逐个做正则转义后再进入模式，
+ * findRegex 模式本体不被整串转义。
+ * ST 1.18.0 对齐：engine.js:402-403（postProcessFn 仅作用于每个宏替换值，
+ * script.js:2756-2758）+ engine.js:304-324 sanitizeRegexMacro 字符集；
+ * 后端 character_ext.py:1157-1163 同语义。
+ */
+function stSubstituteParamsEscaped(text: string, params?: { userName?: string; characterName?: string; characterOverride?: string }): string {
+  const userName = stSanitizeRegexMacro(params?.userName || 'User');
+  const characterName = stSanitizeRegexMacro(params?.characterOverride || params?.characterName || 'Character');
+  return String(text || '')
+    .replace(/\{\{user\}\}/gi, userName)
+    .replace(/\{\{char\}\}/gi, characterName)
+    .replace(/\{\{character\}\}/gi, characterName)
+    .replace(/\{\{name1\}\}/gi, userName)
+    .replace(/\{\{name2\}\}/gi, characterName);
 }
 
 function stFilterString(rawString: string, trimStrings: string[]): string {
@@ -139,26 +157,6 @@ export class RegexPipeline {
       return true;
     }
     return false;
-  }
-
-  /**
-   * 处理文本
-   */
-  process(input: string, options: RegexProcessingOptions): string {
-    if (!input) return input;
-
-    let result = input;
-    const scripts = this.getScriptsForPlacement(options.placement);
-
-    for (const script of scripts) {
-      if (this.shouldSkipScript(script, options)) {
-        continue;
-      }
-
-      result = this.applyScript(result, script, options);
-    }
-
-    return result;
   }
 
   /**
@@ -292,8 +290,10 @@ export class RegexPipeline {
     let findRegexSource = script.findRegex;
 
     if (substituteMode === 2) {
-      findRegexSource = stSubstituteParams(findRegexSource, params);
-      findRegexSource = stSanitizeRegexMacro(findRegexSource);
+      // A1 修复（ST 1.18.0 engine.js:402-403 ESCAPED 语义）：仅对宏替换值逐个
+      // 转义（postProcessFn = sanitizeRegexMacro，script.js:2756-2758），模式本体
+      // 不做整串 sanitize；对齐后端 character_ext.py:1157-1163 逐值转义。
+      findRegexSource = stSubstituteParamsEscaped(findRegexSource, params);
     } else if (substituteMode === 1) {
       findRegexSource = stSubstituteParams(findRegexSource, params);
     }
@@ -332,105 +332,6 @@ export class RegexPipeline {
     } catch {
       return input;
     }
-  }
-
-  /**
-   * 获取适用于指定位置的脚本
-   */
-  private getScriptsForPlacement(placement: RegexPlacement): RegexScript[] {
-    return Array.from(this.scripts.values()).filter(script => {
-      if (script.disabled) return false;
-      if (script.placement.includes(RegexPlacement.ALL)) return true;
-      return script.placement.includes(placement);
-    });
-  }
-
-  /**
-   * 检查是否应该跳过脚本
-   */
-  private shouldSkipScript(script: RegexScript, options: RegexProcessingOptions): boolean {
-    // 检查markdownOnly
-    if (script.markdownOnly && !options.isMarkdown) {
-      return true;
-    }
-
-    // 检查promptOnly
-    if (script.promptOnly && !options.isPrompt) {
-      return true;
-    }
-
-    // 检查runOnEdit
-    if (script.runOnEdit && !options.isEdit) {
-      return true;
-    }
-
-    // 检查深度范围
-    if (options.depth !== undefined) {
-      if (script.minDepth !== null && script.minDepth !== undefined && options.depth < script.minDepth) {
-        return true;
-      }
-      if (script.maxDepth !== null && script.maxDepth !== undefined && options.depth > script.maxDepth) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * 应用单个脚本
-   */
-  private applyScript(input: string, script: RegexScript, options: RegexProcessingOptions): string {
-    try {
-      // 获取正则表达式
-      const flags = this.getFlagsForScript(script);
-      const regex = regexProvider.get(script.findRegex, flags);
-      
-      if (!regex) {
-        return input;
-      }
-
-      // 执行替换
-      let result = input;
-      
-      // 处理trimStrings
-      if (script.trimStrings && script.trimStrings.length > 0) {
-        for (const trimStr of script.trimStrings) {
-          result = result.replace(new RegExp(trimStr, 'g'), '');
-        }
-      }
-
-      // 处理替换
-      if (script.substituteRegex === 1) {
-        // 使用替换字符串中的捕获组引用
-        result = result.replace(regex, script.replaceString);
-      } else {
-        // 简单替换
-        result = result.replace(regex, () => script.replaceString);
-      }
-
-      return result;
-    } catch (error) {
-      if (this.config.enableLogging) {
-        console.error(`[RegexPipeline] Error applying script "${script.scriptName}":`, error);
-      }
-      return input;
-    }
-  }
-
-  /**
-   * 获取脚本的正则标志
-   */
-  private getFlagsForScript(script: RegexScript): string {
-    let flags = 'g';
-    
-    // 从正则表达式中提取标志
-    const regexMatch = script.findRegex.match(/^\/(.+)\/([gimsuy]*)$/);
-    if (regexMatch) {
-      flags = regexMatch[2] || 'g';
-    }
-
-    return flags;
   }
 
   /**

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
@@ -137,6 +137,14 @@ interface MessageProps {
   onSetMultipleItemsSelect?: (itemIds: string[], select: boolean) => void;
   onEdit?: (newContent: string, messageId?: string | number) => void;
   canEdit?: boolean;
+  // [批次B] 无分框模式消息交互补齐：swipe 候选切换 + 隐藏/取消隐藏。
+  // swipe 数据（swipes/swipeId）由 CharacterChat 从 CharacterChatMessage 透传
+  // （MessageType 本体无 swipe 字段）；isHidden 对应后端序列化顶层 is_hidden。
+  onSwipe?: (messageId: string | number, direction: 'prev' | 'next') => void;
+  swipes?: string[];
+  swipeId?: number;
+  onHide?: (messageId: string | number, hidden: boolean) => void;
+  isHidden?: boolean;
   isMixedDeleteMode?: boolean;
   selectedWholeMessages?: Set<number>;
   selectedMessageParts?: Map<number, Set<string>>;
@@ -682,8 +690,14 @@ function MessageInner({
   messageIndex,
   selectedItems,
   onSetMultipleItemsSelect,
-  onEdit: _onEdit,
-  canEdit: _canEdit = false,
+  onEdit,
+  canEdit = false,
+  // [批次B] swipe 切换 + 隐藏/取消隐藏（无分框模式交互补齐）
+  onSwipe,
+  swipes,
+  swipeId,
+  onHide,
+  isHidden = false,
   isMixedDeleteMode = false,
   selectedWholeMessages,
   onToggleWholeMessageSelect,
@@ -713,6 +727,9 @@ function MessageInner({
   mvuSecondaryRunning = false,
 }: MessageProps) {
   const [copied, setCopied] = useState(false);
+  // [批次B] 消息编辑态：组件局部 state（不入 memo 比较器），进入编辑时预填当前显示正文
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState('');
   // [N-21] 复制按钮复位定时器：ref 存储 + 卸载清理（对齐 CodeBlock copyResetTimerRef 模式）
   const copyResetTimerRef = useRef<number | null>(null);
   useEffect(() => {
@@ -1045,6 +1062,35 @@ function MessageInner({
     }, 2000);
   };
 
+  // [批次B] 编辑入口：预填当前显示正文——assistant 取 displayContent（剥离思考链/
+  // 状态栏/UpdateVariable 后的正文，对齐用户所见；swipes 多候选时 content 已由
+  // swipe 切换链路同步为当前候选），user 取原始 content（含图片 markdown，
+  // 避免编辑保存覆盖 content 时丢失独立渲染的图片标记）。
+  const handleStartEdit = useCallback(() => {
+    if (!onEdit || message.id == null) return;
+    setEditDraft(isUser ? (message.content || '') : (displayContent || message.content || ''));
+    setIsEditing(true);
+  }, [onEdit, message.id, isUser, displayContent, message.content]);
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false);
+    setEditDraft('');
+  }, []);
+
+  // 保存：走上游 onEdit(newContent, messageId)（CharacterChat handleEditAt → PUT /messages/{mid}）
+  const handleSaveEdit = useCallback(() => {
+    if (!onEdit || message.id == null) return;
+    onEdit(editDraft, message.id);
+    setIsEditing(false);
+    setEditDraft('');
+  }, [onEdit, message.id, editDraft]);
+
+  // [批次B] 隐藏/取消隐藏切换：回调 CharacterChat 的 PATCH 可见性端点接线
+  const handleToggleHide = useCallback(() => {
+    if (!onHide || message.id == null) return;
+    onHide(message.id, !isHidden);
+  }, [onHide, message.id, isHidden]);
+
   // [ST 兼容] 消息内占位锚点点击防护（通用修复，不逐卡适配）：
   // 角色卡常把按钮写成 <a href="#">，卡片脚本被净化剥离后无任何真实跳转语义。
   // 显示管线（formatting.ts afterSanitizeAttributes）已不给占位锚点加 target，
@@ -1184,7 +1230,9 @@ function MessageInner({
         isUser && "justify-end",
         isItemSelected && "bg-primary/5 rounded-lg p-1 -m-1",
         isInDeleteMode && "cursor-pointer",
-        canSkipOffscreenRender && "mes-render-skip"
+        canSkipOffscreenRender && "mes-render-skip",
+        // [批次B] 隐藏消息半透明（对齐 ST isHidden 视觉），保留完整交互可再次点击取消
+        isHidden && "opacity-50"
       )}
       data-mesid={messageIndex}
       // Fix 1: mesid / is_user / is_system 是 ST 标准属性（非 data-*），插件用 getAttribute('is_user')
@@ -1276,7 +1324,37 @@ function MessageInner({
             )}
             {/* [UI-2026-08-19] 角色名 div 不再显示（用户要求：与 ST 保持一致，角色名由
                 插件/角色卡特效渲染或省略，Palink 不额外显示角色名行） */}
-            {(!isUser && displayContent) || isUser ? (
+            {/* [批次B] 编辑态：正文区替换为 textarea + 保存/取消（对齐 ST Edit→Save/Cancel 交互） */}
+            {isEditing ? (
+              <div className="w-full px-4 py-3 rounded-3xl border border-[var(--rp-color-ui-border)] bg-[var(--rp-color-bot-msg)]">
+                <textarea
+                  className="w-full min-h-[140px] resize-y bg-transparent text-[15px] leading-relaxed text-[var(--rp-color-main-text)] outline-none"
+                  value={editDraft}
+                  onChange={(e) => setEditDraft(e.target.value)}
+                  autoFocus
+                  rows={4}
+                  aria-label="编辑消息内容"
+                />
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCancelEdit}
+                    className="px-3 py-1 text-xs rounded-full border border-[var(--rp-color-ui-border)] text-muted-foreground hover:bg-secondary/80 transition-colors"
+                    aria-label="取消编辑"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEdit}
+                    className="px-3 py-1 text-xs rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                    aria-label="保存编辑"
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            ) : (!isUser && displayContent) || isUser ? (
             <div
               ref={contentContainerRef}
               onClick={handleMessageClick}
@@ -1442,6 +1520,33 @@ function MessageInner({
             </div>
             ) : null}
 
+            {/* [批次B] user 消息 hover 操作组（原本无操作区）：编辑 + 隐藏/取消隐藏，
+                按钮风格对齐 assistant 底部操作组，hover 显示不占静态视觉 */}
+            {isUser && (onEdit || onHide) && (
+              <div className="mt-1 self-end flex items-center gap-0.5 bg-muted/30 rounded-full px-0.5 py-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                {onEdit && (
+                  <button
+                    onClick={handleStartEdit}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    title="编辑消息"
+                    aria-label="编辑消息"
+                  >
+                    <Pencil size={8} />
+                  </button>
+                )}
+                {onHide && (
+                  <button
+                    onClick={handleToggleHide}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    title={isHidden ? '取消隐藏' : '隐藏消息'}
+                    aria-label={isHidden ? '取消隐藏' : '隐藏消息'}
+                  >
+                    {isHidden ? <Eye size={8} /> : <EyeOff size={8} />}
+                  </button>
+                )}
+              </div>
+            )}
+
             {isUser && userImages.length > 0 && (
               <div className="mt-1 flex justify-end">
                 <ImageThumbnails
@@ -1462,6 +1567,35 @@ function MessageInner({
               </div>
             )}
           </div>
+
+          {/* [批次B] swipe 候选切换计数条：仅多候选（swipes.length > 1）时渲染，
+              视觉对齐分框模式 NativeRoleplayChat 的 ‹ 当前/总数 › 箭头（hover 显示、
+              边界禁用）；swipes=1 的 roll 场景由「重新生成」按钮承担，不改其行为 */}
+          {!isUser && !streaming && Array.isArray(swipes) && swipes.length > 1 && (
+            <div className="mt-1 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={() => message.id != null && onSwipe?.(message.id, 'prev')}
+                disabled={(swipeId ?? 0) <= 0}
+                className="text-xs px-1 opacity-60 hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed text-muted-foreground"
+                title="上一个候选"
+                aria-label="上一个候选"
+              >
+                <ChevronLeft size={12} />
+              </button>
+              <span className="text-xs opacity-60 tabular-nums">
+                {(swipeId ?? 0) + 1}/{swipes.length}
+              </span>
+              <button
+                onClick={() => message.id != null && onSwipe?.(message.id, 'next')}
+                disabled={(swipeId ?? 0) >= swipes.length - 1}
+                className="text-xs px-1 opacity-60 hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed text-muted-foreground"
+                title="下一个候选"
+                aria-label="下一个候选"
+              >
+                <ChevronRight size={12} />
+              </button>
+            </div>
+          )}
 
           {/* [UI-2026-08-19] 消息底部信息栏重构：左侧 = tokens + 模型名（一个框架），
               右侧 = 操作按钮组（一个框架，按钮缩小）。布局对齐 ST 消息底部信息条。 */}
@@ -1503,6 +1637,18 @@ function MessageInner({
                   </button>
                 )}
 
+                {/* [批次B] 编辑按钮：进入编辑态（正文区切换 textarea，保存走 onEdit 链路） */}
+                {canEdit && onEdit && (
+                  <button
+                    onClick={handleStartEdit}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    title="编辑消息"
+                    aria-label="编辑消息"
+                  >
+                    <Pencil size={8} />
+                  </button>
+                )}
+
                 <button
                   onClick={handleCopy}
                   className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
@@ -1510,6 +1656,18 @@ function MessageInner({
                 >
                   {copied ? <Check size={8} className="text-green-500" /> : <Copy size={8} />}
                 </button>
+
+                {/* [批次B] 隐藏/取消隐藏切换项（依据消息 is_hidden 状态显示对应文案） */}
+                {onHide && (
+                  <button
+                    onClick={handleToggleHide}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
+                    title={isHidden ? '取消隐藏' : '隐藏消息'}
+                    aria-label={isHidden ? '取消隐藏' : '隐藏消息'}
+                  >
+                    {isHidden ? <Eye size={8} /> : <EyeOff size={8} />}
+                  </button>
+                )}
 
                 {canRegenerate && onRegenerate && (
                   <button
@@ -1643,6 +1801,10 @@ export const Message = React.memo(MessageInner, (prev, next) => {
   if (prev.showModelReasoning !== next.showModelReasoning) return false;
   if (prev.canRegenerate !== next.canRegenerate) return false;
   if (prev.canEdit !== next.canEdit) return false;
+  // [批次B] 新增 props 按现有模式补入比较器（swipes 数组引用由上游 messages state 稳定化）
+  if (prev.isHidden !== next.isHidden) return false;
+  if (prev.swipes !== next.swipes) return false;
+  if (prev.swipeId !== next.swipeId) return false;
   if (prev.memoryMode !== next.memoryMode) return false;
   if (prev.tokens !== next.tokens) return false;
   if (prev.isCharacterChat !== next.isCharacterChat) return false;
@@ -1669,6 +1831,9 @@ export const Message = React.memo(MessageInner, (prev, next) => {
   if (prev.onDelete !== next.onDelete) return false;
   if (prev.onSetMultipleItemsSelect !== next.onSetMultipleItemsSelect) return false;
   if (prev.onEdit !== next.onEdit) return false;
+  // [批次B] 新增回调引用比较
+  if (prev.onSwipe !== next.onSwipe) return false;
+  if (prev.onHide !== next.onHide) return false;
   if (prev.onToggleWholeMessageSelect !== next.onToggleWholeMessageSelect) return false;
   if (prev.onToggleMessagePartSelect !== next.onToggleMessagePartSelect) return false;
   if (prev.onSelectAllPartsInMessage !== next.onSelectAllPartsInMessage) return false;

@@ -117,6 +117,24 @@ function sanitizeRegexMacro(text: string): string {
   });
 }
 
+/**
+ * ESCAPED（substituteRegex=2）专用：宏替换值逐个做正则转义后再进入模式，
+ * findRegex 模式本体不被整串转义。
+ * ST 1.18.0 对齐：engine.js:402-403（postProcessFn 仅作用于每个宏替换值，
+ * script.js:2756-2758）+ engine.js:304-324 sanitizeRegexMacro 字符集；
+ * 后端 character_ext.py:1157-1163 同语义。
+ */
+function substituteParamsEscaped(text: string, params?: { userName?: string; characterName?: string; characterOverride?: string }): string {
+  const userName = sanitizeRegexMacro(params?.userName || 'User');
+  const characterName = sanitizeRegexMacro(params?.characterOverride || params?.characterName || 'Character');
+  return String(text || '')
+    .replace(/\{\{user\}\}/gi, userName)
+    .replace(/\{\{char\}\}/gi, characterName)
+    .replace(/\{\{character\}\}/gi, characterName)
+    .replace(/\{\{name1\}\}/gi, userName)
+    .replace(/\{\{name2\}\}/gi, characterName);
+}
+
 function filterString(rawString: string, trimStrings: string[]): string {
   let result = rawString;
   for (const trim of trimStrings) {
@@ -253,8 +271,10 @@ export function runRegexScript(
   let findRegexSource = regexScript.findRegex;
 
   if (substituteMode === 2) {
-    findRegexSource = substituteParams(findRegexSource, params);
-    findRegexSource = sanitizeRegexMacro(findRegexSource);
+    // A1 修复（ST 1.18.0 engine.js:402-403 ESCAPED 语义）：仅对宏替换值逐个
+    // 转义（postProcessFn = sanitizeRegexMacro，script.js:2756-2758），模式本体
+    // 不做整串 sanitize；对齐后端 character_ext.py:1157-1163 逐值转义。
+    findRegexSource = substituteParamsEscaped(findRegexSource, params);
   } else if (substituteMode === 1) {
     findRegexSource = substituteParams(findRegexSource, params);
   }
@@ -343,79 +363,3 @@ export function getRegexedString(
   });
 }
 
-/**
- * Apply regex scripts to a text string for the given placement.
- *
- * This is a convenience helper for placements that need to be applied
- * outside the normal display pipeline (e.g. AI_INPUT before sending to
- * the model, USER_OUTPUT during user-message rendering).
- *
- * MODEL_SETTINGS (9) is intentionally NOT applied here — it is a
- * display-only placement surfaced in the model-settings UI and never
- * runs automatically.
- */
-export function applyRegexToText(
-  rawString: string,
-  placement: number,
-  params?: {
-    characterOverride?: string;
-    userName?: string;
-    characterName?: string;
-    globalScripts?: RegexScript[];
-    scopedScripts?: RegexScript[];
-    presetScripts?: RegexScript[];
-    characterAvatar?: string;
-    characterAllowed?: string[];
-    presetApiId?: string;
-    presetName?: string;
-    allowedOnly?: boolean;
-    depth?: number;
-    isMarkdown?: boolean;
-    isPrompt?: boolean;
-    isEdit?: boolean;
-  }
-): string {
-  if (placement === regex_placement.MODEL_SETTINGS) return rawString;
-  return getRegexedString(rawString, placement, params);
-}
-
-export function applyRegexScripts(
-  content: string,
-  scripts: RegexScript[],
-  options: {
-    placement: number;
-    isMarkdown?: boolean;
-    isPrompt?: boolean;
-    isEdit?: boolean;
-    depth?: number;
-    userName?: string;
-    characterName?: string;
-    characterOverride?: string;
-  }
-): string {
-  let result = content;
-
-  for (const script of scripts) {
-    if (script.placement && Array.isArray(script.placement) && script.placement.length > 0) {
-      if (!script.placement.includes(options.placement)) continue;
-    }
-
-    if (script.markdownOnly && !options.isMarkdown) continue;
-    if (script.promptOnly && !options.isPrompt) continue;
-
-    if (typeof options.depth === 'number') {
-      if (typeof script.minDepth === 'number' && options.depth < script.minDepth) continue;
-      if (typeof script.maxDepth === 'number' && options.depth > script.maxDepth) continue;
-    }
-
-    if (options.isEdit && !script.runOnEdit) continue;
-
-    result = runRegexScript(script, result, {
-      characterOverride: options.characterOverride,
-      userName: options.userName,
-      characterName: options.characterName,
-    });
-  }
-
-  return result;
-}

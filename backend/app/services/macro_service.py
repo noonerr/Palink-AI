@@ -406,8 +406,9 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
             return f"0-{len(env.chat_messages) - 1}"
         return ""
 
-    # ST 1.18.0 idle_duration (macros.js:666)
-    if name_lower == "idle_duration":
+    # ST 1.18.0 idle_duration (macros.js:666)；{{idleDuration}} 为 ST 宏名
+    # （lower 归一 idleduration），此前仅注册 idle_duration → ST 卡该宏泄漏
+    if name_lower in ("idle_duration", "idleduration"):
         if env.last_message_time:
             delta = datetime.utcnow() - env.last_message_time
             total_seconds = int(delta.total_seconds())
@@ -526,6 +527,24 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
         return env.story_string_prefix or ""
     if name_lower == "storystringsuffix":
         return env.story_string_suffix or ""
+
+    # 批次 F（双宏引擎收敛子集）: 补齐前端 macro-engine 已有而后端缺失、
+    # 且 MacroEnv 有数据源的 ST 宏——此前 ST 卡写这些宏在权威 prompt 侧
+    # 原样泄漏（D-9 拍板后端为唯一权威，前端全量而后端缺失即 prompt 侧漏宏）。
+    if name_lower in ("greeting", "charfirstmessage"):
+        # ST charFirstMessage/greeting（macro-engine env-macros.ts aliases）
+        return getattr(char, "first_mes", None) if char else None
+    if name_lower in ("charversion", "version", "char_version"):
+        # ST charVersion/version/char_version → 角色版本号
+        return getattr(char, "character_version", None) if char else None
+    if name_lower == "mesexamplesraw":
+        # {{mesExamplesRaw}}: 原始示例文本（不经 EMTop/EMBottom 拼装，
+        # 与 {{mesExamples}} 的区别即 ST mesExamplesMode=raw 语义）
+        return getattr(char, "mes_example", None) if char else None
+    if name_lower == "original":
+        # {{original}}: 宏替换前的原始消息文本（对齐 ST 一次性消耗语义，
+        # Palink 侧数据源为本次输入原文）
+        return env.input_text or None
 
     return None
 
@@ -661,6 +680,28 @@ def _resolve_complex_macro(parts: list[str], env: MacroEnv) -> Optional[str]:
                 return "true"
         return "false"
 
+    # [A2] ST 1.18.0 变量宏命名兼容四件套
+    # (variable-macros.js:119-136 hasvar / :267-284 hasglobalvar /
+    #  :139-156 deletevar / :287-304 deleteglobalvar)。
+    # 旧名 {{exists}}/{{delvar}} 保留不删（存量卡兼容）。
+    if cmd == "hasvar" and args:
+        key = args[0]
+        for getter in [env._get_chat_var, env._get_user_var, env._get_global_var]:
+            if getter(key) is not None:
+                return "true"
+        return "false"
+
+    if cmd == "hasglobalvar" and args:
+        return "true" if env._get_global_var(args[0]) is not None else "false"
+
+    if cmd == "deletevar" and args:
+        env._delete_chat_var(args[0])
+        return ""
+
+    if cmd == "deleteglobalvar" and args:
+        env._delete_global_var(args[0])
+        return ""
+
     # {{pick}} 的确定性处理在 evaluate_macros 主循环中以 _PICK_PATTERN
     # 专用正则完成（对齐 ST getPickReplaceMacro），此处不再处理。
     # 保留此处以防 _resolve_complex_macro 被直接调用时仍可回退（非确定性）。
@@ -777,6 +818,233 @@ def _resolve_complex_macro(parts: list[str], env: MacroEnv) -> Optional[str]:
     return None
 
 
+# ============================================================
+# [A2] ST 1.18.0 条件块宏 {{if cond}}then{{else}}other{{/if}}
+# （core-macros.js:130-225；块级求值，先于通用迭代宏求值）
+# ============================================================
+
+_IF_OPEN_RE = re.compile(r"\{\{\s*if\b", re.IGNORECASE)
+_IF_CLOSE_RE = re.compile(r"\{\{\s*/\s*if\s*\}\}", re.IGNORECASE)
+_ELSE_RE = re.compile(r"\{\{\s*else\s*\}\}", re.IGNORECASE)
+# 变量简写 .name（getvar）/$name（getglobalvar），对齐 MacroLexer.js:26
+# MACRO_VARIABLE_SHORTHAND_PATTERN = /[a-zA-Z](?:[\w\-_]*[\w])?/
+_VAR_SHORTHAND_RE = re.compile(r"^([.$])([a-zA-Z](?:[\w\-]*[\w])?)$")
+# ST utils.js:1020-1022 isFalseBoolean
+_FALSE_BOOLEAN = ("off", "false", "0")
+
+
+def _scan_macro_head(text: str, start: int):
+    """从 start（指向 '{{'）扫描到配对的 '}}'，跟踪内部 {{ }} 嵌套。
+
+    返回 (head_end, inner)；未闭合返回 (start, None)。
+    用于正确切出含嵌套宏的条件，如 {{if {{getvar::x}}}}。
+    """
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n - 1:
+        two = text[i:i + 2]
+        if two == "{{":
+            depth += 1
+            i += 2
+            continue
+        if two == "}}":
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return i, text[start + 2:i - 2]
+            continue
+        i += 1
+    return start, None
+
+
+def _split_if_args(body: str) -> list[str]:
+    """按顶层 :: 拆分 if 宏参数（嵌套 {{...}} 内的 :: 不作分隔）。
+
+    ST 配对规则（core-macros.js:113-115）：1 参数 = scoped 块形态（条件），
+    2 参数 = 行内形态 {{if cond::content}}。等长掩码保持索引以精确切分。
+    """
+    if not body:
+        return [""]
+    masked_parts: list[str] = []
+    depth = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        two = body[i:i + 2]
+        if two == "{{":
+            depth += 1
+            masked_parts.append("\x00\x00")
+            i += 2
+            continue
+        if two == "}}" and depth > 0:
+            depth -= 1
+            masked_parts.append("\x00\x00")
+            i += 2
+            continue
+        masked_parts.append("\x00" if depth > 0 else body[i])
+        i += 1
+    masked = "".join(masked_parts)
+    seps = [j for j in range(n - 1) if masked[j:j + 2] == "::"]
+    if not seps:
+        return [body]
+    parts: list[str] = []
+    prev = 0
+    for j in seps:
+        parts.append(body[prev:j])
+        prev = j + 2
+    parts.append(body[prev:])
+    return [p.strip() for p in parts]
+
+
+def _eval_if_condition(raw_cond: str, env: "MacroEnv", depth: int) -> bool:
+    """ST core-macros.js:159-193 条件求值（基础语义）。
+
+    流程: ! 取反 → resolve 嵌套宏 → 变量简写 .name/$name → 裸零参简单宏名
+    → falsy = 空串 或 isFalseBoolean("off"/"false"/"0")。
+    不做 JS 表达式全量等价（计划 A2 拍板取舍）。
+    """
+    cond = raw_cond.strip()
+    inverted = bool(re.match(r"^\s*!", cond))
+    if inverted:
+        cond = re.sub(r"^\s*!\s*", "", cond)
+    if depth > 0:
+        cond = evaluate_macros(cond, env, max_iterations=depth)
+    m = _VAR_SHORTHAND_RE.match(cond)
+    if m:
+        macro = "getvar" if m.group(1) == "." else "getglobalvar"
+        if depth > 0:
+            cond = evaluate_macros("{{%s::%s}}" % (macro, m.group(2)), env, max_iterations=depth)
+        else:
+            cond = ""
+    elif cond and " " not in cond and "{" not in cond and "}" not in cond:
+        # 裸宏名（仅零参简单宏可解析，对齐 ST minArgs===0 判定 core-macros.js:185-188）
+        simple = _resolve_simple_macro(cond, env)
+        if simple is not None:
+            cond = simple
+    is_falsy = cond == "" or str(cond).strip().lower() in _FALSE_BOOLEAN
+    if inverted:
+        is_falsy = not is_falsy
+    return not is_falsy
+
+
+def _find_if_blocks(text: str) -> list[tuple[int, int, str, str, "str | None"]]:
+    """收集文本中所有顶层 if 块（不递归内层块）。
+
+    返回 (start, end, cond_raw, then_raw, else_raw_or_None)；
+    分支文本保持原始形态（ST delayArgResolution：未选中分支不求值）。
+    未闭合的 {{if 不消费、原样保留。仅 1 参数的 scoped if 参与配对深度
+    （行内形态不影响配对，core-macros.js:113-115 同款规则）。
+    """
+    blocks: list[tuple[int, int, str, str, "str | None"]] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _IF_OPEN_RE.search(text, pos)
+        if not m:
+            break
+        head_end, inner = _scan_macro_head(text, m.start())
+        if inner is None:
+            pos = m.end()
+            continue
+        body = re.sub(r"(?i)^if\b\s*", "", inner).strip()
+        if not body:
+            pos = head_end
+            continue
+        args = _split_if_args(body)
+        if len(args) == 1:
+            # scoped 形态: {{if cond}}...{{else}}...{{/if}}，配对扫描
+            depth = 1
+            j = head_end
+            else_span: "tuple[int, int] | None" = None
+            close_span: "tuple[int, int] | None" = None
+            while j < n:
+                events = []
+                m_if = _IF_OPEN_RE.search(text, j)
+                m_close = _IF_CLOSE_RE.search(text, j)
+                m_else = _ELSE_RE.search(text, j)
+                if m_if:
+                    events.append((m_if.start(), "if", m_if))
+                if m_close:
+                    events.append((m_close.start(), "close", m_close))
+                if m_else:
+                    events.append((m_else.start(), "else", m_else))
+                if not events:
+                    break
+                events.sort(key=lambda e: e[0])
+                _, kind, ev = events[0]
+                if kind == "close":
+                    depth -= 1
+                    if depth == 0:
+                        close_span = (ev.start(), ev.end())
+                        break
+                    j = ev.end()
+                elif kind == "if":
+                    h2, inner2 = _scan_macro_head(text, ev.start())
+                    if inner2 is not None:
+                        b2 = re.sub(r"(?i)^if\b\s*", "", inner2).strip()
+                        if b2 and len(_split_if_args(b2)) == 1:
+                            depth += 1
+                    j = h2 if inner2 is not None else ev.end()
+                else:
+                    # 只认最外层（depth==1）的第一个 else 为本块分支分割点
+                    if depth == 1 and else_span is None:
+                        else_span = (ev.start(), ev.end())
+                    j = ev.end()
+            if close_span is None:
+                pos = m.end()
+                continue
+            body_start = head_end
+            body_end = close_span[0]
+            if else_span is not None:
+                then_raw = text[body_start:else_span[0]]
+                else_raw: "str | None" = text[else_span[1]:body_end]
+            else:
+                then_raw = text[body_start:body_end]
+                else_raw = None
+            blocks.append((m.start(), close_span[1], body, then_raw, else_raw))
+            pos = close_span[1]
+        elif len(args) == 2:
+            # 行内形态: {{if cond::content}}（无 {{/if}} 配对；content 内
+            # 取首个 {{else}} 做分支分割——低频形态不做嵌套深度跟踪）
+            e = _ELSE_RE.search(args[1])
+            if e:
+                blocks.append((m.start(), head_end, args[0], args[1][:e.start()], args[1][e.end():]))
+            else:
+                blocks.append((m.start(), head_end, args[0], args[1], None))
+            pos = head_end
+        else:
+            pos = head_end
+    return blocks
+
+
+def _process_if_blocks(text: str, env: "MacroEnv", depth: int) -> str:
+    """块级求值全部 {{if}} 条件块（evaluate_macros Step 1.5 接入）。
+
+    ST core-macros.js delayArgResolution 语义：条件先求值，只对选中分支
+    做宏展开（未选分支的副作用宏不执行）；分支结果 strip（近似 ST
+    trimContent，MacroCstWalker.js:55）。depth 递减传递防递归失控，
+    轮数上限 10 保证收敛（每轮顶层块数单调减少）。
+    """
+    if depth <= 0:
+        return text
+    for _ in range(10):
+        blocks = _find_if_blocks(text)
+        if not blocks:
+            break
+        for start, end, cond_raw, then_raw, else_raw in reversed(blocks):
+            truthy = _eval_if_condition(cond_raw, env, depth - 1)
+            chosen = then_raw if truthy else else_raw
+            if chosen is None:
+                replacement = ""
+            elif depth - 1 > 0:
+                replacement = evaluate_macros(chosen, env, max_iterations=depth - 1).strip()
+            else:
+                replacement = chosen.strip()
+            text = text[:start] + replacement + text[end:]
+    return text
+
+
 def evaluate_macros(text: str, env: MacroEnv, max_iterations: int = 10) -> str:
     """Evaluate all {{...}} macros in text, iterating until stable or max iterations.
 
@@ -796,6 +1064,12 @@ def evaluate_macros(text: str, env: MacroEnv, max_iterations: int = 10) -> str:
 
     # Step 1: pre-macros (注释移除 + 遗留尖括号宏)
     result = _apply_pre_macros(text, env)
+
+    # Step 1.5: [A2] {{if}}/{{else}}/{{/if}} 条件块块级求值
+    # （ST core-macros.js:134-213，置于迭代求值前：未选分支的宏不展开，
+    # delayArgResolution；块内残留宏由 Step 4 迭代继续处理。max_iterations
+    # 递减传递防递归失控。）
+    result = _process_if_blocks(result, env, max_iterations)
 
     # Step 2: {{random}} — 非确定性，单次 (macros.js:491-509, 671)
     # ST 在 postEnvMacros 中先于 pick 应用。列表按 :: 或 , 拆分。
