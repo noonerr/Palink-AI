@@ -30,10 +30,18 @@ import {
   Sliders,
   Download,
   Puzzle,
-  MonitorSmartphone
+  MonitorSmartphone,
+  BookOpen
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api, invalidateCache } from '@/services/api';
+import {
+  WORLD_INFO_GLOBAL_DEFAULTS,
+  resolveWorldInfoGlobalSettings,
+  sanitizeWorldInfoGlobalSettings,
+  buildWorldInfoGlobalSavePayload,
+  type WorldInfoGlobalSettings,
+} from '@/lib/worldbook-global-settings';
 import { getSmartCardAssetMode, setSmartCardAssetMode } from '@/components/ui/custom/smart-card-runtime/asset-mode';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -246,6 +254,53 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
     }
   };
 
+  // 世界书全局设置（批次 C 前端半）：存于 silly_tavern_settings.world_info_settings
+  const [wiSettings, setWiSettings] = useState<WorldInfoGlobalSettings>({ ...WORLD_INFO_GLOBAL_DEFAULTS });
+  const [wiLoaded, setWiLoaded] = useState(false);
+  const [wiSaving, setWiSaving] = useState(false);
+
+  useEffect(() => {
+    const loadWorldInfo = async () => {
+      try {
+        // 读通道：POST /api/settings/get 返回的 settings 字段是 JSON 字符串
+        const res = await api.post<{ settings?: string }>('/api/settings/get', {});
+        const parsed = res?.settings ? JSON.parse(res.settings) : {};
+        const wis = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? parsed.world_info_settings
+          : undefined;
+        setWiSettings(resolveWorldInfoGlobalSettings(wis));
+      } catch (e) {
+        console.error('Failed to load world info settings:', e);
+        setWiSettings({ ...WORLD_INFO_GLOBAL_DEFAULTS });
+      } finally {
+        setWiLoaded(true);
+      }
+    };
+    loadWorldInfo();
+  }, []);
+
+  const handleSaveWorldInfo = async () => {
+    if (wiSaving) return;
+    setWiSaving(true);
+    try {
+      // 保存前钳制 UI 输入范围，并把钳制结果回写表单
+      const next = sanitizeWorldInfoGlobalSettings(wiSettings);
+      setWiSettings(next);
+      // 写通道：/api/settings/save 对除 extension_settings 外的字段是整 blob 覆盖，
+      // 必须先读全量 settings 再仅替换 world_info_settings（不覆盖其他数据）
+      const res = await api.post<{ settings?: string }>('/api/settings/get', {});
+      const full = res?.settings ? JSON.parse(res.settings) : null;
+      const payload = buildWorldInfoGlobalSavePayload(full, next);
+      await api.post('/api/settings/save', payload);
+      toast.success('世界书全局设置已保存');
+    } catch (e) {
+      console.error('Failed to save world info settings:', e);
+      toast.error('保存世界书全局设置失败');
+    } finally {
+      setWiSaving(false);
+    }
+  };
+
   // 方向声明: 项目主攻 palink-native；st-compat / st-native 已运行时封存
   // （[MODE-SEALED] 2026-08-24 用户拍板：后端 GET/PUT 强制重定向，此处仅禁用入口）。
   // 详见根目录 AGENTS.md。待隐患排除后将整体删除这两个模式。
@@ -327,6 +382,165 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
           >
             打开插件管理
           </Button>
+        </div>
+      </GlassCard>
+
+      <GlassCard className="p-4 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <BookOpen size={20} className="text-muted-foreground shrink-0" />
+            <div>
+              <p className="font-medium">世界书全局设置</p>
+              <p className="text-xs text-muted-foreground">SillyTavern World Info 全局扫描与注入行为（存于 silly_tavern_settings.world_info_settings）</p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!wiLoaded || wiSaving}
+            onClick={() => void handleSaveWorldInfo()}
+            className="min-h-[44px]"
+          >
+            <Save size={16} className="mr-2" />
+            {wiSaving ? '保存中…' : '保存'}
+          </Button>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">扫描深度</p>
+              <p className="text-xs text-muted-foreground">关键词扫描的聊天历史范围（ST Scan Depth，条目未自定义深度时生效，0-1000，默认 2）</p>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              max={1000}
+              className="w-24 shrink-0"
+              disabled={!wiLoaded}
+              value={wiSettings.world_info_depth}
+              onChange={(e) => {
+                const num = e.target.value === '' ? 0 : Number(e.target.value);
+                if (!Number.isNaN(num)) {
+                  setWiSettings((s) => ({ ...s, world_info_depth: num }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">递归扫描</p>
+              <p className="text-xs text-muted-foreground">新激活条目的内容再次参与关键词扫描（ST Recursive Scan，ST 1.18 默认关）</p>
+            </div>
+            <Switch
+              className="shrink-0"
+              disabled={!wiLoaded}
+              checked={wiSettings.world_info_recursive}
+              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_recursive: v }))}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">预算百分比</p>
+              <p className="text-xs text-muted-foreground">世界书注入 token 预算占上下文长度的百分比（ST Context % Budget，0-100，默认 25）</p>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              className="w-24 shrink-0"
+              disabled={!wiLoaded}
+              value={wiSettings.world_info_budget}
+              onChange={(e) => {
+                const num = e.target.value === '' ? 0 : Number(e.target.value);
+                if (!Number.isNaN(num)) {
+                  setWiSettings((s) => ({ ...s, world_info_budget: num }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">预算上限</p>
+              <p className="text-xs text-muted-foreground">世界书注入 token 绝对上限（ST Budget Cap，0 = 不启用）</p>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              className="w-24 shrink-0"
+              disabled={!wiLoaded}
+              value={wiSettings.world_info_budget_cap}
+              onChange={(e) => {
+                const num = e.target.value === '' ? 0 : Number(e.target.value);
+                if (!Number.isNaN(num)) {
+                  setWiSettings((s) => ({ ...s, world_info_budget_cap: num }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">扫描含说话人名</p>
+              <p className="text-xs text-muted-foreground">关键词扫描范围包含消息的说话人名前缀（ST Include Names，默认开）</p>
+            </div>
+            <Switch
+              className="shrink-0"
+              disabled={!wiLoaded}
+              checked={wiSettings.world_info_include_names}
+              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_include_names: v }))}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">区分大小写</p>
+              <p className="text-xs text-muted-foreground">关键词匹配时区分大小写（ST Case Sensitive，默认关）</p>
+            </div>
+            <Switch
+              className="shrink-0"
+              disabled={!wiLoaded}
+              checked={wiSettings.world_info_case_sensitive}
+              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_case_sensitive: v }))}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">全词匹配</p>
+              <p className="text-xs text-muted-foreground">仅匹配完整单词而非内容片段（ST Match Whole Words，默认关）</p>
+            </div>
+            <Switch
+              className="shrink-0"
+              disabled={!wiLoaded}
+              checked={wiSettings.world_info_match_whole_words}
+              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_match_whole_words: v }))}
+            />
+          </div>
+
+          <div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium">插入策略</p>
+              <p className="text-xs text-muted-foreground">角色世界书与全局世界书条目的插入顺序（ST Character Lore Insertion Strategy，默认角色优先）</p>
+            </div>
+            <div className="mt-2 flex gap-2">
+              {([0, 1, 2] as const).map((v) => (
+                <Button
+                  key={v}
+                  variant={wiSettings.world_info_character_strategy === v ? 'default' : 'outline'}
+                  size="sm"
+                  className="flex-1"
+                  disabled={!wiLoaded}
+                  onClick={() => setWiSettings((s) => ({ ...s, world_info_character_strategy: v }))}
+                >
+                  {v === 0 ? '均匀' : v === 1 ? '角色优先' : '全局优先'}
+                </Button>
+              ))}
+            </div>
+          </div>
         </div>
       </GlassCard>
     </div>

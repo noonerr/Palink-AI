@@ -3580,6 +3580,9 @@ async def _assemble_roleplay_prompt_impl(
         skip_dynamic_context=_is_st_compat,  # st-compat 模式下 worldbook 通过 ST 位置注入，不重复添加到 dynamic_context_parts
         char_name=_macro_char_name,
         max_context_tokens=_wb_max_context_tokens,
+        # D 批修复: 群聊世界书上下文（此前分支引用非作用域变量致群聊注入整体失效）
+        group_chat=_g_mode,
+        group_wi_strategy=group_wi_strategy,
     )
     dynamic_context_part_keys.extend(["worldbook"] * (len(dynamic_context_parts) - _part_count_before))
 
@@ -4480,6 +4483,11 @@ def _append_worldbook_context(
     char_name: str = "",  # 角色名（用于正则宏替换）
     # A5 修复: 真实模型上下文上限（世界书百分比预算基数；None 时服务内回退 16000 兜底）
     max_context_tokens: Optional[int] = None,
+    # D 批修复: 群聊上下文入参（此前分支内引用主装配局部变量 _g_mode/group_wi_strategy
+    # 与裸 db，均不在本函数作用域 → 群聊请求必 NameError 被外层 except 吞掉，
+    # 群聊世界书注入整体失效）。缺省时按 req.group_id 现场解析兜底。
+    group_chat: Optional["GroupChat"] = None,
+    group_wi_strategy: str = "one",
 ) -> None:
     """注入世界书上下文到 prompt 中。
 
@@ -4511,12 +4519,24 @@ def _append_worldbook_context(
         wi_min_activations_depth_max = 0
         # Phase G: ST 1.18.0 world_info_character_strategy 默认 character_first(1)
         wi_char_strategy = 1
-        # A4 修复: ST world_info_depth 默认对齐 ST=2、world_info_recursive 默认开。
-        # 存量用户显式配置过的值原样生效（仅未配置时取 ST 默认）。
+        # A4 修复: ST world_info_depth 默认对齐 ST=2。
+        # C2 修复（批次 C）: world_info_recursive 默认 false（world-info.js:75，
+        # 原 true 为误记）；存量用户显式配置过的值原样生效。
         wi_world_info_depth = 2
-        wi_recursive = True
+        wi_recursive = False
         # V-3 (2026-08-25): 世界书向量检索总开关，默认 false 存量零突变
         wi_vectorized_enabled = False
+        # C1 修复（批次 C）: ST world_info_budget 默认 25（%语义，world-info.js:73）、
+        # world_info_budget_cap 默认 0=不钳制（world-info.js:81）。
+        # 书级 budget_tokens/budget_cap 优先，此处作全局兜底。
+        wi_budget: Optional[float] = 25.0
+        wi_budget_cap = 0
+        # C3 修复（批次 C）: ST world_info_include_names 默认 true（world-info.js:74）
+        wi_include_names = True
+        # C5 修复（批次 C）: ST world_info_case_sensitive / world_info_match_whole_words
+        # 默认 false（world-info.js:77-78）；条目级 NULL 继承此全局值
+        wi_case_sensitive = False
+        wi_match_whole_words = False
         try:
             us = req.db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
             if us:
@@ -4539,12 +4559,24 @@ def _append_worldbook_context(
                                 # Phase G: ST 1.18.0 world_info_character_strategy
                                 # (world-info.js:4496) 默认 1=character_first
                                 wi_char_strategy = int(_wis.get("world_info_character_strategy", 1) or 1)
-                                # A4 修复: world_info_depth（ST 默认 2）+ recursive 总开关（ST 默认 true）
+                                # A4 修复: world_info_depth（ST 默认 2）
+                                # C2 修复（批次 C）: recursive 总开关默认 false（world-info.js:75）
                                 wi_world_info_depth = int(_wis.get("world_info_depth", 2) or 2)
-                                wi_recursive = bool(_wis.get("world_info_recursive", True))
+                                wi_recursive = bool(_wis.get("world_info_recursive", False))
                                 # V-3 (2026-08-25): vectorized 检索总开关（默认 false，
                                 # 用户显式开启才生效；top_k/threshold 由 env 覆盖）
                                 wi_vectorized_enabled = bool(_wis.get("vectorized_enabled", False))
+                                # C1 修复（批次 C）: 全局百分比预算 + cap（书级值优先，此处兜底）
+                                try:
+                                    wi_budget = float(_wis.get("world_info_budget", 25))
+                                except (TypeError, ValueError):
+                                    wi_budget = 25.0
+                                wi_budget_cap = int(_wis.get("world_info_budget_cap", 0) or 0)
+                                # C3 修复（批次 C）: include_names（"name: content" 拼接）
+                                wi_include_names = bool(_wis.get("world_info_include_names", True))
+                                # C5 修复（批次 C）: 全局大小写敏感 / 全词匹配（entry NULL 继承）
+                                wi_case_sensitive = bool(_wis.get("world_info_case_sensitive", False))
+                                wi_match_whole_words = bool(_wis.get("world_info_match_whole_words", False))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         pass
         except Exception as exc:
@@ -4567,11 +4599,17 @@ def _append_worldbook_context(
             .limit(_wb_msg_limit)
             .all()[::-1]
         )
-        recent_msgs = [{"role": m.role, "content": m.content} for m in recent_for_wb]
+        # C3 修复（批次 C）: 消息 dict 携带 name 字段（ST script.js:4565
+        # include_names 时 "name: content" 拼接的数据来源；m.name 为 ST 对齐
+        # 写入路径落库的发言人名，缺失时为空串 → haystack 退化为纯 content）
+        recent_msgs = [
+            {"role": m.role, "content": m.content, "name": m.name or ""}
+            for m in recent_for_wb
+        ]
         if req.is_init:
-            recent_msgs = [{"role": "user", "content": req.message or ""}]
+            recent_msgs = [{"role": "user", "content": req.message or "", "name": user_nickname or ""}]
         elif req.message and not req.smart_card_trigger and not req.is_continue:
-            recent_msgs.append({"role": "user", "content": req.message})
+            recent_msgs.append({"role": "user", "content": req.message, "name": user_nickname or ""})
 
         # D-1 修复（2026-08-23）: 世界书 delay 的 ST chat.length 绝对语义
         # （world-info.js:665-676）需要真实聊天消息总数——recent_for_wb 是截断
@@ -4596,10 +4634,22 @@ def _append_worldbook_context(
             _wb_chat_length = max(_wb_persisted_count, len(recent_msgs))
 
         # E1 修复: 群聊 per-member 世界书（strategy=all/group 时，将启用成员字段并入 WI haystack）
-        group_chars_arg = None
-        if req.group_id and _g_mode is not None and group_wi_strategy in ("all", "group"):
+        # D 批修复: 群对象与策略改由入参传入（调用方=主装配已求值），db 用 req.db；
+        # 入参缺省且 req.group_id 在场时现场解析，保证直接调用本函数的路径同样可用。
+        _wb_group_chat = group_chat
+        if _wb_group_chat is None and req.group_id:
             try:
-                _enabled = _load_members(db, _g_mode)
+                _wb_group_chat = _cached_request_group(req, req.group_id)
+            except Exception as gc_err:
+                logger.warning(
+                    "Failed to resolve group chat for worldbook (group_id=%s): %s",
+                    req.group_id, gc_err,
+                )
+                _wb_group_chat = None
+        group_chars_arg = None
+        if req.group_id and _wb_group_chat is not None and group_wi_strategy in ("all", "group"):
+            try:
+                _enabled = _load_members(req.db, _wb_group_chat)
                 # 排除主角色 req.char（其字段已由单 char haystack 覆盖），避免重复计入
                 _main_id = str(req.char.id) if getattr(req.char, "id", None) else None
                 group_chars_arg = [c for c in _enabled if str(c.id) != _main_id]
@@ -4625,6 +4675,14 @@ def _append_worldbook_context(
             enable_recursive=wi_recursive,
             # V-2/V-3 (2026-08-25): vectorized 检索开关透传（top_k/threshold 走 env 默认）
             vectorized_enabled=wi_vectorized_enabled,
+            # C1 修复（批次 C）: 全局百分比预算兜底 + cap 钳制（书级值优先）
+            world_info_budget=wi_budget,
+            world_info_budget_cap=wi_budget_cap,
+            # C3 修复（批次 C）: include_names（haystack "name: content" 拼接）
+            include_names=wi_include_names,
+            # C5 修复（批次 C）: 全局大小写敏感 / 全词匹配（entry NULL 继承）
+            world_info_case_sensitive=wi_case_sensitive,
+            world_info_match_whole_words=wi_match_whole_words,
             # A5 修复: 百分比预算基数传真实上下文上限（16000 仅作兜底）
             max_context_tokens=max_context_tokens,
         )
@@ -4635,7 +4693,9 @@ def _append_worldbook_context(
                 req.db,
                 placement=REGEX_PLACEMENT_WORLD_INFO,
                 is_markdown=False,
-                is_prompt=False,
+                # C4a 修复（批次 C）: ST world-info.js:5086 WI 内容正则 isPrompt:true
+                # （promptOnly 脚本作用于 WI 内容；markdownOnly 不作用于 prompt 侧）
+                is_prompt=True,
                 depth=0,
                 skip_extensions=req.char.extensions,
                 user_name=user_nickname,
@@ -4648,7 +4708,8 @@ def _append_worldbook_context(
                 req.char.extensions,
                 placement=REGEX_PLACEMENT_WORLD_INFO,
                 is_markdown=False,
-                is_prompt=False,
+                # C4a 修复（批次 C）: 同上，isPrompt=True 对齐 ST
+                is_prompt=True,
                 depth=0,
                 user_name=user_nickname,
                 char_name=char_name or (req.char.name or "Character"),
@@ -4868,6 +4929,27 @@ async def _append_memory_context(
         mem_svc = MemoryService(req.db)
         if mem_svc.is_available():
             ancestor_branch_ids = deps.get_ancestor_branch_ids(req.db, req.session_id, req.branch_id) if req.branch_id else []
+            # D3 修复: ST protect 语义 —— 最近 5 条消息的记忆镜像不再重复注入
+            # （对话历史窗口已含原文，重复召回浪费 token）；查询失败静默回退
+            # 不排除（宁多勿缺）。分支内取当前分支消息，主聊天取 branch_id 为空的消息。
+            exclude_message_ids: list = []
+            try:
+                _mem_recent_q = req.db.query(CharacterChatMessage.id).filter(
+                    CharacterChatMessage.session_id == req.session_id,
+                )
+                if req.branch_id:
+                    _mem_recent_q = _mem_recent_q.filter(CharacterChatMessage.branch_id == req.branch_id)
+                else:
+                    _mem_recent_q = _mem_recent_q.filter(CharacterChatMessage.branch_id == None)  # noqa: E711
+                exclude_message_ids = [
+                    row[0] for row in _mem_recent_q
+                    .order_by(CharacterChatMessage.created_at.desc(), CharacterChatMessage.id.desc())
+                    .limit(5)
+                    .all()
+                ]
+            except Exception as mem_recent_err:
+                logger.debug("memory exclude-recent lookup failed: %s", mem_recent_err)
+                exclude_message_ids = []
             mem_ctx = await mem_svc.get_context(
                 user_id=req.user.id,
                 query=req.smart_card_context if req.smart_card_trigger else req.message,
@@ -4875,6 +4957,7 @@ async def _append_memory_context(
                 max_tokens=1500,
                 branch_ids=ancestor_branch_ids if ancestor_branch_ids else None,
                 memory_mode=memory_mode,
+                exclude_message_ids=exclude_message_ids or None,
             )
             if mem_ctx and mem_ctx.memories:
                 memory_text = build_memory_context(mem_ctx, max_tokens=1500)

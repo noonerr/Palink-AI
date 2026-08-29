@@ -504,6 +504,9 @@ def _match_primary_keys(
     haystack: str,
     char_name: str = "",
     user_name: str = "",
+    # C5 修复（批次 C）: 全局大小写敏感/全词匹配设置（entry 级 NULL 时继承）
+    global_case_sensitive: bool = False,
+    global_match_whole_words: bool = False,
 ) -> tuple[bool, list[str]]:
     """匹配 primary keys。
 
@@ -518,11 +521,16 @@ def _match_primary_keys(
     keys = _parse_json_list(entry.keys)
     if not keys:
         return False, []
+    # C5 修复（批次 C）: ST entry.caseSensitive ?? world_info_case_sensitive
+    # （world-info.js:269）、entry.matchWholeWords ?? world_info_match_whole_words
+    # （:347）——条目级 NULL 继承全局设置；显式值优先。默认 False 保持存量行为。
+    case_sensitive = entry.case_sensitive if entry.case_sensitive is not None else global_case_sensitive
+    match_whole_words = entry.match_whole_words if entry.match_whole_words is not None else global_match_whole_words
     matches: list[str] = []
     for key in keys:
         # P1-14: 宏替换后再匹配
         expanded_key = _substitute_wi_key(key, char_name, user_name)
-        if _match_key(haystack, expanded_key, entry.case_sensitive or False, entry.match_whole_words or False):
+        if _match_key(haystack, expanded_key, case_sensitive, match_whole_words):
             matches.append(key)
     # ST primary keys 固定 AND_ANY: 任一匹配即通过
     return len(matches) > 0, matches
@@ -533,6 +541,9 @@ def _match_secondary_keys(
     haystack: str,
     char_name: str = "",
     user_name: str = "",
+    # C5 修复（批次 C）: 全局大小写敏感/全词匹配设置（entry 级 NULL 时继承）
+    global_case_sensitive: bool = False,
+    global_match_whole_words: bool = False,
 ) -> tuple[bool, list[str]]:
     """匹配 secondary keys 并应用 selectiveLogic。
 
@@ -552,6 +563,9 @@ def _match_secondary_keys(
         return True, []
     matches: list[str] = []
     logic = entry.selective_logic if entry.selective_logic is not None else WI_LOGIC_AND_ANY
+    # C5 修复（批次 C）: 同 primary keys——条目级 NULL 继承全局设置
+    case_sensitive = entry.case_sensitive if entry.case_sensitive is not None else global_case_sensitive
+    match_whole_words = entry.match_whole_words if entry.match_whole_words is not None else global_match_whole_words
 
     # 短路求值需要边匹配边判断
     has_any_match = False
@@ -559,7 +573,7 @@ def _match_secondary_keys(
     for key in keys:
         # P1-14: 宏替换后再匹配
         expanded_key = _substitute_wi_key(key, char_name, user_name)
-        key_matched = _match_key(haystack, expanded_key, entry.case_sensitive or False, entry.match_whole_words or False)
+        key_matched = _match_key(haystack, expanded_key, case_sensitive, match_whole_words)
         if key_matched:
             matches.append(key)
             has_any_match = True
@@ -595,10 +609,14 @@ def _build_haystack(
     # 仅对未设置自定义 scan_depth 的条目生效（对齐 ST: entry.scanDepth ?? getDepth()）。
     # None 时回退 DEFAULT_SCAN_DEPTH（保持原有行为不变）。
     global_scan_depth: Optional[int] = None,
-    # P2-10 修复: ST 1.18.0 world-info.js:289-291 recurseBuffer。
+    # P2-10 修复: ST 1.18.0 world-info.js:289-291 recurseBuffer.
     # RECURSION 状态扫描时包含此 buffer（已激活条目的内容），
     # MIN_ACTIVATIONS 状态不包含（由调用方控制是否传入）。
     recurse_buffer: Optional[list[str]] = None,
+    # C3 修复（批次 C）: ST world_info_include_names（world-info.js:74 默认 true，
+    # script.js:4565）——True 时聊天消息按 "name: content" 拼入 haystack，
+    # 使 "Alice:" 类带名字前缀的 key 可命中；False 时纯 content。
+    include_names: bool = True,
 ) -> str:
     """构建条目匹配的文本池。
 
@@ -619,7 +637,16 @@ def _build_haystack(
     else:
         depth = DEFAULT_SCAN_DEPTH
     recent = recent_messages[-depth:] if len(recent_messages) >= depth else recent_messages
-    parts.extend(str(m.get("content", "")) for m in recent)
+    # C3 修复（批次 C）: include_names=True 时消息按 "name: content" 拼接
+    # （ST script.js:4565 `${x.name}: ${x.mes}`）；消息无 name 字段时退化为
+    # 纯 content（存量消息结构零突变）。
+    if include_names:
+        for m in recent:
+            _name = str(m.get("name") or "").strip()
+            _content = str(m.get("content", ""))
+            parts.append(f"{_name}: {_content}" if _name else _content)
+    else:
+        parts.extend(str(m.get("content", "")) for m in recent)
 
     # Feature: match_chat_metadata (ST 1.18.0) - 将会话 chat_metadata 纳入匹配范围
     if chat_metadata and _parse_match_chat_metadata(entry):
@@ -718,6 +745,11 @@ def _scan_entries(
     # 开关关闭时整段旁路，存量行为零突变。
     vectorized_enabled: bool = False,
     vector_hits: Optional[dict[str, float]] = None,
+    # C3 修复（批次 C）: 透传给 _build_haystack 的 include_names
+    include_names: bool = True,
+    # C5 修复（批次 C）: 全局大小写敏感/全词匹配（entry 级 NULL 继承）
+    global_case_sensitive: bool = False,
+    global_match_whole_words: bool = False,
 ) -> list[WorldBookStage]:
     activated: list[WorldBookStage] = []
     # Remember where this call's reports begin, so we can enrich them with
@@ -923,11 +955,11 @@ def _scan_entries(
                 timed_mgr.record_activation(entry, message_index)
             continue
 
-        haystack = _build_haystack(entry, recent_messages, char, chat_metadata=chat_metadata, persona_description=persona_description, group_chars=group_chars, global_scan_depth=global_scan_depth, recurse_buffer=recurse_buffer)
+        haystack = _build_haystack(entry, recent_messages, char, chat_metadata=chat_metadata, persona_description=persona_description, group_chars=group_chars, global_scan_depth=global_scan_depth, recurse_buffer=recurse_buffer, include_names=include_names)
         # P1-14: 传入 char_name/user_name 用于 key 宏替换
         wi_char_name = character_name or (char.name if char else "")
         wi_user_name = ""  # _scan_entries 当前签名无 user_name 参数，留空回退
-        primary_ok, primary_matches = _match_primary_keys(entry, haystack, char_name=wi_char_name, user_name=wi_user_name)
+        primary_ok, primary_matches = _match_primary_keys(entry, haystack, char_name=wi_char_name, user_name=wi_user_name, global_case_sensitive=global_case_sensitive, global_match_whole_words=global_match_whole_words)
         if not primary_ok:
             report.append(
                 WorldbookEntryReport(
@@ -940,7 +972,7 @@ def _scan_entries(
             continue
 
         if entry.selective:
-            sec_ok, sec_matches = _match_secondary_keys(entry, haystack, char_name=wi_char_name, user_name=wi_user_name)
+            sec_ok, sec_matches = _match_secondary_keys(entry, haystack, char_name=wi_char_name, user_name=wi_user_name, global_case_sensitive=global_case_sensitive, global_match_whole_words=global_match_whole_words)
             if not sec_ok:
                 report.append(
                     WorldbookEntryReport(
@@ -1027,6 +1059,10 @@ def _recursive_scan(
     # V-2 (2026-08-25): vectorized 接线参数，透传给每轮 _scan_entries
     vectorized_enabled: bool = False,
     vector_hits: Optional[dict[str, float]] = None,
+    # C3/C5 修复（批次 C）: include_names 与全局匹配开关，透传给每轮 _scan_entries
+    include_names: bool = True,
+    global_case_sensitive: bool = False,
+    global_match_whole_words: bool = False,
 ) -> tuple[list[WorldBookStage], list[WorldbookEntryReport]]:
     """递归扫描世界书条目，对齐 ST 1.18.0 scan_state 状态机。
 
@@ -1073,6 +1109,9 @@ def _recursive_scan(
             global_scan_depth=global_scan_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            include_names=include_names,
+            global_case_sensitive=global_case_sensitive,
+            global_match_whole_words=global_match_whole_words,
         )
         if not activated:
             break
@@ -1127,6 +1166,9 @@ def _recursive_scan(
                 chat_length=chat_length,
                 vectorized_enabled=vectorized_enabled,
                 vector_hits=vector_hits,
+                include_names=include_names,
+                global_case_sensitive=global_case_sensitive,
+                global_match_whole_words=global_match_whole_words,
             )
             if activated:
                 all_activated.extend(activated)
@@ -1162,6 +1204,9 @@ def _recursive_scan(
                 chat_length=chat_length,
                 vectorized_enabled=vectorized_enabled,
                 vector_hits=vector_hits,
+                include_names=include_names,
+                global_case_sensitive=global_case_sensitive,
+                global_match_whole_words=global_match_whole_words,
             )
             if activated:
                 all_activated.extend(activated)
@@ -1209,6 +1254,9 @@ def _recursive_scan(
                     chat_length=chat_length,
                     vectorized_enabled=vectorized_enabled,
                     vector_hits=vector_hits,
+                    include_names=include_names,
+                    global_case_sensitive=global_case_sensitive,
+                    global_match_whole_words=global_match_whole_words,
                 )
                 if not new_activated:
                     break
@@ -1577,6 +1625,21 @@ def build_worldbook_context(
     vectorized_enabled: bool = False,
     vector_top_k: Optional[int] = None,
     vector_threshold: Optional[float] = None,
+    # C1 修复（批次 C）: ST world_info_budget 全局百分比预算（world-info.js:73
+    # 默认 25）。书级 budget_tokens 全空时以此兜底（"25%" 百分比语义，基数
+    # max_context_tokens，对齐 :4624 budget = round(budget*maxContext/100)）。
+    # None=不启用全局兜底（直接调用方保持现行 16000 兜底行为不变）。
+    world_info_budget: Optional[float] = None,
+    # C1 修复（批次 C）: ST world_info_budget_cap（world-info.js:81 默认 0=不
+    # 钳制，:4626-4628 cap>0 时 min(budget, cap)）。书级 budget_cap 优先。
+    world_info_budget_cap: int = 0,
+    # C3 修复（批次 C）: ST world_info_include_names（world-info.js:74 默认
+    # true，script.js:4565）——True 时消息按 "name: content" 拼入 haystack。
+    include_names: bool = True,
+    # C5 修复（批次 C）: ST world_info_case_sensitive / world_info_match_whole_words
+    # （world-info.js:77-78 默认 false；:269/:347 entry null ?? global 继承）。
+    world_info_case_sensitive: bool = False,
+    world_info_match_whole_words: bool = False,
 ) -> WorldbookContextResult:
     """
     ST-grade worldbook context builder.
@@ -1727,6 +1790,9 @@ def build_worldbook_context(
             global_scan_depth=world_info_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            include_names=include_names,
+            global_case_sensitive=world_info_case_sensitive,
+            global_match_whole_words=world_info_match_whole_words,
         )
     else:
         visited: set[str] = set()
@@ -1743,6 +1809,9 @@ def build_worldbook_context(
             global_scan_depth=world_info_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            include_names=include_names,
+            global_case_sensitive=world_info_case_sensitive,
+            global_match_whole_words=world_info_match_whole_words,
         )
 
     # Apply group scoring (before sorting)
@@ -1765,6 +1834,14 @@ def build_worldbook_context(
             resolved_budget_tokens = wb.budget_tokens
         if resolved_budget_cap == 0 and wb.budget_cap and wb.budget_cap > 0:
             resolved_budget_cap = wb.budget_cap
+    # C1 修复（批次 C）: 书级 budget_tokens 全空时用全局百分比兜底——
+    # world_info_budget（数字 25）转 "25%" 百分比字符串语义，基数 max_context_tokens
+    # （对齐 ST world-info.js:4624 budget = round(world_info_budget*maxContext/100)）。
+    if resolved_budget_tokens is None and world_info_budget is not None:
+        resolved_budget_tokens = f"{world_info_budget}%"
+    # C1: 书级 cap 全空时全局 cap 兜底（>0 时钳制上限，对齐 :4626-4628）
+    if resolved_budget_cap == 0 and world_info_budget_cap and world_info_budget_cap > 0:
+        resolved_budget_cap = int(world_info_budget_cap)
     effective_budget = _resolve_budget(
         resolved_budget_tokens, resolved_budget_cap, max_context_tokens, max_tokens,
     )
