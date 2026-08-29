@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core import get_db
@@ -34,7 +35,15 @@ def _get_or_create_settings(user: User, db: Session) -> UserSetting:
     if not setting:
         setting = UserSetting(user_id=user.id)
         db.add(setting)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # 反向验证修复（批次 F）: 并发首建竞态防护（详见 silly_tavern.py
+            # _get_or_create_user_setting 注释）——回滚后改读既有行。
+            db.rollback()
+            setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+            if setting is None:
+                raise
     return setting
 
 

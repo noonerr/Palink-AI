@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
@@ -135,7 +136,17 @@ def _get_or_create_user_setting(user: User, db: Session) -> UserSetting:
     if not setting:
         setting = UserSetting(user_id=user.id)
         db.add(setting)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # 反向验证修复（批次 F）: 并发首建竞态防护——另一请求已创建同
+            # user_id 行时回滚改读既有行。注意 flush 等锁期间无法被本异常
+            # 打断（等待对方事务收场），配合 DB 层 idle_in_transaction_
+            # session_timeout 兜底自愈 + 注册时预建行消除竞态源头。
+            db.rollback()
+            setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+            if setting is None:
+                raise
     return setting
 
 
@@ -1556,6 +1567,15 @@ def _worldbook_to_charbook(wb: Optional[WorldBook]) -> Optional[dict[str, Any]]:
         # 避免 False 默认值污染原始 extensions roundtrip
         if getattr(stage, "ignore_budget", False):
             ext.setdefault("ignore_budget", True)
+
+        # G3 导出侧保真（批次 F）: ST 数值位置 2-7（ANTop/ANBottom/EMTop/EMBottom/
+        # atDepth/outlet）按 ST 惯例仅存于 extensions.position（world-info.js:5512
+        # entry.extensions?.position 优先读取）；0/1 由顶层 before_char/after_char
+        # 字符串承载，不写 null 污染。此前 2-7 被折叠成 after_char 且不写
+        # extensions.position，ST 端再导入时位置全部降级。
+        _pos_int_export = stage.position if isinstance(stage.position, int) else 4
+        if _pos_int_export not in (0, 1):
+            ext.setdefault("position", _pos_int_export)
 
         # position: ST V3 expects 'before_char' or 'after_char', or extensions.position
         pos_int = stage.position if isinstance(stage.position, int) else 4
@@ -4535,6 +4555,15 @@ def _create_stage_from_st_entry(
         order=_int_or("order", stage_index),
         selective=bool(entry.get("selective")),
         probability=entry.get("probability") if entry.get("probability") is not None else 100,
+        # C4b 修复（批次 C）: ST useProbability 映射（此前契约路径漏映射，
+        # useProbability=false 的条目被静默回退列默认 true 而参与掷骰）。
+        # 写法对齐 UI 导入路径 worldbook.py 的 use_probability 映射；
+        # 缺省回退 True（ST 默认）。
+        use_probability=(
+            entry["useProbability"]
+            if isinstance(entry.get("useProbability"), bool)
+            else True
+        ),
         constant=bool(entry.get("constant")),
         enabled=not entry_is_disabled(entry),
         case_sensitive=bool(entry.get("caseSensitive")),

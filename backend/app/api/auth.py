@@ -190,8 +190,18 @@ async def register(
     if pw_error:
         raise HTTPException(status_code=400, detail=pw_error)
 
+    from ..models.system import UserSetting
+
     user = User(username=req.username, hashed_password=get_password_hash(req.password))
     db.add(user)
+    db.flush()
+    # 反向验证修复（批次 F，2026-08-29）: 注册时预建 user_settings 行。
+    # 此前该行仅由 settings/get 首次访问时的 get-or-create 创建——同一新用户的
+    # 两个并发首载请求同时走 query→miss→INSERT+flush，后者 flush 等待前者
+    # 未提交事务的 unique 锁，而同步 DB 调用运行在事件循环上 → 全局死锁冻结
+    #（2026-08-19「backend 卡死」同机制，本次浏览器实测复现并定位）。
+    # 预建后正常流量不再触发并发首建。
+    db.add(UserSetting(user_id=user.id))
     db.commit()
     return {"status": "ok"}
 
