@@ -95,6 +95,22 @@ export interface SillyTavernContext {
 // 模块级状态：CharacterChat 每次挂载都 new 一个运行时实例，守卫须防堆叠。
 let nativeFetchForGuard: typeof fetch | null = null;
 
+/**
+ * [N8-d 联动] 向经典轨插件广播 ST 事件。
+ *
+ * 经典轨插件（Galgame 界面插件等）通过 window.eventOn 注册的监听挂在
+ * injectIntoContainer 的 runtime 实例上（即 window.__palinkStRuntime）。
+ * Palink 侧状态变化（如故事线侧栏切换分支）后调用此函数，插件的
+ * tavern_events.CHAT_CHANGED 等监听即可收到并重建自身 UI。
+ * 事件名建议用 ST 事件值（如 'chat_id_changed'）；runtime.on 已做键名↔值别名归一。
+ */
+export function emitClassicPluginEvent(eventName: string, data?: unknown): void {
+  try {
+    const rt = (window as any).__palinkStRuntime as SillyTavernPluginRuntime | undefined;
+    rt?.emit?.(eventName, data);
+  } catch { /* 插件事件广播失败不影响主流程 */ }
+}
+
 function installGlobalFetchGuard(): void {
   if (nativeFetchForGuard) return;
   const nativeFetch = window.fetch.bind(window);
@@ -184,6 +200,8 @@ export class SillyTavernPluginRuntime {
     onlineStatus: 'active',
   };
   private injected = false;
+  /** ST 事件值 → ST 常量名 反查表（eventAliases 懒初始化） */
+  private reverseEventMap: Record<string, string> | null = null;
 
   async loadRuntimeConfig(): Promise<RuntimeConfig> {
     // 30s 前端内存缓存：与 preloadSmartCardRuntimeConfig 共用 api.get 缓存，
@@ -225,17 +243,38 @@ export class SillyTavernPluginRuntime {
     recordStubHit(name, detail);
   }
 
-  on(eventName: string, callback: Function) {
-    if (!this.listeners.has(eventName)) {
-      this.listeners.set(eventName, new Set());
+  /**
+   * [N8-d 联动] 事件名别名归一：插件惯用 tavern_events.CHAT_CHANGED（ST 事件值
+   * 'chat_id_changed'）监听，而 Palink 侧既有 emit 点用映射键 'CHAT_CHANGED'
+   * （如 CharacterChat.tsx 会话切换），双向都注册才能接通。ST_TO_PALINK_EVENT_MAP
+   * 键=ST 常量名、值=ST 1.18 事件值，别名解析对任意一侧入参补齐另一侧。
+   */
+  private eventAliases(eventName: string): string[] {
+    const names = [eventName];
+    const mapped = ST_TO_PALINK_EVENT_MAP[eventName];
+    if (mapped) names.push(mapped);
+    if (!this.reverseEventMap) {
+      this.reverseEventMap = Object.fromEntries(
+        Object.entries(ST_TO_PALINK_EVENT_MAP).map(([k, v]) => [v, k]),
+      );
     }
-    this.listeners.get(eventName)!.add(callback);
+    const reverse = this.reverseEventMap[eventName];
+    if (reverse) names.push(reverse);
+    return names;
+  }
+
+  on(eventName: string, callback: Function) {
+    for (const name of this.eventAliases(eventName)) {
+      if (!this.listeners.has(name)) {
+        this.listeners.set(name, new Set());
+      }
+      this.listeners.get(name)!.add(callback);
+    }
   }
 
   off(eventName: string, callback: Function) {
-    const cbs = this.listeners.get(eventName);
-    if (cbs) {
-      cbs.delete(callback);
+    for (const name of this.eventAliases(eventName)) {
+      this.listeners.get(name)?.delete(callback);
     }
   }
 
@@ -638,6 +677,12 @@ export class SillyTavernPluginRuntime {
     const setupScript = document.createElement('script');
     setupScript.setAttribute('data-palink-st-plugin-id', '__palink_runtime_setup__');
     setupScript.setAttribute('nonce', 'palink-smart-card');
+    // [N8-d 修复] setupScript 是注入页面的独立 <script>（页面全局作用域），
+    // 模板内无法引用本 ES 模块的导入——此前 getRequestHeaders 桩直接调用
+    // getCsrfToken()，运行时 ReferenceError → 插件拿不到 X-CSRF-Token →
+    // ST 端点 403 CSRF token mismatch（Galgame 插件"获取聊天列表失败"的真因）。
+    // 经 window 转交模块内的真实实现，模板内一律走 window.__palinkGetCsrfToken。
+    (window as any).__palinkGetCsrfToken = getCsrfToken;
     setupScript.textContent = `
       (function() {
         var runtime = window.__palinkStRuntime;
@@ -716,15 +761,27 @@ export class SillyTavernPluginRuntime {
         // N8-c 终态：前端不再持有明文凭据，同源请求凭据由 HttpOnly Cookie 自动携带；
         // fetch 守卫（installGlobalFetchGuard）只负责补 Cookie credentials，不注入 Bearer，
         // 插件把请求头发给第三方或写入日志都不会泄露凭据。
-        window.getRequestHeaders = window.getRequestHeaders || function() {
+        // N8-d：无条件重装——旧 bundle 留下的坏桩（内部引用未定义的 getCsrfToken）
+        // 不能经 || 短路残留；本函数幂等且仅依赖 window.__palinkGetCsrfToken。
+        window.getRequestHeaders = function() {
           return {
             'Content-Type': 'application/json',
             // [CSRF] N8-c 终态：动态读 palink_csrf cookie（旧静态 'palink-csrf' 在新
-            // 双提交中间件下会 mismatch 403）
-            'X-CSRF-Token': getCsrfToken()
+            // 双提交中间件下会 mismatch 403）。N8-d 修复：getCsrfToken 是宿主模块
+            // 作用域导入，注入脚本内不可直接引用（ReferenceError → 插件 403），
+            // 经 window.__palinkGetCsrfToken 转交。
+            'X-CSRF-Token': (window.__palinkGetCsrfToken || function() { return ''; })()
           };
         };
         window.SillyTavern.getRequestHeaders = window.getRequestHeaders;
+        // [N8-d 修复] 插件读取当前聊天 ID 的第一优先候选是 SillyTavern.getCurrentChatId
+        // （天机时间线的 resolveCurrentChatId/getCurrentChatId 候选顺序：ST API →
+        // context.chatId → …）。缺省时落到 context.chatId（裸 UUID），与时间线/
+        // 存档的文件名形态不匹配。用委托函数而非直接赋值——本脚本内
+        // window.getCurrentChatId 在更靠后的位置才定义，直接赋值会复制 undefined。
+        window.SillyTavern.getCurrentChatId = function() {
+          return typeof window.getCurrentChatId === 'function' ? window.getCurrentChatId() : '';
+        };
 
         // ST 兼容：消息写入（COT 格式化 swipe 保存）/ slash 命令 / 跨会话切换。
         // 全部经 __palinkBridge 桥接到 Palink 原生能力；桥接层缺失时优雅降级。
@@ -769,6 +826,52 @@ export class SillyTavernPluginRuntime {
         };
         window.eventSource.emit = function(event, data) {
           runtime.emit(event, data);
+        };
+
+        // N11 修复（批次 F）: 补全 eventSource 完整签名——once/makeFirst/
+        // makeLast/removeAllListeners（runtime.getEventSource() 的
+        // EventSourceWrapper 已实现，runtime.ts:383-430）。此前经典轨只暴露
+        // on/off/emit，quick-reply 式 makeFirst(CHARACTER_MESSAGE_RENDERED,
+        // ..., makeFirst) 自动执行在经典轨静默失效。
+        try {
+          var _palinkEventSource = runtime.getEventSource ? runtime.getEventSource() : null;
+          if (_palinkEventSource) {
+            window.eventSource.once = function(event, callback) {
+              _palinkEventSource.once(event, callback);
+            };
+            window.eventSource.makeFirst = function(event, callback) {
+              _palinkEventSource.makeFirst(event, callback);
+            };
+            window.eventSource.makeLast = function(event, callback) {
+              _palinkEventSource.makeLast(event, callback);
+            };
+            window.eventSource.removeAllListeners = function(event) {
+              _palinkEventSource.removeAllListeners(event);
+            };
+          }
+        } catch (esErr) { /* eventSource 扩展失败不阻断注入 */ }
+
+        // [N8-d 联动] 酒馆助手式全局事件桩：Galgame 等经典轨插件通过
+        // topWindow.eventOn(topWindow.tavern_events.CHAT_CHANGED, ...) 注册
+        // 聊天切换监听（沙箱轨/智能卡 iframe 轨已有同名桩，此前经典轨缺失）。
+        // tavern_events 与 event_types 同为 ST_TO_PALINK_EVENT_MAP（键=ST 常量名）；
+        // eventOn 落到 runtime.on（eventAliases 已做 键名↔事件值 双向归一，
+        // Palink 侧 emit 'CHAT_CHANGED'/'chat_id_changed' 任一形式均可命中）。
+        window.tavern_events = window.tavern_events || window.event_types || {};
+        window.eventOn = window.eventOn || function(event, callback) {
+          window.eventSource.on(event, callback);
+        };
+        window.eventOff = window.eventOff || function(event, callback) {
+          window.eventSource.off(event, callback);
+        };
+        window.eventEmit = window.eventEmit || function(event, data) {
+          window.eventSource.emit(event, data);
+        };
+        window.eventMakeLast = window.eventMakeLast || function(event, callback) {
+          window.eventSource.on(event, callback);
+        };
+        window.eventMakeFirst = window.eventMakeFirst || function(event, callback) {
+          window.eventSource.on(event, callback);
         };
 
         window.registerSlashCommand = function(name, callback, aliases, helpString) {
@@ -880,7 +983,17 @@ export class SillyTavernPluginRuntime {
           return chat.length - 1;
         };
         window.getCurrentChatId = function() {
-          return runtime.context.chatId || '';
+          var chatId = runtime.context.chatId || '';
+          if (!chatId) return '';
+          // [N8-d 修复] ST 语义：getCurrentChatId/chatId 返回聊天文件名。
+          // Palink 的 runtime.context.chatId 是裸会话 UUID，而 /api/characters/chats
+          // 的 file_name（时间线节点、存档槽的 chatId 域）是
+          // "palink-session-{uuid}.jsonl"——插件内部 isSameChatId 只剥路径/扩展名、
+          // 不剥 palink-session- 前缀，两种形态永不相等：读档切换实际成功但校验
+          // 恒失败 → 6s 超时 → "切换聊天失败，无法读档"；时间线"当前"高亮同理失联。
+          // 此处统一输出文件名形态（与 /getchatname 一致）。
+          if (/^palink-session-/i.test(chatId)) return chatId;
+          return 'palink-session-' + chatId + '.jsonl';
         };
         window.substitudeMacros = function(text) {
           // ST 拼写错误的 API，语义同 substituteParams：同样接入宏引擎
@@ -1069,9 +1182,13 @@ export class SillyTavernPluginRuntime {
     // 酒馆助手 iframe 里运行；其注入的格式规则与渲染正则同卡配套。若提升为全局执行，
     // 会出现"注入常驻、渲染缺失"的分裂态——模型对任何卡都输出 @bubble 等标记却无人渲染，
     // 原始标记直接漏进正文（2026-08-21 实测泄漏源：plugins 表「酒馆助手」插件）。
+    // [GUARD-TH-EXEMPT]（2026-08-28 用户拍板，与后端 plugins.py 同名豁免配对）：
+    // tavern_helper 型插件豁免本守卫——8-23 双侧守卫上线后「酒馆助手」（数据库界面
+    // 面板脚本）被整体拦停，正文下方角色面板消失。泄漏面由脚本级
+    // plugin_scripts.enabled 开关收口（用户可单独停用 BubbleDialogue 类脚本）。
     const extensions = this.config.plugins.filter(
       (p) => (p.plugin_type === 'sillytavern_extension' || p.plugin_type === 'tavern_helper')
-        && p.source_type !== 'character_card_extension'
+        && (p.source_type !== 'character_card_extension' || p.plugin_type === 'tavern_helper')
     );
 
     for (const plugin of extensions) {

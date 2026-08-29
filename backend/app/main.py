@@ -16,9 +16,8 @@ try:
 except ImportError:
     fcntl = None
 
-from urllib.parse import urlparse
-
 from .core import settings, engine, run_migrations, ensure_runtime_schema_compat, get_password_hash, verify_password, SessionLocal
+from .core.csrf_guard import origin_same_site
 from .core.exceptions import ServiceError
 from .core.log_sanitizer import setup_sanitized_logging
 from .core.security import UPLOAD_TOKEN_TTL_SECONDS, create_upload_token
@@ -338,31 +337,31 @@ _CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _CSRF_EXEMPT_PATHS = {"/api/token"}
 _CSRF_EXEMPT_PREFIXES = ("/api/uploads",)
 
+# [N8-d] 同源判定下沉到 core/csrf_guard（端点级守卫与全局中间件共用一份口径），
+# main.py 保留原名别名以最小化调用点改动。
+_origin_same_site = origin_same_site
 
-def _origin_same_site(origin: str, request: Request) -> bool:
-    """[插件兼容兜底] Origin 与部署站点同源判定。
 
-    浏览器对同源 fetch/XHR 的 mutating 请求必带同源 Origin；跨站表单/img 伪造
-    必带外站 Origin 或不带 Origin，故此兜底不削弱防护强度。判定口径：
-    1) Origin host == 请求 Host（同源部署主路径）；
-    2) Origin 命中 CORS_ORIGINS 显式白名单（多第一方域名部署）；"*" 不参与
-       （开发通配不得等价于放行任意外站 Origin）。
+def _ensure_csrf_cookie(request: Request, response) -> None:
+    """[N8-d] palink_csrf cookie 自愈下发。
+
+    该 cookie 仅在登录（auth.py 双 Set-Cookie）时下发；滑动续期只重发
+    palink_session。结果：早于 N8-a 上线建立的存量会话、或 cookie 满 12h
+    过期后的长寿命会话，浏览器里永远不会再出现 palink_csrf → 前端/插件
+    getCsrfToken() 恒为空 → ST 兼容路由端点级守卫 403（CSRF token mismatch）。
+    此处在「持有会话 Cookie 但缺 CSRF 配对值」的每个响应上补发一份
+    （复用响应对象，含 403 响应——首个请求失败即完成自愈，下次请求恢复）。
+    仅在缺失时新签，不做轮换，避免与已读入内存的旧 token 产生竞态。
     """
-    parsed = urlparse(origin)
-    origin_host = (parsed.netloc or "").lower()
-    if not origin_host:
-        return False
-    site_host = (request.headers.get("host") or "").lower()
-    if site_host and origin_host == site_host:
-        return True
-    allowed = settings.cors_origins_list
-    if "*" in allowed:
-        return False
-    origin_norm = f"{parsed.scheme}://{parsed.netloc}".lower()
-    for item in allowed:
-        if item.strip().rstrip("/").lower() == origin_norm:
-            return True
-    return False
+    if request.cookies.get(SESSION_COOKIE_NAME, "") and not request.cookies.get(CSRF_COOKIE_NAME, ""):
+        response.set_cookie(
+            CSRF_COOKIE_NAME,
+            secrets.token_urlsafe(32),
+            max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            httponly=False,
+            samesite="lax",
+            path="/",
+        )
 
 
 @app.middleware("http")
@@ -389,10 +388,14 @@ async def csrf_protection_middleware(request: Request, call_next):
     端点级守卫按原语义处理（分层不重复、互不削弱）。
     """
     if request.method in _CSRF_SAFE_METHODS:
-        return await call_next(request)
+        response = await call_next(request)
+        _ensure_csrf_cookie(request, response)
+        return response
     path = request.url.path
     if path in _CSRF_EXEMPT_PATHS or path.startswith(_CSRF_EXEMPT_PREFIXES):
-        return await call_next(request)
+        response = await call_next(request)
+        _ensure_csrf_cookie(request, response)
+        return response
     auth_scheme = request.headers.get("Authorization", "").split(" ", 1)[0].lower()
     if auth_scheme == "bearer":
         return await call_next(request)
@@ -412,13 +415,18 @@ async def csrf_protection_middleware(request: Request, call_next):
 
     origin = request.headers.get("origin")
     if origin and _origin_same_site(origin, request):
-        return await call_next(request)
+        response = await call_next(request)
+        _ensure_csrf_cookie(request, response)
+        return response
 
     request_id = getattr(request.state, "request_id", "unknown")
-    return JSONResponse(
+    response = JSONResponse(
         status_code=403,
         content={"detail": "CSRF validation failed", "request_id": request_id},
     )
+    # [N8-d] 403 响应同样补发 cookie：缺 cookie 的会话首个请求即完成自愈。
+    _ensure_csrf_cookie(request, response)
+    return response
 
 app.include_router(api_router)
 

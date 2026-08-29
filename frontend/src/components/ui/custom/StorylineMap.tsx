@@ -1475,6 +1475,7 @@ function StorylineMapInner({ branchTree, onNavigate, isDark, sessionId, onDelete
         onNodesChange={onNodesChange}
         onEdgesChange={undefined}
         nodeTypes={nodeTypes}
+        colorMode={isDark ? 'dark' : 'light'}
         onInit={(instance) => {
           rfInstanceRef.current = instance;
           if (!initialFitDoneRef.current) {

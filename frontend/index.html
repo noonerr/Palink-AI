@@ -17,7 +17,12 @@
     <meta name="apple-mobile-web-app-title" content="Palink" />
     <script>
       try {
-        const launchTheme = localStorage.getItem('theme') === 'dark' ? 'dark' : 'light';
+        // 亮/暗/auto 三态与 App.tsx 主题解析对齐：auto 跟随系统
+        // prefers-color-scheme，避免系统暗色用户在启动/加载阶段看到亮色闪屏。
+        const storedTheme = localStorage.getItem('theme');
+        const launchTheme = storedTheme === 'dark' || storedTheme === 'light'
+          ? storedTheme
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         const launchBackground = launchTheme === 'dark' ? '#1a1a2e' : '#f5f5f5';
         document.documentElement.style.backgroundColor = launchBackground;
         document.documentElement.style.colorScheme = launchTheme;

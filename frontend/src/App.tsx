@@ -583,6 +583,12 @@ function App() {
     }
     localStorage.setItem('theme', themeMode);
     document.documentElement.setAttribute('data-theme', isDark);
+    // [主题↔插件联动] 广播主题变化：data-theme 属性（上方）+ 此事件是插件侧
+    // 感知亮暗切换的两个标准入口。经典轨插件可直接 addEventListener 监听，
+    // 或读取 documentElement.dataset.theme；插件 CSS 可用 [data-theme="light"] 作用。
+    window.dispatchEvent(new CustomEvent('palink:theme-change', {
+      detail: { theme: themeMode, isDark: isDark === 'dark' },
+    }));
   }, [isDark, themeMode]);
 
   useEffect(() => {
