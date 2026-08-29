@@ -135,11 +135,12 @@ class MemoryService:
         max_tokens: int = 2000,
         include_profile: bool = True,
         branch_ids: Optional[List[str]] = None,
-        memory_mode: str = "vector"
+        memory_mode: str = "vector",
+        exclude_message_ids: Optional[List[int]] = None
     ) -> ContextResponse:
         """
         获取增强上下文
-        
+
         这是主要接口，用于在聊天前获取相关记忆
         """
         if not self.is_available():
@@ -153,7 +154,14 @@ class MemoryService:
         if self.enable_cache:
             branch_key = ",".join(sorted(branch_ids)) if branch_ids else ""
             query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
-            cache_key = f"context:{user_id}:{session_id or ''}:{branch_key}:{query_hash}"
+            # D3 修复: 排除集逐轮变化（随最近消息滚动），必须进缓存键防跨轮串味
+            exclude_key = (
+                hashlib.sha256(
+                    ",".join(str(m) for m in sorted(exclude_message_ids)).encode()
+                ).hexdigest()[:12]
+                if exclude_message_ids else "none"
+            )
+            cache_key = f"context:{user_id}:{session_id or ''}:{branch_key}:{query_hash}:{exclude_key}"
             cached = await self._get_cache(cache_key)
             if cached is not None:
                 return cached
@@ -166,7 +174,8 @@ class MemoryService:
                 branch_ids=branch_ids,
                 max_tokens=max_tokens,
                 include_profile=include_profile,
-                memory_mode=memory_mode
+                memory_mode=memory_mode,
+                exclude_message_ids=exclude_message_ids
             )
 
             result = await asyncio.to_thread(self.retriever.retrieve, request)

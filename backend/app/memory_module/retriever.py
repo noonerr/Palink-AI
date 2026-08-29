@@ -40,13 +40,17 @@ class MemoryRetriever:
         try:
             # 1. 获取短期记忆 (STM) - 最近 5 条
             recent_limit = 5
+            # D3 修复: ST protect 语义 —— 排除最近消息的记忆镜像（调用方传入最近
+            # N 条消息 id；命中 message_id 的条目不注入，历史窗口已含原文）。
+            # 多取 len(exclude_ids) 条补位，保证过滤后 STM 数量稳定。
+            exclude_ids = set(request.exclude_message_ids or [])
             stm_memories = self.storage.get_recent(
                 user_id=request.user_id,
                 session_id=request.session_id,
-                limit=recent_limit,
+                limit=recent_limit + len(exclude_ids),
                 branch_ids=request.branch_ids
             )
-            
+
             # 去重，保留最新
             seen_ids = set()
             unique_stm = []
@@ -56,7 +60,14 @@ class MemoryRetriever:
                     unique_stm.append(m)
             stm_memories = unique_stm
             stm_ids = seen_ids
-            
+
+            # D3: 过滤最近消息镜像（message_id 命中排除集；NULL message_id 的
+            # 存量行永不排除——按既定边界不做回填）
+            if exclude_ids:
+                stm_memories = [
+                    m for m in stm_memories if m.message_id not in exclude_ids
+                ][:recent_limit]
+
             # 计算 STM 占用的 tokens
             current_tokens = sum(m.tokens_count or (len(m.content) // 2) for m in stm_memories)
 
@@ -104,6 +115,12 @@ class MemoryRetriever:
                 )
                 
                 if semantic_candidates:
+                    # D3: LTM 侧同样排除最近消息镜像
+                    if exclude_ids:
+                        semantic_candidates = [
+                            m for m in semantic_candidates
+                            if m.message_id not in exclude_ids
+                        ]
                     scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
                     
                     # 按综合分数排序

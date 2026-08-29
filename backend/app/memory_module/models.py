@@ -70,6 +70,10 @@ class MemoryEntry(BaseModel):
     id: Optional[int] = None
     user_id: int
     session_id: str
+    # D 批补齐: 存储构造点本就传 branch_id/message_id（此前模型缺字段被静默丢弃）；
+    # message_id 是"记忆=消息镜像"的关联键，STM/LTM 排除最近消息镜像依赖它。
+    branch_id: Optional[str] = None
+    message_id: Optional[int] = None
     role: str
     content: str
     importance_score: float = 0.5
@@ -77,7 +81,7 @@ class MemoryEntry(BaseModel):
     tokens_count: int = 0
     created_at: Optional[datetime] = None
     embedding: Optional[List[float]] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -106,6 +110,9 @@ class ContextRequest(BaseModel):
     max_tokens: int = 2000
     include_profile: bool = True
     memory_mode: str = "vector"
+    # D3 修复: ST protect 语义 —— 最近 N 条消息的 id 集合，其记忆镜像不注入
+    # （对话历史窗口已含原文，重复召回浪费 token）；None/空 = 行为不变。
+    exclude_message_ids: Optional[List[int]] = None
 
 
 class ContextResponse(BaseModel):

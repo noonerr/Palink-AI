@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -21,7 +22,9 @@ from ..models.character import (
 )
 from ..models.worldbook import WorldBook, WorldBookStage
 from ..models.chat_variable import ChatVariable, UserVariable, GlobalVariable
-from ..services.macro_service import MacroEnv
+from ..services.macro_service import MacroEnv, evaluate_macros
+# D 批新增: 消息删除的记忆镜像级联（与 delete_character_message 同源助手）
+from ..memory_module.storage import delete_by_message_id
 
 logger = logging.getLogger(__name__)
 
@@ -514,8 +517,10 @@ def _cmd_wi(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
         .first()
     )
     if not wb:
+        # D 批修复: WorldBook 模型字段是 name 非 title（原 title= 必 TypeError，
+        # 被 execute_slash_command 吞成 "Command error"，/wi 建新书路径从未可用）
         wb = WorldBook(
-            title=f"{ctx.character.name}'s World Book",
+            name=f"{ctx.character.name}'s World Book",
             character_id=ctx.character.id,
             user_id=ctx.user_id,
         )
@@ -901,6 +906,349 @@ def _cmd_var(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
     return SlashCommandResult(send_to_chat=False, response=str(value) if value is not None else "")
 
 
+# ========== D 批新增（2026-08-29）：ST 高频命令补齐 ==========
+
+def _delete_message_with_cascade(db: DBSession, session_id: str, msg: CharacterChatMessage) -> bool:
+    """删除单条消息并级联清理其向量记忆镜像（对齐 delete_character_message 路径）。
+
+    锁定消息（is_locked）不允许删除，返回 False 交由调用方计数跳过。
+    """
+    if getattr(msg, "is_locked", False):
+        return False
+    delete_by_message_id(db, session_id, msg.id)
+    db.delete(msg)
+    return True
+
+
+def _session_messages_asc(
+    db: DBSession, session_id: str, branch_id: Optional[str]
+) -> list[CharacterChatMessage]:
+    """会话消息按显示序（id 升序）返回；激活分支内仅取分支消息（对齐 _get_last_ai_message 过滤语义）。"""
+    query = db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.session_id == session_id,
+    )
+    if branch_id:
+        query = query.filter(CharacterChatMessage.branch_id == branch_id)
+    return list(query.order_by(CharacterChatMessage.id.asc()).all())
+
+
+def _parse_index_range(arg: str) -> Optional[tuple[int, int]]:
+    """解析 <index> 或 <start-end>（支持负数索引，-1=最后一条）；非法返回 None。"""
+    arg = (arg or "").strip()
+    if not arg:
+        return None
+    m = re.fullmatch(r"(-?\d+)\s*-\s*(-?\d+)", arg)
+    if m:
+        start, end = int(m.group(1)), int(m.group(2))
+        if start > end:
+            start, end = end, start
+        return (start, end)
+    m = re.fullmatch(r"-?\d+", arg)
+    if m:
+        value = int(arg)
+        return (value, value)
+    return None
+
+
+def _cmd_del(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /del [times] — 删除最近 N 条消息（缺省 1），对齐 ST /del。
+
+    记忆镜像级联清理；锁定消息跳过并计数。
+    """
+    times = 1
+    if args:
+        try:
+            times = max(1, int(args[0]))
+        except ValueError:
+            return SlashCommandResult(send_to_chat=False, response="Usage: /del [times]")
+    branch = _get_active_branch(ctx.db, ctx.session_id)
+    query = ctx.db.query(CharacterChatMessage).filter(
+        CharacterChatMessage.session_id == ctx.session_id,
+    )
+    if branch:
+        query = query.filter(CharacterChatMessage.branch_id == branch.id)
+    msgs = list(query.order_by(CharacterChatMessage.id.desc()).limit(times).all())
+    if not msgs:
+        return SlashCommandResult(send_to_chat=False, response="No messages to delete")
+    deleted = skipped = 0
+    for msg in msgs:
+        if _delete_message_with_cascade(ctx.db, ctx.session_id, msg):
+            deleted += 1
+        else:
+            skipped += 1
+    ctx.db.commit()
+    detail = f"Deleted {deleted} message(s)"
+    if skipped:
+        detail += f", skipped {skipped} locked"
+    return SlashCommandResult(send_to_chat=False, response=detail, modified=True)
+
+
+def _cmd_cut(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /cut <index|start-end> — 按显示序（0 起，-1=最后）删除区间消息，对齐 ST /cut。
+
+    记忆镜像级联清理；锁定消息跳过并计数。
+    """
+    if not args:
+        return SlashCommandResult(send_to_chat=False, response="Usage: /cut <index|start-end>")
+    rng = _parse_index_range(args[0])
+    if rng is None:
+        return SlashCommandResult(send_to_chat=False, response="Usage: /cut <index|start-end>")
+    branch = _get_active_branch(ctx.db, ctx.session_id)
+    msgs = _session_messages_asc(ctx.db, ctx.session_id, branch.id if branch else None)
+    total = len(msgs)
+    if total == 0:
+        return SlashCommandResult(send_to_chat=False, response="No messages to cut")
+    start = rng[0] if rng[0] >= 0 else total + rng[0]
+    end = rng[1] if rng[1] >= 0 else total + rng[1]
+    start = max(0, start)
+    end = min(total - 1, end)
+    if start > end:
+        return SlashCommandResult(
+            send_to_chat=False,
+            response=f"Out of range: chat has {total} message(s)",
+        )
+    deleted = skipped = 0
+    for msg in msgs[start:end + 1]:
+        if _delete_message_with_cascade(ctx.db, ctx.session_id, msg):
+            deleted += 1
+        else:
+            skipped += 1
+    ctx.db.commit()
+    detail = f"Cut messages {start}-{end}: deleted {deleted}"
+    if skipped:
+        detail += f", skipped {skipped} locked"
+    return SlashCommandResult(send_to_chat=False, response=detail, modified=True)
+
+
+def _cmd_delswipe(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /delswipe [index] — 删除末条 AI 消息的 swipe（1 起编号，缺省=最后一个），对齐 ST /delswipe。
+
+    仅剩一条 swipe 时拒绝（消息至少保留一个候选）。
+    """
+    branch = _get_active_branch(ctx.db, ctx.session_id)
+    last_ai = _get_last_ai_message(ctx.db, ctx.session_id, branch.id if branch else None)
+    if not last_ai:
+        return SlashCommandResult(send_to_chat=False, response="No message to swipe")
+    try:
+        swipes = json.loads(last_ai.swipes) if last_ai.swipes else []
+        if not isinstance(swipes, list):
+            swipes = []
+    except (json.JSONDecodeError, TypeError):
+        swipes = []
+    if not swipes:
+        swipes = [last_ai.content or ""]
+    if len(swipes) <= 1:
+        return SlashCommandResult(send_to_chat=False, response="Only one swipe; nothing to delete")
+    index = len(swipes)  # 缺省删最后一个（1 起）
+    if args:
+        try:
+            index = int(args[0])
+        except ValueError:
+            return SlashCommandResult(send_to_chat=False, response="Usage: /delswipe [index]")
+    if not 1 <= index <= len(swipes):
+        return SlashCommandResult(
+            send_to_chat=False,
+            response=f"Swipe index out of range: 1-{len(swipes)}",
+        )
+    swipes.pop(index - 1)
+    current = last_ai.swipe_id or 0
+    if current >= len(swipes):
+        current = len(swipes) - 1
+    last_ai.swipe_id = current
+    last_ai.swipes = json.dumps(swipes, ensure_ascii=False)
+    if current < len(swipes) and swipes[current]:
+        last_ai.content = swipes[current]
+    ctx.db.commit()
+    return SlashCommandResult(
+        send_to_chat=False,
+        response=f"Deleted swipe {index}; now {current + 1}/{len(swipes)}",
+        modified=True,
+    )
+
+
+def _hide_unhide_messages(args: list[str], ctx: SlashCommandContext, hidden: bool) -> SlashCommandResult:
+    """/hide /unhide 共享实现：缺省作用于最后一条消息，支持 <index|start-end>。"""
+    branch = _get_active_branch(ctx.db, ctx.session_id)
+    msgs = _session_messages_asc(ctx.db, ctx.session_id, branch.id if branch else None)
+    total = len(msgs)
+    if total == 0:
+        return SlashCommandResult(send_to_chat=False, response="No messages")
+    if args:
+        rng = _parse_index_range(args[0])
+        if rng is None:
+            return SlashCommandResult(
+                send_to_chat=False,
+                response=f"Usage: /{'hide' if hidden else 'unhide'} [index|start-end]",
+            )
+        start = rng[0] if rng[0] >= 0 else total + rng[0]
+        end = rng[1] if rng[1] >= 0 else total + rng[1]
+        start = max(0, start)
+        end = min(total - 1, end)
+        if start > end:
+            return SlashCommandResult(
+                send_to_chat=False,
+                response=f"Out of range: chat has {total} message(s)",
+            )
+    else:
+        start = end = total - 1
+    changed = 0
+    for msg in msgs[start:end + 1]:
+        if bool(getattr(msg, "is_hidden", False)) != hidden:
+            msg.is_hidden = hidden
+            changed += 1
+    ctx.db.commit()
+    label = "Hid" if hidden else "Unhid"
+    return SlashCommandResult(
+        send_to_chat=False,
+        response=f"{label} messages {start}-{end} ({changed} changed)",
+        modified=True,
+    )
+
+
+def _cmd_hide(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /hide [index|start-end] — 隐藏消息（ST isHidden 语义：装配过滤 + UI 半透明），缺省=最后一条。"""
+    return _hide_unhide_messages(args, ctx, hidden=True)
+
+
+def _cmd_unhide(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /unhide [index|start-end] — 取消隐藏，缺省=最后一条。"""
+    return _hide_unhide_messages(args, ctx, hidden=False)
+
+
+def _cmd_listvar(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /listvar — 列出本会话 chat 变量（对齐 ST /listvar 局部变量清单）。"""
+    rows = (
+        ctx.db.query(ChatVariable)
+        .filter(ChatVariable.session_id == ctx.session_id)
+        .order_by(ChatVariable.key.asc())
+        .all()
+    )
+    if not rows:
+        return SlashCommandResult(send_to_chat=False, response="(no chat variables)")
+    payload = {row.key: row.value for row in rows}
+    return SlashCommandResult(
+        send_to_chat=False,
+        response=json.dumps(payload, ensure_ascii=False),
+    )
+
+
+def _cmd_if(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /if <condition> then <command...> — 条件执行斜杠命令（简化版，对齐 ST /if 基础语义）。
+
+    条件求值复用批次 A2 的 {{if}} 块机制（macro_service._eval_if_condition：
+    {{getvar::x}} 宏 / .x / $x 简写 / !取反 / 空串与 off·false·0 判 falsy），经
+    evaluate_macros("{{if <cond>}}1{{else}}0{{/if}}") 与提示词侧条件块完全同源。
+    """
+    joined = " ".join(args).strip()
+    if not joined:
+        return SlashCommandResult(
+            send_to_chat=False,
+            response="Usage: /if <condition> then </command [args]>",
+        )
+    marker = " then "
+    idx = joined.lower().find(marker)
+    if idx < 0:
+        return SlashCommandResult(
+            send_to_chat=False,
+            response="Usage: /if <condition> then </command [args]>",
+        )
+    condition = joined[:idx].strip()
+    command_text = joined[idx + len(marker):].strip()
+    if not condition or not command_text.startswith("/"):
+        return SlashCommandResult(
+            send_to_chat=False,
+            response="Usage: /if <condition> then </command [args]>",
+        )
+    env = MacroEnv(
+        db=ctx.db,
+        session_id=ctx.session_id,
+        user_id=ctx.user_id,
+        user_name=ctx.user_name,
+        char_name=ctx.character.name if ctx.character else "Character",
+        input_text=ctx.input_text,
+    )
+    probe = evaluate_macros("{{if " + condition + "}}1{{else}}0{{/if}}", env).strip()
+    if probe != "1":
+        return SlashCommandResult(
+            send_to_chat=False,
+            response="(if: condition false, skipped)",
+        )
+    return execute_slash_command(command_text, ctx)
+
+
+def _cmd_inject(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /inject [position=N] [depth=N] <text> — 会话级提示词注入。
+
+    存储 = session.chat_metadata.palink_injections（装配侧 roleplay_prompt_assembly
+    已消费：position 0=对话内 depth 队列 / 1=system prompt 后 / 2=作者注释前）。
+    /flushinject 清空。
+    """
+    named: dict[str, str] = {}
+    positional: list[str] = []
+    for arg in args:
+        if "=" in arg and not arg.startswith('"'):
+            key, _, value = arg.partition("=")
+            if key and value and key.replace("-", "_").isidentifier():
+                named[key.lower()] = value
+                continue
+        positional.append(arg)
+    content = " ".join(positional).strip()
+    if not content:
+        return SlashCommandResult(
+            send_to_chat=False,
+            response="Usage: /inject [position=0|1|2] [depth=N] <text>",
+        )
+    try:
+        position = int(named.get("position", 0))
+    except ValueError:
+        position = 0
+    try:
+        depth = int(named.get("depth", 4))
+    except ValueError:
+        depth = 4
+    session = ctx.session
+    if session is None:
+        session = (
+            ctx.db.query(CharacterChatSession)
+            .filter(CharacterChatSession.id == ctx.session_id)
+            .first()
+        )
+    meta = _read_chat_metadata(session)
+    injections = meta.get("palink_injections")
+    if not isinstance(injections, list):
+        injections = []
+    injections.append({"content": content, "position": position, "depth": depth})
+    meta["palink_injections"] = injections
+    _write_chat_metadata(session, meta)
+    ctx.db.commit()
+    return SlashCommandResult(
+        send_to_chat=False,
+        response=f"Injected (position={position}, depth={depth}); total {len(injections)}",
+        modified=True,
+    )
+
+
+def _cmd_flushinject(args: list[str], ctx: SlashCommandContext) -> SlashCommandResult:
+    """D 批新增: /flushinject — 清空会话级 /inject 注入列表。"""
+    session = ctx.session
+    if session is None:
+        session = (
+            ctx.db.query(CharacterChatSession)
+            .filter(CharacterChatSession.id == ctx.session_id)
+            .first()
+        )
+    meta = _read_chat_metadata(session)
+    removed = meta.pop("palink_injections", None)
+    count = len(removed) if isinstance(removed, list) else 0
+    _write_chat_metadata(session, meta)
+    ctx.db.commit()
+    return SlashCommandResult(
+        send_to_chat=False,
+        response=f"Flushed {count} injection(s)",
+        modified=True,
+    )
+
+
 # ========== Registration ==========
 
 SlashCommandRegistry.register("sys", _cmd_sys)
@@ -939,6 +1287,21 @@ SlashCommandRegistry.register("preset", _cmd_preset)
 SlashCommandRegistry.register("delvar", _cmd_delvar)
 # P2 修复: /var 双向命令（get/set），对齐 ST variables.js varCallback
 SlashCommandRegistry.register("var", _cmd_var)
+
+# ========== D 批新增（2026-08-29）：ST 高频命令补齐 ==========
+# /genraw: Palink /gen 的 gen_prompt 路径本就是不装配历史与角色卡的原始生成
+# （websocket 调 complete_text_completion，messages=[user, prompt]），
+# /genraw 作为 ST 语义别名注册到同一实现。
+SlashCommandRegistry.register("genraw", _cmd_gen)
+SlashCommandRegistry.register("del", _cmd_del)
+SlashCommandRegistry.register("cut", _cmd_cut)
+SlashCommandRegistry.register("delswipe", _cmd_delswipe)
+SlashCommandRegistry.register("hide", _cmd_hide)
+SlashCommandRegistry.register("unhide", _cmd_unhide)
+SlashCommandRegistry.register("listvar", _cmd_listvar)
+SlashCommandRegistry.register("if", _cmd_if)
+SlashCommandRegistry.register("inject", _cmd_inject)
+SlashCommandRegistry.register("flushinject", _cmd_flushinject)
 
 
 # ========== Public API ==========

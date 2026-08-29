@@ -470,6 +470,7 @@ class MemoryStorage:
                     user_id=row.user_id,
                     session_id=row.session_id,
                     branch_id=row.branch_id,
+                    message_id=getattr(row, "message_id", None),
                     role=row.role,
                     content=row.content,
                     importance_score=row.importance_score,
@@ -548,7 +549,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT 
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at, embedding
+                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id
                         AND (branch_id IN :branch_ids OR branch_id IS NULL)
@@ -561,7 +562,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT 
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at, embedding
+                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id AND embedding IS NOT NULL
                     ORDER BY created_at DESC
@@ -572,7 +573,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT 
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at, embedding
+                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND embedding IS NOT NULL
                     ORDER BY created_at DESC
@@ -607,6 +608,7 @@ class MemoryStorage:
                             user_id=row.user_id,
                             session_id=row.session_id,
                             branch_id=row.branch_id,
+                            message_id=getattr(row, "message_id", None),
                             role=row.role,
                             content=row.content,
                             importance_score=row.importance_score,
@@ -646,7 +648,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at
+                        importance_score, topics, tokens_count, created_at, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id
                         AND (branch_id IN :branch_ids OR branch_id IS NULL)
@@ -663,7 +665,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at
+                        importance_score, topics, tokens_count, created_at, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id AND branch_id = :branch_id
                     ORDER BY created_at DESC
@@ -679,7 +681,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at
+                        importance_score, topics, tokens_count, created_at, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id
                     ORDER BY created_at DESC
@@ -694,7 +696,7 @@ class MemoryStorage:
                 sql = text("""
                     SELECT 
                         id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at
+                        importance_score, topics, tokens_count, created_at, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id
                     ORDER BY created_at DESC
@@ -711,6 +713,7 @@ class MemoryStorage:
                     user_id=row.user_id,
                     session_id=row.session_id,
                     branch_id=row.branch_id,
+                    message_id=getattr(row, "message_id", None),
                     role=row.role,
                     content=row.content,
                     importance_score=row.importance_score,

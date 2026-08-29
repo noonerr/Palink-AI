@@ -1743,13 +1743,15 @@ def _apply_persist_regex_to_display_text(
 
 
 def _build_character_card_attributes(char: Character, prompt_lang: str) -> str:
+    # D 批修复（P2-13 尾巴）: 剔除"创作者备注"——ST 语义中 creator_notes 是纯 UI
+    # 字段不进 prompt（creator_notes 只经显式 {{creator_notes}} 宏引用，见
+    # _replace_character_card_placeholders 的 values["creator_notes"]，该保留）。
     fields = [
         ("核心设定" if prompt_lang == "zh" else "Core Instructions", char.system_prompt),
         ("性格" if prompt_lang == "zh" else "Personality", char.personality),
         ("背景" if prompt_lang == "zh" else "Background", char.background),
         ("场景" if prompt_lang == "zh" else "Scenario", char.scenario),
         ("描述" if prompt_lang == "zh" else "Description", char.description),
-        ("创作者备注" if prompt_lang == "zh" else "Creator Notes", char.creator_notes),
     ]
     return "\n".join(f"{label}: {value.strip()}" for label, value in fields if value and value.strip())
 
@@ -2149,84 +2151,18 @@ def _inject_preset_into_prompt(char: Character, system_prompt: str, user_nicknam
 
 
 def _worldbook_to_charbook(wb):
-    entries = {}
-    for i, stage in enumerate(wb.entries):
-        # 从 extensions_json 读取额外字段（useProbability/displayIndex/automationId/role 等）
-        ext_extra = {}
-        if stage.extensions_json:
-            try:
-                ext_extra = json.loads(stage.extensions_json)
-            except (json.JSONDecodeError, TypeError):
-                ext_extra = {}
+    """G1 修复（批次 F）: 导出 charbook 委托 ST 契约路径的权威实现。
 
-        # V3 extensions 子字段（ST 1.18.0 完整映射）
-        extensions = {
-            "excludeRecursion": stage.exclude_recursion or False,
-            "preventRecursion": stage.prevent_recursion or False,
-            "delayUntilRecursion": stage.delay_until_recursion or 0,
-            "depth": stage.depth if stage.depth is not None else 4,
-            "selectiveLogic": stage.selective_logic if stage.selective_logic is not None else 0,
-            "outletName": stage.outlet_name or "",
-            "groupOverride": stage.group_override or False,
-            "groupWeight": stage.group_weight or 0,
-            "caseSensitive": stage.case_sensitive or False,
-            "matchWholeWords": stage.match_whole_words or False,
-            "vectorized": stage.vectorized or False,
-            "sticky": stage.sticky or 0,
-            "cooldown": stage.cooldown or 0,
-            "delay": stage.delay or 0,
-            "matchPersonaDescription": stage.match_persona_description or False,
-            "matchCharacterDescription": stage.match_character_description or False,
-            "matchCharacterPersonality": stage.match_character_personality or False,
-            "matchCharacterDepthPrompt": stage.match_character_depth_prompt or False,
-            "matchScenario": stage.match_scenario or False,
-            "matchCreatorNotes": stage.match_creator_notes or False,
-            "useProbability": ext_extra.get("useProbability", True),
-            "displayIndex": ext_extra.get("displayIndex", i),
-            "automationId": ext_extra.get("automationId", ""),
-            "role": ext_extra.get("role", 0),
-            "useGroupScoring": ext_extra.get("useGroupScoring", False),
-        }
-        # Bug #6: ST 1.18.0 ignoreBudget — 仅当 stage 显式设置为 True 时
-        # 写入 extensions，避免 False 默认值污染原始 extensions roundtrip
-        if getattr(stage, "ignore_budget", False):
-            extensions["ignoreBudget"] = True
-        # 合并 extensions_json 中的其他自定义字段
-        for _ek, _ev in ext_extra.items():
-            if _ek not in extensions:
-                extensions[_ek] = _ev
-
-        # triggers
-        if stage.triggers:
-            try:
-                extensions["triggers"] = json.loads(stage.triggers)
-            except (json.JSONDecodeError, TypeError):
-                extensions["triggers"] = []
-        else:
-            extensions["triggers"] = []
-
-        entry = {
-            "key": json.loads(stage.keys) if stage.keys else [],
-            "keysecondary": json.loads(stage.secondary_keys) if stage.secondary_keys else [],
-            "content": stage.content or "",
-            "constant": stage.constant or False,
-            "selective": stage.selective or False,
-            "scanDepth": stage.scan_depth or 4,
-            "position": stage.position if isinstance(stage.position, int) else 4,
-            "probability": stage.probability if stage.probability is not None else 100,
-            "comment": stage.title or "",
-            "order": stage.order if stage.order is not None else (stage.stage_index or 0),
-            "disable": not (stage.enabled if stage.enabled is not None else True),
-            "addMemo": stage.add_memo or False,
-            "group": stage.group or None,
-            "extensions": extensions,
-        }
-        entries[str(i)] = entry
-    return {
-        "name": wb.name,
-        "description": wb.description or "",
-        "entries": entries,
-    }
+    此前本函数输出 dict 形式 entries + V2 字段名（key/keysecondary/order/disable），
+    而 ST 1.18.0 convertCharacterBook（world-info.js:5503）要求数组 + V3 字段名
+    （keys/secondary_keys/insertion_order/enabled/extensions.*）——Palink 导出的卡
+    回 ST 后点 "Import Card Lore" 即 entries.forEach is not a function 崩溃。
+    ST 面导出（silly_tavern.py _worldbook_to_charbook）已按 ST 语义实现且带
+    null 语义保真（caseSensitive/scanDepth 等导出 null 而非 False/4 污染），
+    两条路径统一委托该实现，杜绝再分叉。
+    """
+    from .silly_tavern import _worldbook_to_charbook as _st_canonical_charbook
+    return _st_canonical_charbook(wb)
 
 
 @router_characters.get("/{character_id}/export")
@@ -2241,7 +2177,22 @@ async def export_character(
         raise HTTPException(status_code=404, detail="Character not found")
 
     from ..models.worldbook import WorldBook
-    wb = db.query(WorldBook).filter(WorldBook.character_id == char.id).options(selectinload(WorldBook.entries)).first()
+    # G19 修复（批次 F）: 导出取书优先 type=="character_book"（对齐 ST 面
+    # silly_tavern.py:5115），无规范类型书时回退首本角色绑定书——修复多书场景
+    # 下 first() 无序取到非角色书面未丢任何存量单书用户的导出。
+    wb = (
+        db.query(WorldBook)
+        .filter(WorldBook.character_id == char.id, WorldBook.type == "character_book")
+        .options(selectinload(WorldBook.entries))
+        .first()
+    )
+    if not wb:
+        wb = (
+            db.query(WorldBook)
+            .filter(WorldBook.character_id == char.id)
+            .options(selectinload(WorldBook.entries))
+            .first()
+        )
     charbook_data = _worldbook_to_charbook(wb) if wb else None
 
     card_data = convert_character_to_chara_card(char, world_book_data=charbook_data)
@@ -3589,17 +3540,47 @@ async def create_branch(
                     should_add_greeting = True
 
             if should_add_greeting:
-                greeting_swipes = [char.first_mes, *_character_alternate_greetings(char, user.username or "User")]
+                # G7 修复（批次 F）: 分支创建问候语与 init 路径（上方会话初始化）
+                # 同款处理——占位符宏替换 + AI_OUTPUT 显示正则 + 空提升首个
+                # alternate greeting。此前直接落库原始 char.first_mes，分支首条
+                # 消息 {{user}} 原样可见、显示正则不生效，与 swipes 其余条不一致。
+                _user_name = user.username or "User"
+                _greeting_first = _replace_placeholders(
+                    char.first_mes or "", _user_name, char.name or ""
+                )
+                _greeting_first = _apply_persist_regex_to_display_text(
+                    _greeting_first,
+                    db,
+                    char,
+                    user_name=_user_name,
+                    placement=REGEX_PLACEMENT_AI_OUTPUT,
+                    depth=0,
+                )
+                _alt_greetings = _character_alternate_greetings(char, _user_name)
+                if not _greeting_first and _alt_greetings:
+                    # B-7 同款空提升：first_mes 为空时提升首个 alternate greeting
+                    _greeting_first = _apply_persist_regex_to_display_text(
+                        _alt_greetings[0],
+                        db,
+                        char,
+                        user_name=_user_name,
+                        placement=REGEX_PLACEMENT_AI_OUTPUT,
+                        depth=0,
+                    )
+                    _alt_greetings = _alt_greetings[1:]
+                if not _greeting_first:
+                    _greeting_first = ""
+                greeting_swipes = [_greeting_first, *_alt_greetings]
                 greeting_msg = CharacterChatMessage(
                     session_id=session_id,
                     branch_id=branch.id,
                     role="assistant",
-                    content=char.first_mes,
+                    content=_greeting_first,
                     **_st_message_kwargs(
                         role="assistant",
-                        content=char.first_mes,
+                        content=_greeting_first,
                         char_name=char.name or "Character",
-                        user_name=user.username or "User",
+                        user_name=_user_name,
                         swipes=greeting_swipes,
                     ),
                 )
@@ -5516,16 +5497,19 @@ def _ensure_conversation_anchor(messages: List[Dict[str, Any]], char: Character)
     # 2) ST 空 user 轮 hack 的显式版：任务指令（ST main prompt 等价物）
     char_name = (char.name or "角色").strip() or "角色"
     is_zh = _contains_chinese((char.name or "") + (char.description or ""))
+    # 注意：锚点只补"任务语义"（写开场白 + 禁元信息），不得引导视角/身份——
+    # 2026-08-28 实测「请以{char}的身份，从角色视角展开剧情」会压掉卡自定义的
+    # 开场格式（如猫神旁白 + <猫神> 标签），导致依赖该格式的正则/插件面板全部
+    # 消失。开场形态（旁白/登场/结构标签）一律交还给卡定义与 constant 世界书。
     if is_zh:
         anchor = (
-            f"（对话刚刚开始。请以{char_name}的身份，直接输出一段全新的开场白，"
-            "从角色视角展开剧情；不要输出任何说明、规划或元信息。）"
+            f"（对话刚刚开始。请输出{char_name}的开场白；"
+            "不要输出任何说明、规划或元信息。）"
         )
     else:
         anchor = (
-            f"(The conversation has just started. As {char_name}, write a brand-new "
-            "opening message in character, launching the scene from the character's "
-            "perspective. Do not output any explanations, plans, or meta information.)"
+            f"(The conversation has just started. Write {char_name}'s opening "
+            "message; do not output any explanations, plans, or meta information.)"
         )
     messages.append({"role": "user", "content": anchor})
 
