@@ -11,6 +11,10 @@ import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import DOMPurify from 'dompurify';
 import { ST_EVENT_TYPES, getContext as buildStContext, writeExtensionFieldCompat } from '../sillytavern/getContext';
+// N1 修复（批次 F）: messageFormatting 接真实格式化管线所需
+import { formatMessage } from '../sillytavern/formatting';
+import { regex_placement } from '../sillytavern/regex/engine';
+import { regexPipeline } from '../regex-pipeline';
 import { SlashCommandEngine } from '../slash-engine';
 import {
   globalExtensionSettings,
@@ -3254,7 +3258,30 @@ export class PluginSandbox {
           return input;
         }
       },
-      messageFormatting: (content: string) => content,
+      // N1 修复（批次 F）: 此前恒等 stub（content => content）→ 经沙箱 getContext
+      // 的显示层正则/格式化插件全静默失效。接入真实 formatMessage 管线
+      // （Markdown + 正则[宿主 regexPipeline 已加载脚本] + DOMPurify 消毒），
+      // 失败回退原文。ST 语义: messageFormatting(mes, ch_name, isSystem, isUser, messageId)。
+      messageFormatting: (content: string, ...args: any[]) => {
+        try {
+          const [ch_name, isSystem, isUser, messageId] = args as [string?, boolean?, boolean?, number?];
+          return formatMessage(String(content ?? ''), {
+            characterName: ch_name ?? '',
+            isSystem: !!isSystem,
+            isUser: !!isUser,
+            messageId: typeof messageId === 'number' ? messageId : -1,
+          }, {
+            runRegex: true,
+            regexPlacement: isUser ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT,
+            regexParams: {
+              // 两个 RegexScript 类型仅 minDepth null/undefined 之差（结构兼容）
+              globalScripts: regexPipeline.getAllScripts() as any,
+            },
+          });
+        } catch {
+          return content;
+        }
+      },
       // callGenericPopup：委托到父应用 popupManager 显示真实弹窗
       callGenericPopup: async (message: any, type?: any, inputValue?: any, options?: any) => {
         // 如果第三参数是对象（没有 inputValue），调整参数
@@ -3312,18 +3339,21 @@ export class PluginSandbox {
         }
       },
       // Popup 类：与 POPUP_TYPE 保持一致的字符串值
+      // N3/N4 修复（批次 F）: ST popup.js POPUP_TYPE/POPUP_RESULT 为数字枚举
+      // （popup.js:9-27 TEXT:1/CONFIRM:2/INPUT:3/DISPLAY:4），此前字符串值导致
+      // 插件 `type === POPUP_TYPE.CONFIRM` 类比较跨轨不一致。mapSandboxPopupType
+      // 本就兼容数字入参（sandbox.ts:2352-2358），内部弹窗行为不变。
       Popup: class {
-        static get TEXT() { return 'TEXT'; }
-        static get CONFIRM() { return 'CONFIRM'; }
-        static get INPUT() { return 'INPUT'; }
-        static get DISPLAY() { return 'DISPLAY'; }
+        static get TEXT() { return 1; }
+        static get CONFIRM() { return 2; }
+        static get INPUT() { return 3; }
+        static get DISPLAY() { return 4; }
       },
-      // POPUP_TYPE：统一为字符串值，跨文件一致
       POPUP_TYPE: {
-        TEXT: 'TEXT',
-        CONFIRM: 'CONFIRM',
-        INPUT: 'INPUT',
-        DISPLAY: 'DISPLAY',
+        TEXT: 1,
+        CONFIRM: 2,
+        INPUT: 3,
+        DISPLAY: 4,
       },
       toastr: toastr,
       console: {
@@ -4434,7 +4464,17 @@ export class PluginSandbox {
     const moduleMap: Record<string, Record<string, unknown>> = {
       // script.js — ST 主脚本（最常被导入的模块）
       'script.js': {
-        characters,
+        // P-5/N7 修复（批次 F）: characters 与 chat/chat_metadata 同款实时 getter——
+        // 此前为 createMockRequire 构建时快照（stContext.characters 取一次），
+        // 卡切换/新增后模块仍指向旧数组（characters 是 P-5 批次漏改的一项）。
+        get characters() {
+          try {
+            const st = buildStContext() || {};
+            return Array.isArray(st.characters) ? st.characters : characters;
+          } catch {
+            return characters;
+          }
+        },
         // P-5: chat/chat_metadata 改实时 getter —— 此前为 createMockRequire 构建时的
         // 快照（stContext.chatMetadata 取一次），runtime setContext 切换聊天后模块仍
         // 指向旧对象，quick-reply 等插件读旧值。每次访问经 buildStContext() 取最新
@@ -4579,11 +4619,21 @@ export class PluginSandbox {
 
       // popup.js
       // P-6: 补 POPUP_RESULT（connection-manager/expressions/quick-reply 顶层 import）
+      // N3 修复（批次 F）: 对齐 ST popup.js:24-27 数字枚举
       'popup.js': {
         callGenericPopup: sandbox.callGenericPopup,
         Popup: sandbox.Popup,
         POPUP_TYPE: sandbox.POPUP_TYPE,
-        POPUP_RESULT: { AFFIRMATIVE: 'AFFIRMATIVE', NEGATIVE: 'NEGATIVE', CUSTOM: 'CUSTOM' },
+        POPUP_RESULT: {
+          AFFIRMATIVE: 1,
+          NEGATIVE: 0,
+          CANCELLED: null,
+          CUSTOM1: 1001,
+          CUSTOM2: 1002,
+          CUSTOM3: 1003,
+          CUSTOM4: 1004,
+          CUSTOM5: 1005,
+        },
       },
 
       // utils.js — 工具函数集合
@@ -4997,14 +5047,48 @@ export class PluginSandbox {
       },
 
       // macros.js (绝对路径 /scripts/macros.js)
+      // N16 修复（批次 F）: 此前 parse() 恒空壳 → memory 等扩展的
+      // MacrosParser.registerMacro 路径静默断。补最小注册表（register/
+      // unregister/parse），evaluate 不参与求值（沙箱宏求值走 substituteParams）。
       'macros.js': {
-        MacrosParser: class { static parse() { return []; } },
+        MacrosParser: class {
+          static _macros = new Map<string, any>();
+          static parse() {
+            return Array.from(this._macros.values());
+          }
+          static registerMacro(macro: any) {
+            if (macro && typeof macro.macroName === 'string') {
+              this._macros.set(macro.macroName, macro);
+            }
+          }
+          static unregisterMacro(name: string | { macroName?: string }) {
+            const key = typeof name === 'string' ? name : name?.macroName;
+            if (key) this._macros.delete(key);
+          }
+          static evaluate(text: string) {
+            return String(text ?? '');
+          }
+        },
       },
 
       // macros/macro-system.js
+      // N16 修复（批次 F）: MacroCategory 对齐 ST macros/macro-system.js 全枚举
       'macros/macro-system.js': {
         macros: {},
-        MacroCategory: { GLOBAL: 'global', CHARACTER: 'character' },
+        MacroCategory: {
+          GLOBAL: 'global',
+          CHARACTER: 'character',
+          CHAT: 'chat',
+          PERSONA: 'persona',
+          STATE: 'state',
+          TIME: 'time',
+          VARIABLE: 'variable',
+          INSTRUCT: 'instruct',
+          LOGIC: 'logic',
+          LEGACY: 'legacy',
+          CONSTANT: 'constant',
+          CUSTOM: 'custom',
+        },
       },
 
       // shared.js (extensions/shared.js)

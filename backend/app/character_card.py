@@ -482,18 +482,19 @@ def convert_character_to_chara_card(character, world_book_data=None):
         # R-1 修复: V3 导出补 jailbreak 覆盖（此前遗漏，编辑后导出保留的是原始卡值）
         _overlay_field("jailbreak", character.jailbreak)
 
-        # ST 1.18.0 V3 chara card fields: talkativeness / nickname / group_only_greetings
+        # G15 修复（批次 F）: 仅当原卡本就有该字段或用户显式设置过值时才写键。
+        # ST 1.18.0 并不认识 talkativeness / nickname / group_only_greetings
+        # （全库零引用，系 Palink 自加字段），对原卡没有的字段强写默认值
+        # （"0.5"/""/[]）属导出 schema 污染——ST 端导入会看到莫名字段。
+        # talkativeness 列有 ORM 默认 "0.5"，非默认值才视为用户显式设置。
         talkativeness_val = getattr(character, "talkativeness", None)
         if talkativeness_val is not None and talkativeness_val != "":
-            data["talkativeness"] = str(talkativeness_val)
-        elif "talkativeness" not in data:
-            data["talkativeness"] = "0.5"
+            if "talkativeness" in data or str(talkativeness_val) != "0.5":
+                data["talkativeness"] = str(talkativeness_val)
 
         nickname_val = getattr(character, "nickname", None)
         if nickname_val is not None and nickname_val != "":
             data["nickname"] = str(nickname_val)
-        elif "nickname" not in data:
-            data["nickname"] = ""
 
         group_only_greetings_val = getattr(character, "group_only_greetings", None)
         if group_only_greetings_val:
@@ -501,12 +502,9 @@ def convert_character_to_chara_card(character, world_book_data=None):
                 parsed_gog = json.loads(group_only_greetings_val) if isinstance(group_only_greetings_val, str) else group_only_greetings_val
                 if isinstance(parsed_gog, list):
                     data["group_only_greetings"] = parsed_gog
-                else:
-                    data["group_only_greetings"] = []
+                # 解析失败：保留原卡值（若有），不强写默认
             except (json.JSONDecodeError, TypeError):
-                data["group_only_greetings"] = []
-        elif "group_only_greetings" not in data:
-            data["group_only_greetings"] = []
+                pass
 
         if "depth_prompt" not in data and "depth_prompt" in extensions:
             data["depth_prompt"] = extensions["depth_prompt"]

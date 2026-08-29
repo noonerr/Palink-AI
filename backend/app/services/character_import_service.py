@@ -2,6 +2,7 @@
 角色导入服务：PNG 解析、数据规范化、导入流程协调
 """
 import json
+import re
 import struct
 import base64
 import uuid
@@ -602,11 +603,15 @@ class CharacterImportService:
             raise ValueError(f"CharX 内角色卡 JSON 无效: {e}")
 
     def _import_from_byaf(self, content: bytes) -> Dict:
-        """B-5 修复: BYAF（Banner of Yggdrasil）格式导入。
+        """B-5/G2 修复: BYAF（Banner of Yggdrasil）格式导入。
 
-        BYAF 顶层是 JSON 结构（fields 内含角色数据，或直接为角色卡字段）。
-        归一为内部角色卡 dict：优先 fields 子结构，否则顶层即字段。
+        真实 .byaf 是 ZIP 包（manifest.json + characters + scenarios，ST
+        byaf.js:310-322/438-446），此前按纯 JSON 解析 → 真实文件 100% 失败。
+        ZIP 路径解析并映射为 V2 卡 data（对齐 ST ByafParser.getCharacterCard）；
+        纯 JSON 结构保留兼容（历史 B-5 行为，"fields" 子结构或顶层字段）。
         """
+        if content[:4] == b"PK\x03\x04":
+            return self._import_from_byaf_zip(content)
         try:
             data = json.loads(content.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -619,8 +624,142 @@ class CharacterImportService:
             return data
         raise ValueError("无效的 BYAF 角色卡结构")
 
+    @staticmethod
+    def _byaf_replace_macros(text) -> str:
+        """BYAF 宏归一（对齐 ST byaf.js replaceMacros）: {character}→{{char}}、{user}→{{user}}。"""
+        if not isinstance(text, str):
+            return ""
+        text = re.sub(r"\{character\}(?!})", "{{char}}", text, flags=re.IGNORECASE)
+        text = re.sub(r"\{user\}(?!})", "{{user}}", text, flags=re.IGNORECASE)
+        return text
+
+    @classmethod
+    def _byaf_format_example_messages(cls, examples) -> str:
+        """对齐 ST byaf.js formatExampleMessages: 每条 <START> 分块。"""
+        if not isinstance(examples, list):
+            return ""
+        parts = []
+        for example in examples:
+            text = example.get("text") if isinstance(example, dict) else None
+            if not text:
+                continue
+            parts.append(f"<START>\n{cls._byaf_replace_macros(text)}")
+        return "\n".join(parts)
+
+    @classmethod
+    def _byaf_alternate_greetings(cls, scenarios) -> list:
+        """对齐 ST byaf.js formatAlternateGreetings: scenarios[1:] 的 firstMessages[0] 去重。"""
+        if not isinstance(scenarios, list) or len(scenarios) <= 1:
+            return []
+        first = None
+        if isinstance(scenarios[0], dict):
+            fm0 = scenarios[0].get("firstMessages")
+            if isinstance(fm0, list) and fm0 and isinstance(fm0[0], dict):
+                first = fm0[0].get("text")
+        greetings, seen = [], set()
+        for scenario in scenarios[1:]:
+            if not isinstance(scenario, dict):
+                continue
+            fm = scenario.get("firstMessages")
+            if not isinstance(fm, list) or not fm or not isinstance(fm[0], dict):
+                continue
+            text = fm[0].get("text")
+            if text and text != first:
+                replaced = cls._byaf_replace_macros(text)
+                if replaced not in seen:
+                    seen.add(replaced)
+                    greetings.append(replaced)
+        return greetings
+
+    @classmethod
+    def _byaf_character_book(cls, items) -> Optional[Dict]:
+        """对齐 ST byaf.js convertCharacterBook: loreItems → character_book（V3 数组）。"""
+        if not isinstance(items, list) or not items:
+            return None
+        entries = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            keys = [
+                k.strip()
+                for k in cls._byaf_replace_macros(item.get("key") or "").split(",")
+                if k.strip()
+            ]
+            entries.append({
+                "keys": keys,
+                "content": cls._byaf_replace_macros(item.get("value")),
+                "extensions": {},
+                "enabled": True,
+                "insertion_order": index,
+            })
+        if not entries:
+            return None
+        return {"entries": entries, "extensions": {}}
+
+    def _import_from_byaf_zip(self, content: bytes) -> Dict:
+        """G2 修复（批次 F）: ZIP 形态 BYAF → V2 卡 data（对齐 ST getCharacterCard
+        byaf.js:249-277 的逐字段映射，含宏替换/示例消息/问候/loreItems 书）。"""
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                names = set(zf.namelist())
+                if "manifest.json" not in names:
+                    raise ValueError("无效的 BYAF 压缩包: 缺少 manifest.json")
+
+                def _read_json(name):
+                    return json.loads(zf.read(name).decode("utf-8"))
+
+                manifest = _read_json("manifest.json")
+                if not isinstance(manifest, dict):
+                    raise ValueError("无效的 BYAF manifest")
+                characters = manifest.get("characters") or []
+                if not isinstance(characters, list) or not characters:
+                    raise ValueError("无效的 BYAF manifest: 缺少 characters")
+                character = _read_json(characters[0])
+                if not isinstance(character, dict):
+                    character = {}
+                scenarios = []
+                for sp in (manifest.get("scenarios") or [])[:20]:
+                    try:
+                        scenario = _read_json(sp)
+                        if isinstance(scenario, dict):
+                            scenarios.append(scenario)
+                    except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+
+                author = manifest.get("author") if isinstance(manifest.get("author"), dict) else {}
+                scenario0 = scenarios[0] if scenarios else {}
+                fm0 = scenario0.get("firstMessages") if isinstance(scenario0.get("firstMessages"), list) else []
+                first_text = fm0[0].get("text") if fm0 and isinstance(fm0[0], dict) else None
+                display_name = character.get("displayName")
+                data: Dict = {
+                    "name": character.get("name") or display_name or "",
+                    "description": self._byaf_replace_macros(character.get("persona")),
+                    "personality": "",
+                    "scenario": self._byaf_replace_macros(scenario0.get("narrative")),
+                    "first_mes": self._byaf_replace_macros(first_text),
+                    "mes_example": self._byaf_format_example_messages(scenario0.get("exampleMessages")),
+                    "creator_notes": author.get("backyardURL") or "",
+                    "system_prompt": self._byaf_replace_macros(scenario0.get("formattingInstructions")),
+                    "post_history_instructions": "",
+                    "alternate_greetings": self._byaf_alternate_greetings(scenarios),
+                    "character_book": self._byaf_character_book(character.get("loreItems")),
+                    "tags": ["nsfw"] if character.get("isNSFW") else [],
+                    "creator": author.get("name") or "",
+                    "character_version": "",
+                }
+                if display_name:
+                    data["extensions"] = {"display_name": display_name}
+                return data
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"无效的 BYAF 压缩包: {e}")
+
     def _import_from_yaml(self, content: bytes) -> Dict:
-        """B-5 修复: YAML 格式导入（需 pyyaml，缺失时给出明确提示）。"""
+        """B-5 修复: YAML 格式导入（需 pyyaml，缺失时给出明确提示）。
+
+        G5 修复（批次 F）: TavernAI YAML 方言 context→description、greeting→
+        first_mes（ST characters.js:740-741 importFromYaml 同款映射）——此前
+        TavernAI YAML 卡 description/first_mes 全空。
+        """
         if _yaml is None:
             raise ValueError(
                 "YAML 导入需要 PyYAML 支持，请在 backend 环境安装 PyYAML 后重试"
@@ -630,6 +769,12 @@ class CharacterImportService:
         except Exception as e:
             raise ValueError(f"无效的 YAML 文件: {e}")
         if isinstance(data, dict):
+            # G5: TavernAI YAML 方言映射（ST importFromYaml: context→description,
+            # greeting→first_mes；仅目标字段缺失时回填，不覆盖显式值）
+            if data.get("context") and not data.get("description"):
+                data["description"] = data["context"]
+            if data.get("greeting") and not data.get("first_mes"):
+                data["first_mes"] = data["greeting"]
             if data.get("data") and isinstance(data["data"], dict):
                 return data["data"]
             return data
@@ -688,8 +833,10 @@ class CharacterImportService:
         ):
             if stage_index >= MAX_IMPORT_ENTRIES:
                 break
-            if entry_is_disabled(entry):
-                continue
+            # G6 修复（批次 F）: 禁用条目保留落库（enabled=False），对齐 ST
+            # convertCharacterBook 的 disable: !entry.enabled（world-info.js:5513）
+            # 语义——此前导入即丢条目，ST↔Palink 往返丢失。空内容条目维持跳过
+            # （注入空串无意义，ST 侧等价无效果）。
             entry_content = entry.get("content", "").strip()
             if not entry_content:
                 continue
@@ -747,10 +894,35 @@ class CharacterImportService:
                     or ext.get("scan_depth")
                     or ext.get("depth", 4)
                 ),
-                position=normalize_worldbook_position(entry.get("position", 4)),
+                # G3 修复（批次 F）: ST convertCharacterBook（world-info.js:5512）中
+                # extensions.position 数值（0-7）优先——ANTop/ANBottom/EMTop/EMBottom/
+                # atDepth/outlet 仅存于 extensions，此前只读顶层字符串 → 全部降级
+                # after_char。无任何 position 信息时缺省对齐 ST = after_char(1)（K2）。
+                position=(
+                    ext["position"]
+                    if isinstance(ext.get("position"), int) and 0 <= ext["position"] <= 7
+                    else (
+                        normalize_worldbook_position(_top_pos)
+                        if isinstance((_top_pos := entry.get("position")), (str, int))
+                        else 1
+                    )
+                ),
                 selective=entry.get("selective", False),
                 # V2 规范 probability/useProbability 位于顶层，部分导出器写进 extensions——双读
                 probability=entry.get("probability", ext.get("probability", 100)),
+                # G8 修复（批次 F）: extensions.useProbability 回填（ST 语义 false=必现，
+                # world-info.js:4911）——此前缺失 → 列默认 true 按概率掷骰，ST 卡
+                # useProbability:false 的必现条目被随机丢弃。映射对齐 UI 导入路径
+                # worldbook.py:502-506 与 ST 契约路径 silly_tavern.py:4538-4546。
+                use_probability=(
+                    entry["useProbability"]
+                    if isinstance(entry.get("useProbability"), bool)
+                    else (
+                        ext["useProbability"]
+                        if isinstance(ext.get("useProbability"), bool)
+                        else True
+                    )
+                ),
                 constant=is_constant,
                 group=entry.get("group", None),
                 created_at=now,

@@ -121,31 +121,35 @@ class TestCreateWorldbookFromCharacterBook:
             },
         }
 
-    def test_imports_keys_and_skips_disabled(self):
+    def test_imports_keys_and_retains_disabled(self):
+        """批次 F（G6）行为更新: 禁用条目保留落库（enabled=False），对齐 ST
+        convertCharacterBook 的 disable: !entry.enabled（world-info.js:5513）——
+        此前导入即丢条目导致 ST↔Palink 往返丢失，测试断言随之跟随。"""
         service = self._make_service()
         service._create_worldbook_from_character_book(
             self._st_character_book(), "TestChar", 1, "char-1"
         )
 
         stages = [c for c in service.db.add.call_args_list if isinstance(c[0][0], WorldBookStage)]
-        # 3 个条目中第 2 个（enabled=False）应被跳过，只导入 2 个
-        assert len(stages) == 2
+        # 3 个条目全部导入（禁用条目保留为 enabled=False）
+        assert len(stages) == 3
+
+        import json as _json
+        all_stages = [s[0][0] for s in stages]
 
         # 第一条：ST keys 字段应被保留
-        stage0 = stages[0][0][0]
-        import json as _json
-        assert _json.loads(stage0.keys) == ["南方联合大学", "大学"]
+        stage0 = next(s for s in all_stages if "南方联合大学" in _json.loads(s.keys))
         assert _json.loads(stage0.secondary_keys) == ["SDU"]
         assert stage0.enabled is True
 
         # 第二条：常驻关键词条目 keys 保留
-        stage1 = stages[1][0][0]
-        assert _json.loads(stage1.keys) == ["city"]
+        stage1 = next(s for s in all_stages if "city" in _json.loads(s.keys))
         assert stage1.enabled is True
 
-        # 断言没有导入 enabled=False 的 [initvar] 条目
-        titles = [s[0][0].title for s in service.db.add.call_args_list if isinstance(s[0][0], WorldBookStage)]
-        assert not any("[initvar]" in (t or "") for t in titles)
+        # enabled=False 的 [initvar] 条目保留，且以禁用状态落库
+        disabled_stages = [s for s in all_stages if "[initvar]" in (s.title or "")]
+        assert len(disabled_stages) == 1
+        assert disabled_stages[0].enabled is False
 
     def test_internal_format_key_and_disable_compat(self):
         """ST 内部格式（key/disable）也应兼容导入。"""

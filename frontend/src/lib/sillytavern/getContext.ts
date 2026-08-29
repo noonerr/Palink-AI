@@ -810,7 +810,10 @@ export const ST_EVENT_TYPES: Record<string, string> = {
   // 角色事件
   CHARACTER_CHANGED: 'character_changed',
   CHARACTER_EDITED: 'character_edited',
-  CHARACTER_DELETED: 'character_deleted',
+  // N5 修复（批次 F）: 对齐 ST events.js:68 历史拼写 'characterDeleted'
+  //（非 snake_case）——此前值错误导致订阅该事件的插件永不触发。
+  // 经典轨映射（runtime.ts:214）与智能卡（CompatRuntime:4771）本就正确。
+  CHARACTER_DELETED: 'characterDeleted',
   CHARACTER_DUPLICATED: 'character_duplicated',
   CHARACTER_RENAMED: 'character_renamed',
   CHARACTER_PAGE_LOADED: 'character_page_loaded',
@@ -2256,6 +2259,42 @@ export function getContext(): StGetContext {
       // messages 由 messageManager 自动持久化；此处持久化 chat_metadata
       await _persistChatMetadata(chatId);
     },
+    // N9 修复（批次 F）: 补齐经典/沙箱轨已有而 Ctx 轨缺失的 4 个 API——
+    // 委托 sillyTavernPluginRuntime 注入的 window 桥（triggerSlash/
+    // getChatMessages/setChatMessages 于 runtime.ts:731-881 定义），
+    // 桥缺失时诚实降级 warn 而非插件侧 ReferenceError。
+    triggerSlash: async (...args: any[]) => {
+      const w = window as any;
+      if (typeof w?.triggerSlash === 'function') {
+        return await w.triggerSlash(...args);
+      }
+      console.warn('[Palink getContext] triggerSlash bridge unavailable');
+      return '';
+    },
+    getChatMessages: (...args: any[]) => {
+      const w = window as any;
+      if (typeof w?.getChatMessages === 'function') {
+        return w.getChatMessages(...args);
+      }
+      console.warn('[Palink getContext] getChatMessages bridge unavailable');
+      return undefined;
+    },
+    setChatMessages: (...args: any[]) => {
+      const w = window as any;
+      if (typeof w?.setChatMessages === 'function') {
+        return w.setChatMessages(...args);
+      }
+      console.warn('[Palink getContext] setChatMessages bridge unavailable');
+      return undefined;
+    },
+    saveChatConditional: async (..._args: any[]) => {
+      const w = window as any;
+      if (typeof w?.saveChatConditional === 'function') {
+        return await w.saveChatConditional(..._args);
+      }
+      // Palink 语义退化: 与 saveChat 一致，持久化 chat_metadata
+      await _persistChatMetadata(chatId);
+    },
     openCharacterChat: async (_options?: any) => {
       // Task 2.4: 创建/切换到新会话
       // Palink 新会话在首次发送消息时由后端创建（懒加载），
@@ -2362,11 +2401,16 @@ export function getContext(): StGetContext {
       // 委托到 generateRaw，返回原始数据
       return await generationEngine.generateRaw(prompt, options);
     },
-    getTextTokens: (text: string, tokenizer?: string) => {
+    getTextTokens: (tokenizerType: any, str?: string) => {
       // K-9 修复: 同步调后端 /api/tokenizers/encode 返回真实 token ID 数组
       // （ST 契约：getTextTokens 同步返回 number[]，token-counter/memory 插件
       // 直接用返回值的 length 做 token 预算/展示）。此前返回 [] 导致
       // memory 插件 token 预算恒 0、token-counter ids 显示 "—"。
+      // N2 修复（批次 F）: ST 签名是 getTextTokens(tokenizerType, str)
+      //（st-context.js:147）——此前 Ctx轨参数序颠倒，插件按 ST 顺序传参时
+      // 文本与枚举对调（沙箱轨 _stTokenizerTypeToName 已纠正，此处对齐）。
+      const text = typeof str === 'string' ? str : '';
+      const tokenizer = tokenizerType;
       if (!text) return [];
       try {
         const xhr = new XMLHttpRequest();
