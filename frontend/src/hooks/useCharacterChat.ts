@@ -37,6 +37,10 @@ interface UseCharacterChatOptions {
   // PlotLine 阶段自动推进事件回调，收到事件时调用以刷新会话状态
   onPlotLineAdvanced?: (data: { new_stage: { stage_index: number; title: string; summary: string }; session_id?: string }) => void;
   onVariablesUpdated?: (variables: Record<string, unknown>) => void;
+  /** 一次写入型代际动作（regenerate/send/continue/edit/delete）
+   *  持久化完成后的对外通知，供父级刷新故事线/侧栏分支树等派生数据。
+   *  触发时机：在 DB commit 完成、前端 messages state 已落回最新值之后。 */
+  onAfterWrite?: (kind: 'regenerate' | 'send' | 'continue' | 'edit' | 'delete') => void;
 }
 
 // 生成超时警告阈值：模型网关（opencode.ai）响应慢时首个 chunk 可能数十秒后才到，
@@ -203,6 +207,7 @@ export function useCharacterChat({
   responseLength,
   onPlotLineAdvanced,
   onVariablesUpdated,
+  onAfterWrite,
 }: UseCharacterChatOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -257,6 +262,11 @@ export function useCharacterChat({
   // PlotLine 阶段推进回调 ref，避免闭包过期且无需修改现有 useCallback 依赖
   const onPlotLineAdvancedRef = useRef(onPlotLineAdvanced);
   onPlotLineAdvancedRef.current = onPlotLineAdvanced;
+
+  // onAfterWrite 回调按 ref 封装：同一次 hook 生命周期内用户改 callback 不触发依赖变动，
+  // 也避免 regenerate 等大 useCallback 因 options 变化被重建。
+  const onAfterWriteRef = useRef(onAfterWrite);
+  onAfterWriteRef.current = onAfterWrite;
 
   const updateMessageIndexMap = useCallback((messages: Array<{id?: string | number | null}>) => {
     const map = new Map<string, number>();
@@ -663,9 +673,14 @@ export function useCharacterChat({
     if (userMessageIndex >= 0 && userMessage?.role !== 'user') return;
 
     const assistantMessage = messages[assistantMessageIndex];
-    const targetMessageId = typeof assistantMessage.id === 'number'
-      ? assistantMessage.id
-      : (typeof assistantMessage.message_id === 'number' ? assistantMessage.message_id : null);
+    // [重绘修复 2026-08-29] 兼容数字字符串 id：WS 持久化回写路径把 id 统一转成
+    // 字符串（onFinalContent：id: String(persistedMessageId)），本守卫原只认
+    // typeof === 'number'，把已持久化的消息误判为"未持久化"——Galgame 插件
+    // "重绘当前"经 #option_regenerate 桥触发 handleRegenerate 时报
+    // "无法重新生成：消息未持久化"。本地临时 id（generateMessageId =
+    // `${Date.now()}-${rand}`）含非数字字符，纯数字判定仍会正确拒绝。
+    const rawTargetId = assistantMessage?.id ?? assistantMessage?.message_id;
+    const targetMessageId = /^\d+$/.test(String(rawTargetId ?? '')) ? Number(rawTargetId) : null;
     if (targetMessageId === null) {
       toast.error('无法重新生成：消息未持久化');
       return;
@@ -696,6 +711,9 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    // 本 regenerate 是否已把新候选正式写入消息（收到 final_content 且有正文）——
+    // 只有写成功才向外 onAfterWrite 通知刷新故事线（cancel/error 不触发）。
+    let writeSucceeded = false;
     // [N-9] 快照本次请求的归属会话与代次；回调入口比对代次，切换后即失效
     requestSessionIdRef.current = sessionId;
     const requestEpoch = ++generationEpochRef.current;
@@ -783,6 +801,8 @@ export function useCharacterChat({
           )));
           fullContent = json.content as string;
           fullReasoning = '';
+          // 新候选正文已持久化（regenerate 追加 swipe 并切换）——标记成功路径
+          if ((json.content as string).trim()) writeSucceeded = true;
           return;
         }
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
@@ -825,6 +845,10 @@ export function useCharacterChat({
 
       await loadSessions(selectedCharacter.id);
       await loadMemoryStats(sessionId);
+      // 代次 & 写成功双校验：会话切走/被用户取消时不触发派生刷新。
+      if (requestEpoch === generationEpochRef.current && writeSucceeded) {
+        onAfterWriteRef.current?.('regenerate');
+      }
     } catch (e: any) {
       // [N-9] 代次比对：切换导致的 abort 不再向 ST runtime 发停止/结束事件、不写错误文案
       if (requestEpoch !== generationEpochRef.current) return;
@@ -903,6 +927,9 @@ export function useCharacterChat({
     abortControllerRef.current = new AbortController();
     let fullContent = '';
     let fullReasoning = '';
+    // 本 continue 是否已正式持久化（收到 final_content 且有正文）——
+    // 仅写成功路径触发 onAfterWrite，保证故事线刷新不落在 cancel/error 上。
+    let writeSucceeded = false;
     // [N-9] 快照本次请求的归属会话与代次；回调入口比对代次，切换后即失效
     requestSessionIdRef.current = sessionId;
     const requestEpoch = ++generationEpochRef.current;
@@ -973,6 +1000,7 @@ export function useCharacterChat({
           )));
           fullContent = json.content as string;
           fullReasoning = '';
+          if ((json.content as string).trim()) writeSucceeded = true;
           return;
         }
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
@@ -1010,6 +1038,9 @@ export function useCharacterChat({
       runtime?.emitMessageRendered(assistantIdx, 'continue');
 
       await loadMemoryStats(sessionId);
+      if (requestEpoch === generationEpochRef.current && writeSucceeded) {
+        onAfterWriteRef.current?.('continue');
+      }
     } catch (e: any) {
       // [N-9] 代次比对：切换导致的 abort 不再向 ST runtime 发停止/结束事件、不写错误文案
       if (requestEpoch !== generationEpochRef.current) return;
@@ -1131,6 +1162,9 @@ export function useCharacterChat({
     let fullContent = '';
     let fullReasoning = '';
     let hasReceivedData = false;
+    // 本 send 是否已把完整 assistant 消息正式持久化（final_content 有正文）——
+    // 仅在成功完成后触发 onAfterWrite，保证故事线刷新与新增节点同步。
+    let writeSucceeded = false;
     let resolvedSessionId: string | null = (effectiveSession?.id && effectiveSession.id !== '__pending__') ? effectiveSession.id : null;
     let sessionSynced = false;
     const requestSessionId = (effectiveSession?.id && effectiveSession.id !== '__pending__') ? effectiveSession.id : null;
@@ -1312,6 +1346,7 @@ export function useCharacterChat({
           }
           fullContent = json.content as string;
           fullReasoning = '';
+          if ((json.content as string).trim()) writeSucceeded = true;
           setMessages(prev => prev.map(msg => (
             msg.id === assistantMessageId
               ? {
@@ -1388,6 +1423,9 @@ export function useCharacterChat({
       if (resolvedSessionId) {
         await loadSessions(selectedCharacter.id);
         await loadMemoryStats(resolvedSessionId);
+        if (requestEpoch === generationEpochRef.current && writeSucceeded) {
+          onAfterWriteRef.current?.('send');
+        }
       }
       return fullContent || null;
     } catch (e: any) {
@@ -1527,6 +1565,7 @@ export function useCharacterChat({
         }
         return idx !== messageIndex;
       }));
+      onAfterWriteRef.current?.('delete');
     } catch (e) {
       console.error('Failed to delete message:', e);
       toast.error('删除消息失败');
@@ -1670,6 +1709,7 @@ export function useCharacterChat({
         };
         return newMessages;
       });
+      onAfterWriteRef.current?.('edit');
     } catch (e) {
       console.error('Failed to edit message:', e);
       toast.error('编辑消息失败');

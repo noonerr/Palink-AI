@@ -4444,6 +4444,12 @@ ${bootHeader}
       return;
     }
     if (data.type === 'context-update') {
+      // [白边修复 2026-08-29] 父页面随 context 同步应用主题：显式设置文档
+      // color-scheme，画布底色与聊天背景融合，消除卡片 body 透明 padding 区域
+      // 透出的白色硬边（srcdoc 构建时注入的是构建时刻主题，此处置为运行时权威值）。
+      if (data.colorScheme === 'dark' || data.colorScheme === 'light') {
+        try { document.documentElement.style.setProperty('color-scheme', data.colorScheme); } catch (e) { /* ignore */ }
+      }
       applyParentContextUpdateCompat(data.context);
       return;
     }

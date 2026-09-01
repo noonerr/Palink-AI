@@ -27,6 +27,21 @@ import { SMART_CARD_RUNTIME_URL } from './smart-card-runtime/runtime-url';
 export { looksLikeSmartCardHtml, looksLikeRenderableCardHtml } from './smart-card-runtime/helpers';
 export type { SmartCardInspectTarget, SmartCardAction } from './smart-card-runtime/shared';
 
+function resolveHostColorScheme(): 'dark' | 'light' {
+  // [白边修复 2026-08-29] 卡片文档画布底色跟随应用主题：卡片 body 普遍
+  // background:transparent，而 iframe 文档的画布（canvas base color）取自文档
+  // 自身 color-scheme——未显式声明时跟随浏览器/系统偏好，暗色应用 + 亮色
+  // 浏览器偏好下，body 的 padding 区域透出白色硬边（用户实测：亮色模式
+  // 看不见、暗色模式刺眼）。显式对齐应用主题后画布与聊天底色融合。
+  try {
+    return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  } catch { return 'light'; }
+}
+
+function hostColorSchemeStyle(): string {
+  return `<style data-palink-color-scheme>html{color-scheme:${resolveHostColorScheme()};}</style>`;
+}
+
 function injectIntoFullDocument(
   html: string,
   shim: string,
@@ -46,10 +61,10 @@ function injectIntoFullDocument(
     result = result.replace(/<html([^>]*)>/i, (_match, attrs = '') => `<html${attrs}><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}</head>`);
   }
   if (/<\/head\s*>/i.test(result)) {
-    result = result.replace(/<\/head\s*>/i, `${css}${adapterCss}</head>`);
+    result = result.replace(/<\/head\s*>/i, `${css}${hostColorSchemeStyle()}${adapterCss}</head>`);
   }
   if (!/<html[\s>]/i.test(result)) {
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}${css}${adapterCss}</head><body>${result}</body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}${css}${hostColorSchemeStyle()}${adapterCss}</head><body>${result}</body></html>`;
   }
   return result;
 }
@@ -66,7 +81,7 @@ function wrapHtmlFragment(
   const adapterCss = buildSmartCardAdapterStyle(fragment);
   const resourceHints = buildSmartCardResourceHints(resourcePlan);
   const immersiveBridge = includeImmersiveBridge ? buildSmartCardImmersiveBridge(frameId) : '';
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${css}</head><body>${fragment}${adapterCss}</body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${hostColorSchemeStyle()}${css}</head><body>${fragment}${adapterCss}</body></html>`;
 }
 
 interface IframeRendererProps {
@@ -415,6 +430,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
         frameId: frameIdRef.current,
         type: 'context-update',
         context: contextToPost,
+        // [白边修复] 运行时同步应用主题给 iframe 文档（srcdoc 构建时注入的是
+        // 构建时刻的主题；用户中途切换亮暗后由 context-update 通道热跟随，
+        // 不重建 iframe 文档）。
+        colorScheme: resolveHostColorScheme(),
       }, smartCardFrameTargetOrigin(trustedNativeRef.current));
       // [P0-SRCDOC-SLIM] context 发送时顺带把插件脚本包推给 iframe（幂等，按
       // generated_at 去重）。源码不再内联进 context，避免 4.4MB 随每次

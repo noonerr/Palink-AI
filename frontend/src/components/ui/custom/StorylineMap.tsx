@@ -21,7 +21,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
-import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play, User, ZoomIn, ZoomOut, Maximize2, Minimize2, ChevronsDown, Crosshair, Star, Snowflake, Trash2, AlertTriangle } from 'lucide-react';
+import { GitBranch, MessageSquare, Sparkles, ArrowDownCircle, Play, User, ZoomIn, ZoomOut, Maximize2, Minimize2, ChevronsDown, Crosshair, Star, Snowflake, Trash2, AlertTriangle, Layers } from 'lucide-react';
 import { api } from '@/services/api';
 
 // rfInstanceRef moved inside StorylineMapInner as useRef to avoid stale references across re-mounts
@@ -44,6 +44,10 @@ export interface StoryNode {
   node_title?: string | null;
   user_summary: string | null;
   ai_summary: string | null;
+  /** 该节点（assistant 消息）的候选（swipes）总数；无候选时=1 */
+  swipe_count?: number;
+  /** 当前选中的候选下标（0 起） */
+  current_swipe_id?: number;
   created_at: string | null;
 }
 
@@ -535,6 +539,20 @@ function StoryNodeComponent({ data }: NodeProps) {
           >
             {isStart ? '开始' : `#${pairIndex + 1}`}
           </span>
+          {/* [STORYLINE-SWIPE-BADGE] 候选徽标：该 assistant 消息存在多条候选（swipes>1）时
+              在节点上显示候选总数，使候选在故事线里可见（regenerate/继续生成会产生候选）。
+              摘要始终展示当前选中的候选内容，与聊天内 ‹1/N› 切换保持同步（写操作后会自动刷新）。 */}
+          {typeof node.swipe_count === 'number' && node.swipe_count > 1 && (
+            <span
+              title={`该对话有 ${node.swipe_count} 个候选，当前为第 ${(node.current_swipe_id ?? 0) + 1} 个（在最新对话的候选切换条中可切换）`}
+              className={`flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                isDark ? 'bg-fuchsia-500/25 text-fuchsia-300' : 'bg-fuchsia-100 text-fuchsia-600'
+              }`}
+            >
+              <Layers size={9} />
+              ×{node.swipe_count}
+            </span>
+          )}
           {isOnActivePath && isLeaf && (
             <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-0.5">
               <Play size={9} fill="currentColor" /> 进行中

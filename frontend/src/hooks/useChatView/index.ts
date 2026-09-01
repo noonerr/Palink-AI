@@ -387,7 +387,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         sessionManager.toggleDeleteMode();
       }
     },
-    toggleSessionSelect: sessionManager.toggleDeleteMode,
+    toggleSessionSelect: sessionManager.toggleSessionSelection,
     
     // 消息管理
     ...restChatMessages,

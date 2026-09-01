@@ -137,6 +137,12 @@ interface MessageProps {
   onSetMultipleItemsSelect?: (itemIds: string[], select: boolean) => void;
   onEdit?: (newContent: string, messageId?: string | number) => void;
   canEdit?: boolean;
+  /** 当前是否为「会话中有效最新的 assistant 消息」。
+   *  由调用方基于当前 displayedMessages 最后一条 assistant 判定：
+   *  故事线选择某节点跳转后 displayedMessages 会被 up_to_message_id 截断，
+   *  截断点的 assistant 自动成为最新，候选 UI 也随之迁移到该消息上。
+   *  非 assistant 永远为 false。 */
+  isCurrentLatestAssistant?: boolean;
   // [批次B] 无分框模式消息交互补齐：swipe 候选切换 + 隐藏/取消隐藏。
   // swipe 数据（swipes/swipeId）由 CharacterChat 从 CharacterChatMessage 透传
   // （MessageType 本体无 swipe 字段）；isHidden 对应后端序列化顶层 is_hidden。
@@ -692,6 +698,7 @@ function MessageInner({
   onSetMultipleItemsSelect,
   onEdit,
   canEdit = false,
+  isCurrentLatestAssistant = false,
   // [批次B] swipe 切换 + 隐藏/取消隐藏（无分框模式交互补齐）
   onSwipe,
   swipes,
@@ -1568,10 +1575,11 @@ function MessageInner({
             )}
           </div>
 
-          {/* [批次B] swipe 候选切换计数条：仅多候选（swipes.length > 1）时渲染，
-              视觉对齐分框模式 NativeRoleplayChat 的 ‹ 当前/总数 › 箭头（hover 显示、
-              边界禁用）；swipes=1 的 roll 场景由「重新生成」按钮承担，不改其行为 */}
-          {!isUser && !streaming && Array.isArray(swipes) && swipes.length > 1 && (
+          {/* [CANDIDATE-ONLY-ON-LATEST] swipe 候选切换计数条：
+              1) 仅在「当前有效最新 assistant 消息」上显示（用户明确要求：
+                 「候选按钮仅在最新一个对话显示，包括故事线选择跳转后以跳转目标为最新」）。
+              2) 多候选（swipes.length > 1）时才渲染视觉箭头条，hover 显示、边界禁用。 */}
+          {!isUser && !streaming && isCurrentLatestAssistant && Array.isArray(swipes) && swipes.length > 1 && (
             <div className="mt-1 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={() => message.id != null && onSwipe?.(message.id, 'prev')}
@@ -1669,7 +1677,11 @@ function MessageInner({
                   </button>
                 )}
 
-                {canRegenerate && onRegenerate && (
+                {/* [CANDIDATE-ONLY-ON-LATEST] 重新生成按钮：与候选 UI 同规则——
+                    仅在当前有效最新 assistant 消息上显示。若为旧消息，即便用户手点
+                    后端也会返回 "Can only regenerate the last assistant message"，
+                    所以这里直接隐藏，避免假可点。 */}
+                {canRegenerate && onRegenerate && isCurrentLatestAssistant && (
                   <button
                     onClick={() => onRegenerate(message.id)}
                     className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors"
@@ -1800,6 +1812,7 @@ export const Message = React.memo(MessageInner, (prev, next) => {
   if (prev.compressing !== next.compressing) return false;
   if (prev.showModelReasoning !== next.showModelReasoning) return false;
   if (prev.canRegenerate !== next.canRegenerate) return false;
+  if (prev.isCurrentLatestAssistant !== next.isCurrentLatestAssistant) return false;
   if (prev.canEdit !== next.canEdit) return false;
   // [批次B] 新增 props 按现有模式补入比较器（swipes 数组引用由上游 messages state 稳定化）
   if (prev.isHidden !== next.isHidden) return false;
