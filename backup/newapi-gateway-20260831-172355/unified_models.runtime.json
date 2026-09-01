@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "models": {
+    "deepseek-v4-pro": {
+      "display_name": "deepseek-v4-pro",
+      "icon": "/icons/openrouter.webp"
+    },
+    "deepseek-v4-flash": {
+      "display_name": "deepseek-v4-flash",
+      "icon": "/icons/openrouter.webp"
+    }
+  }
+}

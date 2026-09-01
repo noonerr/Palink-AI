@@ -24,6 +24,11 @@ export interface User {
   tokens_workspace?: number;
   tokens_character?: number;
   tokens_total?: number;
+  /** LLM token 额度：null/undefined = 不限（管理员未设置） */
+  quota_tokens?: number | null;
+  quota_used_tokens?: number;
+  /** 按自然月自动清零已用量 */
+  quota_monthly_reset?: boolean;
 }
 
 export interface Model {
@@ -31,7 +36,9 @@ export interface Model {
   name: string;
   alias?: string;
   provider: string;
-  context_length: number;
+  /** undefined = 未设置（后端按 model_specs 清单/4096 兜底） */
+  context_length?: number;
+  max_output_tokens?: number;
   icon?: string;
   avatar?: string;
   description?: string;
@@ -43,7 +50,6 @@ export interface Model {
   is_test_model?: boolean;
   // 新增字段：思考模式和输出 token 控制
   enable_thinking?: boolean;
-  max_output_tokens?: number;
   /** 思考强度（off/auto/low/medium/high），模型级全局默认；后端 provider_registry 会自动补 auto */
   reasoning_effort?: string;
 }
@@ -57,12 +63,7 @@ export interface UnifiedModelProvider {
   api_key_resolved?: boolean;
   supports_vision: boolean;
   context_length: number;
-  priority?: number;
-  weight?: number;
   enabled: boolean;
-  max_rpm?: number;
-  max_concurrent?: number;
-  max_tokens_per_min?: number;
 }
 
 export interface UnifiedModel {
@@ -72,16 +73,8 @@ export interface UnifiedModel {
   description: string;
   model_type: string;
   providers: UnifiedModelProvider[];
-  routing_strategy: 'priority' | 'round_robin' | 'weighted';
-  failover_enabled: boolean;
   context_length?: number;
   max_output_tokens?: number;
-}
-
-export interface RoutingStrategy {
-  id: string;
-  name: string;
-  description: string;
 }
 
 export interface Provider {
@@ -91,6 +84,11 @@ export interface Provider {
   api_key: string;
   models: Model[];
   is_active?: boolean;
+  /** 网关管理（可选，P2-3）：base_url 指向 new-api/one-api 系网关时的后台地址与凭据 */
+  admin_url?: string;
+  admin_username?: string;
+  /** 明文密码不会从后端回显（返回空串），保存时留空则保留原值 */
+  admin_password?: string;
 }
 
 export interface Session {

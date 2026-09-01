@@ -23,6 +23,16 @@ class StreamResult:
     def has_content(self) -> bool:
         return bool(self.full_content or self.full_reasoning)
 
+    def is_error_only(self) -> bool:
+        """本次生成是否只有错误占位文本（中断/网关无响应/服务错误）而没有真实模型输出。
+
+        约定：错误文本以 "Error:" 开头（本项目所有错误注入点的统一前缀）；
+        真实输出后追加错误后缀（full_content 不以 Error: 开头）不算 error-only。
+        对齐 SillyTavern：token 计数只作用于最终成功文本，错误不计。
+        """
+        text = (self.full_content or "").strip()
+        return text.startswith("Error:")
+
     def final_text(self) -> str:
         # [REASONING-SEPARATE] 分离存储：只返回纯正文；思考经 extra.reasoning 单独持久化
         return self.full_content
@@ -31,6 +41,12 @@ class StreamResult:
         if self.completion_tokens > 0:
             return self.completion_tokens
         return _estimate_tokens(self.full_content) + _estimate_tokens(self.full_reasoning)
+
+    def display_token_count(self) -> int:
+        """消息列表展示/落库用的补全侧 token：错误占位文本不计（对齐 ST isFinal 语义）。"""
+        if self.is_error_only():
+            return 0
+        return self.token_count()
 
     def effective_reasoning_tokens(self) -> int:
         if self.reasoning_tokens > 0:

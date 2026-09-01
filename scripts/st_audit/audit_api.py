@@ -6,7 +6,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-BASE = "http://localhost:13000"
+BASE = "http://localhost:3000"
 USER = "st_audit_2026"
 PASSWORD = "Audit2026Palink"
 CARD = r"d:\项目\Palink-AI\scripts\st_audit_seraphina.png"

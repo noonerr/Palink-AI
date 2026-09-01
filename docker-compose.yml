@@ -2,10 +2,9 @@ services:
   frontend:
     build: ./frontend
     ports:
-      # [TEMP-PORT 2026-08-25] 3000 被 WinNAT 动态保留段(2934-3033)占用（Docker 引擎崩溃重启后遗症），
-      # 用户暂无管理员权限修复，临时改用 13000（已验证不在任何保留段）；管理员永久预留
-      # 3000 后改回，修复命令见 TODOS.md「环境注意」条目
-      - "13000:8080"
+      # [2026-08-31] 统一为 3000：dev/部署同端口，不再区分开发与部署。
+      # 历史: 3000 曾被 WinNAT 动态保留段(2934-3033)吞掉临时改用 13000，现验证可绑定已改回
+      - "3000:8080"
       # 9001 落入 Windows 保留端口段(8958-9057)，docker 无法绑定，临时改到 9061（空闲段）
       - "9061:8081"
     depends_on:
@@ -118,6 +117,60 @@ services:
         reservations:
           memory: 512M
 
+  # [可选网关 2026-08-31] new-api 模型网关：同模型多提供商的渠道聚合、失败转移与配额。
+  # 默认不启动 —— 仅在 `docker compose --profile gateway up -d` 时拉起。
+  # 不启用时 Palink 走「直连模式」（providers.json 里每个上游一条记录），backend 照常启动
+  # （依赖 backend.depends_on.new-api.required=false）。
+  # 启用后 providers.json 只需一条记录指向 http://new-api:3000/v1。
+  # 详见根目录 SPEC_model_gateway_new_api.md §3 双模式。
+  new-api:
+    image: calciumion/new-api:latest
+    container_name: palink-new-api
+    profiles:
+      - gateway
+    ports:
+      # 管理后台入口，**仅绑定 127.0.0.1 回环**，不在局域网暴露。
+      # 宿主机侧刻意避开 3000：该端口落在 Windows 保留段(2934-3033)，docker 无法绑定
+      # （同 frontend 的 TEMP-PORT 处置，见 TODOS.md「环境注意」）。
+      - "127.0.0.1:13001:3000"
+    expose:
+      - "3000"
+    volumes:
+      # SQLite 实际库文件为 /data/one-api.db（不是 new-api.db），备份时认准前者
+      - newapi_data:/data
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      # 单节点非强制，但显式设置可避免容器重启后登录态失效。
+      # ⚠️ 必须用 `:-` 默认值语法，不能用 `:-?`/`:?`：compose 的变量插值发生在
+      # profile 过滤之前，用 `:?` 会让「未启用 gateway 的直连模式用户」
+      # 的 docker compose up -d 直接失败（已实测验证）。启用网关前务必在
+      # .env 里设置 NEWAPI_SESSION_SECRET 替换掉下面这个弱默认值。
+      - SESSION_SECRET=${NEWAPI_SESSION_SECRET:-palink-newapi-change-me-before-use}
+      # 预设 root 令牌，便于后续用管理 API 自动化签发用户令牌（P2 懒签发）
+      - INITIAL_ROOT_TOKEN=${NEWAPI_ROOT_TOKEN:-}
+    restart: always
+    healthcheck:
+      # 用 wget 而非 curl（镜像通常无 curl）；根路径返回前端页面即视为存活
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - frontend-backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 128M
+
   backend:
     build: ./backend
     # --- DNS 配置 ---
@@ -145,6 +198,9 @@ services:
       # 向量引擎统一走 Ollama + bge-m3（同 compose 网络内服务名直连，见 TODOS.md）；
       # Ollama 不可达时 OllamaEmbedder 自动降级 fastembed，无需 sentence-transformers。
       - MEMORY_EMBEDDING_PROVIDER=ollama
+      # 按型号 token 计数（token_counter_service）：HF 词表下载缓存持久化到挂载卷，
+      # 容器重建后无需重新下载（deepseek/qwen 等词表约 2-11MB/个）
+      - HF_HUB_CACHE=/app/data/hf_cache
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=bge-m3
       - MEMORY_VECTOR_DIMENSION=1024
@@ -180,6 +236,11 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      # 可选模型网关（profiles: gateway）。required=false 是关键：
+      # 未启用 gateway profile 时 new-api 不存在，backend 仍须正常启动。
+      new-api:
+        condition: service_started
+        required: false
     # -----------------------------------
     restart: always
     healthcheck:
@@ -240,6 +301,7 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  newapi_data:
   sillytavern_config:
   sillytavern_data:
   sillytavern_plugins:

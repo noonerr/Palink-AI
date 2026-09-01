@@ -13,10 +13,11 @@ from ..services.llm_client import get_async_openai_client
 
 from ..core import get_db, settings, get_password_hash, validate_password_policy
 from ..api.dependencies import get_current_user, get_admin
-from ..models import User, ChatSession, ChatMessage, SystemSetting, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, UserFile, UserFolder
+from ..models import User, UserQuota, ChatSession, ChatMessage, SystemSetting, Character, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, UserFile, UserFolder
 from ..schemas import ProviderModel, ProviderConfig, DefaultModelConfig, TestProviderRequest
 from ..models.system import ProviderTestResult
 from ..services.provider_registry import get_providers, invalidate_provider_cache, resolve_secret_reference, _providers_path
+from ..services.quota_service import set_user_quota
 from ..services.web_search import get_web_search_config, save_web_search_config, search_web, validate_web_search_config, _get_raw_config
 from ..services.local_model_registry import (
     delete_local_model,
@@ -100,6 +101,11 @@ async def get_providers_api(user: User = Depends(get_admin)):
     # 供前端「模型管理 → 服务商 → 模型列表」正确展示，而非显示 providers.json 默认 4096。
     from ..services.unified_model_registry import resolve_model_token_limits, get_model_spec
     for p in providers:
+        # 网关管理密码不回显（P2-3）：env: 引用不是秘密可原样返回，明文一律置空，
+        # 由编辑页重填（推荐路径是 env:NEWAPI_ADMIN_PASSWORD 引用）。
+        pw = str(p.get("admin_password") or "")
+        if pw and not _is_env_secret_ref(pw):
+            p["admin_password"] = ""
         for m in p.get("models", []):
             if isinstance(m, dict) and m.get("id"):
                 ctx, out = resolve_model_token_limits(
@@ -170,9 +176,13 @@ async def list_users(user: User = Depends(get_admin), db: Session = Depends(get_
             User.is_active,
             User.storage_used,
             func.count(ChatSession.id).label("chat_count"),
+            UserQuota.quota_tokens,
+            UserQuota.used_tokens,
+            UserQuota.monthly_reset,
         )
         .outerjoin(ChatSession, ChatSession.user_id == User.id)
-        .group_by(User.id, User.username, User.role, User.is_active, User.storage_used)
+        .outerjoin(UserQuota, UserQuota.user_id == User.id)
+        .group_by(User.id, User.username, User.role, User.is_active, User.storage_used, UserQuota.quota_tokens, UserQuota.used_tokens, UserQuota.monthly_reset)
         .order_by(User.id.asc())
         .all()
     )
@@ -185,9 +195,38 @@ async def list_users(user: User = Depends(get_admin), db: Session = Depends(get_
             "is_active": row.is_active,
             "storage_used": row.storage_used or 0,
             "chat_count": int(row.chat_count or 0),
+            # 额度摘要：无行 / quota_tokens NULL 都表示不限
+            "quota_tokens": int(row.quota_tokens) if row.quota_tokens is not None else None,
+            "quota_used_tokens": int(row.used_tokens or 0) if row.used_tokens is not None else 0,
+            "quota_monthly_reset": bool(row.monthly_reset) if row.monthly_reset is not None else False,
         }
         for row in rows
     ]
+
+
+class AdminQuotaUpdate(BaseModel):
+    """管理员设置用户 token 额度。quota_tokens=None → 不限；reset_used=True → 已用清零；
+    monthly_reset=None → 不改变现有设置（True/False 覆盖：按自然月自动清零已用）。"""
+    quota_tokens: Optional[int] = None
+    reset_used: bool = False
+    monthly_reset: Optional[bool] = None
+
+
+@router.put("/users/{user_id}/quota")
+async def admin_set_user_quota(
+    user_id: int,
+    req: AdminQuotaUpdate,
+    current_user: User = Depends(get_admin),
+    db: Session = Depends(get_db),
+):
+    target = db.query(User).filter(User.id == user_id).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if req.quota_tokens is not None and req.quota_tokens < 0:
+        raise HTTPException(status_code=400, detail="quota_tokens must be >= 0 or null (unlimited)")
+    state = set_user_quota(db, user_id, req.quota_tokens, reset_used=req.reset_used, monthly_reset=req.monthly_reset)
+    db.commit()
+    return {"status": "ok", "quota": state}
 
 
 @router.delete("/users/{user_id}")

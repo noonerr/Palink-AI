@@ -19,7 +19,6 @@ from ..services.unified_model_registry import (
     get_unified_model_list,
     get_flat_model_list,
     save_unified_model_config,
-    get_routing_strategies,
     invalidate_registry_cache,
 )
 from ..utils import normalize_upload_filename
@@ -178,7 +177,7 @@ async def get_models(user: User = Depends(get_current_user), db: Session = Depen
     result = []
     seen_ids: Set[str] = set()
 
-    # 走 unified 模型表：合并同名模型 + 尊重 unified_models.json 的 provider_overrides。
+    # 走 unified 模型表：合并同名模型 + 应用 unified_models.json 的展示层覆盖。
     # 这样在「模型管理」里按模型禁用某个 provider 会在聊天选择器生效，
     # 且每个模型暴露 providers 列表，供前端为同名模型单独选择 A / B。
     for m in get_flat_model_list():
@@ -300,30 +299,12 @@ async def get_unified_models_flat(user: User = Depends(get_current_user)):
     return get_flat_model_list()
 
 
-@router.get("/api/models/unified/strategies")
-async def get_model_routing_strategies(user: User = Depends(get_admin)):
-    """获取可用的路由策略列表"""
-    return get_routing_strategies()
-
-
-class ProviderOverrideItem(BaseModel):
-    priority: Optional[int] = None
-    weight: Optional[int] = None
-    enabled: Optional[bool] = None
-    max_rpm: Optional[int] = None
-    max_concurrent: Optional[int] = None
-    max_tokens_per_min: Optional[int] = None
-
-
 class UnifiedModelConfigRequest(BaseModel):
     display_name: Optional[str] = None
     icon: Optional[str] = None
     description: Optional[str] = None
-    routing_strategy: Optional[str] = None
-    failover_enabled: Optional[bool] = None
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
-    provider_overrides: Optional[dict] = None
 
 
 @router.put("/api/models/unified/{unified_id}")
@@ -332,17 +313,14 @@ async def update_unified_model_config(
     req: UnifiedModelConfigRequest,
     user: User = Depends(get_admin),
 ):
-    """更新统一模型配置（显示名、路由策略、提供商优先级、上下文/输出上限等）"""
+    """更新统一模型配置（显示名、图标、描述、上下文/输出上限）"""
     result = save_unified_model_config(
         unified_id=unified_id,
         display_name=req.display_name,
         icon=req.icon,
         description=req.description,
-        routing_strategy=req.routing_strategy,
-        failover_enabled=req.failover_enabled,
         context_length=req.context_length,
         max_output_tokens=req.max_output_tokens,
-        provider_overrides=req.provider_overrides,
     )
     invalidate_cache("models")
     return result

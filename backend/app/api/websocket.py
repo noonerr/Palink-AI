@@ -28,6 +28,7 @@ from ..models import (
 from ..models.system import GenerationPreset
 from ..services.websocket_manager import ws_manager, Connection, ChatRoom, StreamSessionBusyError
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
+from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.generation_service import _build_logit_bias
 from ..services.inference_queue import inference_queue
 from ..services.stream_builder import StreamResult
@@ -182,6 +183,13 @@ async def run_chat_generation(
 ):
     result = StreamResult()
     save_db = SessionLocal()
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(save_db, user_id)
+    except QuotaExceededError:
+        await ws_manager.send_error(session_id, QUOTA_EXCEEDED_MESSAGE)
+        save_db.close()
+        return
     assistant_message_id = None
     last_saved_content_len = 0
     last_saved_reasoning_len = 0
@@ -206,7 +214,7 @@ async def run_chat_generation(
 
         # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
         final = result.full_content
-        token_count = result.token_count()
+        token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
 
         try:
@@ -416,6 +424,14 @@ async def run_chat_generation(
             await ws_manager.send_error(session_id, result.full_content)
             return
 
+        # 用户 token 额度扣减（按实际用量；无额度行/不限用户也会记账供展示）
+        try:
+            deduct_usage(save_db, user_id, compute_deduct_tokens(result, messages, model))
+            save_db.commit()
+        except Exception as quota_error:
+            save_db.rollback()
+            logger.warning(f"Quota deduction failed: {quota_error}")
+
         usage_info = None
         if result.total_tokens > 0:
             usage_info = {
@@ -575,6 +591,13 @@ async def run_character_chat_generation(
 ):
     result = StreamResult()
     save_db = SessionLocal()
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(save_db, user_id)
+    except QuotaExceededError:
+        await ws_manager.send_error(session_id, QUOTA_EXCEEDED_MESSAGE)
+        save_db.close()
+        return
     # [MVU-SECONDARY] 主事件循环引用：persist_snapshot 可能在 to_thread 线程运行，
     # 副 AI 协程需跨线程提交到主循环执行（asyncio.run_coroutine_threadsafe）。
     _main_loop = asyncio.get_running_loop()
@@ -671,7 +694,7 @@ async def run_character_chat_generation(
             )
             # [REASONING-SEPARATE] 思考不再内联包裹进 content，仅经 msg_extra.reasoning 持久化
             # （与 Step 4 前端消费点迁移同批上线）
-        token_count = result.token_count()
+        token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
 
         # Phase 3 extra 字段: reasoning 双写 + gen_id + per-swipe 元数据
         # ST 1.18.0 对齐: reasoning 同时写入 content 内联(包裹符号, 兼容旧前端)
@@ -1049,6 +1072,14 @@ async def run_character_chat_generation(
             result.full_content = "Error: 模型网关暂时无响应（连续多次返回空内容），请稍后重试或切换模型。"
             await ws_manager.send_error(session_id, result.full_content)
             return
+
+        # 用户 token 额度扣减（按实际用量；无额度行/不限用户也会记账供展示）
+        try:
+            deduct_usage(save_db, user_id, compute_deduct_tokens(result, messages, model))
+            save_db.commit()
+        except Exception as quota_error:
+            save_db.rollback()
+            logger.warning(f"Quota deduction failed: {quota_error}")
 
         usage_info = None
         if result.total_tokens > 0:

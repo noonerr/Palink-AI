@@ -116,6 +116,10 @@ _RUNTIME_COMPAT_COLUMNS = (
     # NULL = 全局插件（所有用户可见）；非 NULL = 仅该 user_id 可见。
     # 存量插件全部为 NULL，单用户部署行为不变。
     ("plugins", "user_id", sa.Integer()),
+    # [用户 token 额度/月度重置] user_quotas 表既有部署的补列：
+    # monthly_reset = 每自然月自动清零 used_tokens；period_month = 当前计数月（YYYY-MM）。
+    ("user_quotas", "monthly_reset", sa.Boolean()),
+    ("user_quotas", "period_month", sa.String()),
 )
 
 

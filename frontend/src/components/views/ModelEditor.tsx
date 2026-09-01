@@ -30,6 +30,26 @@ interface ModelEditorProps {
   providerId?: string;
 }
 
+// 常用挡位（点击即填）。上下文档位覆盖主流模型窗口；最大输出档位覆盖常见上限。
+const CONTEXT_PRESETS = [
+  { label: '8K', value: 8192 },
+  { label: '16K', value: 16384 },
+  { label: '32K', value: 32768 },
+  { label: '64K', value: 65536 },
+  { label: '128K', value: 131072 },
+  { label: '200K', value: 204800 },
+  { label: '256K', value: 262144 },
+  { label: '1M', value: 1048576 },
+];
+
+const OUTPUT_PRESETS = [
+  { label: '4K', value: 4096 },
+  { label: '8K', value: 8192 },
+  { label: '16K', value: 16384 },
+  { label: '32K', value: 32768 },
+  { label: '64K', value: 65536 },
+];
+
 export function ModelEditor({ 
   models, 
   onChange, 
@@ -432,16 +452,35 @@ export function ModelEditor({
                           type="number"
                           min={0}
                           step={1}
-                          value={model.context_length || ''}
+                          value={model.context_length ?? ''}
                           onChange={(e) => {
+                            // 允许清空（undefined = 后端按清单/4096 兜底），
+                            // 不能在 onChange 里强设默认值，否则无法删除已有数字重新输入
                             const raw = e.target.value;
-                            const num = raw === '' ? 0 : parseInt(raw, 10) || 0;
-                            handleUpdateModel(index, { context_length: num || 4096 });
+                            const num = raw === '' ? undefined : parseInt(raw, 10);
+                            handleUpdateModel(index, { context_length: num && num > 0 ? num : undefined });
                           }}
-                          placeholder="如 128000"
+                          placeholder="如 128000，留空自动识别"
                           className="h-10 pl-10 bg-background/50 font-mono overflow-hidden tabular-nums min-w-0"
                         />
                       </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {CONTEXT_PRESETS.map(({ label, value }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => handleUpdateModel(index, { context_length: value })}
+                          className={cn(
+                            "px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors",
+                            model.context_length === value
+                              ? "bg-primary/15 text-primary border-primary/40"
+                              : "bg-muted/40 text-muted-foreground border-border/40 hover:bg-muted"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
                   <div className="space-y-2 min-w-0">
@@ -453,14 +492,31 @@ export function ModelEditor({
                         type="number"
                         min={0}
                         step={1}
-                        value={model.max_output_tokens || ''}
+                        value={model.max_output_tokens ?? ''}
                         onChange={(e) => {
                           const val = e.target.value === '' ? undefined : parseInt(e.target.value, 10);
-                          handleUpdateModel(index, { max_output_tokens: val });
+                          handleUpdateModel(index, { max_output_tokens: val && val > 0 ? val : undefined });
                         }}
                         placeholder="默认值"
                         className="h-10 bg-background/50 font-mono"
                       />
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {OUTPUT_PRESETS.map(({ label, value }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => handleUpdateModel(index, { max_output_tokens: value })}
+                          className={cn(
+                            "px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors",
+                            model.max_output_tokens === value
+                              ? "bg-primary/15 text-primary border-primary/40"
+                              : "bg-muted/40 text-muted-foreground border-border/40 hover:bg-muted"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>

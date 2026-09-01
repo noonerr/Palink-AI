@@ -47,6 +47,14 @@ def _get_or_create_settings(user: User, db: Session) -> UserSetting:
     return setting
 
 
+@router.get("/quota")
+async def get_my_quota(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """当前用户的 token 额度状态（供用量统计页展示）。无行/NULL = 不限。"""
+    from ..services.quota_service import get_quota_state
+
+    return get_quota_state(db, user.id)
+
+
 @router.get("/settings")
 @cached(ttl_seconds=30, key_prefix="user_settings")
 async def get_user_settings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):

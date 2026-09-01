@@ -1,32 +1,30 @@
 """
-上层模型路由与发现
+模型目录与查找（精简版）
 
 职责：
 - 统一模型列表构建（build_unified_models、get_unified_model_list）
 - 模型发现与查找（find_model、select_provider_for_model）
-- Provider 选择策略（优先级、轮询、加权随机）
-- 模型路由配置管理（save_unified_model_config）
-- 扁平化模型列表（get_flat_model_list，用于前端展示）
+- 模型能力元数据（token 上限清单 model_specs.json、reasoning effort 映射）
+- 展示层覆盖（unified_models.json：显示名/图标/描述/上下文/输出上限）
 
-本模块是外部模块查找模型的统一入口，应优先使用本模块的 find_model
-而非直接调用 provider_registry.find_model，以获得统一的模型路由能力。
+设计约定（2026-08-29 模型网关瘦身，用户拍板方案 A）：
+- 上游供应商聚合交给人商网关（如 OpenRouter），本层不再做多供应商路由
+  （priority/round_robin/weighted、权重、RPM/并发/TPM 限流等已删除）。
+- 每个模型 ID 只需解析出一个 (provider, model_data)；同名模型跨 provider 时
+  仅支持按 preferred_provider_id 精确指定。
+- 本地 llama.cpp 模型仍走 local_model_registry / inference_queue，不受影响。
 """
 
-import copy
 import json
 import logging
 import os
-import threading
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .registry_base import JsonRegistryMixin
-from .provider_registry import get_providers, get_runtime_providers, get_model_vision_support, resolve_secret_reference, find_model as _provider_find_model
+from .provider_registry import get_runtime_providers, get_model_vision_support, resolve_secret_reference, find_model as _provider_find_model
 from .local_model_registry import (
     list_local_models,
-    list_enabled_chat_models,
     get_local_model_for_inference,
-    is_local_model_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,12 +217,7 @@ def build_unified_models() -> List[Dict[str, Any]]:
                 "supports_vision": get_model_vision_support(model_id, m if isinstance(m, dict) else None),
                 "context_length": m.get("context_length", 4096) if isinstance(m, dict) else 4096,
                 "max_output_tokens": m.get("max_output_tokens") if isinstance(m, dict) else None,
-                "priority": 0,
-                "weight": 1,
                 "enabled": True,
-                "max_rpm": 0,
-                "max_concurrent": 0,
-                "max_tokens_per_min": 0,
             }
 
             if norm_id not in unified:
@@ -253,12 +246,7 @@ def build_unified_models() -> List[Dict[str, Any]]:
             "api_key_resolved": False,
             "supports_vision": bool(lm.get("mmproj_enabled") and lm.get("mmproj_path")),
             "context_length": lm.get("context_length", 4096),
-            "priority": 0,
-            "weight": 1,
             "enabled": lm.get("enabled", False),
-            "max_rpm": 0,
-            "max_concurrent": lm.get("max_concurrent", 1),
-            "max_tokens_per_min": 0,
         }
 
         if norm_id not in unified:
@@ -293,45 +281,12 @@ def get_unified_model_list() -> List[Dict[str, Any]]:
                 model["icon"] = ov["icon"]
             if ov.get("description"):
                 model["description"] = ov["description"]
-            if ov.get("routing_strategy"):
-                model["routing_strategy"] = ov["routing_strategy"]
-            if ov.get("failover_enabled") is not None:
-                model["failover_enabled"] = ov["failover_enabled"]
             if ov.get("context_length") is not None:
                 ov_context = ov["context_length"]
             if ov.get("max_output_tokens") is not None:
                 ov_output = ov["max_output_tokens"]
 
-            provider_overrides = ov.get("provider_overrides", {})
-            for pe in model["providers"]:
-                pid = pe.get("provider_id", "")
-                if pid in provider_overrides:
-                    po = provider_overrides[pid]
-                    if po.get("priority") is not None:
-                        pe["priority"] = po["priority"]
-                    if po.get("weight") is not None:
-                        pe["weight"] = po["weight"]
-                    if po.get("enabled") is not None:
-                        pe["enabled"] = po["enabled"]
-                    if po.get("max_rpm") is not None:
-                        pe["max_rpm"] = po["max_rpm"]
-                    if po.get("max_concurrent") is not None:
-                        pe["max_concurrent"] = po["max_concurrent"]
-                    if po.get("max_tokens_per_min") is not None:
-                        pe["max_tokens_per_min"] = po["max_tokens_per_min"]
-
-        model.setdefault("routing_strategy", "priority")
-        model.setdefault("failover_enabled", True)
-
-        for pe in model["providers"]:
-            pe.setdefault("priority", 0)
-            pe.setdefault("weight", 1)
-            pe.setdefault("enabled", True)
-            pe.setdefault("max_rpm", 0)
-            pe.setdefault("max_concurrent", 0)
-            pe.setdefault("max_tokens_per_min", 0)
-
-        model["providers"].sort(key=lambda p: (-p["priority"], p["provider_name"]))
+        model["providers"].sort(key=lambda p: p["provider_name"])
 
         # 解析上下文上限 / 最大输出 token：手动覆盖 > provider 真实值 > 清单 > 兜底
         primary = model["providers"][0] if model["providers"] else {}
@@ -395,6 +350,40 @@ def get_flat_model_list() -> List[Dict[str, Any]]:
     return result
 
 
+def _api_selection(provider: Dict[str, Any], model_data: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    return {
+        "provider_type": "api",
+        "provider_id": provider.get("id", ""),
+        "provider_name": provider.get("name", ""),
+        "base_url": provider.get("base_url", ""),
+        "api_key": provider.get("api_key", ""),
+    }, model_data
+
+
+def _find_api_provider(
+    model_id: str,
+    preferred_provider_id: Optional[str] = None,
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """在 providers.json 中按模型 ID 定位 (provider, model_data)。
+
+    两轮匹配：先精确 model_id，再归一化（大小写/空白）匹配；
+    preferred_provider_id 提供时只在指定 provider 内查找（同名模型跨 provider 场景）。
+    """
+    norm_id = _normalize_model_id(model_id)
+    for pass_normalized in (False, True):
+        for rp in get_runtime_providers():
+            if rp.get("is_active") is not None and not rp.get("is_active"):
+                continue
+            if preferred_provider_id and rp.get("id") != preferred_provider_id:
+                continue
+            for m in rp.get("models", []):
+                mid = m.get("id") if isinstance(m, dict) else m
+                if (mid == model_id) if not pass_normalized else (_normalize_model_id(mid) == norm_id):
+                    model_data = m if isinstance(m, dict) else {"id": m}
+                    return _api_selection(rp, model_data)
+    return None
+
+
 def select_provider_for_model(model_id: str, preferred_provider_id: Optional[str] = None) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     local_model = get_local_model_for_inference(model_id)
     if local_model:
@@ -405,133 +394,7 @@ def select_provider_for_model(model_id: str, preferred_provider_id: Optional[str
             "local_model": local_model,
         }, None
 
-    unified_models = get_unified_model_list()
-    norm_id = _normalize_model_id(model_id)
-
-    target_um = None
-    for um in unified_models:
-        for p in um["providers"]:
-            if p.get("model_id") == model_id:
-                target_um = um
-                break
-            if um["unified_id"] == norm_id:
-                target_um = um
-        if target_um:
-            break
-
-    if not target_um:
-        find_model = _provider_find_model
-        provider, model_data = find_model(model_id)
-        if provider and model_data:
-            return {
-                "provider_type": "api",
-                "provider_id": provider.get("id", ""),
-                "provider_name": provider.get("name", ""),
-                "base_url": provider.get("base_url", ""),
-                "api_key": provider.get("api_key", ""),
-            }, model_data
-        return None
-
-    enabled_providers = [p for p in target_um["providers"] if p.get("enabled", True) and p.get("provider_type") == "api"]
-    if not enabled_providers:
-        local_providers = [p for p in target_um["providers"] if p.get("enabled", True) and p.get("provider_type") == "local"]
-        if local_providers:
-            lp = local_providers[0]
-            lm = get_local_model_for_inference(lp["model_id"])
-            if lm:
-                return {
-                    "provider_type": "local",
-                    "model_key": lm["key"],
-                    "model_path": lm["path"],
-                    "local_model": lm,
-                }, None
-        return None
-
-    # 用户/前端明确指定了某个 provider（同名模型跨 provider 时单独选择）
-    if preferred_provider_id:
-        pref = next(
-            (p for p in target_um["providers"]
-             if p.get("provider_id") == preferred_provider_id
-             and p.get("enabled", True)
-             and p.get("provider_type") == "api"),
-            None,
-        )
-        if pref:
-            # 必须按 provider_id 在真实 providers 中精准定位，绝不能再用
-            # find_model(model_id) 按模型名回查——否则同名模型会被其它 provider 抢走
-            for rp in get_runtime_providers():
-                if rp.get("id") != pref.get("provider_id"):
-                    continue
-                for m in rp.get("models", []):
-                    mid = m.get("id") if isinstance(m, dict) else m
-                    if mid == pref.get("model_id"):
-                        return {
-                            "provider_type": "api",
-                            "provider_id": rp.get("id", ""),
-                            "provider_name": rp.get("name", ""),
-                            "base_url": rp.get("base_url", ""),
-                            "api_key": rp.get("api_key", ""),
-                        }, (m if isinstance(m, dict) else {"id": m})
-            # 该 provider 在 providers.json 中找不到 / 不含该模型时，回退到下面的策略选择
-
-    strategy = target_um.get("routing_strategy", "priority")
-
-    if strategy == "round_robin":
-        selected = _round_robin_select(target_um["unified_id"], enabled_providers)
-    elif strategy == "weighted":
-        selected = _weighted_select(enabled_providers)
-    else:
-        selected = enabled_providers[0]
-
-    find_model = _provider_find_model
-    provider, model_data = find_model(selected["model_id"])
-    if not provider:
-        for ep in enabled_providers:
-            if ep != selected:
-                provider, model_data = find_model(ep["model_id"])
-                if provider:
-                    selected = ep
-                    break
-
-    if not provider:
-        return None
-
-    return {
-        "provider_type": "api",
-        "provider_id": provider.get("id", ""),
-        "provider_name": provider.get("name", ""),
-        "base_url": provider.get("base_url", ""),
-        "api_key": provider.get("api_key", ""),
-    }, model_data
-
-
-_rr_counters: Dict[str, int] = {}
-_rr_counter_lock = threading.Lock()
-
-
-def _round_robin_select(unified_id: str, providers: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not providers:
-        return {}
-    with _rr_counter_lock:
-        idx = _rr_counters.get(unified_id, 0)
-        idx = idx % len(providers)
-        _rr_counters[unified_id] = idx + 1
-    return providers[idx]
-
-
-def _weighted_select(providers: List[Dict[str, Any]]) -> Dict[str, Any]:
-    import random
-    weights = [p.get("weight", 1) for p in providers]
-    total = sum(weights)
-    if total <= 0:
-        return providers[0] if providers else {}
-    r = random.uniform(0, total)
-    cumulative = 0
-    for p, w in zip(providers, weights):
-        cumulative += w
-        if r <= cumulative:
-            return p
-    return providers[-1]
+    return _find_api_provider(model_id, preferred_provider_id=preferred_provider_id)
 
 
 def save_unified_model_config(
@@ -539,11 +402,8 @@ def save_unified_model_config(
     display_name: Optional[str] = None,
     icon: Optional[str] = None,
     description: Optional[str] = None,
-    routing_strategy: Optional[str] = None,
-    failover_enabled: Optional[bool] = None,
     context_length: Optional[int] = None,
     max_output_tokens: Optional[int] = None,
-    provider_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     registry = _registry._load_registry()
     models = registry.setdefault("models", {})
@@ -559,21 +419,10 @@ def save_unified_model_config(
         entry["icon"] = icon
     if description is not None:
         entry["description"] = description
-    if routing_strategy is not None:
-        entry["routing_strategy"] = routing_strategy
-    if failover_enabled is not None:
-        entry["failover_enabled"] = failover_enabled
     if context_length is not None:
         entry["context_length"] = context_length
     if max_output_tokens is not None:
         entry["max_output_tokens"] = max_output_tokens
-
-    if provider_overrides is not None:
-        existing_po = entry.setdefault("provider_overrides", {})
-        for pid, po in provider_overrides.items():
-            if pid not in existing_po:
-                existing_po[pid] = {}
-            existing_po[pid].update(po)
 
     _registry._save_registry(registry)
     _registry.invalidate_registry_cache()
@@ -581,19 +430,10 @@ def save_unified_model_config(
     return {"status": "ok", "unified_id": unified_id}
 
 
-def get_routing_strategies() -> List[Dict[str, str]]:
-    return [
-        {"id": "priority", "name": "优先级", "description": "按优先级从高到低选择提供商，高优先级不可用时自动降级"},
-        {"id": "round_robin", "name": "轮询", "description": "在所有可用提供商之间均匀轮询分配请求"},
-        {"id": "weighted", "name": "加权随机", "description": "按权重随机选择提供商，权重越高被选中概率越大"},
-    ]
-
-
 def find_model(model_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     统一的模型查找入口
 
-    优先通过统一模型注册表查找，回退到 provider_registry.find_model。
     外部模块应使用此函数而非直接调用 provider_registry.find_model。
 
     Args:

@@ -53,6 +53,7 @@ import { Switch } from '@/components/ui/switch';
 import { OCSettings } from '@/components/ui/custom/OCSettings';
 import { PromptSettings } from './settings-tabs/PromptSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelManagementTab } from './settings-tabs/ModelManagementTab';
 import { AboutTab } from './settings-tabs/AboutTab';
@@ -624,6 +625,12 @@ export function SettingsView({
   }, []);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [usersList, setUsersList] = useState<UserType[]>([]);
+  // 用户 token 额度编辑（管理员）
+  const [quotaEditUser, setQuotaEditUser] = useState<UserType | null>(null);
+  const [quotaInput, setQuotaInput] = useState('');
+  const [quotaResetUsed, setQuotaResetUsed] = useState(false);
+  const [quotaMonthlyReset, setQuotaMonthlyReset] = useState(false);
+  const [quotaSaving, setQuotaSaving] = useState(false);
   const [localModels, setLocalModels] = useState<any[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   
@@ -1140,6 +1147,46 @@ export function SettingsView({
     }
   };
 
+  const openQuotaEditor = (u: UserType) => {
+    setQuotaEditUser(u);
+    setQuotaInput(u.quota_tokens != null ? String(u.quota_tokens) : '');
+    setQuotaResetUsed(false);
+    setQuotaMonthlyReset(u.quota_monthly_reset ?? false);
+  };
+
+  const saveUserQuota = async () => {
+    if (!quotaEditUser) return;
+    const raw = quotaInput.trim().replace(/,/g, '');
+    const parsed = raw === '' ? null : parseInt(raw, 10);
+    if (raw !== '' && (isNaN(parsed!) || parsed! < 0)) {
+      toast.error('额度需为非负整数（token 数），留空表示不限');
+      return;
+    }
+    setQuotaSaving(true);
+    try {
+      await api.put(`/api/admin/users/${quotaEditUser.id}/quota`, {
+        quota_tokens: parsed,
+        reset_used: quotaResetUsed,
+        monthly_reset: quotaMonthlyReset,
+      });
+      toast.success('额度已更新');
+      setQuotaEditUser(null);
+      fetchUsers();
+    } catch (e: any) {
+      toast.error(e?.detail || e?.message || '保存失败');
+    } finally {
+      setQuotaSaving(false);
+    }
+  };
+
+  const formatQuotaStatus = (u: UserType): { text: string; cls: string } => {
+    if (u.quota_tokens == null) return { text: '额度不限', cls: 'bg-muted/60 text-muted-foreground' };
+    const remaining = Math.max(u.quota_tokens - (u.quota_used_tokens ?? 0), 0);
+    if (remaining <= 0) return { text: '已超限', cls: 'bg-red-500/15 text-red-500' };
+    const fmt = (n: number) => n >= 10000 ? `${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}万` : String(n);
+    return { text: `剩 ${fmt(remaining)}`, cls: 'bg-primary/10 text-primary' };
+  };
+
   const fetchStarters = async () => {
     try {
       const data = await api.get('/api/recommendations/starters');
@@ -1384,7 +1431,7 @@ export function SettingsView({
   );
 
   return (
-    <div className={cn('relative flex h-full overflow-hidden', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
+    <div className={cn('relative flex h-full overflow-hidden', isMobile ? '' : 'bg-background' /* 移动端透明：轨道容器层垫屏幕锚定的单一渐变 */)}>
       {/* Desktop Sidebar - Vertical Navigation */}
       <div className="hidden md:flex w-64 flex-shrink-0 border-r border-border/50 bg-background flex-col">
         {/* Sidebar Header */}
@@ -1738,7 +1785,7 @@ export function SettingsView({
                               {t.role}: {u.role}
                             </span>
                           </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 md:gap-2 mt-2">
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5 md:gap-2 mt-2">
                             <div className="p-1.5 md:p-2 rounded-lg bg-muted/40 border border-border/40">
                               <p className="text-xs text-blue-500 font-medium">输入</p>
                               <p className="text-xs md:text-sm font-bold">{(u.tokens_chat || 0) + (u.tokens_workspace || 0) + (u.tokens_character || 0)}</p>
@@ -1755,13 +1802,26 @@ export function SettingsView({
                               <p className="text-xs text-muted-foreground font-medium">存储</p>
                               <p className="text-xs md:text-sm font-bold">{((u.storage_used ?? 0) / 1024 / 1024).toFixed(1)}MB</p>
                             </div>
+                            <div className={`p-1.5 md:p-2 rounded-lg border border-border/40 ${formatQuotaStatus(u).cls}`}>
+                              <p className="text-xs font-medium">Token 额度</p>
+                              <p className="text-xs md:text-sm font-bold">{formatQuotaStatus(u).text}</p>
+                            </div>
                           </div>
                         </div>
                       </button>
                       <div className="flex gap-2 ml-2 shrink-0">
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:bg-secondary min-h-[44px] min-w-[44px]"
+                          aria-label="编辑额度"
+                          onClick={(e) => { e.stopPropagation(); openQuotaEditor(u); }}
+                        >
+                          <Settings2 size={14} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           className="text-destructive hover:bg-destructive/10 min-h-[44px] min-w-[44px]"
                           onClick={(e) => { e.stopPropagation(); handleDeleteUser(u.id); }}
                         >
@@ -1772,6 +1832,48 @@ export function SettingsView({
                   </GlassCard>
                 ))}
               </div>
+
+              {/* 额度编辑弹窗 */}
+              <Dialog open={quotaEditUser !== null} onOpenChange={(open) => { if (!open) setQuotaEditUser(null); }}>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>设置 Token 额度 — {quotaEditUser?.username}</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4 py-2">
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                        总额度（tokens），留空表示不限
+                      </label>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="如 5000000（500 万 tokens）"
+                        value={quotaInput}
+                        onChange={(e) => setQuotaInput(e.target.value)}
+                      />
+                      {quotaEditUser && quotaEditUser.quota_used_tokens != null && quotaEditUser.quota_used_tokens > 0 && (
+                        <p className="text-[11px] text-muted-foreground mt-1.5">当前已用：{quotaEditUser.quota_used_tokens.toLocaleString()} tokens</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch checked={quotaResetUsed} onCheckedChange={setQuotaResetUsed} />
+                      <span className="text-sm">同时清零已用量</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch checked={quotaMonthlyReset} onCheckedChange={setQuotaMonthlyReset} />
+                      <span className="text-sm">每月自动重置</span>
+                      <span className="text-[11px] text-muted-foreground">（按自然月清零已用量）</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      计入口径：对话生成的 prompt + 补全 + 思考 tokens 总和。额度耗尽后该用户发起聊天会被拦截。
+                    </p>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setQuotaEditUser(null)}>取消</Button>
+                    <Button onClick={saveUserQuota} disabled={quotaSaving}>{quotaSaving ? '保存中…' : '保存'}</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
               </div>
             </ScrollArea>
           )}

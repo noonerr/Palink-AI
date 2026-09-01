@@ -231,7 +231,11 @@ async def get_usage_stats(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return _get_usage_stats_for_user(user.id, period, db, hide_character_usage=False)
+    from ..services.quota_service import get_quota_state
+
+    stats = _get_usage_stats_for_user(user.id, period, db, hide_character_usage=False)
+    stats["quota"] = get_quota_state(db, user.id)
+    return stats
 
 
 @router.get("/admin/usage/{user_id}")
@@ -241,8 +245,12 @@ async def get_admin_user_usage_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_admin),
 ):
+    from ..services.quota_service import get_quota_state
+
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    return _get_usage_stats_for_user(user_id, period, db, hide_character_usage=True)
+
+    stats = _get_usage_stats_for_user(user_id, period, db, hide_character_usage=True)
+    stats["quota"] = get_quota_state(db, user_id)
+    return stats

@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   ArrowUpCircle, ArrowDownCircle, MessageSquare,
-  Sparkles, ChevronLeft, BarChart2, Brain,
+  Sparkles, ChevronLeft, BarChart2, Brain, Gauge,
 } from 'lucide-react';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,15 @@ interface CharacterChatStats extends ChatStats {
 interface UsageData {
   character_chat: CharacterChatStats;
   regular_chat: ChatStats;
+  /** 用户 token 额度状态（无额度行/NULL = 不限） */
+  quota?: {
+    unlimited: boolean;
+    quota_tokens: number | null;
+    used_tokens: number;
+    remaining: number | null;
+    monthly_reset?: boolean;
+    period_month?: string | null;
+  };
 }
 
 type Period = 'day' | 'week' | 'month' | 'all';
@@ -127,6 +136,55 @@ function CharacterTable({ rows }: { rows: CharacterEntry[] }) {
   );
 }
 
+function QuotaCard({ quota }: { quota: NonNullable<UsageData['quota']> }) {
+  const used = quota.used_tokens ?? 0;
+  if (quota.unlimited) {
+    return (
+      <div className="p-4 rounded-2xl border border-border/50 bg-card/60 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 font-medium">
+            <Gauge size={16} className="text-muted-foreground" />
+            Token 额度
+          </div>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-muted/60 text-muted-foreground">不限</span>
+        </div>
+        <p className="text-sm text-muted-foreground">已用 <span className="font-bold text-foreground">{formatTokens(used)}</span> tokens（管理员未设置额度上限）</p>
+      </div>
+    );
+  }
+  const total = quota.quota_tokens ?? 0;
+  const remaining = Math.max(total - used, 0);
+  const pct = total > 0 ? Math.min((used / total) * 100, 100) : 0;
+  const exhausted = remaining <= 0;
+  return (
+    <div className={`p-4 rounded-2xl border bg-card/60 space-y-3 ${exhausted ? 'border-red-500/40' : 'border-border/50'}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 font-medium">
+            <Gauge size={16} className={exhausted ? 'text-red-500' : 'text-primary'} />
+            Token 额度
+          </div>
+          <div className="flex items-center gap-1.5">
+            {quota.monthly_reset && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-500">每月重置</span>
+            )}
+            {exhausted && <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-500">已超限</span>}
+          </div>
+        </div>
+      <div className="flex items-baseline gap-2">
+        <span className={`text-2xl font-bold ${exhausted ? 'text-red-500' : 'text-foreground'}`}>{formatTokens(remaining)}</span>
+        <span className="text-sm text-muted-foreground">/ {formatTokens(total)} 剩余</span>
+      </div>
+      <div className="h-2 rounded-full bg-muted/60 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${exhausted ? 'bg-red-500' : 'bg-primary'}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">已用 {formatTokens(used)} tokens（{pct.toFixed(1)}%）</p>
+    </div>
+  );
+}
+
 /* ───────────── main component ───────────── */
 
 export function TokenUsagePanel({ 
@@ -202,7 +260,11 @@ export function TokenUsagePanel({
 
       {/* Overview (detail === null) */}
       {!loading && data && !detail && (
-        <div className={`grid gap-4 ${hideCharacterUsage ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+        <div className="space-y-4">
+          {/* 剩余额度卡（管理员未设置额度时显示"不限"） */}
+          {data.quota && <QuotaCard quota={data.quota} />}
+
+          <div className={`grid gap-4 ${hideCharacterUsage ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
           {/* Regular chat card */}
           <button
             className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
@@ -238,6 +300,7 @@ export function TokenUsagePanel({
               </div>
             </button>
           )}
+          </div>
         </div>
       )}
 

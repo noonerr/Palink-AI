@@ -1,5 +1,5 @@
 from .base import Base
-from .user import User
+from .user import User, UserQuota
 from .oauth import OAuthAccount
 from .session import ChatSession
 from .message import ChatMessage
@@ -22,7 +22,7 @@ from .background import Background
 
 __all__ = [
     'Base',
-    'User', 'OAuthAccount', 'ChatSession', 'ChatMessage',
+    'User', 'UserQuota', 'OAuthAccount', 'ChatSession', 'ChatMessage',
     'Character', 'CharacterChatSession', 'ChatMessage', 'CharacterChatSessionBranch',
     'UserFolder', 'UserFile',
     'SystemSetting', 'UserSetting', 'ProviderTestResult', 'GenerationPreset', 'ContextTemplate', 'InstructTemplate', 'ConnectionProfile', 'Theme',

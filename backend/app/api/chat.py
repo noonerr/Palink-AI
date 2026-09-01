@@ -19,6 +19,7 @@ from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting, ChatSession
 from ..memory_module.service import MemoryService
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
+from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.inference_queue import inference_queue
 from ..services.compact_title_service import generate_compact_title
 from ..services.web_search import search_web, format_search_results, get_web_search_config
@@ -50,6 +51,12 @@ async def chat_stream(
         settings.CHAT_RATE_LIMIT_REQUESTS,
         settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
     )
+
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(db, user.id)
+    except QuotaExceededError:
+        raise HTTPException(status_code=402, detail=QUOTA_EXCEEDED_MESSAGE)
 
     try:
         ensure_model_available(req.model)
@@ -236,7 +243,7 @@ async def chat_stream(
 
             # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
             final = result.full_content
-            token_count = result.token_count()
+            token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
             ws_json = json.dumps({"query": req.message, "results": web_search_results}, ensure_ascii=False) if web_search_results else None
             extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
 
@@ -396,6 +403,15 @@ async def chat_stream(
         finally:
             try:
                 persist_snapshot(force=True)
+
+                # 用户 token 额度扣减（按实际用量；无额度行/不限用户也会记账供展示）
+                try:
+                    deducted = compute_deduct_tokens(result, messages, req.model)
+                    deduct_usage(save_db, user.id, deducted)
+                    save_db.commit()
+                except Exception as quota_error:
+                    save_db.rollback()
+                    logger.warning(f"Quota deduction failed: {quota_error}")
 
                 if memory_mode != "disabled" and result.full_content and not memory_stored:
                     try:

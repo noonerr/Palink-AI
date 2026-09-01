@@ -26,6 +26,27 @@ def _estimate_tokens(text: str) -> int:
     return int(chinese_chars * 1.5 + other_chars * 0.25)
 
 
+def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
+    """对消息数组做 prompt 侧 token 字符启发式估算。
+
+    仅作供应商未上报 usage 时的回退（配额扣减用）；文本内容扁平化
+    （str 或 content parts 列表），与 OpenAI 计费口径存在固有偏差。
+    """
+    total = 0
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            total += _estimate_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total += _estimate_tokens(str(part.get("text", "")))
+        # role/name 等结构开销忽略（回退估算只求量级正确）
+    return total
+
+
 def _usage_int(usage: Any, name: str) -> int:
     if not usage:
         return 0

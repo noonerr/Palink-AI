@@ -3,7 +3,7 @@
 import json
 import urllib.request
 
-BASE = "http://localhost:13000"
+BASE = "http://localhost:3000"
 USER = "st_audit_2026"
 PASSWORD = "Audit2026Palink"
 ST_ORIG = r"d:\项目\Palink-AI\SillyTavern-1.18.0\SillyTavern-1.18.0\default\content\Eldoria.json"

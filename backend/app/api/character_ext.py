@@ -44,6 +44,7 @@ from ..services.inference_dispatcher import (
     ensure_model_available,
     stream_text_completion,
 )
+from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.generation_service import _build_logit_bias
 from ..core.default_prompts import build_default_character_prompt
 from ..services.character_message_builder import (
@@ -3777,6 +3778,26 @@ async def get_branch_tree(
             return default
         return cleaned or default
 
+    def _swipe_info(msg):
+        """该消息的候选（swipes）数量与当前选中的候选下标。
+        候选是 regerate/继续生成追加在同一消息上的多版本，同一消息可能有多条记录。"""
+        try:
+            swipes_list = _message_swipes(msg)
+        except Exception:
+            swipes_list = []
+        count = len(swipes_list) if swipes_list else 1
+        swipe = getattr(msg, "swipe_id", None) or 0
+        if isinstance(swipe, str):
+            try:
+                swipe = int(swipe)
+            except ValueError:
+                swipe = 0
+        try:
+            swipe = max(0, min(int(swipe), count - 1))
+        except (TypeError, ValueError):
+            swipe = 0
+        return count, swipe
+
     session = db.query(CharacterChatSession).filter(
         CharacterChatSession.id == session_id,
         CharacterChatSession.user_id == user.id
@@ -3812,6 +3833,8 @@ async def get_branch_tree(
             CharacterChatMessage.content,
             CharacterChatMessage.branch_id,
             CharacterChatMessage.short_title,
+            CharacterChatMessage.swipes,
+            CharacterChatMessage.swipe_id,
             CharacterChatMessage.created_at,
         )
         .filter(
@@ -3843,6 +3866,7 @@ async def get_branch_tree(
                     node_title = clean_storyline_preview(msg.short_title, default="开始") or clean_storyline_preview(ai_display[:20], default="开始")
                     user_summary = clean_storyline_preview(pending_user.content[:80])
                     ai_summary = clean_storyline_preview(ai_display[:80])
+                    swipe_count, current_swipe_id = _swipe_info(msg)
                     pairs.append({
                         "pair_id": f"pair_{pending_user.id}",
                         "user_msg_id": pending_user.id,
@@ -3850,6 +3874,8 @@ async def get_branch_tree(
                         "node_title": node_title,
                         "user_summary": user_summary,
                         "ai_summary": ai_summary,
+                        "swipe_count": swipe_count,
+                        "current_swipe_id": current_swipe_id,
                         "created_at": msg.created_at.isoformat() if msg.created_at else None,
                     })
                     pending_user = None
@@ -3857,6 +3883,7 @@ async def get_branch_tree(
                     ai_display = re.sub(r"<thinking>[\s\S]*?</thinking>", "", msg.content).strip()
                     node_title = clean_storyline_preview(msg.short_title, default="开始") or clean_storyline_preview(ai_display[:20], default="开始")
                     ai_summary = clean_storyline_preview(ai_display[:80])
+                    swipe_count, current_swipe_id = _swipe_info(msg)
                     pairs.append({
                         "pair_id": f"ai_{msg.id}",
                         "user_msg_id": None,
@@ -3864,6 +3891,8 @@ async def get_branch_tree(
                         "node_title": node_title,
                         "user_summary": None,
                         "ai_summary": ai_summary,
+                        "swipe_count": swipe_count,
+                        "current_swipe_id": current_swipe_id,
                         "created_at": msg.created_at.isoformat() if msg.created_at else None,
                     })
         result_branches.append({
@@ -4275,6 +4304,12 @@ async def _character_chat_impl(
     if not char:
         raise HTTPException(status_code=404, detail="Character not found")
 
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(db, user.id)
+    except QuotaExceededError:
+        raise HTTPException(status_code=402, detail=QUOTA_EXCEEDED_MESSAGE)
+
     user_nickname = req.user_nickname or user.username or "用户"
     smart_card_trigger = bool(req.smart_card_trigger)
     smart_card_context = (
@@ -4672,7 +4707,7 @@ async def _character_chat_impl(
                         char_name=char.name or "Character",
                     )
                 # [REASONING-SEPARATE] 思考不再内联包裹进 content，仅经 msg_extra.reasoning 持久化
-            token_count = result.token_count()
+            token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
 
             # Phase 3 extra 字段: reasoning 双写 + gen_id + per-swipe 元数据
             # ST 1.18.0 对齐: reasoning 同时写入 content 内联(包裹符号, 兼容旧前端)
@@ -4879,6 +4914,15 @@ async def _character_chat_impl(
         finally:
             try:
                 persist_snapshot(force=True)
+
+                # 用户 token 额度扣减（按实际用量；无额度行/不限用户也会记账供展示）
+                try:
+                    deducted = compute_deduct_tokens(result, messages, req.model)
+                    deduct_usage(save_db, user.id, deducted)
+                    save_db.commit()
+                except Exception as quota_error:
+                    save_db.rollback()
+                    logger.warning(f"Quota deduction failed: {quota_error}")
 
                 if assistant_message_id is not None:
                     try:
@@ -5686,6 +5730,14 @@ async def _run_action_stream(
         yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': err_msg}, ensure_ascii=False)}\n\n"
     finally:
         try:
+            # 用户 token 额度扣减（按实际用量；无额度行/不限用户也会记账供展示）
+            try:
+                deduct_usage(save_db, user.id, compute_deduct_tokens(result, messages, model))
+                save_db.commit()
+            except Exception as quota_error:
+                save_db.rollback()
+                logger.warning(f"Quota deduction failed: {quota_error}")
+
             final_body = (result.full_content or "").strip()
             if final_body and not final_body.startswith("Error:"):
                 message_id, final_content = persist_fn(save_db, result)
@@ -5753,6 +5805,12 @@ async def continue_session(
     """续写最后一条 assistant 消息（不添加新的 user 消息）。"""
     session, char, branch_id = _resolve_session_for_action(db, session_id, user)
     user_nickname = req.user_nickname or user.username or "用户"
+
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(db, user.id)
+    except QuotaExceededError:
+        raise HTTPException(status_code=402, detail=QUOTA_EXCEEDED_MESSAGE)
 
     last_assistant = db.query(CharacterChatMessage).filter(
         CharacterChatMessage.session_id == session_id,
@@ -5828,7 +5886,7 @@ async def continue_session(
             patched_extra.setdefault("reasoning_type", "thinking")
             msg.extra = _json_dump_or_none(patched_extra)
         msg.model = model
-        msg.tokens = result.token_count()
+        msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()
@@ -5866,6 +5924,12 @@ async def regenerate_message(
     """重新生成指定 assistant 消息，保留原响应为 swipe。"""
     session, char, branch_id = _resolve_session_for_action(db, session_id, user)
     user_nickname = req.user_nickname or user.username or "用户"
+
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(db, user.id)
+    except QuotaExceededError:
+        raise HTTPException(status_code=402, detail=QUOTA_EXCEEDED_MESSAGE)
 
     target_msg = db.query(CharacterChatMessage).filter(
         CharacterChatMessage.id == req.message_id,
@@ -5952,7 +6016,7 @@ async def regenerate_message(
             swipe_id=new_swipe_id,
         ))
         msg.model = model
-        msg.tokens = result.token_count()
+        msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()
@@ -6117,6 +6181,12 @@ async def swipe_message(
     session, char, branch_id = _resolve_session_for_action(db, session_id, user)
     user_nickname = req.user_nickname or user.username or "用户"
 
+    # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
+    try:
+        ensure_quota(db, user.id)
+    except QuotaExceededError:
+        raise HTTPException(status_code=402, detail=QUOTA_EXCEEDED_MESSAGE)
+
     target_msg = db.query(CharacterChatMessage).filter(
         CharacterChatMessage.id == req.message_id,
         CharacterChatMessage.session_id == session_id,
@@ -6198,7 +6268,7 @@ async def swipe_message(
             swipe_id=new_swipe_id,
         ))
         msg.model = model
-        msg.tokens = result.token_count()
+        msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()

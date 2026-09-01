@@ -42,6 +42,7 @@ from .st_resources import router as st_resources_router
 from .stt import router as stt_router
 from .connection_profiles import router as connection_profiles_router
 from .themes import router as themes_router
+from .gateway import router as gateway_router
 from .live2d_pool import router as live2d_pool_router
 
 api_router = APIRouter()
@@ -67,6 +68,7 @@ api_router.include_router(sessions_router)
 api_router.include_router(workspace_router)
 api_router.include_router(models_router)
 api_router.include_router(admin_router)
+api_router.include_router(gateway_router)
 api_router.include_router(recommendations_router)
 api_router.include_router(memory_router)
 api_router.include_router(router_characters)

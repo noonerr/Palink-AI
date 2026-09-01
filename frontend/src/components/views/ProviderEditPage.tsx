@@ -42,6 +42,9 @@ export function ProviderEditPage({
   const [pName, setPName] = useState('');
   const [pUrl, setPUrl] = useState('');
   const [pKey, setPKey] = useState('');
+  const [pAdminUrl, setPAdminUrl] = useState('');
+  const [pAdminUsername, setPAdminUsername] = useState('');
+  const [pAdminPassword, setPAdminPassword] = useState('');
   const [pModels, setPModels] = useState<Model[]>([]);
   const [configExpanded, setConfigExpanded] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -74,12 +77,18 @@ export function ProviderEditPage({
         setPName(provider.name);
         setPUrl(provider.base_url);
         setPKey(provider.api_key);
+        setPAdminUrl(provider.admin_url || '');
+        setPAdminUsername(provider.admin_username || '');
+        setPAdminPassword(provider.admin_password || '');
         setPModels(normalizedModels);
       }
     } else {
       setPName('');
       setPUrl('');
       setPKey('');
+      setPAdminUrl('');
+      setPAdminUsername('');
+      setPAdminPassword('');
       setPModels([]);
     }
     setLoading(false);
@@ -127,13 +136,21 @@ export function ProviderEditPage({
       return saveModel;
     });
 
+    const original = providerId && providerId !== 'new'
+      ? providers.find(p => p.id === providerId)
+      : undefined;
+
     const newProvider: Provider = {
       id: providerId && providerId !== 'new' ? providerId : `prov-${Date.now()}`,
       name: pName,
       base_url: ensureUrlHasProtocol(pUrl),
       api_key: pKey,
       models: modelsToSave,
-      is_active: true
+      is_active: true,
+      admin_url: pAdminUrl.trim() || undefined,
+      admin_username: pAdminUsername.trim() || undefined,
+      // 明文密码不回显：输入框留空时保留原值（env: 引用会原样回显，不受影响）
+      admin_password: pAdminPassword || original?.admin_password || undefined
     };
 
     const newList = providerId && providerId !== 'new'
@@ -341,6 +358,46 @@ export function ProviderEditPage({
                     <p className="text-[11px] text-muted-foreground">
                       您的密钥安全存储在本地，不会发送到任何第三方服务器
                     </p>
+                  </div>
+
+                  <div className="space-y-2 pt-1 border-t border-border/40">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pt-2 block">
+                      网关管理（可选）
+                    </label>
+                    <p className="text-[11px] text-muted-foreground">
+                      仅当此地址指向 New API / One API 网关且需要「网关对账」时填写。推荐用环境变量引用：
+                      <code className="font-mono bg-secondary px-1 rounded">env:NEWAPI_ADMIN_PASSWORD</code>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">网关后台地址（留空=由 API 地址推导）</label>
+                        <Input
+                          value={pAdminUrl}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPAdminUrl(e.target.value)}
+                          placeholder="http://127.0.0.1:13001"
+                          className="h-10 font-mono text-sm bg-background/60"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">网关管理员用户名</label>
+                        <Input
+                          value={pAdminUsername}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPAdminUsername(e.target.value)}
+                          placeholder="admin"
+                          className="h-10 bg-background/60"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] text-muted-foreground">网关管理员密码（明文不回显，留空保持不变）</label>
+                      <Input
+                        type="password"
+                        value={pAdminPassword}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPAdminPassword(e.target.value)}
+                        placeholder="已配置则留空保持不变；或填 env: 变量引用"
+                        className="h-10 font-mono text-sm bg-background/60"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

@@ -18,7 +18,6 @@ import {
   Plus,
   Plug,
   RefreshCw,
-  Route,
   Save,
   Search,
   Server,
@@ -27,9 +26,9 @@ import {
   Trash2,
   Unlink,
   UploadCloud,
-  ArrowUpDown,
   ShieldCheck,
   Volume2,
+  Network,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -40,9 +39,10 @@ import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { api, invalidateCache } from '@/services/api';
 import { AVAILABLE_ICONS, MODEL_FAMILIES, autoMatchIcon, detectModelFamily } from '@/components/views/settings-constants';
 import { MCPTab } from '@/components/views/settings-tabs/MCPTab';
-import type { Model, Provider, UnifiedModel, UnifiedModelProvider, RoutingStrategy } from '@/types';
+import { GatewayLedgerPanel, type GatewayDetectResult } from '@/components/views/settings-tabs/GatewayLedgerPanel';
+import type { Model, Provider, UnifiedModel } from '@/types';
 
-type SubTab = 'providers' | 'local' | 'routing' | 'web_search' | 'mcp' | 'tts';
+type SubTab = 'providers' | 'local' | 'models' | 'web_search' | 'mcp' | 'tts' | 'gateway';
 type LocalSubView = 'language' | 'vision';
 
 interface ModelManagementTabProps {
@@ -86,26 +86,19 @@ export function ModelManagementTab({
 }: ModelManagementTabProps) {
   const [subTab, setSubTab] = useState<SubTab>(defaultSubTab || 'providers');
   const [unifiedModels, setUnifiedModels] = useState<UnifiedModel[]>([]);
-  const [strategies, setStrategies] = useState<RoutingStrategy[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{
     display_name: string;
     icon: string;
-    routing_strategy: string;
-    failover_enabled: boolean;
     context_length: string;
     max_output_tokens: string;
-    provider_overrides: Record<string, Partial<UnifiedModelProvider>>;
   }>({
     display_name: '',
     icon: '',
-    routing_strategy: 'priority',
-    failover_enabled: true,
     context_length: '',
     max_output_tokens: '',
-    provider_overrides: {},
   });
   const [iconSearch, setIconSearch] = useState('');
   const [groupingMode, setGroupingMode] = useState<'family' | 'provider'>('family');
@@ -126,6 +119,18 @@ export function ModelManagementTab({
   const [localSubView, setLocalSubView] = useState<LocalSubView>('language');
   const [visionDropdownOpen, setVisionDropdownOpen] = useState<string | null>(null);
   const [visionDropdownPos, setVisionDropdownPos] = useState<{ top: number; left: number; width: number; modelId: string }>({ top: 0, left: 0, width: 0, modelId: '' });
+  // 网关探测结果（P2-3）：仅管理员加载，key = provider.id
+  const [gatewayInfo, setGatewayInfo] = useState<Record<string, GatewayDetectResult>>({});
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    api.get<{ providers: Record<string, GatewayDetectResult> }>('/api/admin/gateway/detect')
+      .then(res => { if (!cancelled) setGatewayInfo(res.providers || {}); })
+      .catch(() => { /* 探测失败静默：卡片不显示网关徽标即可 */ });
+    return () => { cancelled = true; };
+  }, [isAdmin, providers]);
+
   
   // TTS 状态
   const [ttsVoices, setTtsVoices] = useState<any[]>([]);
@@ -218,12 +223,8 @@ export function ModelManagementTab({
   const fetchUnifiedModels = useCallback(async () => {
     setLoading(true);
     try {
-      const [modelsData, strategiesData] = await Promise.all([
-        api.get<UnifiedModel[]>(API_BASE),
-        api.get<RoutingStrategy[]>(`${API_BASE}/strategies`),
-      ]);
+      const modelsData = await api.get<UnifiedModel[]>(API_BASE);
       setUnifiedModels(Array.isArray(modelsData) ? modelsData : []);
-      setStrategies(Array.isArray(strategiesData) ? strategiesData : []);
     } catch (e) {
       console.error('Failed to fetch unified models:', e);
     } finally {
@@ -232,7 +233,7 @@ export function ModelManagementTab({
   }, []);
 
   useEffect(() => {
-    if (subTab === 'routing') {
+    if (subTab === 'models') {
       fetchUnifiedModels();
     }
   }, [subTab, fetchUnifiedModels]);
@@ -330,25 +331,11 @@ export function ModelManagementTab({
 
   const startEditModel = (model: UnifiedModel) => {
     setEditingModel(model.unified_id);
-    const overrides: Record<string, Partial<UnifiedModelProvider>> = {};
-    for (const p of model.providers) {
-      overrides[p.provider_id] = {
-        priority: p.priority,
-        weight: p.weight,
-        enabled: p.enabled,
-        max_rpm: p.max_rpm,
-        max_concurrent: p.max_concurrent,
-        max_tokens_per_min: p.max_tokens_per_min,
-      };
-    }
     setEditForm({
       display_name: model.display_name,
       icon: model.icon,
-      routing_strategy: model.routing_strategy,
-      failover_enabled: model.failover_enabled,
       context_length: model.context_length != null ? String(model.context_length) : '',
       max_output_tokens: model.max_output_tokens != null ? String(model.max_output_tokens) : '',
-      provider_overrides: overrides,
     });
   };
 
@@ -365,11 +352,12 @@ export function ModelManagementTab({
     try {
       const ctx = parseTokenInput(editForm.context_length);
       const out = parseTokenInput(editForm.max_output_tokens);
-      const payload: any = { ...editForm };
+      const payload: any = {
+        display_name: editForm.display_name,
+        icon: editForm.icon,
+      };
       if (ctx != null) payload.context_length = ctx;
-      else delete payload.context_length;
       if (out != null) payload.max_output_tokens = out;
-      else delete payload.max_output_tokens;
       await api.put(`${API_BASE}/${encodeURIComponent(unifiedId)}`, payload);
       invalidateCache('/api/models');
       invalidateCache(API_BASE);
@@ -386,19 +374,6 @@ export function ModelManagementTab({
     }
   };
 
-  const updateProviderOverride = (providerId: string, field: string, value: any) => {
-    setEditForm((prev) => ({
-      ...prev,
-      provider_overrides: {
-        ...prev.provider_overrides,
-        [providerId]: {
-          ...(prev.provider_overrides[providerId] || {}),
-          [field]: value,
-        },
-      },
-    }));
-  };
-  
   // TTS 相关函数
   const handleSaveTtsVoice = async (voiceId: string, gender: string) => {
     try {
@@ -413,7 +388,8 @@ export function ModelManagementTab({
   const subTabs: { key: SubTab; label: string; icon: React.ReactNode }[] = [
     { key: 'providers', label: '提供商', icon: <Sparkles size={16} /> },
     { key: 'local', label: '本地模型', icon: <Database size={16} /> },
-    { key: 'routing', label: '路由', icon: <Route size={16} /> },
+    { key: 'models', label: '模型', icon: <Layers size={16} /> },
+    { key: 'gateway', label: '网关对账', icon: <Network size={16} /> },
     { key: 'web_search', label: '搜索', icon: <Globe size={16} /> },
     { key: 'mcp', label: 'MCP', icon: <Plug size={16} /> },
     { key: 'tts', label: '语音', icon: <Volume2 size={16} /> },
@@ -428,7 +404,8 @@ export function ModelManagementTab({
       <div className="flex items-center gap-2 border-b border-border/50 pb-4 shrink-0 overflow-x-auto">
         {visibleSubTabs.map((tab) => {
           if (tab.key === 'local' && !isAdmin) return null;
-          if (tab.key === 'routing' && !isAdmin) return null;
+          if (tab.key === 'models' && !isAdmin) return null;
+          if (tab.key === 'gateway' && !isAdmin) return null;
           return (
             <button
               key={tab.key}
@@ -447,7 +424,7 @@ export function ModelManagementTab({
       </div>
       )}
 
-      {subTab === 'providers' && (
+              {subTab === 'providers' && (
         <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="space-y-4">
               <div className="flex justify-between items-center">
@@ -462,6 +439,7 @@ export function ModelManagementTab({
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
               {providers.map((provider) => {
                 const status = providerStatus[provider.id];
+                const gw = gatewayInfo[provider.id];
                 return (
                   <GlassCard key={provider.id} className="p-4 sm:p-5 hover:shadow-lg transition-all group" hover>
                     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
@@ -474,6 +452,14 @@ export function ModelManagementTab({
                             title={status?.message || '未测试'}
                           />
                           <h4 className="font-semibold truncate text-sm sm:text-base">{provider.name}</h4>
+                          {gw?.is_gateway && (
+                            <span
+                              className="text-[10px] bg-amber-500/15 text-amber-500 px-2 py-0.5 rounded-full shrink-0"
+                              title={`${gw.flavor === 'new-api' ? 'New API' : 'One API'} 网关 ${gw.version || ''}`}
+                            >
+                              网关{gw.version ? ` · ${gw.version}` : ''}
+                            </span>
+                          )}
                           <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">
                             {(provider.models || []).length} {t.active_models || '个模型'}
                           </span>
@@ -513,6 +499,18 @@ export function ModelManagementTab({
                         </div>
                       </div>
                       <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                        {gw?.is_gateway && gw.admin_url && (
+                          <a
+                            href={gw.admin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center h-8 px-2 rounded-md text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                            title={`打开网关管理后台（${gw.admin_url}）`}
+                          >
+                            <Network size={14} className="mr-1" />
+                            后台
+                          </a>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -546,6 +544,10 @@ export function ModelManagementTab({
               })}
             </div>
         </div>
+      )}
+
+      {subTab === 'gateway' && isAdmin && (
+        <GatewayLedgerPanel t={t} providers={providers} gatewayInfo={gatewayInfo} />
       )}
 
       {subTab === 'local' && isAdmin && (
@@ -935,13 +937,13 @@ export function ModelManagementTab({
         </div>
       )}
 
-      {subTab === 'routing' && isAdmin && (
+      {subTab === 'models' && isAdmin && (
         <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
               <div className="min-w-0">
-                <h3 className="text-2xl font-semibold">路由策略</h3>
+                <h3 className="text-2xl font-semibold">模型管理</h3>
                 <p className="text-sm text-muted-foreground mt-1">
-                  管理同型号模型的多提供商路由策略、优先级和故障转移设置
+                  管理 API / 本地模型的显示名称、图标与 token 上限设置
                 </p>
               </div>
               <Button onClick={fetchUnifiedModels} disabled={loading} className="shrink-0">
@@ -1010,19 +1012,8 @@ export function ModelManagementTab({
                                 {model.providers.length}个提供商
                               </span>
                             )}
-                            {model.failover_enabled && multiProvider && (
-                              <span className="text-[10px] bg-green-500/15 text-green-500 dark:text-green-400 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shrink-0">
-                                <ShieldCheck size={10} />
-                                故障转移
-                              </span>
-                            )}
                           </div>
                           <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                            <span className="flex items-center gap-0.5 shrink-0">
-                              <Route size={10} />
-                              {strategies.find((s) => s.id === model.routing_strategy)?.name || model.routing_strategy}
-                            </span>
-                            <span className="shrink-0">•</span>
                             <span className="shrink-0">{model.providers.filter((p) => p.enabled).length}/{model.providers.length} 可用</span>
                           </div>
                         </div>
@@ -1167,142 +1158,6 @@ export function ModelManagementTab({
                                 </div>
                               </div>
 
-                              <div>
-                                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">路由策略</label>
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                  {strategies.map((s) => (
-                                    <button
-                                      key={s.id}
-                                      onClick={() => setEditForm((prev) => ({ ...prev, routing_strategy: s.id }))}
-                                      className={`p-2.5 sm:p-3 rounded-lg border text-left transition-all ${
-                                        editForm.routing_strategy === s.id
-                                          ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
-                                          : 'border-border hover:border-primary/30'
-                                      }`}
-                                    >
-                                      <div className="font-medium text-sm">{s.name}</div>
-                                      <div className="text-[10px] text-muted-foreground mt-0.5">{s.description}</div>
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-
-                              {multiProvider && (
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <Switch
-                                      checked={editForm.failover_enabled}
-                                      onCheckedChange={(checked) => setEditForm((prev) => ({ ...prev, failover_enabled: checked }))}
-                                    />
-                                    <span className="text-sm">启用故障转移</span>
-                                  </div>
-                                </div>
-                              )}
-
-                              <div>
-                                <div className="flex items-center gap-2 mb-2">
-                                  <Settings2 size={14} className="text-muted-foreground" />
-                                  <span className="text-xs font-medium text-muted-foreground">提供商配置</span>
-                                </div>
-                                <div className="space-y-2">
-                                  {model.providers.map((provider, idx) => {
-                                    const po = editForm.provider_overrides[provider.provider_id] || {};
-                                    return (
-                                      <div
-                                        key={provider.provider_id}
-                                        className={`p-2.5 sm:p-3 rounded-lg border border-border/50 overflow-x-hidden ${
-                                          !po.enabled && po.enabled !== undefined ? 'opacity-50' : ''
-                                        }`}
-                                      >
-                                        <div className="flex items-center gap-1.5 sm:gap-2 mb-2 flex-wrap">
-                                          <ArrowUpDown size={12} className="text-muted-foreground shrink-0" />
-                                          <span className="text-sm font-medium break-words">{provider.provider_name}</span>
-                                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${
-                                            provider.provider_type === 'local'
-                                              ? 'bg-amber-500/15 text-amber-500 dark:text-amber-400'
-                                              : 'bg-sky-500/15 text-sky-500 dark:text-sky-400'
-                                          }`}>
-                                            {provider.provider_type === 'local' ? '本地' : '云端 API'}
-                                          </span>
-                                          {idx === 0 && po.enabled !== false && (
-                                            <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full shrink-0">
-                                              首选
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div>
-                                            <label className="text-[10px] text-muted-foreground block">优先级</label>
-                                            <input
-                                              type="number"
-                                              value={po.priority ?? provider.priority ?? 0}
-                                              onChange={(e) =>
-                                                updateProviderOverride(provider.provider_id, 'priority', parseInt(e.target.value) || 0)
-                                              }
-                                              className="w-full px-2 py-1 rounded border border-border bg-background text-xs"
-                                              min={0}
-                                              max={100}
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="text-[10px] text-muted-foreground block">权重</label>
-                                            <input
-                                              type="number"
-                                              value={po.weight ?? provider.weight ?? 1}
-                                              onChange={(e) =>
-                                                updateProviderOverride(provider.provider_id, 'weight', parseInt(e.target.value) || 1)
-                                              }
-                                              className="w-full px-2 py-1 rounded border border-border bg-background text-xs"
-                                              min={1}
-                                              max={100}
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="text-[10px] text-muted-foreground block">RPM限制</label>
-                                            <input
-                                              type="number"
-                                              value={po.max_rpm ?? provider.max_rpm ?? 0}
-                                              onChange={(e) =>
-                                                updateProviderOverride(provider.provider_id, 'max_rpm', parseInt(e.target.value) || 0)
-                                              }
-                                              className="w-full px-2 py-1 rounded border border-border bg-background text-xs"
-                                              min={0}
-                                              placeholder="0=不限"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="text-[10px] text-muted-foreground block">并发限制</label>
-                                            <input
-                                              type="number"
-                                              value={po.max_concurrent ?? provider.max_concurrent ?? 0}
-                                              onChange={(e) =>
-                                                updateProviderOverride(provider.provider_id, 'max_concurrent', parseInt(e.target.value) || 0)
-                                              }
-                                              className="w-full px-2 py-1 rounded border border-border bg-background text-xs"
-                                              min={0}
-                                              placeholder="0=不限"
-                                            />
-                                          </div>
-                                        </div>
-                                        <div className="mt-2">
-                                          <div className="flex items-center gap-2">
-                                            <Switch
-                                              checked={po.enabled ?? provider.enabled ?? true}
-                                              onCheckedChange={(checked) =>
-                                                updateProviderOverride(provider.provider_id, 'enabled', checked)
-                                              }
-                                            />
-                                            <span className="text-xs text-muted-foreground">
-                                              {(po.enabled ?? provider.enabled ?? true) ? '已启用' : '已禁用'}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-
                               <div className="flex justify-end gap-2 pt-2 border-t border-border/50">
                                 <Button
                                   variant="ghost"
@@ -1352,14 +1207,8 @@ export function ModelManagementTab({
                                         )}
                                       </div>
                                       <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                                        <span className="shrink-0">优先级: {provider.priority}</span>
-                                        <span className="shrink-0">•</span>
-                                        <span className="shrink-0">权重: {provider.weight}</span>
                                         {provider.provider_type === 'api' && (
-                                          <>
-                                            <span className="shrink-0">•</span>
-                                            <span className="break-all min-w-0">{provider.base_url}</span>
-                                          </>
+                                          <span className="break-all min-w-0">{provider.base_url}</span>
                                         )}
                                       </div>
                                     </div>
@@ -1376,7 +1225,7 @@ export function ModelManagementTab({
                                   }}
                                 >
                                   <Settings2 size={14} className="mr-1" />
-                                  配置路由
+                                  编辑配置
                                 </Button>
                               </div>
                             </>
