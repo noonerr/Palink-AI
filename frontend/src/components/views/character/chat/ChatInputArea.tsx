@@ -3,6 +3,7 @@
  * 从 CharacterChat 提取的输入区域组件，统一处理移动端和桌面端
  */
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 import { ChatInput } from '@/components/ui/custom/ChatInput';
 import type { Character } from '@/types';
@@ -51,14 +52,13 @@ export function ChatInputArea({
   character,
   t,
 }: ChatInputAreaProps) {
-  // iOS WebApp 忽略 interactive-widget=overlays-content，键盘弹出时视口自动缩小
-  // （nav 已被推到键盘上方），因此输入框始终用 CSS 变量定位在 nav 上方，
-  // 不需要额外加 keyboardHeight（否则会双重偏移，输入框离 nav 很远）
+  // 键盘未弹起时输入框停在 dock 栏上方；弹起后 dock 隐藏。
   const cssDockHeight = typeof getComputedStyle !== 'undefined'
     ? parseInt(getComputedStyle(document.documentElement).getPropertyValue('--palink-dock-height') || '90', 10)
     : 90;
   const mobileComposerClosedBottomPx = composerBottomPx > 0 ? composerBottomPx : cssDockHeight;
-  // 始终用 CSS var()，让浏览器实时读取 --palink-dock-height（由 MobileBottomNav 写入）
+  // 【K13 原始基线】不做任何 JS 抬升：关闭态停在 dock 上方；聚焦后由纯 CSS
+  // （index.css :has(:focus)）落到最底 bottom:0，之后交给系统原生行为。
   const mobileComposerBottom = `var(--palink-dock-height, ${mobileComposerClosedBottomPx}px)`;
 
   const placeholder = t.chat_with_character
@@ -96,7 +96,15 @@ export function ChatInputArea({
 
   // 移动端
   if (isMobile) {
-    return (
+    // 【关键】fixed + Portal 到 document.body：
+    // iOS 26/27 键盘弹起只缩 visual viewport、layout viewport 不变（WebKit
+    // Bug 304976），fixed bottom:0 不再被系统顶起 —— 位置完全由 JS 写入的
+    // --palink-kb-vh 决定（K9 一步到位，无过渡）。
+    // Portal 到 body 是为了逃离 MobilePager 槽位的 transform/will-change
+    // 包含块（否则 fixed 会锚到槽位而不是视口），同时使
+    // index.css 的 body > [data-palink-chat-composer] 抬升规则命中本元素
+    // （对话主页的嵌套 composer 被该选择器排除）。
+    const mobileComposer = (
       <div
         data-palink-chat-composer="true"
         className={cn(
@@ -106,13 +114,15 @@ export function ChatInputArea({
         style={{ bottom: mobileComposerBottom }}
       >
         <div className="mx-auto max-w-3xl">
+          {/* 移动端"新对话"按钮已按用户要求移除（2026-08-30）：入口与桌面 Dock/侧栏重复，
+              且遮挡输入区左侧。桌面端按钮保留（[TAG:DESKTOP-DO-NOT-TOUCH] 范围）。 */}
           <ChatInput
             {...chatInputProps}
-            leadingAction={newConversationButton}
           />
         </div>
       </div>
     );
+    return createPortal(mobileComposer, document.body);
   }
 
   // 桌面端

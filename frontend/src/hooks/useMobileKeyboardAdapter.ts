@@ -183,15 +183,15 @@ export function useMobileKeyboardAdapter({
     ? Math.max(0, composerBottomLockPx)
     : composerBottomOffset;
 
-  const messageBottomPaddingPx = isKeyboardOpen
-    ? 16
-    : Math.max(
-        16,
-        (effectiveComposerBottomOffset > 0 ? effectiveComposerBottomOffset : 90)
-          + COMPOSER_CONTAINER_TOP_PADDING_PX
-          + MESSAGE_TO_COMPOSER_GAP_PX
-          - MESSAGES_OUTER_BOTTOM_PADDING_PX
-      );
+  // 【K9】对话主页排除在键盘方案外：输入框不再随键盘抬升，留白恒按 dock 态
+  // 计算，键盘开/关时消息内容零位移。
+  const messageBottomPaddingPx = Math.max(
+    16,
+    (effectiveComposerBottomOffset > 0 ? effectiveComposerBottomOffset : 90)
+      + COMPOSER_CONTAINER_TOP_PADDING_PX
+      + MESSAGE_TO_COMPOSER_GAP_PX
+      - MESSAGES_OUTER_BOTTOM_PADDING_PX
+  );
 
   return {
     composerBottomOffset: effectiveComposerBottomOffset,

@@ -1,5 +1,11 @@
 node_modules
 dist
+# 历史构建产物目录（dist_bak_* / dist_fix_* / dist.prev / dist.bak 等）。
+# Dockerfile 用 COPY . . 且构建在容器内完成（npm run build），这些目录对镜像毫无用处，
+# 不排除会让构建上下文膨胀到数 GB、COPY 阶段极慢。新产物一律落到 dist/。
+dist_*
+dist.*
+dist-*
 .git
 *.md
 .env*

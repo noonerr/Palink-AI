@@ -156,12 +156,16 @@ export function ChatSidebar({
     return (
       <aside
         className={cn(
-          'mobile-storyline-sidebar fixed inset-y-0 left-0 w-[320px] transform-gpu px-0 pb-0 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform ease-in-out z-[60]',
+          'mobile-storyline-sidebar fixed inset-y-0 left-0 w-[80%] transform-gpu px-0 pb-0 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform ease-in-out z-[60]',
           isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
         )}
         style={{
-          transform: `translate3d(${mobileSidebarOpen ? 0 : -320}px, 0, 0)`,
+          // 关闭态位移用自身宽度的 -100%（固定元素宽度=视口 80%，与聊天历史侧栏一致）
+          transform: `translate3d(${mobileSidebarOpen ? 0 : -100}%, 0, 0)`,
           transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+          // 与底部 dock / 正文右移共用同一条曲线（Tailwind ease-in-out），
+          // 三者必须逐帧同步，见 MobileBottomNav dock 注释
+          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
         }}
       >
         <div className="flex h-full flex-col overflow-hidden relative">

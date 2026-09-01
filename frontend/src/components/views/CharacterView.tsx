@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useCharacterChat } from '@/hooks/useCharacterChat';
 import { useMessageSelection } from '@/hooks/useMessageSelection';
@@ -35,7 +35,7 @@ interface CharacterViewProps {
   isDark?: boolean;
   sidebarCollapsed?: boolean;
   setSidebarCollapsed?: (v: boolean) => void;
-  setDockOffset?: (offset: number) => void;
+  setDockOffset?: (offset: number | string) => void;
 }
 
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
@@ -180,16 +180,20 @@ export function CharacterView({
 
   const setMobileSidebarOpen = useCallback((open: boolean) => {
     setMobileSidebarOpenRaw(open);
-    if (isMobile) {
-      setDockOffset?.(open ? 320 : 0);
-    }
-  }, [isMobile, setDockOffset]);
+  }, []);
 
-  useLayoutEffect(() => {
-    if (!isMobile) {
-      setDockOffset?.(storylineCollapsed ? 0 : 320);
-    }
-  }, [isMobile, storylineCollapsed, setDockOffset]);
+  // dock 偏移由渲染状态声明式推导：移动端故事线侧栏只在聊天视图渲染，离开聊天视图
+  // （返回列表/路由切到其他 tab）即归零。MobilePager 四槽常驻下本组件不卸载，
+  // 依赖卸载清理复位会残留偏移，导致 dock 在其他 tab 上仍带着角色页侧栏的位移。
+  // 移动端侧栏已是 w-[80%]（视口 80%），让位量用同源 '80vw' 随视口自适应，
+  // 与正文右移 80% 保持一致（宽屏下 dock 不再因 320px 常数右移不足而失位）。
+  const nextDockOffset: number | string = isMobile
+    ? (mobileSidebarOpen && viewState === 'chat' ? '80vw' : 0)
+    : (storylineCollapsed ? 0 : 320);
+
+  useEffect(() => {
+    setDockOffset?.(nextDockOffset);
+  }, [nextDockOffset, setDockOffset]);
 
   useEffect(() => {
     return () => {
@@ -319,6 +323,34 @@ export function CharacterView({
     }
   }, [pl, selectedSession?.id]);
 
+  // 每次写入型动作（regenerate / send / continue / edit / delete）完成后：
+  // 1) 失效 branch-tree / branches / messages 缓存，保证故事线侧栏拿到的节点摘要
+  //    与 DB 同步（regenerate 追加 swipe 会刷新 ai_summary、新消息会新增节点）。
+  // 2) 立刻重拉 branch-tree + branches 使 UI 无需等待用户手动重开。
+  //    loadBranches/fetchBranchTree 在本组件下方声明（稍后定义），因此通过 ref
+  //    解耦前向引用，避免 TS 报错「use before declaration」。
+  const loadBranchesRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
+  const fetchBranchTreeRef = useRef<() => Promise<void>>(async () => undefined);
+  const handleAfterWrite = useCallback(async (_kind: 'regenerate' | 'send' | 'continue' | 'edit' | 'delete') => {
+    const sid = selectedSession?.id;
+    if (!sid) return;
+    try {
+      invalidateCache(`/api/character-sessions/${sid}/branch-tree`);
+      invalidateCache(`/api/character-sessions/${sid}/branches`);
+      invalidateCache(`/api/character-sessions/${sid}/messages`);
+    } catch {
+      /* ignore cache-invalidate errors */
+    }
+    try {
+      await Promise.all([
+        loadBranchesRef.current(sid),
+        fetchBranchTreeRef.current(),
+      ]);
+    } catch (e) {
+      console.warn('[CharacterView] onAfterWrite 刷新故事线失败:', e);
+    }
+  }, [selectedSession?.id]);
+
   const handleEditorCancel = useCallback(() => {
     setViewState('list');
     setEditingCharacter({});
@@ -371,6 +403,7 @@ export function CharacterView({
     onBranchCreated: handleBranchCreated,
     responseLength,
     onPlotLineAdvanced: handlePlotLineAdvanced,
+    onAfterWrite: handleAfterWrite,
   });
 
   // Message selection hook
@@ -528,6 +561,9 @@ export function CharacterView({
       console.error('Failed to load branches:', e);
     }
   }, []);
+  // 前向引用解耦：loadBranches/fetchBranchTree 在 handleAfterWrite 之后才声明，
+  // 通过 ref 回写，使 onAfterWrite 执行时能调用到真实函数。
+  loadBranchesRef.current = loadBranches;
 
   const createBranch = async (_branchName?: string) => {
     if (!selectedSession) return;
@@ -624,6 +660,7 @@ export function CharacterView({
       console.error('Failed to fetch branch tree:', e);
     }
   }, [selectedSession]);
+  fetchBranchTreeRef.current = fetchBranchTree;
 
   const handleStorylineNavigate = useCallback(async (branchId: string, messageId: number | null, isLeaf: boolean) => {
     if (!selectedSession) return;
@@ -1787,6 +1824,7 @@ export function CharacterView({
           fetchBranchTree={fetchBranchTree}
           branchTree={branchTree}
           handleStorylineNavigate={handleStorylineNavigate}
+          onStorylineChanged={() => void handleAfterWrite('edit')}
           forkPoint={forkPoint}
           clearForkPoint={handleClearForkPoint}
           showDeleteBranchConfirm={showDeleteBranchConfirm}

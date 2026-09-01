@@ -257,6 +257,8 @@ export interface CharacterChatProps {
   fetchBranchTree: () => Promise<void>;
   branchTree: BranchTree | null;
   handleStorylineNavigate: (branchId: string, messageId: number | null, isLeaf: boolean) => Promise<void>;
+  /** 候选切换（swipe）/ 其他组件内写操作完成后，通知父级刷新故事线（失效 branch-tree 缓存并重拉） */
+  onStorylineChanged?: () => void;
   forkPoint: { branchId: string; messageId: number } | null;
   clearForkPoint: () => void;
   showDeleteBranchConfirm: boolean;
@@ -426,6 +428,7 @@ export function CharacterChat(props: CharacterChatProps) {
     branches, selectedBranch, createBranch, switchBranch, deleteBranch,
     fetchBranchTree, branchTree,
     handleStorylineNavigate, forkPoint, clearForkPoint,
+    onStorylineChanged,
     showDeleteBranchConfirm, setShowDeleteBranchConfirm, confirmDeleteBranch,
     isMixedDeleteMode, setIsMixedDeleteMode,
     selectedWholeMessages, selectedMessageParts,
@@ -1379,6 +1382,8 @@ export function CharacterChat(props: CharacterChatProps) {
             ? { ...m, swipe_id: next, content: swipes[next] ?? m.content }
             : m
         )));
+        // 候选切换也是写操作：通知父级刷新故事线缓存，使节点「当前候选下标/摘要」与聊天内保持一致
+        onStorylineChanged?.();
       } catch (e) {
         console.error('Swipe message failed:', e);
         toast.error('切换候选回复失败');
@@ -1407,14 +1412,9 @@ export function CharacterChat(props: CharacterChatProps) {
     }
   }, [selectedSession, setMessages]);
   const mobileComposerClosedBottomPx = composerBottomPx > 0 ? composerBottomPx : 90;
-  // iOS WebApp 键盘弹出时视口已自动缩小，输入框定位在 nav 上方（不需要 keyboardHeight）
-  const mobileComposerKeyboardBottomPx = mobileComposerClosedBottomPx;
-  const mobileMessagesBottomPaddingPx = isKeyboardOpen
-    ? Math.max(
-        140,
-        mobileComposerKeyboardBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX,
-      )
-    : mobileComposerClosedBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX;
+  // 【K13 原始基线】无键盘检测布局：留白恒按关闭态（dock 上方）计算
+  const mobileMessagesBottomPaddingPx =
+    mobileComposerClosedBottomPx + MOBILE_CHAT_INPUT_ESTIMATED_HEIGHT_PX + MOBILE_CHAT_INPUT_GAP_PX;
   // [N-3] 稳定切片：历史部分（index < len-K，K=SMART_CARD_TAIL_REALTIME_COUNT）冻结于 ref 快照，
   // 仅在 会话切换 / 消息数量变化 / 正则脚本集变化 / 生成相位翻转（isGenerating 起止，作为流的
   // 提交点：发起时尾条清空、结束时写入终稿）时重建；尾部 K 条实时更新。对外输出完整数组，
@@ -1474,6 +1474,23 @@ export function CharacterChat(props: CharacterChatProps) {
   }, [displayedMessages.length, selectedSession?.id, isGenerating, globalRegexScripts, selectedCharacter.name, user.username, sessionVisualSnapshot]);
 
   const totalMsgCount = displayedMessages.length;
+
+  // [CANDIDATE-ONLY-ON-LATEST] 当前显示范围内「有效最新 assistant 消息 ID」：
+  // 按 displayedMessages 正序扫，取最后一条 role=assistant 的 ID。
+  // 这使得：
+  //   1) 正常聊天，最后一条 assistant 即为「最新」，候选导航 + 重绘 + 按钮仅在其上显示；
+  //   2) 故事线选择某节点跳转后（后端 switch up_to_message_id 把 displayedMessages
+  //      截断至目标点），目标位置之后的消息不再显示，目标位置的 assistant 自动成为
+  //      新的「最新」，候选 UI 只会出现在它上面，符合「跳转到 2 则 2 为最新」的规则。
+  // 消息未持久化（id 为本地临时串）时按 undefined 兜底（Message 组件比较会为 false，
+  // 不展示候选 UI，待持久化 final_content 后下一次重渲染生效）。
+  const currentLatestAssistantId = useMemo(() => {
+    let found: string | number | undefined = undefined;
+    for (const m of displayedMessages) {
+      if (m.role === 'assistant' && m.id != null) found = m.id;
+    }
+    return found == null ? null : String(found);
+  }, [displayedMessages]);
 
   // Fix 3: 暴露 window.__palinkChatMessages 给 ST 插件 sandbox（getChatMessages / getLastMessageId 数据源）
   // 结构对齐 ST chat 数组：name / is_user / is_system / mes / mesid / send_date / swipes / extra
@@ -1739,8 +1756,11 @@ export function CharacterChat(props: CharacterChatProps) {
           isMobile ? 'absolute inset-0 z-10 w-full overflow-hidden' : 'relative w-full'
         )}
         style={isMobile ? {
-          transform: `translate3d(${effectiveMobileSidebarOpen ? 320 : 0}px, 0, 0)`,
+          // 正文右移量 = 侧栏宽（自身宽 80%，与故事线侧栏 w-[80%] 同步）
+          transform: `translate3d(${effectiveMobileSidebarOpen ? 80 : 0}%, 0, 0)`,
           transitionDuration: `${HISTORY_SLIDE_DURATION_MS}ms`,
+          // 与底部 dock / 侧栏滑入共用同一条曲线，三者逐帧同步
+          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
         } : undefined}
         onClick={() => {
           if (isMobile && mobileSidebarOpen && !isNavigating) {
@@ -1880,12 +1900,15 @@ export function CharacterChat(props: CharacterChatProps) {
         {(displayedMessages.length > 0 || displayedActiveSessionId) && (
           <div
             id="chat"
-            className={cn('rp-chat-area flex-1 flex flex-col overflow-y-auto space-y-4 pt-4 pb-4 w-full', isMobile ? 'px-1' : 'px-2')}
-            style={isMobile ? { paddingBottom: `${mobileMessagesBottomPaddingPx}px` } : undefined}
+            className={cn('rp-chat-area flex-1 flex flex-col overflow-y-auto space-y-4 w-full', isMobile ? 'px-1' : 'px-2 pt-4 pb-4')}
+            style={isMobile ? { paddingTop: 'calc(env(safe-area-inset-top) + 3.5rem)', paddingBottom: `${mobileMessagesBottomPaddingPx}px` } : undefined}
             onScroll={handleScroll}
             onClick={() => { activePausedAutoScrollRef.current = true; }}
           >
-            {isMobile && (
+            {/* 顶部强制留空：桌面端 header 为流式布局（不遮挡内容），保留占位作为视觉留空；
+                移动端 header 为悬浮覆盖层，改用滚动容器自身 paddingTop（不会随滚动消失，
+                内容始终无法滚入 header 之下），因此这里不再重复加占位。 */}
+            {!isMobile && (
               <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />
             )}
             {wb.sessionStatus?.active && (
@@ -1931,6 +1954,18 @@ export function CharacterChat(props: CharacterChatProps) {
               </div>
             )}
             {displayedMessages.map((msg, idx) => {
+              const msgId = msg.id != null ? String(msg.id) : null;
+              // 当前消息是否为「有效最新 assistant」：
+              //   - 非 assistant → false
+              //   - assistant 但 id 未持久化 → false（避免生成中/本地临时 id 展示候选 UI）
+              //   - 否则与 currentLatestAssistantId 比较（故事线截断目标点即成为最新，
+              //     对应 displayedMessages 最后一条 assistant）。
+              const isCurrentLatestAssistant = Boolean(
+                msg.role === 'assistant'
+                  && msgId != null
+                  && currentLatestAssistantId != null
+                  && msgId === currentLatestAssistantId,
+              );
               return (
               <Message
                 key={msg.id || idx}
@@ -1953,14 +1988,15 @@ export function CharacterChat(props: CharacterChatProps) {
                 models={models}
                 streaming={(isGenerating && idx === totalMsgCount - 1) || regeneratingMessageIndex === idx}
                 isLast={idx === totalMsgCount - 1}
+                isCurrentLatestAssistant={isCurrentLatestAssistant}
                 t={t}
                 tokens={msg.tokens}
                 memoryMode={memoryMode}
                 memoryStats={idx === totalMsgCount - 1 && msg.role === 'assistant' ? memoryStats : null}
                 onCompress={idx === totalMsgCount - 1 && msg.role === 'assistant' ? manualCompressMemory : undefined}
                 compressing={compressing}
-                onRegenerate={msg.role === 'assistant' && !isGenerating ? handleRegenerateAt : undefined}
-                canRegenerate={msg.role === 'assistant' && !isGenerating}
+                onRegenerate={isCurrentLatestAssistant && !isGenerating ? handleRegenerateAt : undefined}
+                canRegenerate={isCurrentLatestAssistant && !isGenerating}
                 showModelReasoning={showModelReasoning}
                 onEdit={msg.id != null ? handleEditAt : undefined}
                 // [批次B] user 消息同样开放编辑入口（后端 PUT /messages/{mid} 对 user 消息同样支持）

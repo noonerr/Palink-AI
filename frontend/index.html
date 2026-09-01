@@ -2,13 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
+    <!-- 注意：此处曾带 interactive-widget=overlays-content。
+         其规范语义是「键盘不收缩 viewport，也不收缩 visual viewport」——
+         与本项目依赖的「iOS 把 fixed bottom:0 顶到键盘上沿」机制直接冲突。
+         iOS 若已实现该特性，会主动关掉 fixed 上推，导致哨兵测不到键盘高度、
+         输入框落在布局视口底部被键盘盖住（即「视口显示页面顶部」）。
+         保留它没有任何收益：不支持时被忽略，支持时有害。已移除。
+         另：maximum-scale/user-scalable 在 iOS 10+ 默认被忽略，保留仅为安卓。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
+    <!-- 缓存控制：配合 nginx no-cache 策略，进一步防止 iOS Safari 内存缓存 -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Palink AI v0.21.2</title>
     
     <link rel="manifest" href="/manifest.json" />
-    <!-- theme-color 必须与 manifest.json 的 theme_color 一致，避免启动阶段颜色跳变 -->
-    <meta name="theme-color" content="#1a1a2e" />
+    <!-- theme-color 必须与 manifest.json 的 theme_color 一致，避免启动阶段颜色跳变。
+         颜色 = 当前画布色（与 App.tsx MobilePager 容器同源）：iOS 26/27 会采样
+         html/body 背景色给顶部工具条与键盘区域染色，用旧渐变色会造成断层。 -->
+    <meta name="theme-color" content="#020617" />
     <meta name="color-scheme" content="light dark" />
     <meta name="description" content="Palink AI - 智能对话助手" />
     <meta name="application-name" content="Palink AI" />
@@ -23,7 +36,7 @@
         const launchTheme = storedTheme === 'dark' || storedTheme === 'light'
           ? storedTheme
           : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        const launchBackground = launchTheme === 'dark' ? '#1a1a2e' : '#f5f5f5';
+        const launchBackground = launchTheme === 'dark' ? '#020617' : '#F8FAFC';
         document.documentElement.style.backgroundColor = launchBackground;
         document.documentElement.style.colorScheme = launchTheme;
         document.querySelector('meta[name="theme-color"]')?.setAttribute('content', launchBackground);

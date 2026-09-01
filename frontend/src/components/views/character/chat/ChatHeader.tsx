@@ -109,7 +109,7 @@ export function ChatHeader({
         )}
         style={isMobile ? { paddingTop: 'calc(env(safe-area-inset-top) + 10px)' } : undefined}
       >
-      <div className={cn(isMobile ? 'pointer-events-auto flex items-center space-x-3' : 'relative z-10 flex items-center space-x-3')}>
+      <div className={cn(isMobile ? 'pointer-events-auto flex items-center space-x-3 min-w-0' : 'relative z-10 flex items-center space-x-3')}>
         {/* 返回角色列表按钮 - 仅移动端、且传入 onBackToList 时显示 */}
         {isMobile && onBackToList && (
           <Button
@@ -166,8 +166,8 @@ export function ChatHeader({
             </div>
           )}
         </div>
-        <div>
-          <h2 className="font-semibold text-slate-900 dark:text-white">{selectedCharacter.name}</h2>
+        <div className="min-w-0">
+          <h2 className="font-semibold text-slate-900 dark:text-white truncate">{selectedCharacter.name}</h2>
         </div>
       </div>
 

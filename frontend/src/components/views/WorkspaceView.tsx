@@ -380,7 +380,7 @@ export function WorkspaceView({
 
   if (workspaceMode === 'chat') {
     return (
-      <div className={cn('flex h-full relative', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
+      <div className={cn('flex h-full relative', isMobile ? '' : 'bg-background' /* 移动端透明：轨道容器层垫屏幕锚定的单一渐变 */)}>
         {/* Placeholder for workspace chat - would need ChatInterface component */}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -395,7 +395,7 @@ export function WorkspaceView({
   }
 
   return (
-    <div className={cn('flex h-full relative', isMobile ? (isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]') : 'bg-background')}>
+    <div className={cn('flex h-full relative', isMobile ? '' : 'bg-background' /* 移动端透明：轨道容器层垫屏幕锚定的单一渐变 */)}>
       {/* Desktop Sidebar with smooth fade animation */}
       <div 
         className={cn(

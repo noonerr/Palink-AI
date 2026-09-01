@@ -1335,12 +1335,166 @@ body.ios-mobile-app-dark,
   }
 }
 
+/* ========================================
+   移动端：app-shell 高度【恒定 100svh】，不跟随键盘（iOS 键盘适配最终方案）
+   【研究结论】iOS Safari 把虚拟键盘视为 overlay，键盘弹起时
+   布局视口恒不变，vh / svh / dvh 全部不响应键盘（CSS 视口单位规范
+   既定行为，不是 bug）。任何纯 CSS 的"自动收缩"都不存在；而 JS 跟随
+   visualViewport.height 又会蠕动（K6/K7 实证，见下方 K9 注释）。
+
+   【iOS 26/27 关键变化（WebKit Bug 304976）】键盘弹起只缩 visual viewport，
+   layout viewport 不变 —— fixed bottom:0 不再被顶到键盘上沿，哨兵测量失效。
+   【K9 一步到位】focusin 同帧写 --palink-kb-vh（= 键盘上沿布局 y 值，键盘高度
+   取 localStorage 实测缓存）并挂 palink-kb-open：正文 max-height、输入框
+   bottom、dock 隐藏同帧到位，动画期间零写入零过渡；稳定检测仅在与缓存值
+   不一致时改写一次。详见 useVirtualKeyboard.ts K9 注释与 IOS_KEYBOARD_HANDOVER_v2.md。
+
+   配套结构约束（缺一不可）：
+   1) html/body/#root 不可滚 —— 文档滚不动，iOS 才不会偏移可视视口；
+   2) shell 是 flex column —— 顶部栏/内容区/输入区各居其位；
+   3) 滚动只发生在中间内容区 —— 顶部栏和输入框永远不会被划走。
+   ======================================== */
+@media (hover: none) and (pointer: coarse) {
+  /* 【化繁为简·最终方案】背景层（html/body/#root）与 shell 高度【恒定】，
+     不跟随键盘。真机教训：iOS 在键盘动画期间/之后对 vv.height 是阶梯状
+     分步报告的，任何"跟随"（轮询/逐帧/稳定检测/锁定窗口）都会让背景层
+     一级一级变矮 = 蠕动。背景层恒定 = 物理上无蠕动可能。
+     键盘弹起时的分工（K9，仅角色聊天页；对话主页/登录页排除）：
+     - 正文收缩 → .rp-chat-area 的 max-height（--palink-kb-vh，focusin 同帧写入）
+     - 输入框贴键盘 → JS 抬升 bottom = calc(100% − var(--palink-kb-vh))，
+       iOS 26/27 不再自动顶起 fixed（Bug 304976）
+     - dock 隐藏 → html.palink-kb-open 类切换（focusin 同帧挂载） */
+  html, body, #root {
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    overscroll-behavior: none !important;
+  }
+  .palink-app-shell {
+    height: 100svh !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+  }
+  /* 【K12】iOS 键盘把页面往上推/滚动补偿时，「页面底下」露出的区域
+     （高度≈键盘高）显示的是 html/body 背景色 —— 必须与主页画布同色且
+     跟随暗色/亮色（与 App.tsx MobilePager 容器 #020617/#F8FAFC 同源），
+     否则露出一条不跟主题的白底/黑底。桌面端不生效（coarse 限定）。 */
+  html, body {
+    background-color: #F8FAFC;
+  }
+  html.dark, html.dark body {
+    background-color: #020617;
+  }
+}
+
 /* iOS Safari 底部安全区域适配 - 导航栏 */
 @supports (padding: max(0px)) {
   .ios-safe-area-bottom {
     padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
   }
 }
+
+/* ========================================
+   虚拟键盘弹起（html.palink-kb-open，由 useVirtualKeyboard 挂载）
+   策略：让 dock 栏平滑下移滑出（而非瞬隐）——iOS 键盘区可能透明，瞬隐会显得突兀。
+   输入框由聊天屏设为 bottom:0 吸到键盘上沿（与 ChatViewMobile 的 isKeyboardOpen→0 一致）。
+   注意：
+   1) nav 内联 transition 只声明了 transform，会覆盖 CSS 过渡，故淡出用 animation(keyframes) 绕开；
+   2) 下移 transform 放在内层圆角条 div 上，不回碰 nav 内联的 routing transform(dockTransform)；
+   3) dock 仍占布局但无空白——输入框 open 态是硬编码 bottom:0，与 dock 高度/CSS 变量无关。
+   ======================================== */
+html.palink-kb-open nav[data-dock="true"] {
+  opacity: 0;
+  pointer-events: none;
+  animation: palink-kb-dock-fade 240ms ease both;
+}
+html.palink-kb-open nav[data-dock="true"] > div[data-dock="true"] {
+  animation: palink-kb-dock-slide 240ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+/* 【K12】一步到位：键盘布局的唯一开关 = html.palink-kb-open，由
+   useVirtualKeyboard 在 focusin 同帧挂上（t=0 记忆值落位，静止后单次校正），
+   --palink-kb-vh 同帧写入。以下规则全部与类同帧生效，刻意【不加任何
+   transition】——蠕动根源就是动画期间的持续更新/过渡。 */
+/* 消息区封顶 + 底部留白（两个底部输入框页面：角色聊天页 .rp-chat-area 与
+   对话主页 [data-palink-msg-scroll]，用户 K12 澄清「主页=最下面是输入框的
+   页面」也要跟键盘弹起）。渲染区域 = 屏幕高 − 键盘高。
+   留白与类同帧生效，覆盖 React 内联（检测链晚 ~100-300ms 会多一步）：
+   角色页 112 = ChatInputArea 的 92+20；主聊天页 96 = adapter 的 72+40−16。 */
+html.palink-kb-open .rp-chat-area,
+html.palink-kb-open [data-palink-msg-scroll="true"] {
+  max-height: var(--palink-kb-vh, 100%) !important;
+  min-height: 0 !important;
+}
+html.palink-kb-open .rp-chat-area {
+  padding-bottom: 112px !important;
+}
+html.palink-kb-open [data-palink-msg-scroll="true"] {
+  padding-bottom: 96px !important;
+}
+/* 输入框抬升（两个页面的底部 composer 都命中；登录页无该属性自然排除；
+   欢迎页中间态输入框即同一底部 composer，聚焦输入时同样抬到键盘上沿）。
+   【K9→K12 澄清】曾按「对话主页排除」限定 body > 直接子级（只命中角色页
+   portal），结果主聊天页输入框被键盘盖住 → iOS 反复自动滚动去露出它
+   （画面慢慢上移 + 底部露底色）——用户明确要主页也跟随键盘弹起，故放宽。 */
+html.palink-kb-open [data-palink-chat-composer="true"] {
+  bottom: calc(100% - var(--palink-kb-vh, 330px)) !important;
+}
+/* 文档级滚动兜底：html 也锁死 overflow，彻底禁止整页滑动
+   （body 高度收缩由 JS inline style 完成，这里只管锁定滚动） */
+html.palink-kb-open,
+html.palink-kb-open body {
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+/* 【研究结论】iOS 橡皮筋滚动会把任何触摸目标当滚动候选——即使
+   html/body overflow:hidden，拖动非滚动区仍会拉动布局视口，
+   fixed 元素随之漂移（"一卡一卡"根因）。touch-action:none 声明
+   这些元素不是滚动目标。 */
+nav[data-dock="true"] {
+  touch-action: none;
+}
+/* 消息滚动区：滚动溢出不冒泡到文档，手势只作用于列表内部 */
+.rp-chat-area {
+  overscroll-behavior: contain;
+}
+@keyframes palink-kb-dock-fade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes palink-kb-dock-slide {
+  from { transform: translateY(0); }
+  to   { transform: translateY(120%); }
+}
+
+/* ========================================
+   【K13 原始基线】纯 CSS，零 JS 键盘代码：
+   聚焦任何输入框 → 输入框落到最底（bottom:0）、dock 下移淡出，
+   其余一切交给系统原生行为（iOS 是否把 fixed bottom:0 顶到键盘上沿，
+   由系统决定，本代码不做任何干预、不检测、不校正）。
+   仅触屏设备。 ======================================== */
+@media (hover: none) and (pointer: coarse) {
+  html:has(:is(textarea, input, [contenteditable="true"]):focus) [data-palink-chat-composer="true"] {
+    bottom: 0 !important;
+  }
+  html:has(:is(textarea, input, [contenteditable="true"]):focus) nav[data-dock="true"] {
+    opacity: 0;
+    pointer-events: none;
+    animation: palink-kb-dock-fade 240ms ease both;
+  }
+  html:has(:is(textarea, input, [contenteditable="true"]):focus) nav[data-dock="true"] > div[data-dock="true"] {
+    animation: palink-kb-dock-slide 240ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+}
+
+/* 【已移除·勿恢复】html:has(:is(textarea,input,[contenteditable]):focus) 兜底块
+   （dock 隐藏 + composer 抬升，K8/K9 期间存在）：
+   ① 「键盘收起但焦点仍在」（iOS 键盘上的收起键）时 :focus 仍匹配 → 输入框
+      悬空在键盘原位、dock 消失，页面状态与键盘脱节；
+   ② 与 palink-kb-open 类双轨并存，两轨翻转时机不同 → 接力跳动。
+   现在键盘布局的唯一开关 = html.palink-kb-open：focusin 同帧挂载，不慢于
+   :has；触屏守卫（coarse matchMedia）在 useVirtualKeyboard.ts K10 effect 内。
+   另【已移除·勿恢复】更早的 body position:fixed 兜底——切换 body 定位本身
+   就是跳变源（「先动再慢慢回弹」的直接来源，详见 git 历史）。 */
 
 /* iOS Safari 顶部安全区域适配 - 通用 CSS 工具类 */
 @supports (padding: env(safe-area-inset-top)) {
@@ -2039,6 +2193,16 @@ body.ios-mobile-app-dark,
   }
 }
 
+/* 窄屏（≤380px）降宽档：6 个 44px 按钮的胶囊 min 宽 ~278px，在 320px 屏上会把
+   手势行右侧的记忆指示器顶出视口（实测溢出 44px，2026-08-30）。宽度降到 36px
+   （6×36+间距 ≈ 230px，320px 行宽 276px 下与记忆指示器共存），min-height 保持
+   44px 不牺牲纵向触达。 */
+@media (max-width: 380px) {
+  .palink-mes-action-btn {
+    min-width: 36px;
+  }
+}
+
 .settings-nav-icon {
   width: 24px;
   height: 24px;
@@ -2308,4 +2472,25 @@ body.ios-mobile-app-dark,
 .mes-render-skip {
   content-visibility: auto;
   contain-intrinsic-size: auto 240px;
+}
+
+/* ─── 视口拖拽调整期间禁用全站过渡 ───
+   dock 让位(80vw)、正文右移(80%)、侧栏等 transform 带百分比/vw 的元素，
+   在连续 resize 时目标值每帧都变，300ms 过渡永远追不上目标 → 肉眼拖影卡顿。
+   resize 期间过渡只该有瞬时跟手（App.tsx 加/防抖移除 html.palink-resizing）。 */
+html.palink-resizing *,
+html.palink-resizing *::before,
+html.palink-resizing *::after {
+  transition: none !important;
+}
+
+/* ─── 移动端消息列水平居中 ───
+   角色聊天里 AI 消息的左侧头像列（36px）把 mes_block 气泡列推向右侧，
+   右侧只剩 ~4px 视觉贴边（390px 屏实测：气泡列 40..386，中心 213 vs 屏幕中心 195）。
+   给 mes_block 补 36px 对称右边距 → 左右各留 40px，气泡列正对屏幕中央。
+   仅移动端断点（<768，与 useIsMobile 同口径）；桌面端不受影响。 */
+@media (max-width: 767px) {
+  .rp-chat-area .mes .mes_block {
+    padding-right: 36px;
+  }
 }

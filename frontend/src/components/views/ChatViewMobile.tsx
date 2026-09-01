@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Sparkles, X, Edit3, Trash2, Menu, Globe } from 'lucide-react';
+import { Sparkles, X, Edit3, Trash2, Menu, Globe, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
@@ -12,8 +12,6 @@ import type { Model } from '@/types';
 import { useChatView } from '@/hooks/useChatView';
 import { useMobileChatAnimations } from '@/hooks/useMobileChatAnimations';
 import { useMobileKeyboardAdapter } from '@/hooks/useMobileKeyboardAdapter';
-
-const HISTORY_PANEL_WIDTH_PX = 280;
 
 interface ChatViewProps {
   token: string;
@@ -61,8 +59,6 @@ export function ChatViewMobile({
   const hideBottomComposerDuringWelcomeDrop = anim.welcomeDropping && !anim.welcomeDropHandoffReady;
   const keepComposerVisualBright = anim.welcomeDropping || composerBottomLockPx !== null || chat.isSendingMessage;
   const getComposerTargetBottomPx = useCallback(() => {
-    if (isKeyboardOpen) return 0;
-
     const cssDockHeight = parseInt(
       getComputedStyle(document.documentElement).getPropertyValue('--palink-dock-height') || '90',
       10,
@@ -70,7 +66,14 @@ export function ChatViewMobile({
     if (cssDockHeight > 0) return cssDockHeight;
 
     return kb.composerBottomOffset > 0 ? kb.composerBottomOffset : 90;
-  }, [isKeyboardOpen, kb.composerBottomOffset]);
+  }, [kb.composerBottomOffset]);
+
+  // 【K9】对话主页按用户要求排除在键盘抬升方案之外：输入框恒在 dock 栏上方
+  // （或欢迎动画期间的锁定值），键盘弹起时保持系统默认行为，不做 JS 抬升、
+  // 不消费 --palink-kb-vh。键盘一步到位抬升仅角色聊天页（ChatInputArea）适用。
+  const composerBottomStyle = composerBottomLockPx !== null
+    ? `${kb.composerBottomOffset}px`
+    : 'var(--palink-dock-height, 90px)';
 
   const handleSelectSession = (session: any) => {
     const sessionId = typeof session === 'string' ? session : session.id;
@@ -228,48 +231,71 @@ export function ChatViewMobile({
 
   return (
     <>
-      <div className={cn('relative h-full overflow-hidden', isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)] text-slate-100' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)] text-slate-900')}>
+      {/* 页面根不再自绘背景：移动端轨道的单一渐变垫在 pager 容器层（屏幕锚定，
+          切换时背景零变化），此根保持透明、只负责文字基调色 */}
+      <div className={cn('relative h-full overflow-hidden', isDark ? 'text-slate-100' : 'text-slate-900')}>
 
       <aside
         className={cn(
-          'mobile-history-sidebar fixed inset-y-0 left-0 w-[280px] transform-gpu px-4 pb-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform ease-in-out',
+          'mobile-history-sidebar fixed inset-y-0 left-0 w-[80%] transform-gpu px-4 pb-4 pt-[env(safe-area-inset-top)] transition-transform ease-in-out',
           chat.showDeleteConfirm ? 'z-[31]' : 'z-[60]',
-          isDark ? 'border-r border-slate-700/70 bg-[#1f2233] backdrop-blur-[24px]' : 'border-r border-[#ddd4c5] bg-[#FFFAFA] backdrop-blur-[20px]'
+          isDark ? 'border-r border-slate-700/70 bg-[#020617]' : 'border-r border-[#ddd4c5] bg-[#F8FAFC]'
         )}
         style={{
-          transform: `translate3d(${historyOpen ? 0 : -HISTORY_PANEL_WIDTH_PX}px, 0, 0)`,
+          // 关闭态位移用自身宽度的 -100%（固定元素宽度=视口 80%，不再依赖 px 常数）
+          transform: `translate3d(${historyOpen ? 0 : -100}%, 0, 0)`,
           transitionDuration: `${anim.HISTORY_SLIDE_DURATION_MS}ms`,
+          // 与底部 dock / 正文右移共用同一条曲线（Tailwind ease-in-out），三者逐帧同步
+          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
         }}
       >
         <div className="flex h-full flex-col overflow-hidden">
           <div className={cn('mb-2 flex h-[60px] items-center justify-between', isDark ? 'border-b border-slate-700/70' : 'border-b border-[#ddd4c5]')}>
-            <span className={cn('text-sm font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>
+            <span className={cn('text-lg font-semibold', isDark ? 'text-white/95' : 'text-slate-800')}>
               {chat.isDeleteMode ? t.batch_manage : t.chat_history}
             </span>
-            <button
-              onClick={() => {
-                if (chat.isDeleteMode) {
-                  if (chat.selectedSessions.size > 0) {
-                    chat.handleBatchDelete();
-                  } else {
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  // 新建对话：先退出删除模式（内部顺带清空选中态），再走统一的新会话动画
+                  if (chat.isDeleteMode) {
                     chat.setIsDeleteMode(false);
                   }
-                } else {
-                  chat.setIsDeleteMode(true);
-                }
-              }}
-              className={cn(
-                'inline-flex h-11 w-11 items-center justify-center rounded-full border transition-colors',
-                chat.isDeleteMode && chat.selectedSessions.size > 0
-                  ? 'border-red-400/60 bg-red-500/20 text-red-100'
-                  : isDark
-                  ? 'border-slate-600/80 bg-[#2d3350] text-slate-100'
-                  : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700'
-              )}
-              aria-label="toggle-delete-mode"
-            >
-              {chat.isDeleteMode ? (chat.selectedSessions.size > 0 ? <Trash2 size={18} /> : <X size={18} />) : <Edit3 size={18} />}
-            </button>
+                  handleNewSession();
+                }}
+                aria-label="new-session"
+                title={t.new_chat || '新建对话'}
+                className="!h-10 !w-10 rounded-full"
+              >
+                <Plus size={18} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  if (chat.isDeleteMode) {
+                    if (chat.selectedSessions.size > 0) {
+                      chat.handleBatchDelete();
+                    } else {
+                      chat.setIsDeleteMode(false);
+                    }
+                  } else {
+                    chat.setIsDeleteMode(true);
+                  }
+                }}
+                aria-label="toggle-delete-mode"
+                className={cn(
+                  '!h-10 !w-10 rounded-full',
+                  chat.isDeleteMode && chat.selectedSessions.size > 0
+                    ? 'text-red-500 bg-red-500/15 hover:bg-red-500/25 dark:text-red-400 dark:bg-red-500/20 dark:hover:bg-red-500/30'
+                    : ''
+                )}
+              >
+                {chat.isDeleteMode ? (chat.selectedSessions.size > 0 ? <Trash2 size={18} /> : <X size={18} />) : <Edit3 size={18} />}
+              </Button>
+            </div>
           </div>
 
           <ChatSessionList
@@ -293,12 +319,15 @@ export function ChatViewMobile({
 
         <div
           className={cn(
-            'mobile-history-main absolute inset-0 z-10 flex h-full w-full flex-col overflow-visible transition-transform ease-in-out will-change-transform',
-          isDark ? 'bg-[radial-gradient(circle_at_50%_50%,#2d2d44_0%,#1a1a2e_100%)]' : 'bg-[radial-gradient(circle_at_50%_50%,#f5f5f5_0%,#e0e0e0_100%)]'
+            // 正文容器不再自绘背景（画布由 pager 容器层统一垫 #F8FAFC/#020617）
+            'mobile-history-main absolute inset-0 z-10 flex h-full w-full flex-col overflow-visible transition-transform ease-in-out will-change-transform'
         )}
         style={{
-          transform: `translate3d(${historyOpen ? HISTORY_PANEL_WIDTH_PX : 0}px, 0, 0)`,
+          // 正文右移量 = 侧栏宽（自身宽 80%，与侧栏 w-[80%] 同步）
+          transform: `translate3d(${historyOpen ? 80 : 0}%, 0, 0)`,
           transitionDuration: `${anim.HISTORY_SLIDE_DURATION_MS}ms`,
+          // 与底部 dock / 侧栏滑入共用同一条曲线，三者逐帧同步
+          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
         }}
         onClick={() => {
           if (historyOpen) {
@@ -442,6 +471,7 @@ export function ChatViewMobile({
           <>
             <div
               ref={kb.messagesScrollWrapRef}
+              data-palink-msg-scroll="true"
               className="flex-1 min-h-0 overflow-y-auto"
               onScroll={handleScroll}
             >
@@ -530,6 +560,7 @@ export function ChatViewMobile({
             </div>
 
             <div
+              data-palink-chat-composer="true"
               className={cn(
                 'absolute left-0 right-0 z-[20] px-3 pt-2 transform-gpu',
                 'bg-gradient-to-t from-transparent via-transparent to-transparent',
@@ -537,11 +568,7 @@ export function ChatViewMobile({
                   ? 'invisible pointer-events-none'
                   : 'visible'
               )}
-              style={{
-                bottom: composerBottomLockPx !== null
-                  ? `${kb.composerBottomOffset}px`
-                  : 'var(--palink-dock-height, 90px)',
-              }}
+              style={{ bottom: composerBottomStyle }}
             >
               <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput
@@ -587,6 +614,7 @@ export function ChatViewMobile({
               <div className="flex flex-1 flex-col overflow-hidden">
             <div
               ref={kb.messagesScrollWrapRef}
+              data-palink-msg-scroll="true"
               className="flex-1 min-h-0 overflow-y-auto"
               onScroll={handleScroll}
             >
@@ -675,6 +703,7 @@ export function ChatViewMobile({
             </div>
 
             <div
+              data-palink-chat-composer="true"
               className={cn(
                 'absolute left-0 right-0 z-[20] px-3 pt-2 transform-gpu',
                 'bg-gradient-to-t from-transparent via-transparent to-transparent',
@@ -682,11 +711,7 @@ export function ChatViewMobile({
                   ? 'invisible pointer-events-none'
                   : 'visible'
               )}
-              style={{
-                bottom: composerBottomLockPx !== null
-                  ? `${kb.composerBottomOffset}px`
-                  : 'var(--palink-dock-height, 90px)',
-              }}
+              style={{ bottom: composerBottomStyle }}
             >
               <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput

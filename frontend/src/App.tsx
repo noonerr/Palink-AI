@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, lazy, Suspense, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, type Location } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AuroraBackground } from '@/components/ui/custom/AuroraBackground';
 import { DesktopSidebar, MobileBottomNav } from '@/components/ui/custom/Sidebar';
@@ -12,6 +12,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { WidescreenPrompt } from '@/components/ui/custom/WidescreenPrompt';
 import { StPluginMountPoints } from '@/components/st-plugin-ui-host/StPluginMountPoints';
 import { Popup } from '@/lib/popup-system';
+import { mobilePager } from '@/lib/mobilePagerBridge';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, ApiError, AUTH_FAILURE_EVENT, invalidateCache, isAbortError } from '@/services/api';
@@ -391,6 +392,58 @@ const RouteFallback = () => (
   </div>
 );
 
+// ─── 移动端主页面轨道（pager）───
+// 四个主 tab 的页面常驻并排（各自独立 transform 层），位移由 dock 滑块的连续
+// 位置 p（mobilePager 桥）逐帧驱动：拖动滑块即擦洗页面、吸附时页面同步弹簧滑入。
+// 槽位只动 transform（GPU 合成，不触发 layout/paint）；fixed 子元素会以槽位为
+// 包含块，恰好等于整屏区域，几何与原先一致。
+const MOBILE_PAGE_TABS = ['/chat', '/workspace', '/characters', '/settings'];
+
+function MobilePager({ renderSlot, dark = false }: { renderSlot: (tabId: string, location: Location) => ReactNode; dark?: boolean }) {
+  const location = useLocation();
+  const slotRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  const applyTransforms = useCallback(() => {
+    const p = mobilePager.p;
+    slotRefs.current.forEach((el, i) => {
+      if (el) el.style.transform = `translate3d(${(i - p) * 100}%, 0, 0)`;
+    });
+  }, []);
+
+  // useLayoutEffect：首帧绘制前就对齐位置，避免四页重叠闪帧
+  useLayoutEffect(() => {
+    applyTransforms();
+    return mobilePager.subscribe(applyTransforms);
+  }, [applyTransforms]);
+
+  useEffect(() => {
+    const onResize = () => applyTransforms();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [applyTransforms]);
+
+  return (
+    // 全局画布：与角色扮演聊天页内容区同色实底（bg-slate-50 / dark:bg-slate-950），
+    // 让 #FFFAFA 系侧栏/卡片全 app 都是「白上白」的故事线观感（用户拍板，
+    // 不引入毛玻璃模糊层）；此层屏幕锚定不随页面滑动，切换时背景零变化
+    <div
+      className="relative h-full w-full overflow-hidden"
+      style={{ backgroundColor: dark ? '#020617' : '#F8FAFC' }}
+    >
+      {MOBILE_PAGE_TABS.map((tabId, i) => (
+        <div
+          key={tabId}
+          ref={(el) => { slotRefs.current[i] = el; }}
+          className="absolute inset-0"
+          style={{ willChange: 'transform' }}
+        >
+          {renderSlot(tabId, location)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const isMobile = useIsMobile();
   // N8-c 终态：哨兵值驱动既有渲染门控（/api/users/me 探测判定登录态）。
@@ -414,8 +467,9 @@ function App() {
   // N8-c 终态：登录后触发的重新探测计数（handleLogin 自增，驱动 /api/users/me 探测 effect 重跑）
   const [authProbeKey, setAuthProbeKey] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
-  const [dockOffset, setDockOffset] = useState(0);
-  const { isKeyboardOpen } = useVirtualKeyboard();
+  const [dockOffset, setDockOffset] = useState<number | string>(0);
+  const { isKeyboardOpen, keyboardHeight } = useVirtualKeyboard();
+  // 【K15】诊断角标已按用户要求删除。真机确认新版本：键盘弹出时标题栏出现 ⌨K15 标记。
   const [currentModel, setCurrentModel] = useState<string>('');
   const [stNativeActive, setStNativeActive] = useState(false);
   // galgame 插件全屏（原生 fullscreen 或 #gal-global-overlay.fullscreen）激活时隐藏底部 Dock
@@ -603,6 +657,16 @@ function App() {
     };
 
     clearMobileShellClasses();
+
+    // iOS 26/27 Safari 已忽略 theme-color meta，顶部工具条（Liquid Glass）与
+    // 键盘区域（含配件条）的颜色都采样自 html/body 的 background-color。
+    // 这里必须是当前画布色（#020617/#F8FAFC，与 MobilePager 容器一致）：
+    // 旧渐变时代的 #1a1a2e/#f5f5f5 会让键盘区域染出一条与页面不同的色带（K14 断层）。
+    // index.html 启动脚本与 manifest.json 的 theme_color 已同步为同一组值。
+    const themeBackground = isDark === 'dark' ? '#020617' : '#F8FAFC';
+    document.documentElement.style.backgroundColor = themeBackground;
+    document.body.style.backgroundColor = themeBackground;
+    document.documentElement.style.colorScheme = isDark === 'dark' ? 'dark' : 'light';
 
     if (!isMobile) {
       if (themeMeta) {
@@ -800,6 +864,26 @@ function App() {
     dockOffset,
   }), [user, isDark, lang, t, models, currentModel, sidebarCollapsed, dockOffset, toggleTheme, toggleLang, handleLogout, setCurrentModel]);
 
+  // 视口拖拽调整期间禁用全站过渡：transform 带百分比/vw 的元素（dock 让位、
+  // 正文右移、侧栏宽）在连续 resize 时目标值每帧都变，300ms 过渡永远追不上
+  // 目标 → 肉眼拖影卡顿；resize 停止 180ms 后恢复，开/关侧栏等离散动画照常。
+  // 仅移动端生效（桌面端不动）。
+  useEffect(() => {
+    if (!isMobile) return;
+    let timer: number | undefined;
+    const onResize = () => {
+      document.documentElement.classList.add('palink-resizing');
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => document.documentElement.classList.remove('palink-resizing'), 180);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.clearTimeout(timer);
+      document.documentElement.classList.remove('palink-resizing');
+    };
+  }, [isMobile]);
+
   if (loading) {
     return (
       <BrowserRouter>
@@ -810,132 +894,150 @@ function App() {
     );
   }
 
-  const protectedRoutes = (
-    <Routes>
+  // ── 各主页面元素（桌面 <Routes> 与移动端 pager 槽位共用，保证两侧行为一致）──
+  const chatPage = (
+    <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
+      {isMobile ? (
+        <ChatViewMobile
+          token={token!}
+          user={user!}
+          models={models}
+          currentModel={currentModel}
+          setCurrentModel={setCurrentModel}
+          t={t}
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
+          isDark={isDark === 'dark'}
+          isKeyboardOpen={isKeyboardOpen}
+        />
+      ) : (
+        <ChatViewDesktop
+          token={token!}
+          user={user!}
+          models={models}
+          currentModel={currentModel}
+          setCurrentModel={setCurrentModel}
+          t={t}
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
+          isDark={isDark === 'dark'}
+        />
+      )}
+    </Suspense>
+    </ErrorBoundary>
+  );
+  const workspacePage = (
+    <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
+      <WorkspaceView
+        token={token!}
+        user={user!}
+        models={models}
+        systemDefaults={systemDefaults}
+        onUpdateDefaults={loadSystemDefaults}
+        t={t}
+        isDark={isDark === 'dark'}
+      />
+    </Suspense>
+    </ErrorBoundary>
+  );
+  const settingsPage = (
+    <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
+      <SettingsView
+        token={token!}
+        user={user!}
+        models={models}
+        systemDefaults={systemDefaults}
+        onLogout={handleLogout}
+        onUpdateDefaults={loadSettingsConfig}
+        t={t}
+        isDark={isDark === 'dark'}
+        onThemeToggle={toggleTheme}
+        themeMode={themeMode}
+        onThemeSet={setTheme}
+        lang={lang}
+        onLangToggle={toggleLang}
+      />
+    </Suspense>
+    </ErrorBoundary>
+  );
+  const providerEditPage = isAdmin ? (
+    <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
+      <ProviderEditPage
+        token={token!}
+        providers={providers}
+        onProvidersUpdate={fetchProviders}
+        t={t}
+      />
+    </Suspense>
+    </ErrorBoundary>
+  ) : (
+    <Navigate to="/settings" replace />
+  );
+  const charactersPage = (
+    <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
+      <CharacterView
+        token={token!}
+        user={user!}
+        models={models}
+        t={t}
+        systemDefaults={systemDefaults}
+        onUpdateDefaults={loadSystemDefaults}
+        isDark={isDark === 'dark'}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        setDockOffset={setDockOffset}
+      />
+    </Suspense>
+    </ErrorBoundary>
+  );
+
+  // 路由渲染入口。location 传入时把这份 <Routes> 钉死在指定地址，不传则读路由
+  // 上下文（桌面端常规渲染）。
+  const routesAt = (location?: Location) => (
+    <Routes location={location}>
       <Route path="/" element={<Navigate to="/chat" replace />} />
-      <Route path="/chat" element={
-        <ErrorBoundary>
-        <Suspense fallback={<RouteFallback />}>
-          {isMobile ? (
-            <ChatViewMobile
-              token={token!}
-              user={user!}
-              models={models}
-              currentModel={currentModel}
-              setCurrentModel={setCurrentModel}
-              t={t}
-              sidebarCollapsed={sidebarCollapsed}
-              setSidebarCollapsed={setSidebarCollapsed}
-              isDark={isDark === 'dark'}
-              isKeyboardOpen={isKeyboardOpen}
-            />
-          ) : (
-            <ChatViewDesktop
-              token={token!}
-              user={user!}
-              models={models}
-              currentModel={currentModel}
-              setCurrentModel={setCurrentModel}
-              t={t}
-              sidebarCollapsed={sidebarCollapsed}
-              setSidebarCollapsed={setSidebarCollapsed}
-              isDark={isDark === 'dark'}
-            />
-          )}
-        </Suspense>
-        </ErrorBoundary>
-      } />
-      <Route path="/workspace" element={
-        <ErrorBoundary>
-        <Suspense fallback={<RouteFallback />}>
-          <WorkspaceView
-            token={token!}
-            user={user!}
-            models={models}
-            systemDefaults={systemDefaults}
-            onUpdateDefaults={loadSystemDefaults}
-            t={t}
-            isDark={isDark === 'dark'}
-          />
-        </Suspense>
-        </ErrorBoundary>
-      } />
-      <Route path="/settings" element={
-        <ErrorBoundary>
-        <Suspense fallback={<RouteFallback />}>
-          <SettingsView
-            token={token!}
-            user={user!}
-            models={models}
-            systemDefaults={systemDefaults}
-            onLogout={handleLogout}
-            onUpdateDefaults={loadSettingsConfig}
-            t={t}
-            isDark={isDark === 'dark'}
-            onThemeToggle={toggleTheme}
-            themeMode={themeMode}
-            onThemeSet={setTheme}
-            lang={lang}
-            onLangToggle={toggleLang}
-          />
-        </Suspense>
-        </ErrorBoundary>
-      } />
-      <Route path="/settings/providers/:providerId" element={
-        isAdmin ? (
-          <ErrorBoundary>
-          <Suspense fallback={<RouteFallback />}>
-            <ProviderEditPage
-              token={token!}
-              providers={providers}
-              onProvidersUpdate={fetchProviders}
-              t={t}
-            />
-          </Suspense>
-          </ErrorBoundary>
-        ) : (
-          <Navigate to="/settings" replace />
-        )
-      } />
-      <Route path="/characters" element={
-        <ErrorBoundary>
-        <Suspense fallback={<RouteFallback />}>
-          <CharacterView
-            token={token!}
-            user={user!}
-            models={models}
-            t={t}
-            systemDefaults={systemDefaults}
-            onUpdateDefaults={loadSystemDefaults}
-            isDark={isDark === 'dark'}
-            sidebarCollapsed={sidebarCollapsed}
-            setSidebarCollapsed={setSidebarCollapsed}
-            setDockOffset={setDockOffset}
-          />
-        </Suspense>
-        </ErrorBoundary>
-      } />
-      <Route path="/characters/:characterId" element={
-        <ErrorBoundary>
-        <Suspense fallback={<RouteFallback />}>
-          <CharacterView
-            token={token!}
-            user={user!}
-            models={models}
-            t={t}
-            systemDefaults={systemDefaults}
-            onUpdateDefaults={loadSystemDefaults}
-            isDark={isDark === 'dark'}
-            sidebarCollapsed={sidebarCollapsed}
-            setSidebarCollapsed={setSidebarCollapsed}
-            setDockOffset={setDockOffset}
-          />
-        </Suspense>
-        </ErrorBoundary>
-      } />
+      <Route path="/chat" element={chatPage} />
+      <Route path="/workspace" element={workspacePage} />
+      <Route path="/settings" element={settingsPage} />
+      <Route path="/settings/providers/:providerId" element={providerEditPage} />
+      <Route path="/characters" element={charactersPage} />
+      <Route path="/characters/:characterId" element={charactersPage} />
       <Route path="*" element={<Navigate to="/chat" replace />} />
     </Routes>
   );
+
+  // 移动端 pager 槽位：每个槽位用独立 <Routes> 钉在自己的 tab 路由上。
+  // 当前路由命中本 tab 时跟随真实地址（角色详情 / 服务商编辑等子路由生效），
+  // 否则钉在 tab 基础路由——保证拖动滑块时四个页面都有真实内容可掠过。
+  const renderPagerSlot = (tabId: string, loc: Location) => {
+    const active = loc.pathname === tabId || loc.pathname.startsWith(`${tabId}/`);
+    const slotLoc = active ? `${loc.pathname}${loc.search}` : tabId;
+    if (tabId === '/chat') {
+      return <Routes location={slotLoc}><Route path="/chat" element={chatPage} /></Routes>;
+    }
+    if (tabId === '/workspace') {
+      return <Routes location={slotLoc}><Route path="/workspace" element={workspacePage} /></Routes>;
+    }
+    if (tabId === '/characters') {
+      return (
+        <Routes location={slotLoc}>
+          <Route path="/characters" element={charactersPage} />
+          <Route path="/characters/:characterId" element={charactersPage} />
+        </Routes>
+      );
+    }
+    return (
+      <Routes location={slotLoc}>
+        <Route path="/settings" element={settingsPage} />
+        <Route path="/settings/providers/:providerId" element={providerEditPage} />
+      </Routes>
+    );
+  };
 
   return (
     <ErrorBoundary>
@@ -963,7 +1065,11 @@ function App() {
               <div className="flex flex-1 overflow-hidden">
                 {!isMobile && <DesktopSidebar {...sidebarProps} />}
                 <main className="flex-1 overflow-hidden">
-                  {protectedRoutes}
+                  {isMobile && !stNativeActive && !pluginFullscreen ? (
+                    <MobilePager dark={isDark === 'dark'} renderSlot={renderPagerSlot} />
+                  ) : (
+                    routesAt()
+                  )}
                 </main>
               </div>
               {/* ST 插件挂载点常驻：提供 #extensions_settings 等隐藏容器并派发

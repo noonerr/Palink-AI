@@ -40,7 +40,8 @@ export function ChatEmptyState({
         className="w-full max-w-2xl flex flex-col items-center animate-fade-in-up"
         style={isMobile ? { paddingBottom: isKeyboardOpen ? 0 : (composerBottomPx > 0 ? `${composerBottomPx}px` : undefined) } : undefined}
       >
-        {isMobile && <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />}
+        {/* 顶部强制留空 = 头部高度，任何情况下都保留 */}
+        <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />
         {isMobile && showDesktopHint && (
           <div className={cn(
             'w-full mb-4 px-4 py-3 rounded-xl border text-sm flex items-start gap-3',
@@ -135,7 +136,8 @@ export function ChatInitializingState({
         className="w-full flex flex-col items-center animate-fade-in-up"
         style={isMobile ? { paddingBottom: isKeyboardOpen ? 0 : (composerBottomPx > 0 ? `${composerBottomPx}px` : undefined) } : undefined}
       >
-        {isMobile && <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />}
+        {/* 顶部强制留空 = 头部高度，任何情况下都保留 */}
+        <div style={{ height: 'calc(env(safe-area-inset-top) + 3.5rem)', width: '100%' }} />
         <div className="animate-spin text-primary mb-4"><Bot size={32} /></div>
         <p className="text-muted-foreground">{t.loading_conversation || '正在加载对话...'}</p>
       </div>

@@ -10,7 +10,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { animate } from 'framer-motion';
+import { mobilePager } from '@/lib/mobilePagerBridge';
 import type { User } from '@/types';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -23,7 +25,7 @@ interface SidebarProps {
   onLogout?: () => void;
   t: Record<string, string>;
   sidebarCollapsed?: boolean;
-  dockOffset?: number;
+  dockOffset?: number | string;
 }
 
 interface NavItemProps {
@@ -147,6 +149,31 @@ export function DesktopSidebar({
 };
 
 // Mobile Bottom Navigation Component
+
+interface DockRects {
+  dockLeft: number;
+  items: { relLeft: number; width: number; center: number }[];
+}
+
+interface DockPointerState {
+  id: number;
+  x0: number;
+  moved: boolean;
+  lastX: number;
+  lastT: number;
+  vx: number; // px/ms，指数平滑
+  dwellTab: number | null;
+  lastMoveAt: number;
+  lastMoveX: number;
+}
+
+// 弹簧参数：近似临界阻尼（2√(k·m)≈35.8）。滑块与页面共用同一条 p 弹簧，
+// 欠阻尼的过冲在滑块上只有几像素看不出来、在整屏宽的页面上却是几十像素的大甩动
+// ——所以取接近临界的 35.5：页面落位干净不回弹，滑块依然利落带吸入感。
+const PILL_SPRING = { stiffness: 320, damping: 35.5, mass: 1 } as const;
+const DRAG_START_PX = 6; // 超过该位移才算拖动，否则视为轻点
+const DWELL_MS = 180; // 按住停留在某 tab 上方多久后吸附过去
+
 export function MobileBottomNav({
   t,
   isDark = false,
@@ -154,12 +181,21 @@ export function MobileBottomNav({
   sidebarCollapsed = true,
 }: SidebarProps) {
   const location = useLocation();
-  const HISTORY_PANEL_WIDTH = 280;
-  const historyOffset = (!sidebarCollapsed && location.pathname === '/chat') ? HISTORY_PANEL_WIDTH : 0;
-  const totalOffset = dockOffset + historyOffset;
+  const navigate = useNavigate();
+  // 历史侧栏打开时 dock 右移让位：侧栏宽已改视口 80%（w-[80%]），dock 同步让
+  // 80vw——CSS 单位随窗口宽度自适应，无需 JS 测量
+  const historyOffset = (!sidebarCollapsed && location.pathname === '/chat') ? '80vw' : '0px';
+  // dockOffset 只属于角色扮演页：MobilePager 四槽常驻，离开 /characters 时
+  // CharacterView 不卸载、其复位 effect 不会跑，这里按路由裁掉陈旧偏移，
+  // 避免 dock 在其他 tab 上仍带着角色页侧栏的位移（还会与 historyOffset 叠加）。
+  // number=px（桌面端 320px 固定宽侧栏）、string=CSS 长度（移动端 w-[80%] 侧栏按视口自适应）
+  const characterOffset: number | string = location.pathname.startsWith('/characters') ? dockOffset : 0;
   const dockRef = React.useRef<HTMLDivElement | null>(null);
+  const pillRef = React.useRef<HTMLDivElement | null>(null);
   const itemRefs = React.useRef<Record<string, HTMLAnchorElement | null>>({});
-  const [slider, setSlider] = React.useState<{ left: number; width: number; ready: boolean }>({ left: 0, width: 0, ready: false });
+  const [pillReady, setPillReady] = React.useState(false);
+  // 乐观文字高亮：目标 tab 确定瞬间切色不等路由渲染；路由 pathname 追上后清除
+  const [pendingTab, setPendingTab] = React.useState<string | null>(null);
   const tabs = React.useMemo(() => [
     { id: '/chat', icon: MessageSquare, label: t.nav_chat || 'Chat' },
     { id: '/workspace', icon: FolderOpen, label: t.nav_files || 'Workspace' },
@@ -174,42 +210,220 @@ export function MobileBottomNav({
     return nested?.id || '/chat';
   }, [location.pathname, tabs]);
 
-  const updateSlider = React.useCallback((targetId?: string) => {
+  const routeActiveId = getActiveId();
+  const activeId = pendingTab ?? routeActiveId;
+  const activeIndex = tabs.findIndex((tab) => tab.id === activeId);
+
+  // ── 滑块 ↔ 页面轨道 连续位置控制 ──
+  // p ∈ [0,3] 是唯一事实源：滑块 transform 与 MobilePager 槽位 transform 都由它
+  // 推导。拖动逐帧直写 DOM（绕过 React）；吸附/点击/路由变化走 framer 弹簧。
+  const rectsRef = React.useRef<DockRects | null>(null);
+  const pRef = React.useRef(0);
+  const initedRef = React.useRef(false);
+  const springRef = React.useRef<{ stop: () => void } | null>(null);
+  const springTargetRef = React.useRef<number | null>(null);
+  const activeIndexRef = React.useRef(activeIndex);
+  activeIndexRef.current = activeIndex;
+  const routeActiveIdRef = React.useRef(routeActiveId);
+  routeActiveIdRef.current = routeActiveId;
+  const pointerRef = React.useRef<DockPointerState | null>(null);
+  // 指针路径已完成导航时屏蔽派生 click。setPointerCapture 后 click 会落在 dock
+  // 容器上不进 Link，此标志只在捕获失败、click 仍落到 Link 的浏览器里兜底防双跳。
+  const suppressClickRef = React.useRef(false);
+
+  const measureDock = React.useCallback((): DockRects | null => {
+    const dock = dockRef.current;
+    if (!dock) return null;
+    const dockRect = dock.getBoundingClientRect();
+    const items = tabs.map((tab) => {
+      const r = itemRefs.current[tab.id]?.getBoundingClientRect();
+      return r
+        ? { relLeft: r.left - dockRect.left, width: r.width, center: r.left - dockRect.left + r.width / 2 }
+        : null;
+    });
+    if (items.some((item) => !item)) return null;
+    return { dockLeft: dockRect.left, items: items as DockRects['items'] };
+  }, [tabs]);
+
+  const applyFrame = React.useCallback((p: number) => {
+    pRef.current = p;
+    const rects = rectsRef.current;
+    const pill = pillRef.current;
+    if (rects && pill) {
+      const cp = Math.min(3, Math.max(0, p));
+      const i = Math.min(2, Math.floor(cp));
+      const f = cp - i;
+      const a = rects.items[i];
+      const b = rects.items[Math.min(3, i + 1)];
+      const left = a.relLeft + (b.relLeft - a.relLeft) * f;
+      pill.style.transform = `translate3d(${left}px, -50%, 0)`;
+      pill.style.width = `${rects.items[Math.round(cp)].width}px`;
+    }
+    mobilePager.p = p;
+    mobilePager.emit();
+  }, []);
+
+  const springTo = React.useCallback((target: number, velocity = 0) => {
+    const clamped = Math.min(3, Math.max(0, target));
+    springTargetRef.current = clamped;
+    springRef.current?.stop();
+    springRef.current = animate(pRef.current, clamped, {
+      type: 'spring',
+      velocity,
+      ...PILL_SPRING,
+      onUpdate: applyFrame,
+    });
+  }, [applyFrame]);
+
+  const pFromX = React.useCallback((clientX: number): number => {
+    const rects = rectsRef.current;
+    if (!rects) return pRef.current;
+    const spacing = (rects.items[3].center - rects.items[0].center) / 3;
+    if (spacing <= 0) return pRef.current;
+    return Math.min(3, Math.max(0, (clientX - rects.dockLeft - rects.items[0].center) / spacing));
+  }, []);
+
+  const navigateToTab = React.useCallback((idx: number) => {
+    const tab = tabs[idx];
+    if (!tab || tab.id === routeActiveIdRef.current) return;
+    suppressClickRef.current = true;
+    setPendingTab(tab.id);
+    // 兜底：路由因故未跳转时，乐观态 800ms 后自动回落
+    window.setTimeout(() => setPendingTab(null), 800);
+    navigate(tab.id, { replace: true });
+  }, [tabs, navigate]);
+
+  const handlePointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     const dock = dockRef.current;
     if (!dock) return;
+    rectsRef.current = measureDock();
+    if (!rectsRef.current) return;
+    // 按下不立即接管：轻点保持原有弹簧动画，位移超过阈值才进入拖动跟手
+    pointerRef.current = {
+      id: e.pointerId,
+      x0: e.clientX,
+      moved: false,
+      lastX: e.clientX,
+      lastT: performance.now(),
+      vx: 0,
+      dwellTab: null,
+      lastMoveAt: performance.now(),
+      lastMoveX: e.clientX,
+    };
+    suppressClickRef.current = false;
+    try {
+      dock.setPointerCapture(e.pointerId);
+    } catch {
+      // 捕获失败时 click 仍会落到 Link，由 onClick 兜底导航
+    }
+  }, [measureDock]);
 
-    const activeId = targetId || getActiveId();
-    const target = itemRefs.current[activeId];
-    if (!target) return;
+  const handlePointerMove = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = pointerRef.current;
+    if (!st || e.pointerId !== st.id) return;
+    const now = performance.now();
 
-    const dockRect = dock.getBoundingClientRect();
-    const itemRect = target.getBoundingClientRect();
-    const pad = 4;
+    if (!st.moved) {
+      if (Math.abs(e.clientX - st.x0) < DRAG_START_PX) return;
+      // 进入拖动：停掉在途弹簧，滑块/页面开始 1:1 跟手
+      st.moved = true;
+      springRef.current?.stop();
+      springTargetRef.current = null;
+    }
 
-    const nextLeft = itemRect.left - dockRect.left + pad;
-    const nextWidth = Math.max(itemRect.width - pad * 2, 0);
+    // 停留吸附后再次移动 → 立即恢复跟手
+    springRef.current?.stop();
+    springTargetRef.current = null;
+    st.dwellTab = null;
 
-    setSlider((prev) => {
-      if (prev.ready && Math.abs(prev.left - nextLeft) < 0.5 && Math.abs(prev.width - nextWidth) < 0.5) {
-        return prev;
-      }
-      return {
-        left: nextLeft,
-        width: nextWidth,
-        ready: true,
-      };
-    });
-  }, [getActiveId]);
+    const dt = Math.max(1, now - st.lastT);
+    st.vx = 0.8 * st.vx + 0.2 * ((e.clientX - st.lastX) / dt);
+    st.lastX = e.clientX;
+    st.lastT = now;
+    applyFrame(pFromX(e.clientX));
+
+    // 按住停留：在某个 tab 区域停住一小段时间 → 高亮与页面先吸附到该 tab（仍按住）
+    if (Math.abs(e.clientX - st.lastMoveX) > 4) {
+      st.lastMoveX = e.clientX;
+      st.lastMoveAt = now;
+    } else if (st.dwellTab === null && now - st.lastMoveAt > DWELL_MS) {
+      const idx = Math.min(3, Math.max(0, Math.round(pRef.current)));
+      st.dwellTab = idx;
+      navigateToTab(idx);
+      springTo(idx);
+    }
+  }, [applyFrame, pFromX, navigateToTab, springTo]);
+
+  const handlePointerEnd = React.useCallback((e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
+    const st = pointerRef.current;
+    if (!st || e.pointerId !== st.id) return;
+    pointerRef.current = null;
+
+    if (cancelled) {
+      springTo(Math.round(pRef.current));
+      return;
+    }
+
+    if (!st.moved) {
+      // 轻点：滑块带弹簧动画滑向目标（保留原点击动效），页面同步滑入
+      const idx = Math.min(3, Math.max(0, Math.round(pFromX(e.clientX))));
+      navigateToTab(idx);
+      springTo(idx);
+      return;
+    }
+
+    // 拖动松手：停留吸附优先，否则按最近 tab（加出手速惯性偏置）收尾；
+    // 弹簧带初速度落位——距离越远时间越长但速度更快，中途页面快速掠过
+    const rects = rectsRef.current;
+    const spacing = rects ? (rects.items[3].center - rects.items[0].center) / 3 : 1;
+    const vP = Math.max(-6, Math.min(6, (st.vx / Math.max(1, spacing)) * 1000)); // p/s
+    const bias = Math.max(-0.45, Math.min(0.45, vP * 0.12));
+    const target = st.dwellTab !== null
+      ? st.dwellTab
+      : Math.min(3, Math.max(0, Math.round(pRef.current + bias)));
+    navigateToTab(target);
+    springTo(target, vP);
+  }, [pFromX, navigateToTab, springTo]);
+
+  // 初始对齐：无动画地把滑块/页面放到当前路由对应位置
+  React.useLayoutEffect(() => {
+    rectsRef.current = measureDock();
+    if (rectsRef.current && !initedRef.current) {
+      initedRef.current = true;
+      applyFrame(activeIndexRef.current);
+      setPillReady(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 路由驱动的切换（轻点兜底/浏览器返回/页内跳转）：弹簧滑到新 tab
+  React.useEffect(() => {
+    if (!initedRef.current) return;
+    if (pointerRef.current) return;
+    if (springTargetRef.current === activeIndex) return;
+    springTo(activeIndex);
+  }, [activeIndex, springTo]);
 
   React.useEffect(() => {
-    updateSlider();
-  }, [updateSlider, location.pathname]);
-
-  React.useEffect(() => {
-    const onResize = () => updateSlider();
+    const onResize = () => {
+      rectsRef.current = measureDock();
+      if (rectsRef.current && !pointerRef.current) applyFrame(pRef.current);
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [updateSlider]);
+  }, [measureDock, applyFrame]);
+
+  React.useEffect(() => {
+    return () => {
+      springRef.current?.stop();
+    };
+  }, []);
+
+  // 路由追上目标后清除乐观高亮态
+  React.useEffect(() => {
+    setPendingTab(null);
+  }, [location.pathname]);
 
   // 将 dock 栏总高度写入 CSS 变量，供输入框精确定位
   React.useEffect(() => {
@@ -234,35 +448,53 @@ export function MobileBottomNav({
     };
   }, []);
 
-  const dockTransform = totalOffset > 0
-    ? `translateX(${totalOffset}px)`
-    : undefined;
+  // number 偏移补 px 后缀，string（如 '80vw'）直接拼接——与侧栏宽度同源，随视口自适应
+  const dockTransform = `translate3d(calc(${typeof characterOffset === 'number' ? `${characterOffset}px` : characterOffset} + ${historyOffset}), 0, 0)`;
 
   return (
     <nav className={cn(
-      'fixed bottom-0 inset-x-0 z-50 flex flex-col items-center pointer-events-auto w-[92%] max-w-[560px] mx-auto'
-    )} style={{ transform: dockTransform, transition: 'transform 300ms ease-in-out' }} data-dock="true">
+      // absolute（原为 fixed）：dock 挂在 .palink-app-shell 内，shell 高度 = 实测
+      // 可视高度，因此 absolute bottom:0 即贴在键盘上沿，与输入框共用同一套坐标系。
+      // fixed 在 iOS 上锚定哪个视口随版本/上下文变化，不可依赖。
+      'absolute bottom-0 inset-x-0 z-50 flex flex-col items-center pointer-events-auto w-[92%] max-w-[560px] mx-auto'
+    )} style={{
+      transform: dockTransform,
+      // 侧栏滑入/正文右移用的是 Tailwind ease-in-out（cubic-bezier(0.4,0,0.2,1)）。
+      // 此处必须用同一条曲线——CSS 关键字 ease-in-out 是 (0.42,0,0.58,1)，形状不同，
+      // 会让 dock 与侧栏/正文在 300ms 内出现肉眼可见的先后脚（dock 右移不同步）。
+      // translate3d + willChange 与侧栏/正文同走 GPU 合成层，帧调度一致。
+      transition: 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1)',
+      willChange: 'transform',
+    }} data-dock="true">
       <div
         ref={dockRef}
         className={cn(
           'relative flex h-[70px] w-[92%] max-w-[560px] select-none items-center justify-around rounded-[35px] border backdrop-blur-[30px] shadow-[0_10px_28px_rgba(120,106,79,0.14)]',
-          isDark 
-            ? 'border-slate-600/80 bg-[#2d3350]/70' 
+          isDark
+            ? 'border-slate-600/80 bg-[#2d3350]/70'
             : 'border-[#ddd4c5]/80 bg-white/60'
         )}
+        style={{ touchAction: 'none' }}
         data-dock="true"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(e) => handlePointerEnd(e, false)}
+        onPointerCancel={(e) => handlePointerEnd(e, true)}
       >
         <div
+          ref={pillRef}
           className={cn(
-            'absolute top-1/2 z-[1] h-[52px] -translate-y-1/2 rounded-[26px] transition-[left,width] duration-300 ease-[cubic-bezier(0.22,0.65,0.22,1)]',
-            !slider.ready && 'opacity-0',
+            'absolute top-1/2 left-0 z-[1] h-[52px] rounded-[26px]',
             isDark ? 'bg-white/[0.15]' : 'bg-[#ece2d3]/50'
           )}
-          style={{ left: slider.left, width: slider.width }}
+          style={{
+            opacity: pillReady ? 1 : 0,
+            transition: 'opacity 200ms ease',
+          }}
         />
         {tabs.map((item) => {
           const IconComponent = item.icon;
-          const isActive = getActiveId() === item.id;
+          const isActive = activeId === item.id;
           return (
             <Link
               key={item.id}
@@ -278,8 +510,21 @@ export function MobileBottomNav({
                   : (isActive ? 'text-slate-900' : 'text-slate-700/85')
               )}
               data-dock="true"
+              onClick={(e) => {
+                if (suppressClickRef.current) {
+                  e.preventDefault();
+                  suppressClickRef.current = false;
+                  return;
+                }
+                if (item.id === routeActiveId) return;
+                // 键盘激活（Enter）等无指针事件的兜底路径：路由变化触发弹簧滑块
+                setPendingTab(item.id);
+                window.setTimeout(() => setPendingTab(null), 800);
+              }}
             >
-              <IconComponent size={22} strokeWidth={isActive ? 2.5 : 2} />
+              <span className="flex">
+                <IconComponent size={22} strokeWidth={isActive ? 2.5 : 2} />
+              </span>
               <span className={cn('text-[10px] leading-none', isActive ? 'font-semibold' : 'font-medium')}>
                 {item.label}
               </span>
@@ -288,7 +533,7 @@ export function MobileBottomNav({
         })}
       </div>
       <p className={cn(
-        'text-center text-[10px] pb-[calc(8px+min(env(safe-area-inset-bottom),8px))]',
+        'text-center text-[10px] leading-none pb-0',
         isDark ? 'text-white/40' : 'text-slate-400/60'
       )}>
         {t.ai_disclaimer}
