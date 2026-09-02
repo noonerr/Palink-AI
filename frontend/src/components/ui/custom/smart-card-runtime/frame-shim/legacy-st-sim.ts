@@ -327,7 +327,13 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
   };
   const userGestureWindowMs = 15000;
   let lastUserGestureAt = 0;
-  const markUserGesture = () => {
+  // [SEC-2026-09-02 F-1] 只认浏览器派发的可信事件：isTrusted 由浏览器设置且无法被 JS 伪造，
+  // 卡片脚本 dispatchEvent 合成的事件（isTrusted=false）不记入手势。否则恶意卡片一行合成
+  // 事件就能让本 shim「主动」附上真帧内密钥，令牌校验形同虚设。
+  // 宽松度说明：真实用户的 pointerdown/keydown/click 均为可信事件，正常卡片交互不受影响；
+  // 唯一被排除的是「无任何真实交互却想骗手势」的场景——这正是要拦的攻击。
+  const markUserGesture = (event) => {
+    if (event && event.isTrusted === false) return;
     lastUserGestureAt = Date.now();
   };
   const hasRecentUserGesture = () => Date.now() - lastUserGestureAt <= userGestureWindowMs;
@@ -337,6 +343,12 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
         source: 'palink-smart-card',
         frameId,
         __palinkUserGesture: hasRecentUserGesture(),
+        // [SEC-2026-09-02 F-1] 仅在「确实发生过真实用户手势」时附上帧内密钥。
+        // 父侧据此判定手势声明可信（密钥由 <head> 的 meta 一次性投递，恶意卡片拿不到）；
+        // 未发生手势时附空串，语义与旧的 __palinkUserGesture=false 完全一致。
+        __palinkGestureToken: hasRecentUserGesture()
+          ? (typeof __palinkFrameSecret === 'string' ? __palinkFrameSecret : '')
+          : '',
         __palinkRuntimeMode: 'legacy',
         ...payload,
       }, '*');

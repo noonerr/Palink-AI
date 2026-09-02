@@ -58,6 +58,20 @@ export function buildShim(context: CharacterSmartCardContext, frameId: string): 
   return `
 <script nonce="${SMART_CARD_CSP_NONCE}">
 (() => {
+  // [SEC-2026-09-02 F-1] 帧内密钥（gesture token）——只被本 IIFE 闭包持有。
+  // 卡片脚本与本 IIFE 同处一个 realm，任何「写在源码里」或「经 postMessage 传输」的密钥
+  // 都能被恶意卡片读到（读 script.textContent / 监听 message 事件）。唯一安全的投递方式：
+  // 放在 <head> 里的 <meta> 上，由本段（注入位置在所有卡片内容之前）**读取后立即移除**，
+  // 之后的卡片脚本既读不到 meta 也读不到本闭包变量。
+  const __palinkFrameSecret = (() => {
+    try {
+      var el = document.querySelector('meta[name="palink-frame-secret"]');
+      if (!el) return '';
+      var value = String(el.getAttribute('content') || '');
+      if (el.parentNode) el.parentNode.removeChild(el);
+      return value;
+    } catch (e) { return ''; }
+  })();
   const ctx = ${contextJson};
   const frameId = ${frameIdJson};
 ${LEGACY_ST_SIM_SEGMENT}

@@ -256,6 +256,19 @@ export function buildSmartCardCompatRuntimeExternalScript(): string {
 function buildSillyTavernCompatRuntimeBodyScript(bootHeader: string): string {
   return `(() => {
 ${bootHeader}
+  // [SEC-2026-09-02 F-1] 帧内密钥（gesture token）——只被本 IIFE 闭包持有。
+  // 与 legacy shim 同理：密钥经 <head> 的 <meta> 一次性投递，本段读取后立即移除该 meta，
+  // 后续执行的卡片脚本既读不到 meta 也读不到本闭包变量（二者同 realm，写在源码里或走
+  // postMessage 传输都会被读到，唯此投递方式安全）。内联与外部两种加载路径共用本入口。
+  const __palinkFrameSecretV2 = (() => {
+    try {
+      var el = document.querySelector('meta[name="palink-frame-secret-v2"]');
+      if (!el) return '';
+      var value = String(el.getAttribute('content') || '');
+      if (el.parentNode) el.parentNode.removeChild(el);
+      return value;
+    } catch (e) { return ''; }
+  })();
   const uiText = ctx.language === 'en'
     ? {
         requestTimeout: 'Palink smart card request timed out',
@@ -332,7 +345,11 @@ ${bootHeader}
       }, '*');
     } catch {}
   };
-  const markUserGesture = () => {
+  const markUserGesture = (event) => {
+    // [SEC-2026-09-02 F-1] 只认浏览器派发的可信事件（isTrusted 无法被 JS 伪造），
+    // 与 legacy shim 同语义：卡片脚本 dispatchEvent 合成的事件不记入手势，
+    // 防止「伪造手势 → 让本 shim 主动附上帧内密钥」绕过父侧令牌校验。
+    if (event && event.isTrusted === false) return;
     lastUserGestureAt = Date.now();
   };
   const hasRecentUserGesture = () => Date.now() - lastUserGestureAt <= userGestureWindowMs;
@@ -451,6 +468,10 @@ ${bootHeader}
       payload: {
         ...(payload && typeof payload === 'object' ? payload : {}),
         __palinkUserGesture: hasRecentUserGesture(),
+        // [SEC-2026-09-02 F-1] 仅在真实发生用户手势时附帧内密钥（与 legacy shim 同语义）。
+        __palinkGestureToken: hasRecentUserGesture()
+          ? (typeof __palinkFrameSecretV2 === 'string' ? __palinkFrameSecretV2 : '')
+          : '',
         __palinkRuntimeMode: runtimeMode,
         __palinkContext: {
           characterId: ctx.characterId,

@@ -42,6 +42,27 @@ function hostColorSchemeStyle(): string {
   return `<style data-palink-color-scheme>html{color-scheme:${resolveHostColorScheme()};}</style>`;
 }
 
+/**
+ * [SEC-2026-09-02 HARDEN-2] 生成帧内标识符的随机段。
+ * 优先 crypto.randomUUID（CSPRNG）；非安全上下文（无 crypto.randomUUID）时回退到
+ * randomUUID 的等价替代——getRandomValues 亦属 CSPRNG，仅在其也不可用时才退回 Math.random。
+ */
+function randomFrameToken(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch {
+    /* 落到下方兜底 */
+  }
+  return `${Math.random().toString(36).slice(2)}-${Date.now()}`;
+}
+
 function injectIntoFullDocument(
   html: string,
   shim: string,
@@ -49,24 +70,49 @@ function injectIntoFullDocument(
   resourcePlan: SmartCardResourcePlan,
   customCss?: string,
   includeImmersiveBridge = false,
+  frameSecret = '',
 ): string {
   const css = customCss ? `<style>${customCss}</style>` : '';
   const adapterCss = buildSmartCardAdapterStyle(html);
   const resourceHints = buildSmartCardResourceHints(resourcePlan);
   const immersiveBridge = includeImmersiveBridge ? buildSmartCardImmersiveBridge(frameId) : '';
+  // [SEC-2026-09-02 F-1] 帧内密钥必须排在 shim 之前：shim（紧接着注入）在 IIFE 顶部读取
+  // 这两个 meta 后立即移除，其后才轮到卡片内容里的脚本执行，因此卡片拿不到密钥。
+  const secretMeta = buildSmartCardFrameSecretMeta(frameSecret);
+  const headInject = `<meta charset="UTF-8">${resourceHints}${secretMeta}${shim}${immersiveBridge}`;
   let result = html;
   if (/<head[\s>]/i.test(result)) {
-    result = result.replace(/<head([^>]*)>/i, (_match, attrs = '') => `<head${attrs}><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}`);
+    result = result.replace(/<head([^>]*)>/i, (_match, attrs = '') => `<head${attrs}>${headInject}`);
   } else {
-    result = result.replace(/<html([^>]*)>/i, (_match, attrs = '') => `<html${attrs}><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}</head>`);
+    result = result.replace(/<html([^>]*)>/i, (_match, attrs = '') => `<html${attrs}><head>${headInject}</head>`);
   }
   if (/<\/head\s*>/i.test(result)) {
     result = result.replace(/<\/head\s*>/i, `${css}${hostColorSchemeStyle()}${adapterCss}</head>`);
   }
   if (!/<html[\s>]/i.test(result)) {
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}${css}${hostColorSchemeStyle()}${adapterCss}</head><body>${result}</body></html>`;
+    return `<!DOCTYPE html><html><head>${headInject}${css}${hostColorSchemeStyle()}${adapterCss}</head><body>${result}</body></html>`;
   }
   return result;
+}
+
+/**
+ * [SEC-2026-09-02 F-1] 生成帧内密钥的两个 <meta>（legacy shim 与兼容层 V2 各取其一）。
+ * 两个 shim 是彼此独立的 IIFE，各自读取并移除自己的那一个；密钥为空时不产出 meta，
+ * 此时 shim 侧拿到空串、父侧按「无令牌」处理（见 controller 的失败开放兜底）。
+ */
+function buildSmartCardFrameSecretMeta(secret: string): string {
+  if (!secret) return '';
+  return `<meta name="palink-frame-secret" content="${escapeHtmlAttribute(secret)}">`
+    + `<meta name="palink-frame-secret-v2" content="${escapeHtmlAttribute(secret)}">`;
+}
+
+/** 转义 HTML 属性值，防止密钥串或注入内容破坏文档结构。 */
+function escapeHtmlAttribute(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function wrapHtmlFragment(
@@ -76,12 +122,14 @@ function wrapHtmlFragment(
   resourcePlan: SmartCardResourcePlan,
   customCss?: string,
   includeImmersiveBridge = false,
+  frameSecret = '',
 ): string {
   const css = customCss ? `<style>${customCss}</style>` : '';
   const adapterCss = buildSmartCardAdapterStyle(fragment);
   const resourceHints = buildSmartCardResourceHints(resourcePlan);
   const immersiveBridge = includeImmersiveBridge ? buildSmartCardImmersiveBridge(frameId) : '';
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${hostColorSchemeStyle()}${css}</head><body>${fragment}${adapterCss}</body></html>`;
+  const secretMeta = buildSmartCardFrameSecretMeta(frameSecret);
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${secretMeta}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${hostColorSchemeStyle()}${css}</head><body>${fragment}${adapterCss}</body></html>`;
 }
 
 interface IframeRendererProps {
@@ -103,7 +151,17 @@ const IframeRenderer = React.memo(function IframeRenderer({
   mode,
   onAction,
 }: IframeRendererProps) {
-  const frameIdRef = useRef(`palink-smart-card-${Math.random().toString(36).slice(2)}-${Date.now()}`);
+  // [SEC-2026-09-02 HARDEN-2] 帧内标识符改用 CSPRNG。
+  // 原实现的 `Math.random()` 仅约 51 bit 熵，且 V8 的 xorshift128+ 状态可被连续采样还原，
+  // 帧 ID 后 6 位还会进入 window.__palinkFrameMsgs 调试数组（页内脚本可读）→ 存在被预测的面。
+  // frameId 是「这条消息确实来自我自己创建的那个 iframe」的判据之一（配合下方 event.source
+  // 实例比对），故必须是不可预测的随机值。crypto.randomUUID 在非安全上下文不可用，保留回退。
+  const frameIdRef = useRef(`palink-smart-card-${randomFrameToken()}`);
+  // [SEC-2026-09-02 F-1] 帧内密钥：用于验证「用户手势」声明的真实性。
+  // 经 <head> 的 <meta> 一次性投递给 iframe 内的 shim 闭包（shim 读取后立刻移除该 meta），
+  // 因此只有 shim 拿得到，恶意卡片脚本拿不到 → 伪造的 __palinkUserGesture 无法配上令牌。
+  // 用 useRef 保证组件生命周期内恒定：iframe 重建/重载时 srcdoc 会带上同一个密钥，父侧比对一致。
+  const frameSecretRef = useRef(randomFrameToken());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const lastPostedContextSignatureRef = useRef('');
@@ -383,8 +441,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
       ? addSmartCardScriptNonce(normalizeSmartCardScriptBlocks(runtimeHtml))
       : runtimeHtml;
     const finalDoc = isFullDocument
-      ? injectIntoFullDocument(normalizedHtml, shim, frameIdRef.current, resourcePlan, customCss, prefersImmersive)
-      : wrapHtmlFragment(normalizedHtml, shim, frameIdRef.current, resourcePlan, customCss, prefersImmersive);
+      ? injectIntoFullDocument(normalizedHtml, shim, frameIdRef.current, resourcePlan, customCss, prefersImmersive, frameSecretRef.current)
+      : wrapHtmlFragment(normalizedHtml, shim, frameIdRef.current, resourcePlan, customCss, prefersImmersive, frameSecretRef.current);
 
     return finalDoc;
     // 注意：srcDoc 只依赖「内容」变化（html/customCss/effectiveMode/resourcePlan），
@@ -758,7 +816,36 @@ const IframeRenderer = React.memo(function IframeRenderer({
           w2.__palinkFrameMsgs.push({ frameId: String(data.frameId || '').slice(-6), type: data.type, height: data.height, realContent: data.realContent });
         }
       } catch { /* ignore */ }
-      if (iframeRef.current?.contentWindow && event.source !== iframeRef.current.contentWindow) return;
+      // [SEC-2026-09-02 HARDEN-1] 失败关闭（fail-closed）。
+      // 原写法 `iframeRef.current?.contentWindow && event.source !== ...` 是「条件跳过」：
+      // 当 ref 为空时整个 && 短路为假 → 不 return → **跳过这条最强的来源校验**。
+      // 当前不可利用（JS 单线程，React 提交是同步的，消息只在调用栈清空后派发；且本组件
+      // 两条渲染分支都渲染 iframe，不存在「监听器在而 iframe 不在」的稳定态），但一旦将来
+      // 引入条件渲染（如折叠态不挂载 iframe），这条守卫会静默失效。改为 ref 缺失即拒绝。
+      if (!iframeRef.current?.contentWindow) return;
+      if (event.source !== iframeRef.current.contentWindow) return;
+      // [SEC-2026-09-02 F-1] 手势令牌父侧裁决（本修复的最后一块：此前 shim 已附令牌但父侧从未校验）。
+      // shim 仅在「帧内 15s 内发生过真实（isTrusted）用户事件」时附上帧内密钥；密钥经 <head> meta
+      // 一次性投递给 shim 后立即移除，卡片脚本读不到（见 buildSmartCardFrameSecretMeta 注释）。
+      // 此处把卡片自声明的 __palinkUserGesture 改写为父侧验证结果——本组件直接动作分支与
+      // SmartCardCompatController 的 gesture 闸门一律消费改写后的值，伪造标记从此无效。
+      // legacy shim 把令牌放消息顶层，V2 兼容层放 payload 内，两处都查。
+      // 兜底：frameSecret 理论上恒非空（randomFrameToken 三级回退），一旦为空按旧行为
+      // 信任自声明（失败开放），避免异常环境把卡片功能整体打死。
+      const expectedFrameSecret = frameSecretRef.current;
+      const claimedToken = typeof data.__palinkGestureToken === 'string'
+        ? data.__palinkGestureToken
+        : (data.payload && typeof data.payload === 'object'
+          && typeof (data.payload as Record<string, unknown>).__palinkGestureToken === 'string'
+          ? String((data.payload as Record<string, unknown>).__palinkGestureToken)
+          : '');
+      const gestureVerified = expectedFrameSecret
+        ? claimedToken !== '' && claimedToken === expectedFrameSecret
+        : data.__palinkUserGesture === true;
+      data.__palinkUserGesture = gestureVerified;
+      if (data.payload && typeof data.payload === 'object') {
+        (data.payload as Record<string, unknown>).__palinkUserGesture = gestureVerified;
+      }
       if (data.type === 'request-plugin-scripts') {
         // [P0-SRCDOC-SLIM] iframe 重建/重载后主动请求插件脚本包 → 强制重推。
         // 源码不再内联进 srcDoc，若此处漏推将导致插件脚本不执行，故忽略版本去重。
