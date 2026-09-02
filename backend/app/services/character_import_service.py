@@ -7,6 +7,7 @@ import struct
 import base64
 import uuid
 import logging
+import urllib.request
 import zipfile
 import io
 from datetime import datetime, timezone
@@ -34,6 +35,27 @@ except ImportError:  # pragma: no cover - YAML 导入为可选能力
 _MAX_RESPONSE_SIZE = 50 * 1024 * 1024
 _MAX_CHARACTER_CARD_UPLOAD_SIZE = 50 * 1024 * 1024
 _CHUNK_SIZE = 8192
+
+
+class _PublicUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """[PENTEST-2026-09-02 P1-3] 重定向逐跳 SSRF 复检（清偿 TODOS 已登记遗留项）。
+
+    裸 urlopen 默认跟随 301/302/307 且不复查目标：公网头像 URL 可被 302 跳板
+    引向内网/云元数据。每跳用与首跳相同的 _is_public_http_url 口径复检
+    （scheme 白名单 + 内网/环回/链路本地/CGNAT IP 拦截），非公网目标即中止。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_public_http_url(newurl):
+            logger.warning("Avatar fetch redirect blocked by SSRF protection: %s", newurl)
+            raise ValueError(f"Redirect to non-public URL blocked: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_public_url(req, timeout: int = 15):
+    """带逐跳重定向校验的受限打开（替代裸 urlopen，防跳板 SSRF）。"""
+    opener = urllib.request.build_opener(_PublicUrlRedirectHandler())
+    return opener.open(req, timeout=timeout)
 
 
 def _read_with_size_limit(resp, max_size: int = _MAX_RESPONSE_SIZE) -> bytes:
@@ -1055,7 +1077,7 @@ class CharacterImportService:
                 import urllib.request
                 import re as _re
                 req = urllib.request.Request(avatar_url, headers={"User-Agent": "Palink-AI/1.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with _open_public_url(req, 15) as resp:
                     img_data = _read_with_size_limit(resp)
                     content_type = resp.headers.get("Content-Type", "")
                     if content_type.startswith("text/html"):
@@ -1069,7 +1091,7 @@ class CharacterImportService:
                                 logger.warning("og:image URL blocked by SSRF protection: %s", og_url)
                                 return None
                             req2 = urllib.request.Request(og_url, headers={"User-Agent": "Palink-AI/1.0"})
-                            with urllib.request.urlopen(req2, timeout=15) as resp2:
+                            with _open_public_url(req2, 15) as resp2:
                                 img_data = _read_with_size_limit(resp2)
                                 content_type = resp2.headers.get("Content-Type", "image/png")
                         else:
