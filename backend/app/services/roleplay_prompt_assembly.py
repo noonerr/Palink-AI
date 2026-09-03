@@ -1,12 +1,11 @@
 """Unified roleplay prompt assembly service.
 
-This module is the backend seam for Palink's ST-compatible roleplay runtime.
+This module is the backend seam for Palink's roleplay runtime.
 It intentionally preserves the existing prompt behavior while making the
 assembly steps explicit and reusable by HTTP and WebSocket character chat.
 
 方向声明: 项目当前主攻 `palink-native` 装配（build_character_chat_messages）。
-`st-compat`（本文件 ST_COMPAT_MODES 分支 → build_st_compat_messages）与
-`st-native`（iframe）均已封存冷处理、待删除，除非用户明确要求不要优化它们。
+`st-compat`/`st-native` 双轨已于 2026-09 删除（含本文件 ST_COMPAT_MODES 分支）。
 详见根目录 AGENTS.md。
 """
 
@@ -21,6 +20,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -37,7 +37,7 @@ from ..models.extension_prompt import (
     EXTENSION_PROMPT_POSITION_MIN,
     EXTENSION_PROMPT_POSITION_MAX,
 )
-from ..services.character_message_builder import build_character_chat_messages, build_st_compat_messages
+from ..services.character_message_builder import build_character_chat_messages
 from ..services.plotline_service import build_plotline_context
 from ..services.worldbook_service import build_worldbook_context, WorldbookContextResult
 from ..services.macro_service import MacroEnv, evaluate_macros, evaluate_macros_in_messages
@@ -48,32 +48,6 @@ logger = logging.getLogger(__name__)
 REGEX_PLACEMENT_WORLD_INFO = 5
 
 DEFAULT_CONTEXT_TEMPLATE_NAME = "Default"
-
-# ST 兼容装配模式：silly_tavern_mode 取这些值时，装配使用 ST 1.18.0 对齐的
-# build_st_compat_messages 管线。compat 为历史过渡模式（iframe 别名），
-# 语义上同样应按 ST 排序装配。
-ST_COMPAT_MODES = {"st-compat", "compat"}
-
-# [MODE-SEALED] 2026-08-24 用户拍板：除 palink-native 外的模式运行时封存不可达。
-# 封存作用在【装配入口】（_st_mode_effective 归一化用户设置），而非本文件的
-# _is_st_compat_mode / st-compat 函数族内部——后者是被固化测试直调的纯函数契约，
-# 代码本体保留，待隐患排除后与固化测试一起统一删除。
-# 解封 = 从 SEALED_ST_MODES 移除对应值（并同步 users.py / silly_tavern.py 守卫）。
-SEALED_ST_MODES = {"st-compat", "compat", "st-native"}
-
-
-def _st_mode_effective(st_mode: Optional[str]) -> str:
-    """[MODE-SEALED] 入口级模式归一：封存模式一律按 palink-native 处理。
-
-    仅用于读取 user_setting.silly_tavern_mode 后、进入装配分支前的判定；
-    st-compat 函数族内部不经过本函数（固化测试契约不变）。
-    """
-    return "" if (st_mode or "").strip().lower() in SEALED_ST_MODES else (st_mode or "").strip()
-
-
-def _is_st_compat_mode(st_mode: Optional[str]) -> bool:
-    return (st_mode or "").strip().lower() in ST_COMPAT_MODES
-
 
 # ── ST 1.18.0 depth 注入统一队列（palink-native 专属） ─────────────────
 # 对齐 ST 的三级确定序（openai.js populationInjectionPrompts L801-866 +
@@ -152,8 +126,8 @@ def _load_instruct_template(db: Session, user_setting: Optional[UserSetting], ca
     template_id = getattr(user_setting, "instruct_template_id", None)
     if not template_id:
         return None
-    # E-8 修复: 请求级缓存——装配路径对同一用户 InstructTemplate 加载 2 次
-    # （st-compat skip_examples 检查 + 最终 instruct 包装）。
+    # E-8 修复: 请求级缓存——装配路径最终 instruct 包装需加载 InstructTemplate，
+    # 缓存避免同一请求内重复查询。
     if cache is not None:
         key = f"instruct:{template_id}"
         if key in cache:
@@ -812,20 +786,16 @@ def _preset_order_identifiers(preset: Optional[PromptPreset]) -> set[str]:
 
 def _should_split_char_fields_for_order(
     preset: Optional[PromptPreset],
-    st_mode: str,
 ) -> bool:
     """P1-1 修复：判断是否需要把角色卡字段抽取为独立可重排消息。
 
-    仅当同时满足以下条件时返回 True：
-    1. 当前处于 palink-native 模式（st-compat 路径已内置分离装配，无需此处理）；
-    2. 已绑定 PromptPreset 且其 prompt_order 包含至少一个角色卡字段标识符
-       （charDescription / charPersonality / scenario / worldInfoBefore / worldInfoAfter）。
+    当已绑定 PromptPreset 且其 prompt_order 包含至少一个角色卡字段标识符
+    （charDescription / charPersonality / scenario / worldInfoBefore / worldInfoAfter）
+    时返回 True。
 
     默认行为（无 preset 或 preset 不含角色卡字段）保持不变，system_prompt 仍为
     合并形态，避免影响未使用 prompt_order 的常规角色对话。
     """
-    if _is_st_compat_mode(st_mode):
-        return False
     if preset is None:
         return False
     order_ids = _preset_order_identifiers(preset)
@@ -835,7 +805,6 @@ def _should_split_char_fields_for_order(
 def _extract_char_field_messages_for_order(
     req: "PromptAssemblyRequest",
     preset: Optional[PromptPreset],
-    st_mode: str,
     char_name: str,
 ) -> list[dict[str, Any]]:
     """P1-1 修复：把角色卡字段抽取为独立 system 消息，供 prompt_order 重排。
@@ -858,7 +827,7 @@ def _extract_char_field_messages_for_order(
     - worldInfoBefore/worldInfoAfter 字段不在此抽取（它们由 worldbook 扫描结果
       填充，而非角色卡字段），仅当 preset 显式包含其标识符时由外层装配处理。
     """
-    if not _should_split_char_fields_for_order(preset, st_mode):
+    if not _should_split_char_fields_for_order(preset):
         return []
 
     messages: list[dict[str, Any]] = []
@@ -1283,203 +1252,6 @@ def _apply_dynamic_trimming(
         )
     )
     return new_messages, current_total
-
-
-def _apply_st_compat_history_trim_inner(
-    messages: list[dict[str, Any]],
-    token_budget: int,
-    report: list[PromptAssemblyReportItem],
-    pin_examples: bool = False,
-) -> list[dict[str, Any]]:
-    """D4 修复: st-compat 路径的 chat_history token 裁剪（内部实现）。
-
-    与 ST 1.18.0 openai.js 的 TokenBudgetExceededError + reserveBudget 语义一致：
-    - 仅对 chat_history 做按 token 裁剪
-    - 保留强制项（main/worldInfoBefore/personaDescription/charDescription/
-      charPersonality/scenario/worldInfoAfter/dialogueExamples/jailbreak/authorsNote）
-    - 从 chat_history 中间裁剪最旧消息，保留开头 N 条 + 末尾 M 条
-
-    A-10 修复: 示例/历史的预算竞争由外层 _apply_st_compat_history_trim 处理
-    （pin_examples=false 时示例区段在调用本函数前已被抽离），本函数只裁剪 chat_history。
-
-    识别 chat_history 区段：从 [Start a new Chat] 标记开始到 jailbreak 之前。
-    """
-    # 估算总 token 数（E-2 修复: 一次性计算每消息 token，避免裁剪循环内
-    # 反复全量 re-encode 造成的 O(n²) 开销）
-    per_msg = [_estimate_tokens(str(m.get("content", ""))) for m in messages]
-    total_tokens = sum(per_msg)
-    if total_tokens <= token_budget:
-        return messages
-
-    # 识别 chat_history 区段：找到 [Start a new Chat] 标记
-    history_start_idx = -1
-    for i, m in enumerate(messages):
-        content = str(m.get("content", ""))
-        if "[Start a new Chat]" in content or "[Start a new Group Chat" in content:
-            history_start_idx = i
-            break
-
-    if history_start_idx < 0:
-        # 找不到标记，不裁剪
-        return messages
-
-    # 识别 jailbreak 位置（chat_history 结束点）：st-compat 末尾可能有多条
-    # 强制 system 消息（jailbreak + author's note pos1/2 + group nudge），均需排除在可裁剪区之外。
-    # 从末尾向前跳过所有带 _st_trailing_guard 标记的消息，history_end_idx 定位到
-    # 第一条末尾强制项之前。
-    # A-11 修复: builder 已为 jailbreak/group nudge/AN pos0/IN_PROMPT extension_prompts
-    # 打 _st_trailing_guard 标记。原「跳过最多 _MAX_TRAILING_MANDATORY=4 条 system」
-    # 数量启发式在强制项超过 4 条时会把 jailbreak 误裁；而 chatHistory 以 depth 注入
-    # 的 system 结尾时又会把可裁剪条目误判为强制项（裁剪不充分）。标记法两者皆解。
-    history_end_idx = len(messages)
-    for i in range(len(messages) - 1, history_start_idx, -1):
-        if messages[i].get("_st_trailing_guard") is True:
-            history_end_idx = i
-        else:
-            break
-
-    # 提取 chat_history 区段
-    history_messages = messages[history_start_idx:history_end_idx]
-    if len(history_messages) <= 3:
-        # 历史太短，不裁剪
-        return messages
-
-    # 计算强制项 token 数（非 chat_history 部分）
-    mandatory_tokens = sum(per_msg[:history_start_idx]) + sum(per_msg[history_end_idx:])
-
-    # P1-2 修复: 剩余预算 = token_budget - 强制项 token（对齐 ST 1.18.0 openai.js
-    #  的 canAfford 行为）。原 0.7 比例会重复扣减动态上下文预算（mandatory_tokens
-    #  已包含 worldbook/memory 等），导致历史被过度裁剪。修复后使用全部剩余预算。
-    history_budget = token_budget - mandatory_tokens
-    if history_budget <= 0:
-        # 强制项已超预算，不裁剪历史（与 ST TokenBudgetExceededError 一致）
-        report.append(
-            PromptAssemblyReportItem(
-                "st_compat_trim",
-                "skipped",
-                detail=f"mandatory_tokens={mandatory_tokens} exceeds budget",
-            )
-        )
-        return messages
-
-    # E-2 修复: 前缀和数组，裁剪循环内 O(1) 计算任意区间的 token 数
-    n = len(history_messages)
-    prefix = [0] * (n + 1)
-    for i in range(n):
-        prefix[i + 1] = prefix[i] + per_msg[history_start_idx + i]
-
-    # 计算当前历史 token 数
-    history_tokens = prefix[n]
-    if history_tokens <= history_budget:
-        return messages
-
-    # 从中间裁剪：保留开头 N 条 + 末尾 M 条
-    # 策略：保留开头 1 条（[Start a new Chat]）+ 末尾若干条，直到符合预算
-    keep_start = 1  # 保留 [Start a new Chat] 标记
-    keep_end = n - 1
-
-    while keep_end > 0:
-        kept_tokens = prefix[keep_start] + (prefix[n] - prefix[n - keep_end])
-        if kept_tokens <= history_budget:
-            break
-        keep_end -= 1
-
-    # 重建 messages
-    trimmed_history = history_messages[:keep_start] + (history_messages[-keep_end:] if keep_end > 0 else [])
-    new_messages = messages[:history_start_idx] + trimmed_history + messages[history_end_idx:]
-
-    trimmed_count = len(history_messages) - len(trimmed_history)
-    report.append(
-        PromptAssemblyReportItem(
-            "st_compat_trim",
-            "trimmed",
-            detail=f"trimmed={trimmed_count} history messages; original={history_tokens}; budget={history_budget}",
-        )
-    )
-    return new_messages
-
-
-def _apply_st_compat_history_trim(
-    messages: list[dict[str, Any]],
-    token_budget: int,
-    report: list[PromptAssemblyReportItem],
-    pin_examples: bool = False,
-) -> list[dict[str, Any]]:
-    """A-10 修复: st-compat 路径 chat_history 裁剪入口（含 pin_examples 预算竞争）。
-
-    ST 1.18.0 openai.js:1327-1334 语义：
-    - pin_examples=true : 先填示例再填历史（示例保留预算，历史被裁剪）
-    - pin_examples=false: 先填历史再填示例（历史保留预算，示例用剩余预算尽力保留）
-
-    此前 pin_examples=false 时整段删除示例块（[Example Chat] 标记+内容全部丢弃），
-    与 ST「尽力保留能塞下的块」不符。修复：抽离示例区段 → 调用 inner 裁剪剩余
-    （含 chatHistory）→ 用剩余预算从前往后把示例塞回（放不下的尾部才丢弃）。
-    """
-    # 仅在 pin_examples=false 且总预算超限时抽离示例区段；pin_examples=true 时
-    # 示例属于强制项（inner 的 mandatory_tokens 统计），保持原行为。
-    if not pin_examples and sum(_estimate_tokens(str(m.get("content", ""))) for m in messages) > token_budget:
-        example_msgs: list[dict[str, Any]] = []
-        example_start = -1
-        for i, m in enumerate(messages):
-            if m.get("role") == "system" and "[Example Chat]" in str(m.get("content", "")):
-                example_start = i
-                break
-        if example_start >= 0:
-            example_end = example_start
-            while example_end + 1 < len(messages):
-                _nx = messages[example_end + 1]
-                _nx_content = str(_nx.get("content", ""))
-                if (
-                    _nx.get("role") != "system"
-                    or "[Start a new Chat]" in _nx_content
-                    or "[Start a new Group Chat" in _nx_content
-                ):
-                    break
-                example_end += 1
-            example_msgs = messages[example_start:example_end + 1]
-            # 抽离示例，剩余消息交给 inner 裁剪（chatHistory 获得全部预算）
-            remainder = messages[:example_start] + messages[example_end + 1:]
-            trimmed = _apply_st_compat_history_trim_inner(remainder, token_budget, report, pin_examples=False)
-            # 尽力塞回示例：从前往后累计，放不下的尾部丢弃
-            remaining_budget = token_budget - sum(_estimate_tokens(str(m.get("content", ""))) for m in trimmed)
-            kept: list[dict[str, Any]] = []
-            for _ex in example_msgs:
-                _ex_tokens = _estimate_tokens(str(_ex.get("content", "")))
-                if _ex_tokens <= remaining_budget:
-                    kept.append(_ex)
-                    remaining_budget -= _ex_tokens
-                else:
-                    break
-            if not kept:
-                # 示例完全放不下（尽力后仍整段丢弃）
-                report.append(
-                    PromptAssemblyReportItem(
-                        "st_compat_trim",
-                        "trimmed",
-                        detail=(
-                            f"pin_examples=false; example block could not fit "
-                            f"({len(example_msgs)} msg, budget exhausted)"
-                        ),
-                    )
-                )
-                return trimmed
-            # 示例原本位于 chatHistory（[Start a new Chat] 标记）之前 → 塞回标记前
-            insert_idx = len(trimmed)
-            for i, m in enumerate(trimmed):
-                _c = str(m.get("content", ""))
-                if "[Start a new Chat]" in _c or "[Start a new Group Chat" in _c:
-                    insert_idx = i
-                    break
-            result = trimmed[:insert_idx] + kept + trimmed[insert_idx:]
-            report.append(
-                PromptAssemblyReportItem(
-                    "st_compat_trim",
-                    "refilled",
-                    detail=f"pin_examples=false; kept {len(kept)}/{len(example_msgs)} example message(s)",
-                )
-            )
-            return result
-    return _apply_st_compat_history_trim_inner(messages, token_budget, report, pin_examples=pin_examples)
 
 
 def _load_prompt_preset(db: Session, preset_id: Optional[str]) -> Optional[PromptPreset]:
@@ -2193,7 +1965,7 @@ def _build_group_combined_card(group: "GroupChat", members: list[Character]) -> 
     def _custom_transform(value: str, field_name: str, char_name: str) -> str:
         """等价 ST customTransform：<FIELDNAME>→fieldName（大小写不敏感）；{{char}}→char_name。
 
-        不处理 {{user}}（留给下游 build_st_compat_messages._sub 解析为用户名）。
+        不处理 {{user}}（留给下游宏替换解析为用户名）。
         """
         if not value:
             return ""
@@ -2281,7 +2053,6 @@ def _select_natural_speaker(
     group: GroupChat,
     members: list[Character],
     user_text: str,
-    st_mode: str = "palink-native",
 ) -> Optional[str]:
     """ST activateNaturalOrder 等价实现（B1 NATURAL）。
 
@@ -2291,24 +2062,22 @@ def _select_natural_speaker(
     2. 概率激活：每个 talkativeness>0 的成员按 random()<=talkativeness 激活；
        排除上一位发言者（除非 allow_self_responses）；talkativeness=0 永不主动激活。
     3. 回退：无人激活 → 从 talkativeness>0 成员随机；再无 → 全体随机（仍回避 last）。
-    4. follower 衰减：仅 palink-native 生效（st-compat 严格对齐 ST 1.18.0，
-       ST 无 follower_members 概念，故忽略该字段，无衰减）。
+    4. follower 衰减：follower_members 中的成员 talkativeness 施加 FOLLOWER_DAMPING。
     """
     if not members:
         return None
     allow_self = bool(getattr(group, "allow_self_responses", False))
     last = _get_last_group_speaker_id(db, group, members)
     follower_ids: set = set()
-    if not _is_st_compat_mode(st_mode):
-        raw_follower = getattr(group, "follower_members", None)
-        if raw_follower:
-            try:
-                follower_ids = {
-                    str(x)
-                    for x in (json.loads(raw_follower) if isinstance(raw_follower, str) else raw_follower)
-                }
-            except (json.JSONDecodeError, TypeError):
-                follower_ids = set()
+    raw_follower = getattr(group, "follower_members", None)
+    if raw_follower:
+        try:
+            follower_ids = {
+                str(x)
+                for x in (json.loads(raw_follower) if isinstance(raw_follower, str) else raw_follower)
+            }
+        except (json.JSONDecodeError, TypeError):
+            follower_ids = set()
 
     def _eff(m: Character) -> float:
         t = _read_talkativeness(m)
@@ -2683,27 +2452,6 @@ async def _resolve_group_speaker(req: PromptAssemblyRequest) -> None:
 
     strategy = int(group.activation_strategy or 0)
 
-    # st-compat 模式对标 ST 1.18.0，其 group_activation_strategy 枚举仅定义
-    # NATURAL=0/LIST=1/MANUAL=2/POOLED=3（见参考源
-    # SillyTavern-1.18.0/.../public/scripts/group-chats.js:122），不含 4/5。
-    # 4(TALKATIVE)/5(VOTING) 为 Palink 原生扩展，st-compat 收到时回退 NATURAL(0)
-    # 属正确对齐行为（非缺口），并记 warning。
-    st_mode = "palink-native"
-    try:
-        _us = req.db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
-        if _us is not None:
-            # [MODE-SEALED] 入口归一化：封存模式按 palink-native 处理
-            st_mode = _st_mode_effective(getattr(_us, "silly_tavern_mode", "")) or "palink-native"
-    except Exception as exc:
-        logger.warning("UserSetting lookup failed for st_mode detection (group_id=%s): %s", req.group_id, exc)
-    if _is_st_compat_mode(st_mode) and strategy in (_GROUP_ACTIVATION_TALKATIVE, _GROUP_ACTIVATION_VOTING):
-        logger.warning(
-            "st-compat mode does not support native group strategy %s; falling back to NATURAL(0) (group_id=%s)",
-            strategy,
-            req.group_id,
-        )
-        strategy = 0
-
     # Phase B 修复: ST 1.18.0 generateGroupWrapper (group-chats.js:1006-1031) —
     # swipe/continue/impersonate/quiet 的选角分支优先于 activation_strategy。
     # 使用全部成员（含 disabled，对齐 ST group.members）。
@@ -2785,7 +2533,7 @@ async def _resolve_group_speaker(req: PromptAssemblyRequest) -> None:
         members = _load_members(req.db, group)
         if members:
             req.current_speaker_id = _select_natural_speaker(
-                req.db, group, members, req.message or "", st_mode=st_mode
+                req.db, group, members, req.message or ""
             )
 
     elif strategy == 3 and not req.current_speaker_id:
@@ -3255,7 +3003,6 @@ async def _assemble_roleplay_prompt_impl(
     #   3 = inactive (skip)
     persona_depth_entry: Optional[DepthInjection] = None
     persona_last_message: Optional[str] = None
-    persona_full_text: Optional[str] = None  # st-compat 用: 完整 persona 文本 (ST 固定 Index 2)
     try:
         active_persona_id = getattr(user_setting, "active_persona_id", None) if user_setting else None
         if active_persona_id:
@@ -3291,7 +3038,6 @@ async def _assemble_roleplay_prompt_impl(
                     source="persona_description",
                     sort_key=_KEY_PERSONA_DEPTH,
                 )
-                persona_full_text = persona_text
                 report.append(PromptAssemblyReportItem(
                     "persona_description",
                     "included",
@@ -3300,7 +3046,6 @@ async def _assemble_roleplay_prompt_impl(
                 ))
             elif persona_position == 1:
                 system_prompt = system_prompt + "\n\n" + persona_text
-                persona_full_text = persona_text
                 report.append(PromptAssemblyReportItem(
                     "persona_description",
                     "included",
@@ -3309,7 +3054,6 @@ async def _assemble_roleplay_prompt_impl(
                 ))
             elif persona_position == 2:
                 persona_last_message = persona_text
-                persona_full_text = persona_text
                 report.append(PromptAssemblyReportItem(
                     "persona_description",
                     "included",
@@ -3419,9 +3163,6 @@ async def _assemble_roleplay_prompt_impl(
     #   IN_PROMPT(0)     → 排队为 ext_in_prompt_entries，等 system_prompt 构建完成后追加末尾（不按 depth）
     #   IN_CHAT(1)       → 排队为 ext_depth_entries（统一队列），按 ST 三级序注入 chat history
     #   NONE(-1)         → 跳过（已在 _collect_extension_prompts 中过滤）
-    # 注意：st-compat 路径使用 char_system_prompt（不是 system_prompt），所以
-    #       prepend/append 到 system_prompt 对 st-compat 无效；st-compat 的
-    #       IN_PROMPT/BEFORE_PROMPT 在 build_st_compat_messages 内部处理。
     ext_depth_entries: list[DepthInjection] = []  # IN_CHAT(1) 用 —— ST 对齐: 与世界书/AN/persona 统一队列
     ext_chat_messages: list[dict[str, str]] = []  # {"role": str, "content": str} — 保留以兼容引用，IN_CHAT 改走 ext_depth_entries
     ext_in_prompt_entries: list[tuple[str, str]] = []  # (content, role) for IN_PROMPT(0)
@@ -3541,18 +3282,7 @@ async def _assemble_roleplay_prompt_impl(
     wb_em_top_entries: list[str] = []
     wb_em_bottom_entries: list[str] = []
     wb_outlet_entries: dict[str, list[str]] = {}
-    # ST 1.18.0 对齐: 分离 worldInfoBefore (pos=0) 和 worldInfoAfter (pos=1)
-    st_wi_before_parts: list[str] = []
-    st_wi_after_parts: list[str] = []
-    # G4 修复: 分离 ANTop (pos=2) 和 ANBottom (pos=3)
-    st_wi_an_top_parts: list[str] = []
-    st_wi_an_bottom_parts: list[str] = []
     _part_count_before = len(dynamic_context_parts)
-    # [MODE-SEALED] 入口归一化：封存模式（st-compat/compat/st-native）按 palink-native 处理
-    _is_st_compat = bool(
-        user_setting
-        and _is_st_compat_mode(_st_mode_effective(getattr(user_setting, "silly_tavern_mode", "")))
-    )
     # E-1 修复: 世界书扫描（N+1 查询 + token 编码）是纯同步重活，移入线程池，
     # 避免阻塞事件循环（与 persist_snapshot 的 to_thread 模式一致）。
     # A5 修复: 与 _compute_prompt_token_budget 同源取真实上下文上限
@@ -3573,11 +3303,6 @@ async def _assemble_roleplay_prompt_impl(
         em_top_entries=wb_em_top_entries,
         em_bottom_entries=wb_em_bottom_entries,
         outlet_entries=wb_outlet_entries,
-        st_wi_before_parts=st_wi_before_parts,
-        st_wi_after_parts=st_wi_after_parts,
-        st_wi_an_top_parts=st_wi_an_top_parts,  # G4 修复
-        st_wi_an_bottom_parts=st_wi_an_bottom_parts,  # G4 修复
-        skip_dynamic_context=_is_st_compat,  # st-compat 模式下 worldbook 通过 ST 位置注入，不重复添加到 dynamic_context_parts
         char_name=_macro_char_name,
         max_context_tokens=_wb_max_context_tokens,
         # D 批修复: 群聊世界书上下文（此前分支引用非作用域变量致群聊注入整体失效）
@@ -3605,7 +3330,21 @@ async def _assemble_roleplay_prompt_impl(
         report.append(PromptAssemblyReportItem("response_length", "skipped"))
 
     _part_count_before = len(dynamic_context_parts)
-    await _append_memory_context(req, deps, memory_mode, dynamic_context_parts, report)
+    # [分层记忆 Phase 1] 实体卡注入 + 1b 长会话门控 + 档位注入预算：
+    # 预算在此预计算（_compute_prompt_token_budget 纯函数，与下方
+    # _apply_token_budget 调用点重复计算无副作用），供门控判断
+    # "历史+已注入是否仍在窗口内"。
+    _memory_token_budget = _compute_prompt_token_budget(
+        req.model, effective_max_tokens,
+        context_window_override=_get_openai_max_context_override(user_setting),
+    )
+    await _append_memory_context(
+        req, deps, memory_mode, dynamic_context_parts, report,
+        memory_max_tokens=_resolve_memory_max_tokens(user_setting),
+        token_budget=_memory_token_budget,
+        system_prompt=system_prompt,
+        history_reserve=_get_history_reserve(user_setting),
+    )
     dynamic_context_part_keys.extend(["memory"] * (len(dynamic_context_parts) - _part_count_before))
 
     include_title_instruction = req.include_title_instruction and not req.is_init
@@ -3723,325 +3462,67 @@ async def _assemble_roleplay_prompt_impl(
     # 注意：[INJ-CLOSE-TAG-GUARD] 2026-08-19 修复——此前误实现为"append 独立消息
     # 到 messages 末尾"（prompt 最后一条 = system 注入），导致推理模型 100% 空响应，
     # 详见下方 IN_PROMPT 注入处的修复注释。
-    # st-compat 路径在 build_st_compat_messages 内部已处理，并在分支内 clear() 此列表。
-    # palink-native 路径在下方 messages 构建完成后注入（见 line ~3990 处）。
-
-    # ST 1.18.0 extension_prompts BEFORE_PROMPT(2): 一次性 prepend 到 system_prompt 之前
-    # 多条目按原序拼接（与 st-compat 路径的 "\n\n".join 行为一致），避免逐条 prepend 导致逆序。
-    # 注意：st-compat 路径使用 char_system_prompt（不是 system_prompt），此 prepend 对 st-compat
-    # 无效；st-compat 的 BEFORE_PROMPT 在 build_st_compat_messages 内部处理。
+    # extension_prompts BEFORE_PROMPT(2): 一次性 prepend 到 system_prompt 之前
+    # 多条目按原序拼接（"\n\n".join），避免逐条 prepend 导致逆序。
     if ext_before_prompt_entries:
         _ep_before_text = "\n\n".join(t for t, _ in ext_before_prompt_entries)
         system_prompt = _ep_before_text + "\n\n" + system_prompt
 
-    # ST 1.18.0 兼容模式分支：silly_tavern_mode 为 "st-compat"/"compat" 时，
-    # 使用 ST 的精确装配序（角色字段分离、无 Palink 特有内容）。
-    # [MODE-SEALED] 入口归一化：封存模式按 palink-native 处理，本分支运行时不可达
-    st_mode = _st_mode_effective(
-        getattr(user_setting, "silly_tavern_mode", "") if user_setting else ""
-    ) or "palink-native"
-    if _is_st_compat_mode(st_mode):
-        # ST 1.18.0 对齐: 使用分离的世界书条目 (pos=0 → worldInfoBefore, pos=1 → worldInfoAfter)
-        # 低危项修复: 条目间分隔符对齐 ST world-info.js:5146-5147（join('\n')，非 '\n\n'）
-        world_info_before = "\n".join(st_wi_before_parts) if st_wi_before_parts else ""
-        world_info_after = "\n".join(st_wi_after_parts) if st_wi_after_parts else ""
-        # 角色卡 system_prompt 作为 ST 的 systemPromptOverride
-        char_system_prompt = (req.char.system_prompt or "").strip() or None
-        # D1 修复: st-compat 群聊时把发言者身份（group_profile_part）注入到 ST system prompt。
-        # palink-native 模式已在上方 system_prompt 注入；此处补齐 st-compat 分支，避免成员身份丢失。
-        if group_profile_part:
-            char_system_prompt = (char_system_prompt or "") + "\n\n" + group_profile_part
-        # Persona description (st-compat): ST 将 persona 固定在 Index 2 (personaDescription),
-        # 无 persona_position 概念。因此始终注入完整 persona 文本, 避免 position==1 时丢失,
-        # 且 position==3 (inactive) 时 persona_full_text 为 None 不注入。
-        persona_desc = persona_full_text or ""
-        # Author's note (G3 修复: 传递 position 给 build_st_compat_messages)
-        an_text = author_note_text or ""
-        # ST 1.18.0: depth only applies to IN_CHAT (position 1).
-        an_depth = author_note_depth if author_note_position_int == 1 else 4
+    # E-1 修复: palink-native 消息组装（token 编码 + 历史加载）为纯同步重活，
+    # 移入线程池避免阻塞事件循环（与 _append_worldbook_context 一致）。
+    messages = await asyncio.to_thread(
+        build_character_chat_messages,
+        db=db,
+        char=req.char,
+        user_nickname=user_nickname,
+        session_id=req.session_id,
+        branch_id=req.branch_id,
+        message=req.message,
+        images=req.images or [],
+        system_prompt=system_prompt,
+        dynamic_context_parts=dynamic_context_parts,
+        prompt_lang=prompt_lang,
+        user_setting=user_setting,
+        _replace_placeholders=deps.replace_placeholders,
+        _get_full_branch_history=deps.get_full_branch_history,
+        _contains_chinese=deps.contains_chinese,
+        normalize_image_url=lambda img_url, check_size=False: normalize_image_url(
+            img_url,
+            check_size=check_size,
+            user_id=req.user.id,
+        ),
+        include_user_message=(req.include_user_message and not req.smart_card_trigger and not req.is_continue),
+        include_title_instruction=include_title_instruction,
+        context_template=context_template,
+        recent_messages_budget=group_recent_budget,
+        speaker_char=speaker_char,  # D3 修复: 群聊 {{char}} 绑定发言者
+        is_group=bool(getattr(req, "group_id", None)),
+        user_name=req.user.username if req.user else "",  # D2 修复: 群历史名归属
+        message_order=req.message_order,  # Task 7: generate_interceptor 消息重排
+        excluded_message_ids=req.excluded_message_ids,  # P0-3: interceptor 消息排除
+    )
+    report.append(PromptAssemblyReportItem("message_builder", "included", detail=f"messages={len(messages)}"))
 
-        # G7 修复: 检查 instruct 模板的 skip_examples 设置
-        _st_instruct_tmpl = _load_instruct_template(db, user_setting, cache=req._cache)
-        _st_skip_examples = bool(getattr(_st_instruct_tmpl, "skip_examples", False)) if _st_instruct_tmpl else False
-
-        # D1 修复: jailbreak 合并逻辑 (ST 1.18.0 openai.js:1495-1506)
-        # 优先级: 角色卡 jailbreak (高) → 用户全局 jailbreak (中) → context_template.jailbreak (低)
-        char_jailbreak = (getattr(req.char, "jailbreak", None) or "").strip()
-        # A-2 修复: 角色卡无独立 jailbreak 字段时以 PHI 兜底（V2 卡兼容，与
-        # convert_chara_card_to_character 的 V2 回退语义一致）
-        if not char_jailbreak:
-            char_jailbreak = (getattr(req.char, "post_history_instructions", None) or "").strip()
-        user_jailbreak = (getattr(user_setting, "jailbreak", None) or "").strip() if user_setting else ""
-        # 读取 prefer_character_jailbreak (ST 1.18.0 power_user.prefer_character_jailbreak, 默认 True)
-        prefer_char_jb = True
-        if user_setting and user_setting.power_user:
-            try:
-                _pu = json.loads(user_setting.power_user) if isinstance(user_setting.power_user, str) else user_setting.power_user
-                if isinstance(_pu, dict):
-                    prefer_char_jb = _pu.get("prefer_character_jailbreak", True)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-        # A-1 修复: forbid_overrides 守卫 (ST openai.js:1496-1504)。
-        # 用户设置 extension_settings.system_prompt.forbid_overrides=true 时，
-        # 角色卡 jailbreak 不得覆盖用户/模板配置（跳过 override 分支）。
-        forbid_overrides = False
-        if user_setting and user_setting.silly_tavern_settings:
-            try:
-                _st_raw = user_setting.silly_tavern_settings
-                _st_data = json.loads(_st_raw) if isinstance(_st_raw, str) else _st_raw
-                if isinstance(_st_data, dict):
-                    _ext_sec = _st_data.get("extension_settings") or {}
-                    if isinstance(_ext_sec, dict):
-                        _sp_sec = _ext_sec.get("system_prompt") or {}
-                        if isinstance(_sp_sec, dict):
-                            forbid_overrides = bool(_sp_sec.get("forbid_overrides", False))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-        # A-1 修复: 对齐 ST PromptManager 的 prompt 禁用/守卫语义
-        # (PromptManager.js:949-953 isPromptDisabledForActiveCharacter +
-        # openai.js:1488/1498 systemPrompt.forbid_overrides !== true)。
-        # 数据源: PromptPreset.prompt_disabled（禁用标识符数组）与
-        # PromptPreset.entries（prompt 定义，含 identifier/forbid_overrides）。
-        # 此前仅读 extension_settings.system_prompt.forbid_overrides（数据路径
-        # 不存在 → 死代码），且缺 isPromptDisabledForActiveCharacter 分支。
-        _prompt_disabled_ids: set[str] = set()
-        _main_forbid = False
-        _jb_forbid = False
-        if prompt_preset is not None:
-            try:
-                _pd_raw = getattr(prompt_preset, "prompt_disabled", None)
-                if _pd_raw:
-                    _pd_list = json.loads(_pd_raw) if isinstance(_pd_raw, str) else _pd_raw
-                    if isinstance(_pd_list, list):
-                        _prompt_disabled_ids = {str(x) for x in _pd_list if x}
-                _entries_raw = getattr(prompt_preset, "entries", None)
-                if _entries_raw:
-                    _entries_list = json.loads(_entries_raw) if isinstance(_entries_raw, str) else _entries_raw
-                    if isinstance(_entries_list, list):
-                        for _entry in _entries_list:
-                            if not isinstance(_entry, dict):
-                                continue
-                            _id = str(_entry.get("identifier", "") or "")
-                            if _id in ("main", "jailbreak") and _entry.get("forbid_overrides") is True:
-                                if _id == "main":
-                                    _main_forbid = True
-                                else:
-                                    _jb_forbid = True
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-        # A-1: isPromptDisabledForActiveCharacter —— main/jailbreak 在
-        # prompt_disabled 中时角色卡覆盖不生效（ST: promptOrderEntry.enabled=false）。
-        _main_prompt_disabled = "main" in _prompt_disabled_ids
-        _jb_prompt_disabled = "jailbreak" in _prompt_disabled_ids
-        # main override (system_prompt_override) 禁用/守卫时不覆盖
-        if (_main_prompt_disabled or _main_forbid) and char_system_prompt:
-            report.append(
-                PromptAssemblyReportItem(
-                    "prompt_manager",
-                    "skipped",
-                    detail="main override disabled by prompt config (disabled/forbid_overrides)",
-                )
-            )
-            char_system_prompt = None
-        # A-2 修复: prefer=true 时用角色卡 jailbreak（含 PHI 兜底）；prefer=false 时
-        # 仅用用户全局 jailbreak，不再向索引 11 注入 PHI（ST: 此时 jailbreak 槽为空或用户配置值）
-        # A-1 修复: forbid_overrides=true 或 prompt 被禁用时跳过角色卡覆盖（与 ST 语义一致）
-        use_char_jb = (
-            prefer_char_jb
-            and char_jailbreak
-            and not forbid_overrides
-            and not _jb_prompt_disabled
-            and not _jb_forbid
-        )
-        jailbreak_for_st = char_jailbreak if use_char_jb else user_jailbreak
-
-        # D2 修复: 读取 names_behavior (ST 1.18.0 oai_settings.names_behavior, 默认 0=DEFAULT)
-        _names_behavior = 0
-        _wi_format = ""  # D3 修复: wi_format (ST 1.18.0 oai_settings.wi_format, 默认空串)
-        # D5/D6/D7 修复: 群聊 nudge + pin_examples + scenario/personality_format
-        _pin_examples = False
-        _scenario_format = "{{scenario}}"
-        _personality_format = "{{personality}}"
-        _new_group_chat_prompt = "[Start a new group chat. Group members: {{group}}]"
-        # F2 修复: ST 1.18.0 默认 group_nudge_prompt (openai.js:114)。此前读错键名
-        # group_nudge 且默认空串 → 群聊 nudge 从未生效。{{char}} 由 builder _sub 替换。
-        _group_nudge = '[Write the next reply only as {{char}}.]'
-        if user_setting and user_setting.silly_tavern_settings:
-            try:
-                _st_settings = json.loads(user_setting.silly_tavern_settings) if isinstance(user_setting.silly_tavern_settings, str) else user_setting.silly_tavern_settings
-                if isinstance(_st_settings, dict):
-                    _oai = _st_settings.get("oai_settings", {})
-                    if isinstance(_oai, dict):
-                        _names_behavior = int(_oai.get("names_behavior", 0))
-                        _wi_format = _oai.get("wi_format", "") or ""
-                        # A-7 修复: 用户显式设为空串表示禁用该字段，不得被 or 强转回默认值
-                        _scenario_raw = _oai.get("scenario_format")
-                        _scenario_format = _scenario_raw if isinstance(_scenario_raw, str) else "{{scenario}}"
-                        _personality_raw = _oai.get("personality_format")
-                        _personality_format = _personality_raw if isinstance(_personality_raw, str) else "{{personality}}"
-                        _ngcp_raw = _oai.get("new_group_chat_prompt")
-                        _new_group_chat_prompt = _ngcp_raw if isinstance(_ngcp_raw, str) else "[Start a new group chat. Group members: {{group}}]"
-                        _group_nudge = _oai.get("group_nudge_prompt")
-                        if not isinstance(_group_nudge, str):
-                            _group_nudge = '[Write the next reply only as {{char}}.]'
-                    # pin_examples 在 power_user 中
-                    _pu = _st_settings.get("power_user", {})
-                    if isinstance(_pu, dict):
-                        _pin_examples = bool(_pu.get("pin_examples", False))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-
-        # C2 修复: 按 generation_mode 构建合并卡（APPEND=启用成员 / APPEND_DISABLED=含禁用成员），
-        # 对齐 ST 1.18.0 combineGroupIntoSingleCard。仅在 APPEND/APPEND_DISABLED 模式生效；
-        # SWAP(0) 时 group_combined_card 保持 None，builder 走单发言者卡逻辑。
-        group_combined_card: Optional[dict] = None
-        if req.group_id and group_generation_mode in (1, 2):
-            try:
-                _g_for_card = _cached_request_group(req, req.group_id)
-                if _g_for_card is not None:
-                    if group_generation_mode == 2:
-                        _card_members = _load_all_members(db, _g_for_card)  # APPEND_DISABLED: 含禁用成员
-                    else:
-                        _card_members = _load_members(db, _g_for_card)  # APPEND: 仅启用成员
-                    group_combined_card = _build_group_combined_card(_g_for_card, _card_members)
-            except Exception as gcc_err:
-                logger.warning("Failed to build group combined card (group_id=%s): %s", req.group_id, gcc_err)
-
-        # ST 1.18.0 extension_prompts: 复用 palink-native 的收集逻辑（DB+req 合并 + filter 过滤）
-        _st_ext_prompts = _collect_extension_prompts(req)
-        # E-1 修复: st-compat 消息组装（token 编码 + 历史加载）为纯同步重活，
-        # 移入线程池避免阻塞事件循环（与 _append_worldbook_context 一致）。
-        messages = await asyncio.to_thread(
-            build_st_compat_messages,
-            db=db,
-            char=req.char,
-            user_nickname=user_nickname,
-            session_id=req.session_id,
-            branch_id=req.branch_id,
-            message=req.message,
-            images=req.images or [],
-            system_prompt_override=char_system_prompt,
-            world_info_before=world_info_before,
-            world_info_after=world_info_after,
-            persona_description=persona_desc,
-            jailbreak=jailbreak_for_st,  # D1 修复: 不再硬编码空串
-            authors_note=an_text if author_note_position_int != -1 else "",
-            authors_note_depth=an_depth,
-            authors_note_position=author_note_position_int,  # G3 修复
-            dynamic_context_parts=dynamic_context_parts,
-            prompt_lang=prompt_lang,
-            user_setting=user_setting,
-            _replace_placeholders=deps.replace_placeholders,
-            _get_full_branch_history=deps.get_full_branch_history,
-            _contains_chinese=deps.contains_chinese,
-            normalize_image_url=lambda img_url, check_size=False: normalize_image_url(
-                img_url, check_size=check_size, user_id=req.user.id,
-            ),
-            include_user_message=(req.include_user_message and not req.smart_card_trigger and not req.is_continue),
-            token_budget=token_budget,
-            context_template=context_template,
-            recent_messages_budget=group_recent_budget,
-            worldbook_depth_entries=depth_entries,
-            worldbook_em_top=wb_em_top_entries,  # G5 修复
-            worldbook_em_bottom=wb_em_bottom_entries,  # G5 修复
-            skip_examples=_st_skip_examples,  # G7 修复
-            worldbook_an_top=st_wi_an_top_parts,  # G4 修复
-            worldbook_an_bottom=st_wi_an_bottom_parts,  # G4 修复
-            # D2 修复: names_behavior 四态 + 群聊名字
-            names_behavior=_names_behavior,
-            is_group=bool(getattr(req, "group_id", None)),
-            speaker_char=speaker_char,  # D3 修复: 群聊 {{char}} 绑定发言者
-            user_name=req.user.username if req.user else "",
-            narrator_type="narrator",
-            # D3 修复: wi_format 包裹
-            wi_format=_wi_format,
-            # D5/D6/D7 修复: 群聊 nudge + pin_examples + scenario/personality_format
-            pin_examples=_pin_examples,
-            scenario_format=_scenario_format,
-            personality_format=_personality_format,
-            new_group_chat_prompt=_new_group_chat_prompt,
-            group_nudge=_group_nudge,
-            group_members=group_member_names,  # D4 修复: 启用成员名列表（None 时 builder 回退主角色名）
-            # C1/C2 修复: 透传群生成模式与合并卡，对齐 ST 三模式
-            generation_mode=group_generation_mode,
-            group_combined_card=group_combined_card,
-            extension_prompts=_st_ext_prompts,
-            message_order=req.message_order,  # Task 7: generate_interceptor 消息重排
-            excluded_message_ids=req.excluded_message_ids,  # P0-3: interceptor 消息排除
-            generation_type=getattr(req, "generation_type", None),  # A-8 修复: impersonate 豁免 group nudge
-        )
-        report.append(PromptAssemblyReportItem("message_builder", "included", detail=f"st-compat; messages={len(messages)}"))
-        # ST-compat 已在 build_st_compat_messages 内部处理所有注入（世界书 depth、作者备注、Persona），
-        # 清空这些条目避免外层 _insert_depth_prompt 重复注入 (G1/G2 修复)
-        depth_entries.clear()
-        author_note_depth_entry = None  # G1: 防止作者备注双重注入
-        persona_depth_entry = None  # G2: 防止 Persona 双重注入
-        persona_last_message = None  # G2: 防止 Persona 双重注入
-        # st-compat 路径已在 build_st_compat_messages 内部完成 extension_prompts 四态注入，
-        # 清空共享段的 ext_depth_entries / ext_chat_messages / ext_in_prompt_entries / ext_before_prompt_entries
-        # 避免下方 3342/3360/3178/3187 重复注入
-        ext_depth_entries.clear()
-        ext_chat_messages.clear()
-        ext_in_prompt_entries.clear()
-        ext_before_prompt_entries.clear()
-    else:
-        # E-1 修复: palink-native 消息组装（token 编码 + 历史加载）为纯同步重活，
-        # 移入线程池避免阻塞事件循环（与 _append_worldbook_context 一致）。
-        messages = await asyncio.to_thread(
-            build_character_chat_messages,
-            db=db,
-            char=req.char,
-            user_nickname=user_nickname,
-            session_id=req.session_id,
-            branch_id=req.branch_id,
-            message=req.message,
-            images=req.images or [],
-            system_prompt=system_prompt,
-            dynamic_context_parts=dynamic_context_parts,
-            prompt_lang=prompt_lang,
-            user_setting=user_setting,
-            _replace_placeholders=deps.replace_placeholders,
-            _get_full_branch_history=deps.get_full_branch_history,
-            _contains_chinese=deps.contains_chinese,
-            normalize_image_url=lambda img_url, check_size=False: normalize_image_url(
-                img_url,
-                check_size=check_size,
-                user_id=req.user.id,
-            ),
-            include_user_message=(req.include_user_message and not req.smart_card_trigger and not req.is_continue),
-            include_title_instruction=include_title_instruction,
-            context_template=context_template,
-            recent_messages_budget=group_recent_budget,
-            speaker_char=speaker_char,  # D3 修复: 群聊 {{char}} 绑定发言者
-            is_group=bool(getattr(req, "group_id", None)),
-            user_name=req.user.username if req.user else "",  # D2 修复: 群历史名归属
-            message_order=req.message_order,  # Task 7: generate_interceptor 消息重排
-            excluded_message_ids=req.excluded_message_ids,  # P0-3: interceptor 消息排除
-        )
-        report.append(PromptAssemblyReportItem("message_builder", "included", detail=f"messages={len(messages)}"))
-
-    # P1-1 修复: palink-native 路径下，当 prompt_preset.prompt_order 包含角色卡字段
-    # 标识符（charDescription/charPersonality/scenario）时，把这些字段抽取为独立
+    # P1-1 修复: 当 prompt_preset.prompt_order 包含角色卡字段标识符
+    # （charDescription/charPersonality/scenario）时，把这些字段抽取为独立
     # system 消息插入 messages 数组首位（紧跟 system_prompt 之后），使其可被
-    # _apply_full_prompt_order 按 prompt_order 重排。st-compat 路径已内置分离装配，
-    # _extract_char_field_messages_for_order 返回空列表，不影响其行为。
-    if not _is_st_compat_mode(st_mode):
-        _char_field_msgs = _extract_char_field_messages_for_order(
-            req, prompt_preset, st_mode, _macro_char_name,
-        )
-        if _char_field_msgs:
-            # 插入到第 0 条（system_prompt）之后；若 messages 为空则直接 append。
-            _insert_at = 1 if messages and messages[0].get("role") == "system" else 0
-            for _off, _cmsg in enumerate(_char_field_msgs):
-                messages.insert(_insert_at + _off, _cmsg)
-            report.append(
-                PromptAssemblyReportItem(
-                    "char_field_split_for_order",
-                    "included",
-                    detail=f"split_fields={len(_char_field_msgs)}; preset={prompt_preset.name if prompt_preset else 'n/a'}",
-                    tokens_estimate=sum(_estimate_tokens(m.get("content", "")) for m in _char_field_msgs),
-                )
+    # _apply_full_prompt_order 按 prompt_order 重排。
+    _char_field_msgs = _extract_char_field_messages_for_order(
+        req, prompt_preset, _macro_char_name,
+    )
+    if _char_field_msgs:
+        # 插入到第 0 条（system_prompt）之后；若 messages 为空则直接 append。
+        _insert_at = 1 if messages and messages[0].get("role") == "system" else 0
+        for _off, _cmsg in enumerate(_char_field_msgs):
+            messages.insert(_insert_at + _off, _cmsg)
+        report.append(
+            PromptAssemblyReportItem(
+                "char_field_split_for_order",
+                "included",
+                detail=f"split_fields={len(_char_field_msgs)}; preset={prompt_preset.name if prompt_preset else 'n/a'}",
+                tokens_estimate=sum(_estimate_tokens(m.get("content", "")) for m in _char_field_msgs),
             )
+        )
 
     # Append author_note depth entry (queued for in-story / position_int == 0)
     # to depth_entries so _insert_depth_prompt inserts it at the configured depth.
@@ -4080,8 +3561,7 @@ async def _assemble_roleplay_prompt_impl(
 
     # ── ST 1.18.0 extension_prompts IN_PROMPT(0) palink-native 注入 ──
     # 对齐 ST openai.js position='end'（system prompt 末尾）语义：追加到
-    # messages[0]（system 消息）文本末尾。st-compat 路径已 clear() 此列表，
-    # 不会重复注入。
+    # messages[0]（system 消息）文本末尾，不会重复注入。
     # [INJ-CLOSE-TAG-GUARD] 修复（2026-08-19 实证）：此前实现是"作为独立消息
     # append 到 messages 末尾"，把 system 注入放到 prompt 最后一条（紧贴模型
     # 续写位置）。前端插件（对话渲染系统 v7.1）经 setExtensionPrompt(position=0)
@@ -4330,12 +3810,11 @@ async def _assemble_roleplay_prompt_impl(
     # total token count exceeds the budget. This aligns with ST 1.18.0's
     # Prompt Manager behavior where the full prompt collection is ordered
     # and budgeted as a single unit.
-    prompt_sources = _collect_prompt_sources(messages, req.char) if not _is_st_compat_mode(st_mode) else []
+    prompt_sources = _collect_prompt_sources(messages, req.char)
     # Task 3.5.2: apply full prompt_order reordering when a preset with
     # prompt_order is bound. This reorders the actual messages array (not
     # just dynamic_context_parts) by their ST 1.18.0 prompt identifier.
-    # G12 修复: st-compat 跳过重排，装配序已由 builder 固定。
-    if prompt_preset is not None and not _is_st_compat_mode(st_mode):
+    if prompt_preset is not None:
         messages, prompt_sources = _apply_full_prompt_order(
             messages, prompt_sources, prompt_preset, report
         )
@@ -4343,23 +3822,9 @@ async def _assemble_roleplay_prompt_impl(
     # Uses the token budget computed from the model's context window
     # (Task 3.5.1). Non-trimmable sources (system_prompt, recent messages,
     # user message) are always retained.
-    # G8/G12 修复: st-compat 跳过基于标识符的裁剪和重排，
-    # 因为其装配序已由 builder 固定，分类器无法正确识别 ST 标记。
-    # D4 修复: st-compat 启用 chat_history token 裁剪子集。
-    if not _is_st_compat_mode(st_mode):
-        messages, total_tokens_estimate = _apply_dynamic_trimming(
-            messages, prompt_sources, token_budget, report
-        )
-    else:
-        # st-compat: 仅对 chat_history 做按 token 裁剪，保留强制项
-        # D6/A-10 修复: 传入 pin_examples 控制示例/历史预算竞争
-        messages = _apply_st_compat_history_trim(messages, token_budget, report, pin_examples=_pin_examples)
-        # A-11: 剥离 builder 打标的 _st_trailing_guard 内部字段（仅供 trim 识别
-        # 末尾强制项，不得进入 API 请求体）
-        for _m in messages:
-            if isinstance(_m, dict) and "_st_trailing_guard" in _m:
-                _m.pop("_st_trailing_guard", None)
-        total_tokens_estimate = sum(_estimate_tokens(str(m.get("content", ""))) for m in messages)
+    messages, total_tokens_estimate = _apply_dynamic_trimming(
+        messages, prompt_sources, token_budget, report
+    )
 
     # ST 1.18.0 instruct mode — wrap the assembled messages with the bound
     # InstructTemplate's prefix/suffix sequences. Applied after macro
@@ -4475,11 +3940,6 @@ def _append_worldbook_context(
     em_top_entries: Optional[list[str]] = None,
     em_bottom_entries: Optional[list[str]] = None,
     outlet_entries: Optional[dict[str, list[str]]] = None,
-    st_wi_before_parts: Optional[list[str]] = None,
-    st_wi_after_parts: Optional[list[str]] = None,
-    st_wi_an_top_parts: Optional[list[str]] = None,  # G4 修复: ANTop (pos=2)
-    st_wi_an_bottom_parts: Optional[list[str]] = None,  # G4 修复: ANBottom (pos=3)
-    skip_dynamic_context: bool = False,  # st-compat 模式下跳过 dynamic_context_parts 注入
     char_name: str = "",  # 角色名（用于正则宏替换）
     # A5 修复: 真实模型上下文上限（世界书百分比预算基数；None 时服务内回退 16000 兜底）
     max_context_tokens: Optional[int] = None,
@@ -4492,15 +3952,11 @@ def _append_worldbook_context(
     """注入世界书上下文到 prompt 中。
 
     ST 1.18.0 对齐: 把 wb_result 的 8 个 position 全部传出去:
-    - position 0-3 → dynamic_context_parts (wb_result.text) [skip_dynamic_context=True 时跳过]
+    - position 0-3 → dynamic_context_parts (wb_result.text)
     - position 4 (atDepth) → depth_entries
     - position 5 (EMTop) → em_top_entries (经 {{mesExamples}} 宏注入)
     - position 6 (EMBottom) → em_bottom_entries (经 {{mesExamples}} 宏注入)
     - position 7 (outlet) → outlet_entries (经 {{outlet::name}} 宏注入)
-
-    st-compat 模式下应设置 skip_dynamic_context=True，worldbook 内容通过
-    st_wi_before_parts/st_wi_after_parts/depth_entries 等 ST 位置注入，
-    避免与 dynamic_context_parts 重复。
 
     参考: SillyTavern-1.18.0/public/scripts/world-info.js:5093-5143
     """
@@ -4715,8 +4171,7 @@ def _append_worldbook_context(
                 char_name=char_name or (req.char.name or "Character"),
             )
             wb_text = deps.replace_placeholders(wb_text, user_nickname, req.char.name or "")
-            if not skip_dynamic_context:
-                dynamic_context_parts.append(wb_text)
+            dynamic_context_parts.append(wb_text)
             report.append(
                 PromptAssemblyReportItem(
                     "worldbook",
@@ -4735,36 +4190,6 @@ def _append_worldbook_context(
                         tokens_estimate=r.tokens_estimate,
                     )
                 )
-            # ST 1.18.0 对齐: 分离 worldInfoBefore (pos=0) 和 worldInfoAfter (pos=1)
-            if st_wi_before_parts is not None:
-                for content in wb_result.entries_by_position.get(0, []):
-                    st_wi_before_parts.append(
-                        balance_custom_tags(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                        )
-                    )
-            if st_wi_after_parts is not None:
-                for content in wb_result.entries_by_position.get(1, []):
-                    st_wi_after_parts.append(
-                        balance_custom_tags(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                        )
-                    )
-            # G4 修复: 分离 ANTop (pos=2) 和 ANBottom (pos=3)
-            if st_wi_an_top_parts is not None:
-                for content in wb_result.entries_by_position.get(2, []):
-                    st_wi_an_top_parts.append(
-                        balance_custom_tags(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                        )
-                    )
-            if st_wi_an_bottom_parts is not None:
-                for content in wb_result.entries_by_position.get(3, []):
-                    st_wi_an_bottom_parts.append(
-                        balance_custom_tags(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                        )
-                    )
             # Collect depth entries from worldbook
             # ST 对齐: 包装为统一队列记录，key 对齐 ST customDepthWI_{depth}_{role}
             # （constants.js L53）；同 key 多条按收集序稳定排列
@@ -4902,17 +4327,206 @@ def _st_vector_data_active(db, user_id: int) -> bool:
     return active
 
 
+# ── [分层记忆 Phase 1] 实体卡 / 长会话门控 / 注入预算档位 ──
+# spec: docs/SPEC_分层记忆注入_2026-09-02.md §4.1 / §4.1b（2026-09-03 施工）。
+# 档位：0=紧凑 750 / 1=标准 1500（默认=历史硬编码值，存量零变化）/
+# 2=加量 3000 / 3=尽量多 6000。超预算时 _apply_token_budget 兜底裁剪
+# （记忆区优先级低于人设/最近历史），放大档位不会撑爆 prompt。
+_MEMORY_BUDGET_LEVEL_TOKENS = (750, 1500, 3000, 6000)
+# 实体卡压平文本上限（token），超限逐行截断并 report。
+_MEMORY_ENTITY_CARD_MAX_TOKENS = 400
+
+
+def _resolve_memory_max_tokens(user_setting: Optional[Any]) -> int:
+    """[PHASE-1] 档位 → 记忆区注入 token 上限。NULL/越界/无属性 = 标准档 1500。"""
+    try:
+        lvl = getattr(user_setting, "memory_budget_level", None)
+        if isinstance(lvl, int) and 0 <= lvl < len(_MEMORY_BUDGET_LEVEL_TOKENS):
+            return _MEMORY_BUDGET_LEVEL_TOKENS[lvl]
+    except Exception:
+        pass
+    return _MEMORY_BUDGET_LEVEL_TOKENS[1]
+
+
+def _flatten_stat_value(value: Any, _depth: int = 0) -> str:
+    """stat_data 叶子值 → 紧凑文本：bool 转是/否，list 以「、」连接，dict 内联，
+    空值返回空串；叶子截断 120 字防长文本撑爆实体卡。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, dict):
+        # 深度语义：组 > 字段 > 内联子字段 一共三层；更深的畸形嵌套整支丢弃
+        # （真实 stat_data 形如 /组/字段 与 /组/字段/{子字段}，两层已够用）
+        if _depth > 1:
+            return ""
+        parts = []
+        for k, v in value.items():
+            if not k or str(k).startswith("_"):
+                continue
+            inner = _flatten_stat_value(v, _depth + 1)
+            if inner:
+                parts.append(f"{k}={inner}")
+        return "，".join(parts)
+    if isinstance(value, (list, tuple)):
+        items = [_flatten_stat_value(v, _depth + 1) for v in value]
+        items = [i for i in items if i]
+        return "、".join(items)
+    text = str(value).strip()
+    if not text or text.lower() in ("null", "none", "nan"):
+        return ""
+    return text.replace("\n", " ")[:120]
+
+
+def _flatten_stat_data(stat_data: Any) -> str:
+    """[PHASE-1] 把 MVU stat_data 压平成中文键值行。
+
+    压平而非注入原始 JSON：省 token，且降低结构化数据被主模型当成指令
+    的概率。跳过 _ 开头（MVU 只读内部字段）与空值；dict 组展开为
+    「组名：字段=值；…」行。输出示例：
+        世界信息：日期时间=第一天·夜；地点=咖啡馆
+        桃汐：好感度=50；服饰=常服
+    """
+    if not isinstance(stat_data, dict):
+        return ""
+    lines: list[str] = []
+    for group_name, group in stat_data.items():
+        if not group_name or str(group_name).startswith("_"):
+            continue
+        if isinstance(group, dict):
+            pairs = []
+            for field_name, value in group.items():
+                if not field_name or str(field_name).startswith("_"):
+                    continue
+                v = _flatten_stat_value(value)
+                if v:
+                    pairs.append(f"{field_name}={v}")
+            if pairs:
+                lines.append(f"{group_name}：{'；'.join(pairs)}")
+        else:
+            v = _flatten_stat_value(group)
+            if v:
+                lines.append(f"{group_name}：{v}")
+    return "\n".join(lines)
+
+
+def _load_session_stat_data(db: Session, session_id: str, group_id: Optional[str] = None) -> Any:
+    """[PHASE-1] 读取当前会话的 MVU stat_data：群聊优先群组变量
+    （GroupChat.chat_metadata，群聊装配走 _g_mode 同源）、回退会话变量
+    （CharacterChatSession.chat_metadata）。
+
+    脏数据全防御：chat_metadata 非法 JSON / 非 dict / variables 或 stat_data
+    非 dict / 行不存在 / 列 NULL——任何形态返回 None 静默跳过，绝不抛异常
+    （装配主流程宁缺勿错）。只读，不写库。"""
+    candidates: list[tuple[str, str]] = []
+    if group_id:
+        candidates.append(("group", group_id))
+    candidates.append(("session", session_id))
+    for kind, sid in candidates:
+        try:
+            if kind == "group":
+                row = db.query(GroupChat).filter(GroupChat.id == sid).first()
+            else:
+                row = db.query(CharacterChatSession).filter(CharacterChatSession.id == sid).first()
+            meta = json.loads(row.chat_metadata) if (row is not None and row.chat_metadata) else None
+            if not isinstance(meta, dict):
+                continue
+            variables = meta.get("variables")
+            if not isinstance(variables, dict):
+                continue
+            stat = variables.get("stat_data")
+            if isinstance(stat, dict) and stat:
+                return stat
+        except Exception:
+            continue
+    return None
+
+
+def _memory_gate_should_skip(
+    system_prompt_tokens: int,
+    injected_tokens: int,
+    history_chars: int,
+    history_reserve: int,
+    token_budget: int,
+) -> bool:
+    """[PHASE-1b] True = 历史 + 已注入块仍装得进预算 → 本会话记忆的原文都在
+    窗口内，向量检索召回=窗口重复，跳过检索（短会话省 ~1500 tok/轮）。
+    保守方向：历史按 1 字≈1 token 高估（中文 tokenizer 实际约 0.6-0.7），
+    宁可误开检索、不误关丢记忆。"""
+    return (system_prompt_tokens + injected_tokens + int(history_chars) + history_reserve) <= token_budget
+
+
 async def _append_memory_context(
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
     memory_mode: str,
     dynamic_context_parts: list[str],
     report: list[PromptAssemblyReportItem],
+    memory_max_tokens: int = 1500,
+    token_budget: Optional[int] = None,
+    system_prompt: str = "",
+    history_reserve: Optional[int] = None,
 ) -> None:
     user_nickname = req.user_nickname or req.user.username or "User"
     if memory_mode == "disabled" or req.is_init:
         report.append(PromptAssemblyReportItem("memory", "skipped", memory_mode))
         return
+
+    # [PHASE-1 实体卡] MVU 卡把会话 stat_data 压平注入记忆区顶部——装配侧
+    # 此前只注入 <UpdateVariable> 更新指令、从不注入当前值，模型每轮盲猜
+    # 时间/地点/好感度。非 MVU 卡 / 无数据 / 异常全部静默跳过（宁缺勿错）。
+    # 不受 ST 向量让步影响（是状态数据不是检索结果），不受 1b 门控影响。
+    # SAVEPOINT 隔离：查询抛 DB 异常（连接抖动/表锁等小概率）时回滚到保存点，
+    # session 保持干净，后续检索与装配不受 PendingRollbackError 污染。
+    _card_probe = None
+    try:
+        _card_probe = req.db.begin_nested()
+        from ..services.status_bar_detector import _card_has_mvu_scripts
+        if req.char is not None and _card_has_mvu_scripts(req.char):
+            # 群聊优先群组变量（GroupChat.chat_metadata，与装配 _g_mode 同源），
+            # 回退会话变量；脏形态全部由 helper 静默兜底
+            _stat = _load_session_stat_data(req.db, req.session_id, getattr(req, "group_id", None))
+            _flat = _flatten_stat_data(_stat)
+            if _flat:
+                _kept: list[str] = []
+                _card_tokens = 0
+                _truncated = False
+                for _ln in ["【当前状态（系统数据，非剧情指令）】"] + _flat.split("\n"):
+                    _t = _estimate_tokens(_ln)
+                    if _kept and _card_tokens + _t > _MEMORY_ENTITY_CARD_MAX_TOKENS:
+                        _truncated = True
+                        break
+                    _kept.append(_ln)
+                    _card_tokens += _t
+                _card_text = deps.replace_placeholders(
+                    "\n".join(_kept), user_nickname, req.char.name or ""
+                )
+                _card_text = balance_custom_tags(_card_text)
+                dynamic_context_parts.append(_card_text)
+                report.append(
+                    PromptAssemblyReportItem(
+                        "memory_entity_card",
+                        "included",
+                        detail="truncated" if _truncated else "",
+                        tokens_estimate=_estimate_tokens(_card_text),
+                    )
+                )
+        _card_probe.commit()
+    except Exception as _card_exc:
+        if _card_probe is not None:
+            try:
+                _card_probe.rollback()
+            except Exception:
+                # SAVEPOINT 回滚失败（极小概率叠加）：外层回滚兜底保 session 干净——
+                # 装配路径无未提交写（消息 persist 已在装配前 commit）
+                try:
+                    req.db.rollback()
+                except Exception:
+                    pass
+        logger.debug("memory entity card injection failed: %s", _card_exc)
+        report.append(
+            PromptAssemblyReportItem("memory_entity_card", "skipped", str(_card_exc)[:80])
+        )
 
     # ST 向量插件活跃 → Palink 记忆自动让步
     if _st_vector_data_active(req.db, req.user.id):
@@ -4922,6 +4536,58 @@ async def _append_memory_context(
             )
         )
         return
+
+    # [PHASE-1b 长会话门控] 记忆检索按 session_id 过滤=会话内记忆：历史 +
+    # 已注入块仍装得进预算时，窗口原文已覆盖全部记忆内容，检索召回=纯重复
+    # （exclude_recent 只排最近 5 条，第 6 条起双份注入）。预算装不下才检索。
+    # 估算失败视为超预算照常检索（宁误开勿误关）。token_budget=None 时门控
+    # 关闭（兼容旧调用与测试直调路径），行为与改造前一致。
+    if token_budget is not None:
+        # 门控查询同样走 SAVEPOINT（独立于实体卡：门控炸不连累实体卡已注入
+        # 的结果，实体卡炸也不影响门控判断），估算失败视为超预算照常检索
+        # （宁误开勿误关）。token_budget=None 时门控关闭（兼容旧调用与测试
+        # 直调路径），行为与改造前一致。
+        _gate_probe = None
+        _hist_chars = -1  # -1 = 估算失败 → 不门控（照常检索）
+        try:
+            _gate_probe = req.db.begin_nested()
+            _hist_q = req.db.query(
+                func.sum(func.length(CharacterChatMessage.content))
+            ).filter(CharacterChatMessage.session_id == req.session_id)
+            if req.branch_id:
+                _hist_q = _hist_q.filter(CharacterChatMessage.branch_id == req.branch_id)
+            else:
+                _hist_q = _hist_q.filter(CharacterChatMessage.branch_id == None)  # noqa: E711
+            # 隐藏消息不进 prompt（ST 语义），不计入历史；NULL 视为未隐藏
+            _hist_q = _hist_q.filter(
+                or_(CharacterChatMessage.is_hidden == False, CharacterChatMessage.is_hidden == None)  # noqa: E712
+            )
+            _hist_chars = int(_hist_q.scalar() or 0) + len(str(req.message or ""))
+            # 当前用户消息也在窗口内且不属"历史"，同系数并入估算，
+            # 消除"历史偏小 → 误跳过"的系统性偏差
+            _gate_probe.commit()
+        except Exception as _gate_err:
+            if _gate_probe is not None:
+                try:
+                    _gate_probe.rollback()
+                except Exception:
+                    try:
+                        req.db.rollback()
+                    except Exception:
+                        pass
+            logger.debug("memory gate history estimate failed: %s", _gate_err)
+        if _hist_chars >= 0:
+            _injected_tokens = sum(_estimate_tokens(_p) for _p in dynamic_context_parts)
+            _reserve = history_reserve if history_reserve is not None else _DEFAULT_HISTORY_RESERVE
+            if _memory_gate_should_skip(
+                _estimate_tokens(system_prompt), _injected_tokens, _hist_chars, _reserve, token_budget
+            ):
+                report.append(
+                    PromptAssemblyReportItem(
+                        "memory", "skipped", "history within token budget (gate)"
+                    )
+                )
+                return
 
     nested = None
     try:
@@ -4954,13 +4620,13 @@ async def _append_memory_context(
                 user_id=req.user.id,
                 query=req.smart_card_context if req.smart_card_trigger else req.message,
                 session_id=req.session_id,
-                max_tokens=1500,
+                max_tokens=memory_max_tokens,
                 branch_ids=ancestor_branch_ids if ancestor_branch_ids else None,
                 memory_mode=memory_mode,
                 exclude_message_ids=exclude_message_ids or None,
             )
             if mem_ctx and mem_ctx.memories:
-                memory_text = build_memory_context(mem_ctx, max_tokens=1500)
+                memory_text = build_memory_context(mem_ctx, max_tokens=memory_max_tokens)
                 if memory_text:
                     memory_text = deps.replace_placeholders(memory_text, user_nickname, req.char.name or "")
                     dynamic_context_parts.append(memory_text)

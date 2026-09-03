@@ -748,7 +748,7 @@ def _normalize_mode(raw: str | None) -> str:
 def subtask_6_1_4(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     print("\n=== SubTask 6.1.4: 模式切换 ===")
 
-    # [MODE-SEALED] 切换到 st-native 应被封存守卫重定向为 palink-native 落库
+    # st-compat/st-native 已删除（A2 口径）：PUT 任意 silly_tavern_mode 一律落库 palink-native
     status, resp = http_request(
         "PUT", "/api/users/me/settings", token=token, body={"silly_tavern_mode": "st-native"}
     )
@@ -762,9 +762,9 @@ def subtask_6_1_4(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     st_get_mode = get_resp.get("silly_tavern_mode") if isinstance(get_resp, dict) else None
     if st_save_ok and st_db_mode == "palink-native":
         cache_note = "" if st_get_mode == "palink-native" else f" (GET cached={st_get_mode}, known cache bug)"
-        record("switch_to_st_native_sealed_redirect", "PASS", f"db_mode={st_db_mode}{cache_note}")
+        record("switch_st_native_normalized_to_palink_native", "PASS", f"db_mode={st_db_mode}{cache_note}")
     else:
-        record("switch_to_st_native_sealed_redirect", "FAIL", f"save_status={status} db_mode={st_db_mode} get_mode={st_get_mode}")
+        record("switch_st_native_normalized_to_palink_native", "FAIL", f"save_status={status} db_mode={st_db_mode} get_mode={st_get_mode}")
 
     # 切换回 palink-native
     status, resp = http_request(

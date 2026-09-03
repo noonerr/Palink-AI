@@ -132,14 +132,9 @@ def _make_request(char=None, **overrides):
 class TestP11CharFieldPromptOrder:
     """验证 palink-native 路径下角色卡字段可被 prompt_order 重排。"""
 
-    def test_should_split_returns_false_for_st_compat(self):
-        """st-compat 路径已内置分离装配，不需要再拆分。"""
-        preset = _make_preset(["charDescription", "charPersonality"])
-        assert _should_split_char_fields_for_order(preset, "st-compat") is False
-
     def test_should_split_returns_false_without_preset(self):
         """未绑定 preset 时不拆分（保留默认合并行为）。"""
-        assert _should_split_char_fields_for_order(None, "palink-native") is False
+        assert _should_split_char_fields_for_order(None) is False
 
     def test_should_split_returns_false_when_no_char_field_ids(self):
         """preset 不含角色卡字段标识符时不拆分。"""
@@ -147,32 +142,28 @@ class TestP11CharFieldPromptOrder:
         # worldInfoBefore 在 _CHAR_FIELD_ST_IDS 中，应返回 True
         # 改为不含任何角色卡字段
         preset2 = _make_preset(["main", "chatHistory"])
-        assert _should_split_char_fields_for_order(preset2, "palink-native") is False
+        assert _should_split_char_fields_for_order(preset2) is False
 
     def test_should_split_returns_true_when_preset_has_char_description(self):
         """preset 包含 charDescription 时应拆分。"""
         preset = _make_preset(["main", "charDescription", "chatHistory"])
-        assert _should_split_char_fields_for_order(preset, "palink-native") is True
+        assert _should_split_char_fields_for_order(preset) is True
 
     def test_should_split_returns_true_when_preset_has_personality(self):
         """preset 包含 charPersonality 时应拆分。"""
         preset = _make_preset(["main", "charPersonality"])
-        assert _should_split_char_fields_for_order(preset, "palink-native") is True
+        assert _should_split_char_fields_for_order(preset) is True
 
     def test_should_split_returns_true_when_preset_has_scenario(self):
         """preset 包含 scenario 时应拆分。"""
         preset = _make_preset(["scenario", "main"])
-        assert _should_split_char_fields_for_order(preset, "palink-native") is True
+        assert _should_split_char_fields_for_order(preset) is True
 
     def test_extract_char_field_messages_returns_empty_when_not_needed(self):
         """不需要拆分时返回空列表。"""
         req = _make_request(_make_char(description="desc", personality="pers"))
         # 无 preset
-        messages = _extract_char_field_messages_for_order(req, None, "palink-native", "Alice")
-        assert messages == []
-        # st-compat 模式
-        preset = _make_preset(["charDescription"])
-        messages = _extract_char_field_messages_for_order(req, preset, "st-compat", "Alice")
+        messages = _extract_char_field_messages_for_order(req, None, "Alice")
         assert messages == []
 
     def test_extract_char_field_messages_includes_description(self):
@@ -180,7 +171,7 @@ class TestP11CharFieldPromptOrder:
         char = _make_char(description="A brave knight", personality="kind", scenario="medieval")
         req = _make_request(char)
         preset = _make_preset(["main", "charDescription", "charPersonality", "scenario"])
-        messages = _extract_char_field_messages_for_order(req, preset, "palink-native", "Alice")
+        messages = _extract_char_field_messages_for_order(req, preset, "Alice")
         ids = [m.get("_palink_prompt_id") for m in messages]
         assert PROMPT_ID_CHAR_DESCRIPTION in ids
         assert PROMPT_ID_CHAR_PERSONALITY in ids
@@ -195,7 +186,7 @@ class TestP11CharFieldPromptOrder:
         char = _make_char(description="desc", personality="", scenario="")
         req = _make_request(char)
         preset = _make_preset(["charDescription", "charPersonality", "scenario"])
-        messages = _extract_char_field_messages_for_order(req, preset, "palink-native", "Alice")
+        messages = _extract_char_field_messages_for_order(req, preset, "Alice")
         assert len(messages) == 1
         assert messages[0]["_palink_prompt_id"] == PROMPT_ID_CHAR_DESCRIPTION
         assert messages[0]["content"] == "desc"
@@ -206,7 +197,7 @@ class TestP11CharFieldPromptOrder:
         req = _make_request(char)
         # preset 只声明 charDescription
         preset = _make_preset(["main", "charDescription", "chatHistory"])
-        messages = _extract_char_field_messages_for_order(req, preset, "palink-native", "Alice")
+        messages = _extract_char_field_messages_for_order(req, preset, "Alice")
         assert len(messages) == 1
         assert messages[0]["_palink_prompt_id"] == PROMPT_ID_CHAR_DESCRIPTION
         # personality 和 scenario 不在 preset 中，不抽取
@@ -408,41 +399,6 @@ class TestP12TokenBudget:
         # 应触发裁剪
         assert any(r.key.startswith("token_budget_trim") for r in report)
         assert len(trimmed) <= len(parts)
-
-
-# ---------------------------------------------------------------------------
-# P1-2: st-compat 0.7 比例修正（验证 _apply_st_compat_history_trim 不再使用 0.7）
-# ---------------------------------------------------------------------------
-class TestP12StCompatHistoryTrimRatio:
-    """验证 st-compat 历史裁剪不再使用 0.7 比例。"""
-
-    def test_st_compat_trim_uses_full_budget_not_0_7_ratio(self):
-        """st-compat 历史裁剪应使用全部剩余预算，而非 0.7 比例。"""
-        try:
-            from app.services.roleplay_prompt_assembly import _apply_st_compat_history_trim
-        except ImportError:
-            pytest.skip("_apply_st_compat_history_trim 不可导入")
-
-        # 构造 messages: [system, system(start), user, assistant, user, assistant, system(jailbreak)]
-        messages = [
-            {"role": "system", "content": "main prompt"},
-            {"role": "system", "content": "[Start a new Chat]"},
-            {"role": "user", "content": "msg " * 200},
-            {"role": "assistant", "content": "reply " * 200},
-            {"role": "user", "content": "msg2 " * 200},
-            {"role": "assistant", "content": "reply2 " * 200},
-            {"role": "system", "content": "jailbreak"},
-        ]
-        report = []
-        # 给一个较小的 budget 触发裁剪
-        result = _apply_st_compat_history_trim(messages, token_budget=2000, report=report)
-
-        # 验证 report 中包含裁剪记录
-        trim_reports = [r for r in report if r.key == "st_compat_trim"]
-        if trim_reports:
-            # 裁剪应基于全预算（2000 - mandatory），而非 0.7*2000 - mandatory
-            # 这里仅验证裁剪逻辑被触发，具体值由实现决定
-            assert trim_reports[0].status in ("trimmed", "skipped")
 
 
 # ---------------------------------------------------------------------------

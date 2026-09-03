@@ -570,22 +570,11 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-# [MODE-SEALED] 2026-08-24 用户拍板：除 palink-native 外的模式运行时封存不可达。
-# sidecar mode 查询出口与 users.py 同步重定向（iframe 即使存在也只会被告知
-# palink-native）。解封 = 移除守卫并恢复合法集判定。
-_SEALED_ST_MODES = {"compat", "st-compat", "st-native"}
-_LEGAL_ST_MODES = {"compat", "st-compat", "st-native", "palink-native"}  # 解封后恢复使用
+# [MODE-SEALED→已删除] st-compat/st-native 双轨已于 2026-09 删除。
+# 字段保留为纯摆设（A2 分步）：查询出口恒 "palink-native"。
 
 
 def _normalize_silly_tavern_mode(mode: Optional[str]) -> str:
-    raw = str(mode or "palink-native").strip() or "palink-native"
-    aliases = {
-        "iframe": "compat",
-        "native": "palink-native",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized in _LEGAL_ST_MODES and normalized not in _SEALED_ST_MODES:
-        return normalized
     return "palink-native"
 
 

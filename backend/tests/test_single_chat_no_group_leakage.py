@@ -1,9 +1,8 @@
 """1:1（单对话）非回归直测 —— 用户硬要求：群聊改动不得影响修改前的单对话后端。
 
 复用 test_st_compat_group_chat_e2e 的 mock 基建（_run_assembly / _make_request /
-_make_mock_db），并新增 build_st_compat_messages 单测，证明：
+_make_mock_db），证明：
 - group_id=None 装配：无群聊分支触发、system_prompt 不含发言者身份、report 无 group_* 项；
-- build_st_compat_messages(is_group=False) 即使传入 generation_mode=1 + 合并卡，也绝不注入合并卡；
 - worldbook 组策略（group_chars）在 1:1 路径不生效（解析 group_chars=None）。
 """
 
@@ -20,7 +19,6 @@ if _BACKEND_DIR not in sys.path:
 
 try:
     from app.services import roleplay_prompt_assembly as rpa  # noqa: E402
-    from app.services.character_message_builder import build_st_compat_messages  # noqa: E402
     from test_st_compat_group_chat_e2e import (  # noqa: E402
         _make_request,
         _make_mock_db,
@@ -37,14 +35,6 @@ except Exception as exc:  # pragma: no cover
     _IMPORT_ERROR = exc
 
 pytestmark = pytest.mark.skipif(not _IMPORT_OK, reason=f"依赖缺失，跳过: {_IMPORT_ERROR}")
-
-
-def _fake_db():
-    """build_st_compat_messages 在 branch_id=None 时查询历史；返回空历史避免 DB 依赖。"""
-    db = MagicMock()
-    chain = db.query.return_value.filter.return_value.order_by.return_value.limit.return_value
-    chain.all.return_value = []
-    return db
 
 
 # ───────────────────── 1) 装配层：group_id=None 无群聊泄漏 ─────────────────────
@@ -79,67 +69,7 @@ def test_assembly_1to1_vs_group_isolation():
     assert "[当前发言者身份]" not in single_result.system_prompt
 
 
-# ───────────────────── 2) 构建器单测：1:1 绝不注入合并卡 ─────────────────────
-
-def _make_char():
-    return SimpleNamespace(
-        id="char-1", name="Solo", description="SOLO_DESCRIPTION",
-        personality="SOLO_PERSONALITY", scenario="SOLO_SCENARIO",
-        mes_example="<START>\nSolo: hi", extensions=None,
-        post_history_instructions=None,
-    )
-
-
-def _base_builder_kwargs(char, **overrides):
-    kwargs = dict(
-        db=_fake_db(), char=char, user_nickname="User", session_id="s", branch_id=None,
-        message="hi", images=[], system_prompt_override="SYS",
-        world_info_before="", world_info_after="", persona_description="",
-        jailbreak="", authors_note="", authors_note_depth=4,
-        dynamic_context_parts=[], prompt_lang="en", user_setting=None,
-        _replace_placeholders=lambda text, *a, **kw: text,
-        _get_full_branch_history=lambda *a, **kw: [],
-        _contains_chinese=lambda text: False,
-        normalize_image_url=lambda u, *a, **kw: u,
-        include_user_message=False,
-    )
-    kwargs.update(overrides)
-    return kwargs
-
-
-COMBINED_CARD = {
-    "description": "COMBINED_DESCRIPTION",
-    "personality": "COMBINED_PERSONALITY",
-    "scenario": "COMBINED_SCENARIO",
-    "mes_example": "<START>\nCombined: hello",
-}
-
-
-def test_builder_1to1_ignores_combined_card():
-    """is_group=False + generation_mode=1 + 合并卡：description 取 char.description，
-    而非合并卡的 COMBINED_DESCRIPTION（C2 注入仅在 is_group 且 mode in (1,2) 生效）。"""
-    char = _make_char()
-    msgs = build_st_compat_messages(**_base_builder_kwargs(
-        char, is_group=False, generation_mode=1, group_combined_card=COMBINED_CARD,
-    ))
-    joined = "\n".join(m.get("content", "") for m in msgs)
-    assert "COMBINED_DESCRIPTION" not in joined, "1:1 模式误注入合并卡 description"
-    assert "SOLO_DESCRIPTION" in joined, "1:1 模式未使用单卡 description"
-    assert "COMBINED_SCENARIO" not in joined
-    assert "SOLO_SCENARIO" in joined
-
-
-def test_builder_1to1_no_group_name_prefix_in_system():
-    """1:1 模式系统消息不应包含群聊 `Name: ` 风格的成员前缀注入。"""
-    char = _make_char()
-    msgs = build_st_compat_messages(**_base_builder_kwargs(char, is_group=False))
-    joined = "\n".join(m.get("content", "") for m in msgs)
-    # 群聊场景标记不应出现
-    assert "[当前发言者身份]" not in joined
-    assert "Group members:" not in joined
-
-
-# ───────────────────── 3) group_profile 守卫：group_id=None 返回 None ─────────────────────
+# ───────────────────── 2) group_profile 守卫：group_id=None 返回 None ─────────────────────
 
 def test_build_group_profile_context_1to1_returns_none():
     """_build_group_profile_context 在 group_id=None 时直接返回 None（不触碰群聊逻辑）。"""
@@ -147,7 +77,7 @@ def test_build_group_profile_context_1to1_returns_none():
     assert rpa._build_group_profile_context(req) is None
 
 
-# ───────────────────── 4) worldbook 组策略在 1:1 不生效 ─────────────────────
+# ───────────────────── 3) worldbook 组策略在 1:1 不生效 ─────────────────────
 
 def _run_assembly_spy_wb(group_id=None):
     """复用 e2e 基建，但不 patch _append_worldbook_context，改为 spy build_worldbook_context

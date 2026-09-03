@@ -201,34 +201,6 @@ def test_natural_follower_damping_excludes_follower():
     assert result == "m1"
 
 
-def test_natural_stcompat_ignores_follower():
-    """S4.1：st-compat 模式忽略 follower_members（ST 1.18.0 无此概念）。
-
-    同置 A(talk=1.0) B(talk=1.0, follower)，random.random=0.5。
-    palink-native 下 B 衰减为 0.3 被排除（见上）；st-compat 下 follower 衰减被忽略，
-    二者均激活，固定 choice 取首位 A -> 结果仍为 m1，但语义上 B 也参与了激活池
-    （验证 follower 字段在 st-compat 不被读取）。"""
-    members = [FakeChar("m1", "Alice", "1.0"),
-               FakeChar("m2", "Bob", "1.0")]
-    db = FakeDB(session=None)
-    g = FakeGroup(member_ids='["m1","m2"]', disabled="[]", follower='["m2"]')
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(random, "random", lambda: 0.5)
-        mp.setattr(random, "choice", _pick(0))
-        # st-compat：follower 衰减被忽略，B 也满足 0.5<=1.0，activated=[A,B]
-        result = rpa._select_natural_speaker(db, g, members, "hi", st_mode="st-compat")
-    # 固定 choice 取首位 -> m1；关键是不因 follower 衰减而排除 m2（参与池）
-    assert result == "m1"
-    # 反向验证：若 follower 仍生效，B 会被排除，但此刻二者皆在池内，choice 首位即 m1
-    # 用概率条件确保 B 也激活：再测一次 random=0.99 时 B 在 st-compat 下仍激活
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(random, "random", lambda: 0.99)
-        mp.setattr(random, "choice", _pick(0))
-        result2 = rpa._select_natural_speaker(db, g, members, "hi", st_mode="st-compat")
-    # 0.99 <= 1.0 对 A、B 均成立（follower 忽略），二者都在池；取首位 m1
-    assert result2 == "m1"
-
-
 def test_natural_mention_excludes_last_speaker():
     """S4.2：提及命中最后发言者时，因 bannedUser 回避而忽略该提及命中。
 
@@ -421,45 +393,6 @@ def test_resolve_talkative_keeps_preset_speaker():
     assert req.current_speaker_id == "m1"
 
 
-def test_resolve_sealed_stcompat_talkative_uses_native_selector():
-    """[MODE-SEALED] 2026-08-24 封存后：DB 存量 st-compat 在入口被归一化为
-    palink-native -> 原生 TALKATIVE(4) 正常走 native selector（原「降级 NATURAL」
-    行为随 st-compat 管线一并封存）。"""
-    members = [FakeChar("m1", "Alice"), FakeChar("m2", "Bob")]
-    g = FakeGroup(strategy=4, member_ids='["m1","m2"]', disabled="[]")
-    us = FakeUserSetting(mode="st-compat")
-    db = FakeDB(group=g, user_setting=us, members=members, session=None)
-    req = _make_req(db, g)
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(rpa, "_select_talkative_speaker",
-                   lambda db, group, members, allow_self_responses=False: "m2")
-        asyncio.run(rpa._resolve_group_speaker(req))
-    assert req.current_speaker_id == "m2"
-
-
-def test_resolve_sealed_stcompat_voting_uses_native_selector():
-    """[MODE-SEALED] 封存后：存量 st-compat + 原生 VOTING(5) -> 走 native
-    voting selector（不再回退 NATURAL）。"""
-    members = [FakeChar("m1", "Alice"), FakeChar("m2", "Bob")]
-    g = FakeGroup(strategy=5, member_ids='["m1","m2"]', disabled="[]")
-    us = FakeUserSetting(mode="st-compat")
-    db = FakeDB(group=g, user_setting=us, members=members, session=None)
-    req = _make_req(db, g)
-
-    async def _fake_vote(db, group, members_, model):
-        return "m2"
-
-    with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(rpa, "_select_voting_speaker", _fake_vote)
-
-        def _talkative_should_not_be_called(*a, **k):
-            raise AssertionError("VOTING strategy must not fall through to talkative")
-        mp.setattr(rpa, "_select_talkative_speaker", _talkative_should_not_be_called)
-        asyncio.run(rpa._resolve_group_speaker(req))
-    assert req.current_speaker_id == "m2"
-
-
 if __name__ == "__main__":
     test_enabled_member_ids_excludes_disabled()
     test_enabled_member_ids_no_disabled_returns_all()
@@ -482,6 +415,4 @@ if __name__ == "__main__":
     test_resolve_talkative_uses_weighted_selector()
     test_resolve_voting_falls_back_to_talkative()
     test_resolve_talkative_keeps_preset_speaker()
-    test_resolve_stcompat_talkative_downgrades_to_natural()
-    test_resolve_stcompat_voting_downgrades_to_natural()
     print("\nALL GROUP SPEAKER SELECTION TESTS PASSED")

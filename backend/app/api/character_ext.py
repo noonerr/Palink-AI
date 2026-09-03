@@ -5510,8 +5510,8 @@ def _ensure_conversation_anchor(messages: List[Dict[str, Any]], char: Character)
     ST 同场景的双重机制（源码核实）：
     1. newChatMessage "[Start a new Chat]"（openai.js:107 default_new_chat_prompt）
        **无条件**插在 chatHistory 最前（openai.js:1069-1070 insertAtStart），
-       空历史（开场白重 roll）时也在场——"新对话开始"约定信号。本库
-       st-compat 路径 build_st_compat_messages L858-861 已同款实现；
+       空历史（开场白重 roll）时也在场——"新对话开始"约定信号。本库已在
+       本函数内同款实现（ST 双轨 st-compat/st-native 已于 2026-09 删除）；
        palink-native 装配缺此标记（Default 模板直通 + 空历史时
        _apply_context_template 的 chat_start 无插入点）。
     2. 空 user 轮 hack（script.js:4780 "hack for regeneration of the first
