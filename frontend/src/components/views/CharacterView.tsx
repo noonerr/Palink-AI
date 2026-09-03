@@ -140,7 +140,6 @@ export function CharacterView({
   const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
   const [autoGenerateChatImages, setAutoGenerateChatImages] = useState(false);
   const [responseLength, setResponseLength] = useState<string>('medium');
-  const [sillyTavernMode, setSillyTavernMode] = useState<'st-native' | 'st-compat' | 'palink-native' | 'classic'>('classic');
   const [loading, setLoading] = useState(true);
   const [listLoadError, setListLoadError] = useState(false);
   
@@ -458,7 +457,6 @@ export function CharacterView({
       setMemoryMode(settings.memory_mode || 'rule');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
       setAutoGenerateChatImages(settings.auto_generate_chat_images || false);
-      setSillyTavernMode(settings.silly_tavern_mode || 'classic');
     } catch (e) {
       console.error('Failed to fetch user settings:', e);
     }
@@ -528,9 +526,6 @@ export function CharacterView({
       }
       if (e.detail?.autoGenerateChatImages !== undefined) {
         setAutoGenerateChatImages(e.detail.autoGenerateChatImages);
-      }
-      if (e.detail?.sillyTavernMode !== undefined) {
-        setSillyTavernMode(e.detail.sillyTavernMode);
       }
     };
     window.addEventListener('userSettingsUpdated', handleSettingsUpdate);
@@ -1676,14 +1671,6 @@ export function CharacterView({
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  useEffect(() => {
-    const active = viewState === 'chat' && !!selectedCharacter && sillyTavernMode === 'st-native';
-    window.dispatchEvent(new CustomEvent('palink:stNativeActiveChanged', { detail: { active } }));
-    return () => {
-      window.dispatchEvent(new CustomEvent('palink:stNativeActiveChanged', { detail: { active: false } }));
-    };
-  }, [selectedCharacter, sillyTavernMode, viewState]);
-
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -1874,7 +1861,6 @@ export function CharacterView({
           onBackToList={handleBackToList}
           currentPreset={currentPreset}
           setCurrentPreset={handlePresetChange}
-          sillyTavernMode={sillyTavernMode}
           characterDisplayMode={characterDisplayMode}
         />
       )}

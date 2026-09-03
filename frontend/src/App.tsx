@@ -393,8 +393,10 @@ const RouteFallback = () => (
 );
 
 // ─── 移动端主页面轨道（pager）───
-// 四个主 tab 的页面常驻并排（各自独立 transform 层），位移由 dock 滑块的连续
-// 位置 p（mobilePager 桥）逐帧驱动：拖动滑块即擦洗页面、吸附时页面同步弹簧滑入。
+// 四个主 tab 的页面常驻并排（各自独立 transform 层），位移由 mobilePager 桥的
+// 连续位置 p 驱动。注意：拖动 dock 时只移动滑块（Sidebar.applyFrame），页面
+// 停在当前 tab；只有松手判定 / 点击 / 路由切换时（Sidebar.springTo）才由弹簧
+// 把页面从当前页滑到目标页（不擦洗页面）。
 // 槽位只动 transform（GPU 合成，不触发 layout/paint）；fixed 子元素会以槽位为
 // 包含块，恰好等于整屏区域，几何与原先一致。
 const MOBILE_PAGE_TABS = ['/chat', '/workspace', '/characters', '/settings'];
@@ -471,21 +473,10 @@ function App() {
   const { isKeyboardOpen, keyboardHeight } = useVirtualKeyboard();
   // 【K15】诊断角标已按用户要求删除。真机确认新版本：键盘弹出时标题栏出现 ⌨K15 标记。
   const [currentModel, setCurrentModel] = useState<string>('');
-  const [stNativeActive, setStNativeActive] = useState(false);
   // galgame 插件全屏（原生 fullscreen 或 #gal-global-overlay.fullscreen）激活时隐藏底部 Dock
   const [pluginFullscreen, setPluginFullscreen] = useState(false);
 
   const t = TRANSLATIONS[lang];
-
-  useEffect(() => {
-    const handleStNativeActiveChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
-      setStNativeActive(Boolean(detail?.active));
-    };
-    window.addEventListener('palink:stNativeActiveChanged', handleStNativeActiveChange);
-
-    return () => window.removeEventListener('palink:stNativeActiveChanged', handleStNativeActiveChange);
-  }, []);
 
   // 监听浏览器原生全屏 + galgame 插件 overlay 的 fullscreen class，任一激活即视为全屏，
   // 隐藏底部 Dock，避免 Dock 悬浮在 galgame 界面上遮挡按钮。
@@ -682,9 +673,11 @@ function App() {
     });
 
     if (themeMeta) {
-      // iOS WebApp：theme-color 与应用顶部背景完全一致，
-      // 配合 default/black 状态栏样式，让纯色状态栏与应用融为一体
-      themeMeta.setAttribute('content', isDark === 'dark' ? '#000000' : '#f5f5f5');
+      // 【K18 2026-09-03 实测修正】此 meta 只影响浏览器模式（iOS 15+ 顶部工具条染色）。
+      // PWA 模式下 iOS 26.1+/27 的系统状态栏只认 manifest.json 的 theme_color
+      // （添加主屏幕时快照），运行时 meta 改什么都不生效（真机实证）。
+      // 取画布色让浏览器模式工具条与页面同色。
+      themeMeta.setAttribute('content', isDark === 'dark' ? '#020617' : '#F8FAFC');
       themeMeta.removeAttribute('media');
     }
 
@@ -1064,8 +1057,30 @@ function App() {
               {!isMobile && <AuroraBackground />}
               <div className="flex flex-1 overflow-hidden">
                 {!isMobile && <DesktopSidebar {...sidebarProps} />}
-                <main className="flex-1 overflow-hidden">
-                  {isMobile && !stNativeActive && !pluginFullscreen ? (
+                {/* main 加 relative：让下方绝对定位占位条只覆盖 main 顶部的灵动岛
+                    安全区，不与 MobilePager 内容重叠时再拉满整个 shell。overflow-hidden
+                    与 flex-1 不变；relative 仅作 positioned 上下文。 */}
+                <main className="flex-1 overflow-hidden relative">
+                  {/* 【灵动岛区域修复】iOS 26/27 Safari 在浏览器模式下系统层给状态栏
+                      /灵动岛盖深色 Liquid Glass（Web 永远覆盖不了该系统层）。本占位条
+                      把 shell 背景色延伸到灵动岛区域底部：浏览器模式让 Liquid Glass
+                      与 Web 背景色调接近、断层弱化；PWA 模式（black-translucent）下
+                      状态栏背景透明、灵动岛背后直接看到 Web 内容。pointer-events:none
+                      不抢 MobilePager 交互；max(env(...),0) 让非安全区设备(桌面/旧 iOS)
+                      立即收回。zIndex=5 高于 MobilePager 内容、低于 dock(z-50)。
+                  */}
+                  {isMobile && (
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-x-0 top-0 pointer-events-none"
+                      style={{
+                        height: 'max(env(safe-area-inset-top, 0px), 0px)',
+                        background: 'var(--mobile-shell-background, transparent)',
+                        zIndex: 5,
+                      }}
+                    />
+                  )}
+                  {isMobile && !pluginFullscreen ? (
                     <MobilePager dark={isDark === 'dark'} renderSlot={renderPagerSlot} />
                   ) : (
                     routesAt()
@@ -1076,7 +1091,7 @@ function App() {
                   palink:st_mount_points_ready，使 sillytavern_extension 插件（含 ESM 样例）
                   在任意视图（默认 CharacterChat / NativeRoleplayChat）都能注入设置面板。 */}
               <StPluginMountPoints />
-              {isMobile && !stNativeActive && !pluginFullscreen && <MobileBottomNav {...sidebarProps} />}
+              {isMobile && !pluginFullscreen && <MobileBottomNav {...sidebarProps} />}
               <WidescreenPrompt />
             </div>
           ) : (

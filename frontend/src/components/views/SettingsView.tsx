@@ -217,43 +217,6 @@ function RoleplayThemeSettingsPanel() {
 
 function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void }) {
   const { currentTheme, currentThemeId, updateTheme } = useRoleplayTheme();
-  const [stMode, setStMode] = useState<string>('palink-native');
-
-  useEffect(() => {
-    const loadMode = async () => {
-      try {
-        const settings = await api.get('/api/users/me/settings', { cacheTtlMs: 30_000 });
-        setStMode(settings.silly_tavern_mode || 'palink-native');
-      } catch (e) {
-        console.error('Failed to load silly tavern mode:', e);
-      }
-    };
-    loadMode();
-  }, []);
-
-  const handleModeChange = async (mode: string) => {
-    const previous = stMode;
-    setStMode(mode);
-    try {
-      await api.put('/api/users/me/settings', {
-        silly_tavern_mode: mode,
-      });
-      invalidateCache('/api/users/me/settings');
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated', {
-        detail: { sillyTavernMode: mode },
-      }));
-      const labels: Record<string, string> = {
-        'palink-native': 'Palink 原生',
-        'st-compat': 'ST 兼容装配',
-        'st-native': 'ST 原生界面',
-      };
-      toast.success(`已切换为${labels[mode] || mode}`);
-    } catch (e) {
-      console.error('Failed to save silly tavern mode:', e);
-      setStMode(previous);
-      toast.error('保存 ST 模式失败，已恢复之前状态');
-    }
-  };
 
   // 世界书全局设置（批次 C 前端半）：存于 silly_tavern_settings.world_info_settings
   const [wiSettings, setWiSettings] = useState<WorldInfoGlobalSettings>({ ...WORLD_INFO_GLOBAL_DEFAULTS });
@@ -302,57 +265,8 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
     }
   };
 
-  // 方向声明: 项目主攻 palink-native；st-compat / st-native 已运行时封存
-  // （[MODE-SEALED] 2026-08-24 用户拍板：后端 GET/PUT 强制重定向，此处仅禁用入口）。
-  // 详见根目录 AGENTS.md。待隐患排除后将整体删除这两个模式。
-  const stModes: Array<{ value: string; label: string; desc: string; sealed?: boolean }> = [
-    { value: 'palink-native', label: 'Palink 原生', desc: 'Palink 界面 + Palink 原生提示词装配' },
-    { value: 'st-compat', label: 'ST 兼容装配（已封存）', desc: '已封存：不可切换，待隐患排除后删除', sealed: true },
-    { value: 'st-native', label: 'ST 原生界面（已封存）', desc: '已封存：不可切换，待隐患排除后删除', sealed: true },
-  ];
-
   return (
     <div className="space-y-6">
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Sparkles size={20} className="text-muted-foreground shrink-0" />
-          <div>
-            <p className="font-medium">SillyTavern 模式</p>
-            <p className="text-xs text-muted-foreground">选择角色扮演提示词的装配与界面运行时</p>
-          </div>
-        </div>
-        <div className="space-y-2">
-          {stModes.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              disabled={m.sealed}
-              className={cn(
-                'flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                stMode === m.value ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
-                m.sealed && 'cursor-not-allowed opacity-50 hover:bg-transparent'
-              )}
-              onClick={() => {
-                if (m.sealed) {
-                  toast.info('该模式已封存，仅 Palink 原生模式可用');
-                  return;
-                }
-                void handleModeChange(m.value);
-              }}
-            >
-              <span className={cn(
-                'mt-1 h-3.5 w-3.5 shrink-0 rounded-full border',
-                stMode === m.value ? 'border-primary bg-primary' : 'border-muted-foreground/40'
-              )} />
-              <span>
-                <span className="block text-sm font-medium">{m.label}</span>
-                <span className="block text-xs text-muted-foreground">{m.desc}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </GlassCard>
-
       <GlassCard className="p-4 md:p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
@@ -654,6 +568,8 @@ export function SettingsView({
 
   // Memory mode state
   const [memoryMode, setMemoryMode] = useState<string>('rule');
+  // 分层记忆 Phase 1：记忆区注入预算档位（0=紧凑750/1=标准1500/2=加量3000/3=尽量多6000）
+  const [memoryBudgetLevel, setMemoryBudgetLevel] = useState<number>(1);
   const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
   const [promptLanguage, setPromptLanguage] = useState<string>('auto');
   const [characterDisplayMode, setCharacterDisplayMode] = useState<string>('framed');
@@ -725,6 +641,7 @@ export function SettingsView({
     try {
       const settings = await api.get('/api/users/me/settings', { cacheTtlMs: 30_000 });
       setMemoryMode(settings.memory_mode || 'rule');
+      setMemoryBudgetLevel(typeof settings.memory_budget_level === 'number' ? settings.memory_budget_level : 1);
       setShowModelReasoning(settings.show_model_reasoning !== false);
       setPromptLanguage(settings.prompt_language || 'auto');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
@@ -785,6 +702,19 @@ export function SettingsView({
     } catch (e) {
       console.error('Failed to save memory mode:', e);
       toast.error('保存记忆模式失败');
+    }
+  };
+
+  // 分层记忆 Phase 1：记忆区注入档位切换（即时保存，模式对齐 handleSaveMemoryMode）
+  const handleSaveMemoryBudgetLevel = async (level: number) => {
+    try {
+      await api.put('/api/users/me/settings', { memory_budget_level: level });
+      invalidateCache('/api/users/me/settings');
+      setMemoryBudgetLevel(level);
+      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
+    } catch (e) {
+      console.error('Failed to save memory budget level:', e);
+      toast.error('保存记忆注入档位失败');
     }
   };
 
@@ -1463,37 +1393,27 @@ export function SettingsView({
       
       {/* Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Mobile Header - 悬浮覆盖在滚动内容上方，让毛玻璃可以"接住"下面经过的内容模糊 */}
+        {/* Mobile Header - 悬浮覆盖在滚动内容上方，让毛玻璃可以"接住"下面经过的内容模糊
+          视觉统一样式以角色聊天页顶栏（ChatHeader/ChatViewMobile）为母版。 */}
         <div
           className="md:hidden absolute top-0 left-0 right-0 z-20"
-          style={{ height: 'calc(max(env(safe-area-inset-top), 8px) + 48px)' }}
+          style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)' }}
         >
           {/* 从下到上渐变模糊的毛玻璃层：底部完全透明，越向上越不透明+模糊越强 */}
           <div
             className="absolute inset-0 z-0 pointer-events-none"
             style={{
-              backdropFilter: 'blur(28px) saturate(200%)',
-              WebkitBackdropFilter: 'blur(28px) saturate(200%)',
-              // 关键修复：background alpha 控制颜色盖子(0底→0.4中→0.8顶，"20%透明度"=alpha0.8)
-              // mask 只控制底部羽化(底部0让blur消失→20%处升到1→顶部保持1不削弱background)
-              // 实际可见度 = bg alpha × mask alpha：底0×0=0 / 中0.4×1=0.4 / 顶0.8×1=0.8
+              backdropFilter: 'blur(16px) saturate(160%)',
+              WebkitBackdropFilter: 'blur(16px) saturate(160%)',
               backgroundImage: isDark
-                ? 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.10) 15%, rgba(0,0,0,0.22) 30%, rgba(0,0,0,0.32) 45%, rgba(0,0,0,0.40) 55%, rgba(0,0,0,0.52) 70%, rgba(0,0,0,0.64) 82%, rgba(0,0,0,0.74) 92%, rgba(0,0,0,0.80) 100%)'
-                : 'linear-gradient(to top, rgba(255,255,255,0) 0%, rgba(255,255,255,0.12) 15%, rgba(255,255,255,0.26) 30%, rgba(255,255,255,0.38) 45%, rgba(255,255,255,0.48) 55%, rgba(255,255,255,0.60) 70%, rgba(255,255,255,0.72) 82%, rgba(255,255,255,0.78) 92%, rgba(255,255,255,0.85) 100%)',
-              WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.35) 8%, rgba(0,0,0,0.85) 16%, rgba(0,0,0,1) 22%, rgba(0,0,0,1) 100%)',
-              maskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.35) 8%, rgba(0,0,0,0.85) 16%, rgba(0,0,0,1) 22%, rgba(0,0,0,1) 100%)',
-            }}
-          />
-          {/* 分隔线放在毛玻璃上层，但本身半透明（也会被mask的透明度影响，显得底部淡） */}
-          <div
-            className="absolute left-0 right-0 bottom-0 z-[5] border-b border-border/50 pointer-events-none"
-            style={{
-              WebkitMaskImage: 'linear-gradient(to top, black 0%, black 20%, transparent 100%)',
-              maskImage: 'linear-gradient(to top, black 0%, black 20%, transparent 100%)',
+                ? 'linear-gradient(to top, rgba(20,20,30,0) 0%, rgba(20,20,30,0.04) 30%, rgba(20,20,30,0.15) 50%, rgba(20,20,30,0.35) 70%, rgba(20,20,30,0.65) 100%)'
+                : 'linear-gradient(to top, rgba(255,255,255,0) 0%, rgba(255,255,255,0.04) 30%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.35) 70%, rgba(255,255,255,0.65) 100%)',
+              WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.3) 15%, rgba(0,0,0,0.7) 30%, rgba(0,0,0,1) 45%, rgba(0,0,0,1) 100%)',
+              maskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.3) 15%, rgba(0,0,0,0.7) 30%, rgba(0,0,0,1) 45%, rgba(0,0,0,1) 100%)',
             }}
           />
           <div
-            className="absolute inset-0 z-10 flex items-center px-4 pointer-events-none"
+            className="absolute inset-0 z-10 flex items-center px-5 pointer-events-none"
             style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}
           >
             <div className="pointer-events-auto flex items-center h-[48px] w-full">
@@ -1520,8 +1440,8 @@ export function SettingsView({
             className={`flex-1 md:hidden overflow-y-auto overflow-x-hidden px-4 py-3 ${bottomPadding}`}
             // 移除固定的 paddingTop，由下方 spacer 精确提供 = header 完整高度
           >
-            {/* 顶部安全空间：高度与 header 完全一致(max(safe-area,8px)+48px)，确保"个人资料"等第一个按钮不被 header 挡住 */}
-            <div aria-hidden style={{ height: 'calc(max(env(safe-area-inset-top), 8px) + 48px)', width: '100%' }} />
+            {/* 顶部安全空间：高度与 header 完全一致(safe+3rem+8px)，确保"个人资料"等第一个按钮不被 header 挡住 */}
+            <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
             <div className="space-y-2">
               {menuItems.map(item => (
                 <button
@@ -1549,7 +1469,7 @@ export function SettingsView({
             // 移动端移除固定 paddingTop，由下方 spacer 精确提供
           >
             {/* 顶部安全空间：高度与 header 完全一致，确保 Tab 内容最顶部不会被 header 挡住 */}
-            <div aria-hidden style={{ height: 'calc(max(env(safe-area-inset-top), 8px) + 48px)', width: '100%' }} />
+            <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
             <div className="max-w-4xl mx-auto h-full overflow-y-auto overflow-x-hidden">
               {/* Profile Tab */}
               {activeTab === 'profile' && (
@@ -2215,6 +2135,29 @@ export function SettingsView({
                       >
                         {t.memory_mode_vector || '向量记忆'}
                       </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
+                    <div className="flex items-center gap-3">
+                      <Database size={20} className="text-muted-foreground shrink-0" />
+                      <div>
+                        <p className="font-medium">{t.memory_budget || '记忆注入量'}</p>
+                        <p className="text-xs text-muted-foreground">{t.memory_budget_desc || '每轮注入历史记忆的 token 上限：紧凑 750 / 标准 1500 / 加量 3000 / 尽量多 6000，超预算自动裁剪'}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 w-full sm:w-auto">
+                      {([['紧凑', 0], ['标准', 1], ['加量', 2], ['尽量多', 3]] as [string, number][]).map(([label, lvl]) => (
+                        <Button
+                          key={lvl}
+                          variant={memoryBudgetLevel === lvl ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => handleSaveMemoryBudgetLevel(lvl)}
+                          className="flex-1 sm:flex-none min-h-[44px]"
+                        >
+                          {label}
+                        </Button>
+                      ))}
                     </div>
                   </div>
 

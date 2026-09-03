@@ -165,7 +165,7 @@ import {
 // A. SmartCard Runtime Core Globals
 //
 // window.SillyTavern / window.eventSource / window.event_types 等全局由
-// 浏览器侧兼容层 (SillyTavernIframe.tsx) 在 iframe 内挂载，无法在 Node 中
+// 智能卡 runtime 初始化链挂载，无法在 Node 中
 // 直接验证。此处验证其底层支撑的 Palink 运行时 API 形状（createSillyTavernRuntime
 // 返回的实例即 window.SillyTavern.getContext / eventSource 的来源）。
 // ============================================================

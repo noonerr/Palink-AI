@@ -33,7 +33,6 @@ import {
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
 import { ErrorToast } from '@/components/ui/custom/ErrorToast';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
-import { SillyTavernIframe } from '@/components/sillytavern/SillyTavernIframe';
 // 重构后提取的子组件
 import { ChatSidebar } from '@/components/views/character/chat/ChatSidebar';
 import { ChatHeader } from '@/components/views/character/chat/ChatHeader';
@@ -325,8 +324,6 @@ export interface CharacterChatProps {
   setCurrentPreset: (preset: GenerationPreset) => void;
   // system defaults
   systemDefaults?: Record<string, any>;
-  // silly tavern mode
-  sillyTavernMode?: 'st-native' | 'st-compat' | 'palink-native' | 'classic';
   // character display mode (framed / frameless)
   characterDisplayMode?: string;
 }
@@ -448,7 +445,6 @@ export function CharacterChat(props: CharacterChatProps) {
     setViewState, onBackToList,
     currentPreset, setCurrentPreset,
     systemDefaults,
-    sillyTavernMode = 'classic',
     characterDisplayMode = 'framed',
   } = props;
   const dialogText = lang === 'en'
@@ -1495,7 +1491,6 @@ export function CharacterChat(props: CharacterChatProps) {
   // Fix 3: 暴露 window.__palinkChatMessages 给 ST 插件 sandbox（getChatMessages / getLastMessageId 数据源）
   // 结构对齐 ST chat 数组：name / is_user / is_system / mes / mesid / send_date / swipes / extra
   useEffect(() => {
-    if (sillyTavernMode === 'st-native') return;
     const w = window as any;
     w.__palinkChatMessages = smartCardChatMessages.map((m) => ({
       name: m.name,
@@ -1514,13 +1509,12 @@ export function CharacterChat(props: CharacterChatProps) {
       // 切换会话/组件卸载时清理，避免旧数据被插件读到
       delete (w as any).__palinkChatMessages;
     };
-  }, [smartCardChatMessages, selectedSession?.id, sillyTavernMode]);
+  }, [smartCardChatMessages, selectedSession?.id]);
 
   // Fix 2: 注册 ST 桥接钩子，供 Galgame 等插件通过隐藏虚拟元素（#send_but /
   // #option_regenerate）或 SillyTavern.Generate 驱动真实聊天发送与重生成。
   // 桥接虚拟元素在 sillyTavernPluginRuntime 的 setup script 中创建，这里只注册回调。
   useEffect(() => {
-    if (sillyTavernMode === 'st-native') return;
     const w = window as any;
     w.__palinkSendText = (text: string) => {
       const cleaned = String(text || '').replace(/<\/?user>/gi, '').trim();
@@ -1535,11 +1529,10 @@ export function CharacterChat(props: CharacterChatProps) {
       delete w.__palinkSendText;
       delete w.__palinkRegenerate;
     };
-  }, [sillyTavernMode, wrappedHandleSendMessage, wrappedHandleRegenerate, displayedMessages]);
+  }, [wrappedHandleSendMessage, wrappedHandleRegenerate, displayedMessages]);
 
   useEffect(() => {
-    // 方向1隔离：在非 st-native 模式下注入插件 runtime 到容器（保留 ST 逆向接口）
-    if (sillyTavernMode === 'st-native') return;
+    // 插件 runtime 注入到容器（保留 ST 逆向接口）
     const runtime = stRuntimeRef.current;
     if (!runtime) return;
     runtime.loadRuntimeConfig().then(() => {
@@ -1620,8 +1613,7 @@ export function CharacterChat(props: CharacterChatProps) {
   }, [selectedCharacter.name, selectedCharacter.description, selectedCharacter.personality, selectedCharacter.scenario, selectedCharacter.first_mes, selectedCharacter.mes_example, selectedCharacter.creator_notes, selectedCharacter.tags, selectedCharacter.avatar, selectedCharacter.extensions, compatCharacterExtensions, sessionVariables, smartCardChatMessages, selectedSession?.id, user.username]);
 
   useEffect(() => {
-    // 方向1隔离：在非 st-native 模式下创建全局 ST runtime，避免影响 st-native 的 ST iframe
-    if (sillyTavernMode === 'st-native') return;
+    // 创建全局 ST runtime（st-native iframe 线已删除）
     const globalRuntime = getGlobalSillyTavernRuntime();
     if (!globalRuntime) {
       createSillyTavernRuntime({
@@ -1788,20 +1780,6 @@ export function CharacterChat(props: CharacterChatProps) {
       )}
 
       {/* ──── Main chat area ──── */}
-      {sillyTavernMode === 'st-native' ? (
-        <SillyTavernIframe
-          character={selectedCharacter}
-          messages={displayedMessages}
-          user={user}
-          sessionId={selectedSession?.id}
-          branchId={selectedBranch?.id}
-          selectedModel={selectedModel}
-          onSendMessage={async (content) => { await wrappedHandleSendMessage(content, []); }}
-          isGenerating={isGenerating}
-          useNative={true}
-          onBackToPalink={onBackToList}
-        />
-      ) : (
       <div
         ref={chatAreaRef}
         className={`flex-1 flex flex-col h-full overflow-hidden relative pb-[env(safe-area-inset-bottom)] bg-slate-50 dark:bg-slate-950 transition-opacity duration-300 ease-in-out`}
@@ -2066,10 +2044,10 @@ export function CharacterChat(props: CharacterChatProps) {
             onNewSession={handleNewSessionWithFade}
             character={selectedCharacter}
             t={t}
+            mobileSidebarOpen={isMobile ? effectiveMobileSidebarOpen : false}
           />
         )}
       </div>
-      )}
       </div>
 
       {/* ──── Confirm dialogs ──── */}
