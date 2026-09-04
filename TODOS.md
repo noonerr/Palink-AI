@@ -160,6 +160,7 @@
   - `st_sync_service.py` 共用模块保留；其同步函数在 ST 容器不存在后属 best-effort 空转
   - spec §4.3「silly_tavern.py 端点瘦身」（~20 端点族）尚未立项
 - **AGENTS.md** 方向声明已同步（状态表/约定/命名陷阱清单）
+- **第三批端点瘦身（2026-09-04，commit 6c47535）**: silly_tavern.py 删 42 个零消费端点 + 33 个级联死 helper/常量 + /api/st/native/proxy 族 + config.py 4 个零引用字段（8654→6092 行）。逐族甄别=前端全量 API 路径白名单反查（frontend/src+st-plugins）。**甄别发现两处隐藏红线**：/api/chats/rename-session 被插件 getContext.renameChat 消费；/api/backends/chat-completions/generate 被智能卡拦截链消费——均保留。测试同步：ST_ENDPOINTS 93→68（阈值 80→60）、_ST_CORE_ENDPOINTS 摘 7 条、删 test_st_gallery_contract(7)/test_s4_s10_security(8) 两文件及各文件失效方法。验证：路由冒烟 341 条（32 删 17 留全对）+ 容器 pytest **1178 passed/42 skipped/0 failed**（收集 1259→1220）。
 
 ### [已完成·已验收] 角色扮演动作流 reasoning-only 防护（思考链死循环落库，2026-08-24）
 - **spec**: `docs/SPEC_动作流reasoning_only防护_2026-08-24.md`（含完整证据链/方案/测试要求/验收清单）
