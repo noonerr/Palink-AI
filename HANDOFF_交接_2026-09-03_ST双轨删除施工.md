@@ -8,8 +8,20 @@
 
 ## 0. 一句话定位
 
-后端 st-compat 装配线**已删完并拍平**（源码 + 守卫 + A 类测试已处理，均编译通过）；
-剩余 = 阶段1 的 C 类用例 + 脚本 + **容器 pytest 验证 + commit**，然后是阶段2（前端/静态/nginx）与阶段3（后端端点/部署/容器）两大批，全部按 spec §8 顺序执行。
+**✅ 三批施工已全部完成并提交**（2026-09-03 ~ 09-04，用户授权）。
+ST 双轨（st-compat / st-native）代码、静态副本、容器与部署链均已移除，只保留 palink-native。
+
+| 批次 | commit | 内容 | 验证 |
+| --- | --- | --- | --- |
+| 阶段1 后端 st-compat 装配线 | `091023e` | 删 `build_st_compat_messages`+3 辅助、RPA 拍平、封存守卫、A 类 9 测试+golden_vectors、6 脚本 | 容器 pytest 1236 passed/42 skipped/0 failed（收集 1388→1278） |
+| 阶段2 前端/静态/nginx | `aeb8348` | 删 SillyTavernIframe/RoleplayModeSwitcher、4 处守卫、`public/st/`(586 文件 30MB)、public 三文件、nginx `/st/` 与 8081 块、bridge.js 契约 3 例 | tsc 0 错误 / contract 全绿 / build 成功 / 换 dist 部署冒烟通过 |
+| 阶段3 路由/部署/源码副本 | `4eadb86` | 删 st_sync/st_resources/openai_compat + 挂载、silly_tavern 4 个 st-native 端点、compose sillytavern 服务/卷/env/9061、`.env.example` ST_NATIVE 段、`SillyTavern-1.18.0/`(983 文件 441MB)、ST 容器移除 | 路由反射冒烟 384 条 + 容器 pytest 1217 passed/42 skipped/0 failed（收集 1275→1259） |
+
+**⚠️ 两处与 spec 结论不一致（施工实证纠正，详见 §4.5）**：
+1. **`st_groups.py` 不删** —— spec 依据「前端对 chats/group 零调用」判定可删，但漏查 `/api/groups/*`；该族是 Palink 自有群聊后端（`lib/group-chat/manager.ts` ↔ `NativeRoleplayChat.groupChatManager`）。已恢复，待拍板。
+2. **`config.py` 的 `ST_NATIVE_*` 不删** —— 仍被保留代码引用（`/api/st/native/proxy`、`st_sync_service.py`、security N-6 HMAC）。本次只摘 env 供应，彻底清理须与「silly_tavern.py 端点瘦身」同批。
+
+其余见 §4.5「残留与待拍板」。`AGENTS.md` 方向声明与 `TODOS.md` 已同步。
 
 ---
 
@@ -75,42 +87,42 @@
 
 ---
 
-## 4. 未完成（按 spec §8 顺序）
+## 4. 施工结果（原「未完成」清单已全部闭合）
 
-### 4.1 第一阶段收尾（下一位 agent 第一件事）
-1. **C 类用例精确摘除**（勿整删文件！）：
-   - `test_group_speaker_selection.py` 删 3 个：`test_natural_stcompat_ignores_follower`、`test_resolve_sealed_stcompat_talkative_uses_native_selector`、`test_resolve_sealed_stcompat_voting_uses_native_selector`（前一个传 st_mode → 现在会 TypeError；后两个测已删的 group policy 回退）
-   - `test_single_chat_no_group_leakage.py` 删 2 个直调 `build_st_compat_messages` 的用例（原 L118/L132）
-   - `test_st_compat_group_chat_e2e.py` **保留勿删**！它跑的是 palink-native 群聊行为，且 mock 基建被 `test_single_chat_no_group_leakage.py` 跨文件 import
-   - `test_d3_speaker_card_swap.py` 保留（实为 native 行为）
-2. **脚本删除**：`backend/scripts/_verify_mode_sealed.py`；`scripts/st-compat/` 整目录；`scripts/extract_st_golden_vector.py`；`backend/scripts/_verify_stcompat_e2e.py`；`backend/scripts/_inspect_stcompat_tail.py`；`backend/scripts/_verify_mvu_after_fix.py`
-   （删除前先 grep 确认无 import 引用，禁按文件名批量猜）
-3. **run_st_acceptance.py**：仅删 WP-K（L892-896 直调 build_st_compat_messages 的部分），整文件第二批再删
-4. **阶段1 验证**：`docker compose build backend && docker compose up -d` → 容器内 `python -m pytest tests/` 勾稽 **约 1221 passed**（基线 1340 − 119）→ `grep -rn "build_st_compat_messages\|_is_st_compat_mode\|_st_mode_effective\|ST_COMPAT_MODES\|SEALED_ST_MODES" backend/app` 归零
-5. **git commit**（第一批一笔，消息含「阶段1 st-compat 剥离」字样）
+### 4.1 第一阶段收尾 —— ✅ 完成（commit `091023e`）
+1. C 类用例精确摘除 ✅：`test_group_speaker_selection.py` 删 3 个（另顺手清 `__main__` 里 2 行已失效的 dangling 调用）；`test_single_chat_no_group_leakage.py` 删 2 个直调用例 + 其 3 个死 helper；`test_st_compat_group_chat_e2e.py`、`test_d3_speaker_card_swap.py` 保留
+   - **额外发现**：该文件 L23 `from app.services.character_message_builder import build_st_compat_messages` 在删除后会让**整个文件 6 个用例静默 skip**（pytestmark skipif）。已一并摘除，否则 4 个保留用例会假绿。同类：`test_p1_fixes.py::TestP12StCompatHistoryTrimRatio`（测试已删函数，同样静默 skip）已删。
+2. 脚本删除 ✅：5 个脚本 + `scripts/st-compat/` 整目录（44 文件）
+3. `run_st_acceptance.py` ✅：先删 WP-K（阶段1），阶段3 整文件删
+4. 阶段1 验证 ✅：容器 pytest **1236 passed/42 skipped/0 failed**；收集数 1388→1278（减 110，与「删 92 A 类 + 15 改动文件 + parametrize 展开」精确对账，非 spec 估的 119——估算未计 parametrize）
+5. commit ✅
 
-### 4.2 第二阶段（前端 + 静态 + nginx，spec §4）
-- 前端守卫删除：`SettingsView.tsx`（stMode state/loadMode/handleModeChange/模式选择器卡，L220-345 一带）、`CharacterView.tsx`、`CharacterChat.tsx`（st-native 分支行）、`App.tsx`（stNativeActive 相关 L476/487-489/1094/1105）
-- 死组件整删：`SillyTavernIframe.tsx`（无引用）、`RoleplayModeSwitcher.tsx`（无引用）
-- `types/index.ts` 清理 silly_tavern_mode 相关类型
-- `frontend/public/st/` 整目录删除（30MB 静态 ST 副本）
-- public 根三文件：`palink-silly-tavern-loader.js`、`palink-silly-tavern-theme.css`、`palink-smart-card.js`（删前 grep 确认无引用；智能卡 runtime 是 Vite 插件从源码生成，不依赖 public/st）
-- nginx：删 `/st/` 块、无前缀 root-html/st fallback 块、**整个 8081 server 块**（auth_request → /api/st/native/auth）
-- **`test_st_contract.py` 删 3 个 bridge.js 用例必须与 public/st 删除同批**（`test_bridge_js_file_exists`/`test_real_api_paths_non_empty`/`test_palink_owned_endpoints_in_bridge_js`），否则文件消失 FAIL
-- 验证：`npx tsc --noEmit` + `npm run test:contract` + `npm run build`
-- 注意 `lib/sillytavern/__tests__/` 5 个文件零改动（插件体系依赖）；仅 runtime-contract.test.ts L168 一条注释提及 SillyTavernIframe 可顺手清
+### 4.2 第二阶段（前端 + 静态 + nginx）—— ✅ 完成（commit `aeb8348`）
+全部按清单执行；`types/index.ts` 无需改（模式类型是组件内联字面量，随组件删除消失）。补充：
+- **构建踩坑**：`npm run build` 的 `clean-dist.cjs` 会递归删 dist（含旧 `st/` 数千文件），撞上 WorkBuddy 安全删除拦截（node 进程被杀）。绕法：`VITE_OUT_DIR=dist_new_<ts> npm run build` 备份式构建（clean-dist 检测到 VITE_OUT_DIR≠dist 会跳过清理），再停容器换目录。
+- `/st/index.html` 实测返回 **200 而非 404**：因 SPA fallback（`try_files → /index.html`）兜底。已核实返回内容确为 SPA index.html，原 ST 文件（bridge.js/script.js/lib.js）已不存在。**spec 的「404」预期在此项目不适用**，改以「内容是否为 ST 文件」判定。
+- 混入他批：App.tsx/SettingsView.tsx/CharacterChat.tsx 携带 iOS 安全区与分层记忆 Phase 1 的未提交改动，按行拆分会破坏树一致性（CharacterChat 引用已删组件），故整文件提交并在 commit 消息中标注。
 
-### 4.3 第三阶段（后端端点 + 部署，spec §4）
-- 整文件删 + 从 `backend/app/api/__init__.py` 摘挂载：`st_sync.py`、`st_groups.py`、`st_resources.py`、`openai_compat.py`（openai_compat 唯一外部消费者 = ST 容器）
-- 删端点：`/api/st/native/status|auth|login`、`/api/st/version`
-- `st_sync_service.py` **整文件保留**（6 个模块在用），只逐函数摘 ST 专属块
-- `docker-compose.yml`：删 `sillytavern` 服务、frontend `depends_on` 里的 ST、4 个卷、backend env 里 ST_NATIVE_*
-- `config.py`：删 `ST_NATIVE_*`；`.env.example`：删 L176-193
-- `git rm -r SillyTavern-1.18.0/`（983 文件，441MB，`.git` 内）
-- 冒烟：3000 OK、9061 已无容器、`/st/index.html` 404
+### 4.3 第三阶段（后端端点 + 部署）—— ✅ 完成（commit `4eadb86`）
+- 整文件删 + 摘挂载 ✅：`st_sync.py`、`st_resources.py`、`openai_compat.py`
+- **`st_groups.py` 未删（反转，见 §4.5）**
+- 删端点 ✅：`/api/st/native/status|auth|login`、`/api/st/version`（`/version`、`/csrf-token`、`/api/st/csrf-token` 保留）
+- `st_sync_service.py` ✅ 整文件保留，且**未做逐函数摘除**：其 `trigger_async_sync`/`_st_data_root_for_user`/`import_chat_to_session` 仍有 character.py、character_ext.py 等保留模块调用（spec 的摘除前置条件「无调用方」不成立）
+- compose ✅：sillytavern 服务、depends_on、4 卷、backend 6 项 env，**另删 9061:8081 映射**（8081 server 块已删，映射无意义）
+- **`.env.example` 已删 ST_NATIVE 段 ✅；`config.py` 未删（反转，见 §4.5）**
+- `SillyTavern-1.18.0/` ✅ 已删（983 文件）
+- 冒烟 ✅：前端 200、9061 无监听、`/st/*` 落 SPA 回退
 
-### 4.4 收尾
-- TODOS.md 登记 + 每批一个 commit + 更新本交接文件的状态段
+### 4.4 收尾 —— ✅ 完成
+TODOS.md 已登记三批结果与残留；本文件状态段已更新；`AGENTS.md` 方向声明已同步（状态表/约定/命名陷阱）。
+
+### 4.5 残留与待拍板（本次未做，需另立议题）
+1. **`st_groups.py` 是否删除**（最高优先澄清）：spec §4.2 判可删的依据是「前端对 chats/group 零调用」，但只查了 `/api/chats/group/*`。实证：`frontend/src/lib/group-chat/manager.ts` 调 `/api/groups/get|edit|create|delete|chats`，消费方为 `NativeRoleplayChat` 的 groupChatManager。**它是 Palink 自有群聊后端，只是名字带 st_ 前缀**。当前 `NativeRoleplayChat` 非默认视图（CharacterChat.tsx L68-69 注释掉 import），但非死代码。按红线「不影响其他组件否则跳过」本次恢复。
+2. **`config.py` 的 `ST_NATIVE_*` 清理**：须与「silly_tavern.py 端点瘦身」（`/api/st/native/proxy` 及其 helper 族 `_build_proxy_*`/`_validate_proxy_path`、L8555 的 sidecar fetch helper）同批删除，否则保留端点会在请求期 AttributeError。
+3. `/api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token`：保留，属 CSRF 安全链（spec T5）。
+4. spec §4.3「silly_tavern.py 端点瘦身」~20 端点族：尚未立项。
+5. `st_sync_service.py` 的 ST 文件同步函数：ST 容器已不存在，属 best-effort 空转，可随 2 一并评估。
+6. 磁盘：`frontend/dist_bak_*` 历史目录持续累积（本次又增一个），需手动清理（禁 `rm -rf`，用 PowerShell 逐目录删）。
 
 ---
 

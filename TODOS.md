@@ -146,6 +146,21 @@
 - **附带效果**: 原计划 R2「admin 切 palink-native 实测」被本机制自动涵盖——admin 存量 st-compat 已在装配入口归一化为 palink-native，死循环诱因层（无 balance_custom_tags 守卫的装配管线）已不可达
 - **AGENTS.md** 状态表与约定已同步更新
 
+### [已完成] ST 双轨剥离删除（2026-09-03 施工，用户授权）
+- **决策**: st-compat / st-native 双轨整体删除，只保留 palink-native。权威 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`
+- **三笔 commit**：
+  1. `091023e` 阶段1 —— 后端 st-compat 装配线：删 `build_st_compat_messages`+3 辅助函数、RPA 主分支拍平、封存守卫（users.py/silly_tavern.py normalize 恒返回 palink-native）、A 类 9 测试文件+golden_vectors、6 个脚本。容器 pytest 1236 passed/42 skipped/0 failed（收集 1388→1278）
+  2. `aeb8348` 阶段2 —— 前端 st-native iframe 线：删 SillyTavernIframe/RoleplayModeSwitcher、4 处守卫、`public/st/`（586 文件 30MB）、public 根三文件、nginx `/st/` 块与整个 8081 server 块、bridge.js 契约 3 例。tsc/contract/build 全绿并已换 dist 部署
+  3. `4eadb86` 阶段3 —— sidecar 路由与部署链：删 st_sync.py/st_resources.py/openai_compat.py 及挂载、silly_tavern.py 4 个 st-native 端点、compose sillytavern 服务/卷/env/9061 映射、`.env.example` ST_NATIVE 段、`SillyTavern-1.18.0/`（983 文件 441MB）；ST 容器已停并移除。容器 pytest 1217 passed/42 skipped/0 failed（收集 1275→1259，减 16 = 删 2 个测试文件用例数）
+- **silly_tavern_mode 字段按 A2 保留为死摆设**：`core/migrations.py` 补列行**不得删**（否则重启复活该列）
+- **⚠️ spec 事实错误已纠正**：spec §4.2 判 `st_groups.py` 可删（依据「前端对 chats/group 零调用」），但漏查 `/api/groups/*` —— 该族是 **Palink 自有群聊后端**（`lib/group-chat/manager.ts` ↔ `NativeRoleplayChat.groupChatManager`）。已恢复文件+挂载+契约条目。**是否删除待拍板**（群聊 UI 当前非默认视图但非死代码）
+- **未完残留（另立议题）**:
+  - `config.py` 的 `ST_NATIVE_*` 字段仍在用（`/api/st/native/proxy`、`st_sync_service.py`、security N-6 HMAC），清理须与「silly_tavern.py 端点瘦身」（proxy 族）同批
+  - `/api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token` 保留（CSRF 静态豁免属安全链，专项评估）
+  - `st_sync_service.py` 共用模块保留；其同步函数在 ST 容器不存在后属 best-effort 空转
+  - spec §4.3「silly_tavern.py 端点瘦身」（~20 端点族）尚未立项
+- **AGENTS.md** 方向声明已同步（状态表/约定/命名陷阱清单）
+
 ### [已完成·已验收] 角色扮演动作流 reasoning-only 防护（思考链死循环落库，2026-08-24）
 - **spec**: `docs/SPEC_动作流reasoning_only防护_2026-08-24.md`（含完整证据链/方案/测试要求/验收清单）
 - **事故**: 2026-08-23 消息 2248——「我被猫娘包围了！」卡 swipe 重roll 落库空正文 + 2060 字复读思考链

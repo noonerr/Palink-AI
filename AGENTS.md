@@ -5,39 +5,49 @@
 
 ## 当前主攻：palink-native 模式
 
-本项目目前**只维护和优化 `palink-native` 模式**（Palink 原生提示词装配 + Palink 前端插件体系）。
+本项目目前**只维护和优化** **`palink-native`** **模式**（Palink 原生提示词装配 + Palink 前端插件体系）。
 
-### 三种 silly_tavern_mode 的状态
+### 三种 silly\_tavern\_mode 的状态
 
-| 模式 | 含义 | 状态 |
-|------|------|------|
-| `palink-native` | Palink 原生提示词装配（后端 `build_character_chat_messages`） | **主攻、唯一维护、唯一可达** |
-| `st-compat` | 服务端 ST 1.18 对齐装配（后端 `build_st_compat_messages`） | **运行时强制封存（MODE-SEALED），不可调用；代码待删除** |
-| `st-native` | iframe 嵌入完整 SillyTavern（前后端 ST sidecar 链路） | **运行时强制封存（MODE-SEALED），不可调用；代码待删除** |
+| 模式              | 含义                                                 | 状态                                  |
+| --------------- | -------------------------------------------------- | ----------------------------------- |
+| `palink-native` | Palink 原生提示词装配（后端 `build_character_chat_messages`） | **主攻、唯一维护、唯一可达**                    |
+| `st-compat`     | 服务端 ST 1.18 对齐装配（后端 `build_st_compat_messages`）    | **已于 2026-09-03 删除**（091023e）        |
+| `st-native`     | iframe 嵌入完整 SillyTavern（前后端 ST sidecar 链路）         | **已于 2026-09-03 删除**（aeb8348/4eadb86） |
 
 ### 重要约定
 
-1. **`st-compat` / `st-native` 已于 2026-08-24 运行时强制封存（[MODE-SEALED] 用户拍板）**：无论 DB 存什么值，GET/PUT 归一化与装配入口一律按 `palink-native` 处理，设置 UI 入口已禁用。封存守卫位置：`roleplay_prompt_assembly.py` 的 `SEALED_ST_MODES`/`_st_mode_effective`、`users.py` 与 `silly_tavern.py` 的 `_normalize_silly_tavern_mode`。解封 = 从各 `SEALED_ST_MODES` 移除对应值。
-2. **不要新增或优化 `st-compat` / `st-native` 相关功能**，除非用户明确要求。
-3. **不要删除它们**（用户计划隐患排除后统一清理），除非用户明确要求。
-4. **Palink 前端插件体系（插件沙箱、regex 引擎、generate_interceptor、`st-plugins/` 目录）全部属于 `palink-native`**，不是 st-native。前端代码中的 `if (sillyTavernMode === 'st-native') return;` 只是隔离 iframe 的守卫，不是插件功能归属。
-5. 提示词装配默认值是 `palink-native`（`backend/app/models/system.py` 的 `silly_tavern_mode` 列），不要无授权改动。
-6. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。
+1. **ST 双轨已于 2026-09-03 删除完毕**（用户授权，三笔 commit：`091023e` 阶段1 后端装配、`aeb8348` 阶段2 前端/静态/nginx、`4eadb86` 阶段3 路由/部署/源码副本）。权威施工 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`。
+   - 历史脉络：2026-08-24 运行时强制封存（MODE-SEALED）→ 2026-09-03 代码剥离删除。封存守卫（`SEALED_ST_MODES`/`_st_mode_effective`/`_is_st_compat_mode`）已随删除消失，无解封开关。
+   - `silly_tavern_mode` 字段保留为死摆设（A2 口径）：`users.py`/`silly_tavern.py` 的 `_normalize_silly_tavern_mode` 恒返回 `"palink-native"`。**`backend/app/core/migrations.py` 的补列行不得删除**（否则重启把列加回来）；若要 drop 列需三件套同步（models 列 + 补列清单行 + alembic 迁移）。
+2. **残留清理未完成的部分**（后续如要动，需另立议题）：
+   - `st_groups.py` 虽名为 st_ 前缀，实为 **Palink 自有群聊后端**（前端 `lib/group-chat/manager.ts` 调 `/api/groups/*`，消费方 `NativeRoleplayChat` 的 groupChatManager）。**勿按名字误删**。
+   - `st_sync_service.py` 为共用模块，被 character/personas/worldbook/character_ext 等主链路引用，**保留**。
+   - `backend/app/core/config.py` 的 `ST_NATIVE_*` 字段仍在用（`silly_tavern.py` 的 `/api/st/native/proxy`、`st_sync_service.py`、`core/security.py` 的 N-6 HMAC 签名），清理需与「silly_tavern.py 端点瘦身」同批。
+   - `api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token` 保留：csrf 静态豁免属 CSRF 安全链，留待安全专项评估。
+3. **Palink 前端插件体系（插件沙箱、regex 引擎、generate\_interceptor、`st-plugins/`** **目录）全部属于** **`palink-native`**，与已删的 st-native 无关。
+4. 提示词装配默认值是 `palink-native`（`backend/app/models/system.py` 的 `silly_tavern_mode` 列），不要无授权改动。
+5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）。
 
 ## 待办（跨 agent 协作）
 
-- **所有 agent 在动工前请先阅读根目录 `TODOS.md`**（遗留任务、方向决策、进行中的工作项）。
+- **所有 agent 在动工前请先阅读根目录** **`TODOS.md`**（遗留任务、方向决策、进行中的工作项）。
+
 - 它是本项目跨会话/跨 agent 的待办与决策记录，修改前先同步，完成后按其状态更新。
 
 ## 核心代码位置
 
 - 后端提示词装配：`backend/app/services/roleplay_prompt_assembly.py`
+
 - 后端消息构建：`backend/app/services/character_message_builder.py`
-- 前端模式切换 UI：`frontend/src/components/views/SettingsView.tsx`（SillyTavernSettingsPanel）
+
 - 前端插件沙箱：`frontend/src/lib/plugin-system/`
+
 - 前端 ST 插件 runtime：`frontend/src/utils/sillyTavernPluginRuntime.ts`
 
 ## 验证
 
 - 后端：`cd backend && python -m pytest tests/`
+
 - 前端：`cd frontend && npx tsc --noEmit`
+
