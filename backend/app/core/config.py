@@ -61,15 +61,11 @@ class Settings(BaseSettings):
     WORKSPACE_ANALYZE_MAX_CHARS: int = 12000
     SUMMARY_MODEL: Optional[str] = None
 
-    # Official SillyTavern sidecar integration. When ST_NATIVE_URL is empty,
-    # the frontend derives a sibling URL from the current host and
-    # ST_NATIVE_PUBLIC_PORT.
-    ST_NATIVE_URL: Optional[str] = None
-    ST_NATIVE_PUBLIC_PORT: int = 8000
+    # ST-native 遗留配置（st-compat/st-native 已于 2026-09 删除）。仅保留仍有
+    # 消费方的字段：SERVICE_URL/SERVICE_KEY 被 silly_tavern.py 的 /api/extensions/*
+    # sidecar 转发链使用；DATA_ROOT 被 st_sync_service.py 使用。
     ST_NATIVE_SERVICE_URL: str = "http://sillytavern:8000"
     ST_NATIVE_SERVICE_KEY: Optional[str] = None
-    ST_NATIVE_PALINK_OPENAI_URL: str = "http://backend:8000/api/openai/v1"
-    ST_NATIVE_DEFAULT_MODEL: str = "palink-default"
     ST_NATIVE_DATA_ROOT: Optional[str] = None
     STATIC_DIR: str = "static"
 

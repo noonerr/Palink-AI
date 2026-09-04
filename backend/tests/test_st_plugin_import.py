@@ -304,6 +304,8 @@ def _collect_declared_st_routes() -> set[str]:
 
 
 # ST 1.18.0 核心端点（多数第三方插件依赖）——应已实现
+# （2026-09-04 端点瘦身：variables/get|set、images/list、extra/caption|classify、
+#   summarize、modules 已从后端删除——Palink 前端/插件零消费，见 ST_ENDPOINTS 注释）
 _ST_CORE_ENDPOINTS = [
     "/api/characters/all",
     "/api/characters/get",
@@ -315,18 +317,10 @@ _ST_CORE_ENDPOINTS = [
     "/api/worldinfo/get",
     "/api/secrets/write",
     "/api/secrets/read",
-    "/api/variables/get",
-    "/api/variables/set",
     "/api/vector/insert",
     "/api/vector/query",
     "/api/speech/elevenlabs/voices",
     "/api/speech/elevenlabs/synthesize",
-    "/api/images/list",
-    "/api/images/folders",
-    "/api/extra/caption",
-    "/api/extra/classify",
-    "/api/summarize",
-    "/api/modules",
     "/api/chats/get",
     "/api/chats/save",
 ]

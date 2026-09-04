@@ -44,22 +44,23 @@ ST_ENDPOINTS = [
     # Settings
     "/api/settings/get", "/api/settings/save",
     # Characters
+    # （2026-09-04 端点瘦身：duplicate/rename/edit-avatar/edit-attribute 已删，零消费）
     "/api/characters/all", "/api/characters/get", "/api/characters/import",
     "/api/characters/export", "/api/characters/edit", "/api/characters/create",
-    "/api/characters/delete", "/api/characters/duplicate", "/api/characters/rename",
+    "/api/characters/delete",
     "/api/characters/merge-attributes", "/api/characters/chats",
-    "/api/characters/edit-avatar", "/api/characters/edit-attribute",
     # Chats — core CRUD
+    # （瘦身：recent/search/rename 已删）
     "/api/chats/get", "/api/chats/save", "/api/chats/import", "/api/chats/export",
-    "/api/chats/recent", "/api/chats/search", "/api/chats/rename", "/api/chats/delete",
+    "/api/chats/delete",
     # Chats — generation
-    "/api/chats/continue", "/api/chats/regenerate", "/api/chats/swipe",
+    # （瘦身：continue/regenerate/swipe 已删——Palink 生成走自有链路）
     # Chats — group operations
     "/api/chats/group/get", "/api/chats/group/save", "/api/chats/group/delete",
     "/api/chats/group/info", "/api/chats/group/import",
     # Chats — message-level ops
-    "/api/chats/hide", "/api/chats/unhide", "/api/chats/delete-message",
-    "/api/chats/rename-session", "/api/chats/find", "/api/chats/set-input",
+    # （瘦身：hide/unhide/delete-message/find 已删；rename-session 被插件 getContext 消费，保留）
+    "/api/chats/rename-session", "/api/chats/set-input",
     "/api/chats/inject", "/api/chats/flush-inject", "/api/chats/trigger",
     "/api/chats/popup", "/api/chats/buttons", "/api/chats/messages",
     # WorldInfo
@@ -70,26 +71,21 @@ ST_ENDPOINTS = [
     "/api/groups/all", "/api/groups/create", "/api/groups/edit", "/api/groups/delete",
     "/api/groups/get", "/api/groups/member-get", "/api/groups/member-add",
     "/api/groups/member-remove", "/api/groups/chats",
-    # Quick Replies
-    "/api/quick-replies/save", "/api/quick-replies/delete", "/api/quick-replies/list",
-    "/api/quick-replies/execute", "/api/quick-replies/create", "/api/quick-replies/update",
+    # Quick Replies（2026-09-04 端点瘦身：6 条已删，零消费）
     # Secrets (Palink redirect to ConnectionProfiles)
     "/api/secrets/write", "/api/secrets/read", "/api/secrets/view", "/api/secrets/find",
     "/api/secrets/delete", "/api/secrets/rotate", "/api/secrets/rename",
     # Extensions (Palink redirect to extension market)
     "/api/extensions/install", "/api/extensions/update", "/api/extensions/delete",
     "/api/extensions/discover",
-    # Images
-    "/api/images/upload",
+    # Images（2026-09-04 端点瘦身：upload/list/folders 已删；生成走 /api/images/generate）
     # Vector
     "/api/vector/index", "/api/vector/query", "/api/vector/insert", "/api/vector/delete",
     # Speech
     "/api/speech/list", "/api/speech/get", "/api/speech/preview", "/api/speech/generate",
-    # Translate & Search
-    "/api/translate", "/api/search",
-    # Backends
-    "/api/backends/chat-completions/status", "/api/backends/chat-completions/generate",
-    "/api/backends/text-completions/generate",
+    # Translate & Search（2026-09-04 端点瘦身：translate/search 已删）
+    # Backends（2026-09-04 端点瘦身：status/text-completions 已删；generate 为智能卡拦截链红线，保留）
+    "/api/backends/chat-completions/generate",
 ]
 
 
@@ -651,66 +647,6 @@ class TestSTChatsContract:
         assert "attachment" in palink_resp.headers.get("content-disposition", "")
         assert palink_resp.headers.get("content-type") == "application/jsonl"
 
-    def test_chats_search_returns_results(self, client, auth_headers):
-        """POST /api/chats/search 返回匹配结果。"""
-        created = _create_character_via_api(client, auth_headers, name="ChatSearch Char")
-        avatar = created["avatar"]
-        # 先保存一条聊天
-        client.post(
-            "/api/chats/save",
-            headers=auth_headers,
-            json={"avatar_url": avatar, "ch_name": "ChatSearch Char",
-                  "chat": [{"name": "User", "is_user": True, "is_system": False,
-                            "mes": "searchable", "send_date": "2024-01-01T00:00:00"}]},
-        )
-        # 空查询返回该角色所有聊天
-        resp = client.post(
-            "/api/chats/search",
-            headers=auth_headers,
-            json={"avatar_url": avatar, "query": ""},
-        )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert isinstance(data, list)
-        assert len(data) >= 1
-
-    def test_chats_rename_updates_name(self, client, auth_headers):
-        """POST /api/chats/rename 更新聊天标题。"""
-        created = _create_character_via_api(client, auth_headers, name="ChatRename Char")
-        avatar = created["avatar"]
-        # 先保存创建一个聊天
-        save_resp = client.post(
-            "/api/chats/save",
-            headers=auth_headers,
-            json={"avatar_url": avatar, "ch_name": "ChatRename Char",
-                  "chat": [{"name": "User", "is_user": True, "is_system": False,
-                            "mes": "rename me", "send_date": "2024-01-01T00:00:00"}]},
-        )
-        assert save_resp.status_code == 200
-        file_name = save_resp.json().get("file_name")
-        # 从 /api/characters/chats 获取 file_name
-        chats_resp = client.post(
-            "/api/characters/chats",
-            headers=auth_headers,
-            json={"avatar_url": avatar},
-        )
-        assert chats_resp.status_code == 200
-        chats = chats_resp.json()
-        assert len(chats) >= 1
-        original_file = chats[0]["file_name"]
-        # 重命名
-        rename_resp = client.post(
-            "/api/chats/rename",
-            headers=auth_headers,
-            json={"avatar_url": avatar, "original_file": original_file,
-                  "new_file_name": "RenamedChat.jsonl"},
-        )
-        assert rename_resp.status_code == 200, rename_resp.text
-        # P0-1: ST 1.18.0 (chats.js:569) 期望 {ok: true, sanitizedFileName}
-        rename_data = rename_resp.json()
-        assert rename_data.get("ok") is True
-        assert "sanitizedFileName" in rename_data
-
     def test_chats_delete_removes_chat(self, client, auth_headers):
         """POST /api/chats/delete 删除聊天。"""
         created = _create_character_via_api(client, auth_headers, name="ChatDelete Char")
@@ -1258,22 +1194,6 @@ class TestSTGenerationContract:
             # 成功路径应为 OpenAI ChatCompletion 形状
             assert "id" in data or "choices" in data or "object" in data
 
-    def test_chat_completions_status_returns_shape(self, client, auth_headers):
-        """POST /api/backends/chat-completions/status 返回 ST 状态形状。"""
-        resp = client.post(
-            "/api/backends/chat-completions/status",
-            headers=auth_headers,
-            json={},
-        )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        # ST 期望字段
-        assert data["result"] == "ok"
-        assert "valid" in data
-        assert "status" in data
-        assert "data" in data
-        assert isinstance(data["data"], list)
-
 
 # ---------------------------------------------------------------------------
 # 端点注册静态检查（纯函数测试，无需 DB / HTTP，写真实断言）
@@ -1331,8 +1251,12 @@ class TestSTEndpointNo404:
         )
 
     def test_endpoints_list_non_empty(self):
-        """ST_ENDPOINTS 列表本身非空（防止误清空）。"""
-        assert len(self.ST_ENDPOINTS) >= 80, "ST_ENDPOINTS 列表意外过短"
+        """ST_ENDPOINTS 列表本身非空（防止误清空）。
+
+        阈值 60：2026-09-04 端点瘦身删除零消费端点后余 68 条；
+        若再删保留端点请同步评估阈值，防批量误删。
+        """
+        assert len(self.ST_ENDPOINTS) >= 60, "ST_ENDPOINTS 列表意外过短"
 
 
 # ---------------------------------------------------------------------------
