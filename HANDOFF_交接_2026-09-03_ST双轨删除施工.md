@@ -16,10 +16,13 @@ ST 双轨（st-compat / st-native）代码、静态副本、容器与部署链�
 | 阶段1 后端 st-compat 装配线 | `091023e` | 删 `build_st_compat_messages`+3 辅助、RPA 拍平、封存守卫、A 类 9 测试+golden_vectors、6 脚本 | 容器 pytest 1236 passed/42 skipped/0 failed（收集 1388→1278） |
 | 阶段2 前端/静态/nginx | `aeb8348` | 删 SillyTavernIframe/RoleplayModeSwitcher、4 处守卫、`public/st/`(586 文件 30MB)、public 三文件、nginx `/st/` 与 8081 块、bridge.js 契约 3 例 | tsc 0 错误 / contract 全绿 / build 成功 / 换 dist 部署冒烟通过 |
 | 阶段3 路由/部署/源码副本 | `4eadb86` | 删 st_sync/st_resources/openai_compat + 挂载、silly_tavern 4 个 st-native 端点、compose sillytavern 服务/卷/env/9061、`.env.example` ST_NATIVE 段、`SillyTavern-1.18.0/`(983 文件 441MB)、ST 容器移除 | 路由反射冒烟 384 条 + 容器 pytest 1217 passed/42 skipped/0 failed（收集 1275→1259） |
+| 第三批 端点瘦身 | `6c47535` | silly_tavern.py 删 42 个零消费端点（逐族甄别）+ 33 个级联死 helper + proxy 族 + config 4 字段；测试同步（删 2 文件 15 例 + 各文件失效方法） | 路由冒烟 341 条（32 删 17 留全对）+ 容器 pytest 1178 passed/42 skipped/0 failed（收集 1259→1220） |
 
-**⚠️ 两处与 spec 结论不一致（施工实证纠正，详见 §4.5）**：
+**⚠️ 与 spec 结论不一致处（施工实证纠正，详见 §4.5）**：
 1. **`st_groups.py` 不删** —— spec 依据「前端对 chats/group 零调用」判定可删，但漏查 `/api/groups/*`；该族是 Palink 自有群聊后端（`lib/group-chat/manager.ts` ↔ `NativeRoleplayChat.groupChatManager`）。已恢复，待拍板。
-2. **`config.py` 的 `ST_NATIVE_*` 不删** —— 仍被保留代码引用（`/api/st/native/proxy`、`st_sync_service.py`、security N-6 HMAC）。本次只摘 env 供应，彻底清理须与「silly_tavern.py 端点瘦身」同批。
+2. **`config.py` 的 `ST_NATIVE_*` 部分保留** —— SERVICE_URL/SERVICE_KEY 被 `/api/extensions/*` sidecar 转发链使用、DATA_ROOT 被 st_sync_service 使用；URL/PUBLIC_PORT/PALINK_OPENAI_URL/DEFAULT_MODEL 4 个零引用字段已在第三批（`6c47535`）删除。
+3. **`/api/chats/rename-session` 是隐藏红线** —— spec §4.3 把 chats 操作族列为可删候选，但 `getContext.ts:2218`（插件 renameChat）在消费它。实证：瘦身时保留。
+4. **`/api/backends/chat-completions/generate` 是红线** —— 智能卡 runtime 拦截链（SillyTavernCompatRuntime.ts:4979 `startsWith('/api/backends')`）消费，status/text-completions 已删但 generate 保留。
 
 其余见 §4.5「残留与待拍板」。`AGENTS.md` 方向声明与 `TODOS.md` 已同步。
 
@@ -116,13 +119,14 @@ ST 双轨（st-compat / st-native）代码、静态副本、容器与部署链�
 ### 4.4 收尾 —— ✅ 完成
 TODOS.md 已登记三批结果与残留；本文件状态段已更新；`AGENTS.md` 方向声明已同步（状态表/约定/命名陷阱）。
 
-### 4.5 残留与待拍板（本次未做，需另立议题）
+### 4.5 残留与待拍板（第三批 `6c47535` 后更新）
 1. **`st_groups.py` 是否删除**（最高优先澄清）：spec §4.2 判可删的依据是「前端对 chats/group 零调用」，但只查了 `/api/chats/group/*`。实证：`frontend/src/lib/group-chat/manager.ts` 调 `/api/groups/get|edit|create|delete|chats`，消费方为 `NativeRoleplayChat` 的 groupChatManager。**它是 Palink 自有群聊后端，只是名字带 st_ 前缀**。当前 `NativeRoleplayChat` 非默认视图（CharacterChat.tsx L68-69 注释掉 import），但非死代码。按红线「不影响其他组件否则跳过」本次恢复。
-2. **`config.py` 的 `ST_NATIVE_*` 清理**：须与「silly_tavern.py 端点瘦身」（`/api/st/native/proxy` 及其 helper 族 `_build_proxy_*`/`_validate_proxy_path`、L8555 的 sidecar fetch helper）同批删除，否则保留端点会在请求期 AttributeError。
-3. `/api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token`：保留，属 CSRF 安全链（spec T5）。
-4. spec §4.3「silly_tavern.py 端点瘦身」~20 端点族：尚未立项。
-5. `st_sync_service.py` 的 ST 文件同步函数：ST 容器已不存在，属 best-effort 空转，可随 2 一并评估。
-6. 磁盘：`frontend/dist_bak_*` 历史目录持续累积（本次又增一个），需手动清理（禁 `rm -rf`，用 PowerShell 逐目录删）。
+2. ~~config.py 的 ST_NATIVE_* 清理~~ → **第三批已完成 4/7**：URL/PUBLIC_PORT/PALINK_OPENAI_URL/DEFAULT_MODEL 已删；SERVICE_URL/SERVICE_KEY（extensions 转发链）、DATA_ROOT（st_sync_service）保留。
+3. `/api/st/native/proxy` → **第三批已删**（连同 _validate_proxy_path/_build_proxy_target_url）；`_build_proxy_request_headers`/`_is_proxy_strip_header` 保留（extensions 转发链）。`/csrf-token`、`/api/st/csrf-token` 仍保留（CSRF 安全链专项）。
+4. ~~spec §4.3「silly_tavern.py 端点瘦身」~~ → **第三批已完成**（`6c47535`，42 端点 + 33 死 helper，8654→6092 行）。残余 79 个端点均有消费方或属保留红线。
+5. `st_sync_service.py` 的 ST 文件同步函数：ST 容器已不存在，属 best-effort 空转，可随 A1 同批评估（调用方在 character.py/character_ext.py 主链路，摘除触及面大）。
+6. **A1 收尾（silly_tavern_mode 列 drop）**：仍待拍板。需三件套（models 列 + migrations.py 补列行 + alembic 迁移）+ 手动执行迁移；affected: users.py/silly_tavern.py 的 normalize 函数、schemas、test_st_mode_normalization.py。
+7. 磁盘：`frontend/dist_bak_*` 历史目录持续累积，需手动清理（禁 `rm -rf`，用 PowerShell 逐目录删）。
 
 ---
 
