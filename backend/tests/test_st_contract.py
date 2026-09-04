@@ -38,9 +38,9 @@ if _BACKEND_DIR not in sys.path:
 # 覆盖 silly_tavern.py / st_groups.py / st_resources.py 中的 ST 兼容路由
 # ---------------------------------------------------------------------------
 ST_ENDPOINTS = [
-    # Version & CSRF
-    "/version", "/csrf-token",
-    "/api/st/csrf-token",
+    # Version（2026-09-04：/csrf-token 两端点已删——零消费方，cookie 由登录链建立，
+    # csrf_guard 静态分支不变）
+    "/version",
     # Settings
     "/api/settings/get", "/api/settings/save",
     # Characters

@@ -84,18 +84,6 @@ def _st_data_root_for_user(user: User) -> Optional[Path]:
     return user_dir
 
 
-def _characters_dir(data_root: Path) -> Path:
-    path = data_root / "characters"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _chats_dir(data_root: Path) -> Path:
-    path = data_root / "chats"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _worlds_dir(data_root: Path) -> Path:
     path = data_root / "worlds"
     path.mkdir(parents=True, exist_ok=True)
@@ -157,16 +145,6 @@ def _read_text(path: Path) -> Optional[str]:
         return None
 
 
-def _delete_file(path: Path) -> bool:
-    """同步删除文件，文件不存在或删除失败返回 False。"""
-    try:
-        if path.exists():
-            path.unlink()
-        return True
-    except OSError:
-        return False
-
-
 def _read_json(path: Path) -> Optional[Any]:
     text = _read_text(path)
     if text is None:
@@ -185,36 +163,6 @@ def _read_json(path: Path) -> Optional[Any]:
 # 通过 async_sync_*_to_st 调用的同步函数已经在线程池中执行，
 # 内部无需再用这些异步包装。
 # ───────────────────────────────────────────────
-
-async def _write_text_async(path: Path, content: str) -> bool:
-    """_write_text 的异步包装，在线程池中执行避免阻塞事件循环。"""
-    import asyncio
-    return await asyncio.to_thread(_write_text, path, content)
-
-
-async def _write_json_async(path: Path, data: Any) -> bool:
-    """_write_json 的异步包装。"""
-    import asyncio
-    return await asyncio.to_thread(_write_json, path, data)
-
-
-async def _read_text_async(path: Path) -> Optional[str]:
-    """_read_text 的异步包装。"""
-    import asyncio
-    return await asyncio.to_thread(_read_text, path)
-
-
-async def _read_json_async(path: Path) -> Optional[Any]:
-    """_read_json 的异步包装。"""
-    import asyncio
-    return await asyncio.to_thread(_read_json, path)
-
-
-async def _delete_file_async(path: Path) -> bool:
-    """_delete_file 的异步包装。"""
-    import asyncio
-    return await asyncio.to_thread(_delete_file, path)
-
 
 def _worldbook_to_charbook(wb: Optional[WorldBook]) -> Optional[dict[str, Any]]:
     if not wb:
@@ -271,11 +219,6 @@ def _worldbook_to_charbook(wb: Optional[WorldBook]) -> Optional[dict[str, Any]]:
         "extensions": {},
         "recursive_scanning": False,
     }
-
-
-def _build_character_card(character: Character) -> dict[str, Any]:
-    wb = next((item for item in (character.world_books or []) if item.type == "character_book"), None)
-    return convert_character_to_chara_card(character, world_book_data=_worldbook_to_charbook(wb))
 
 
 def _st_iso_utc(dt: Any) -> str:
@@ -571,26 +514,6 @@ def sync_worldbook_to_st(db: Session, user: User, world_book: WorldBook) -> dict
 
 
 # ST 中 WorldInfo 与 WorldBook 同义，提供别名保持端点调用语义一致
-def sync_worldinfo_to_st(db: Session, user: User, world_book: WorldBook) -> dict[str, Any]:
-    """同步 WorldInfo/世界书到 ST DATA_ROOT（sync_worldbook_to_st 的别名）。"""
-    return sync_worldbook_to_st(db, user, world_book)
-
-
-def sync_chat_to_st(
-    db: Session,
-    user: User,
-    character: Character,
-    session: CharacterChatSession,
-    branch: Optional[CharacterChatSessionBranch] = None,
-) -> dict[str, Any]:
-    """同步单个聊天会话到 ST DATA_ROOT（sync_session_to_st 的别名）。
-
-    保留 sync_session_to_st 作为规范名称，同时提供 sync_chat_to_st
-    以匹配 ST sidecar 中的"chat"概念。
-    """
-    return sync_session_to_st(db, user, character, session, branch)
-
-
 def sync_group_to_st(db: Session, user: User, group: GroupChat) -> dict[str, Any]:
     """同步群聊到 ST DATA_ROOT（stub）。
 
@@ -651,47 +574,6 @@ def sync_all_for_user(db: Session, user: User, character_id: Optional[str] = Non
         "details": results,
         "synced_at": _utc_now_iso(),
         "data_root": str(data_root),
-    }
-
-
-def get_sync_status(db: Session, user: User) -> dict[str, Any]:
-    """获取同步状态"""
-    data_root = _st_data_root_for_user(user)
-    if not data_root:
-        return {
-            "available": False,
-            "reason": "data_root_unconfigured",
-        }
-
-    characters_dir = _characters_dir(data_root)
-    chats_dir = _chats_dir(data_root)
-    worlds_dir = _worlds_dir(data_root)
-
-    character_files = list(characters_dir.glob("palink-*.png.json")) if characters_dir.exists() else []
-    chat_files = []
-    if chats_dir.exists():
-        for char_dir in chats_dir.iterdir():
-            if char_dir.is_dir():
-                chat_files.extend(list(char_dir.glob("palink-session-*.jsonl")))
-    world_files = list(worlds_dir.glob("palink-world-*.json")) if worlds_dir.exists() else []
-
-    db_characters = db.query(Character).filter(Character.user_id == user.id).count()
-    db_sessions = (
-        db.query(CharacterChatSession)
-        .join(Character)
-        .filter(Character.user_id == user.id)
-        .count()
-    )
-
-    return {
-        "available": True,
-        "data_root": str(data_root),
-        "st_character_files": len(character_files),
-        "st_chat_files": len(chat_files),
-        "st_world_files": len(world_files),
-        "db_characters": db_characters,
-        "db_sessions": db_sessions,
-        "last_check": _utc_now_iso(),
     }
 
 
@@ -756,79 +638,6 @@ def _extract_inner_text(tag_content: str) -> str:
     inner = re.sub(r"</[^>]+>$", "", inner)
     inner = re.sub(r"<[^>]+>", "", inner)
     return inner.strip()
-
-
-def is_smart_card_message(message: CharacterChatMessage) -> bool:
-    """判断消息是否为 SmartCard 产生的消息"""
-    extra = _safe_json_loads(message.extra, {})
-    if not isinstance(extra, dict):
-        return False
-    if extra.get("smart_card") or extra.get("palink_ui"):
-        return True
-    content = message.content or ""
-    if any(pattern.search(content) for pattern in _SMART_CARD_TAG_PATTERNS):
-        return True
-    return bool(any(pattern.search(content) for pattern in _SMART_CARD_WRAPPER_PATTERNS))
-
-
-def is_plugin_message(message: CharacterChatMessage) -> bool:
-    """判断消息是否为插件产生的消息"""
-    extra = _safe_json_loads(message.extra, {})
-    if not isinstance(extra, dict):
-        return False
-    return bool(extra.get("plugin_name") or extra.get("plugin_source") or extra.get("tool_call_id"))
-
-
-def clean_message_for_st_sync(content: str, message: CharacterChatMessage) -> str:
-    """同步到 ST 前清理消息内容"""
-    cleaned = clean_smart_card_markup(content, keep_inner_text=True)
-    return cleaned
-
-
-def sync_plugin_messages_to_session(
-    db: Session,
-    user: User,
-    character: Character,
-    session: CharacterChatSession,
-    branch: Optional[CharacterChatSessionBranch] = None,
-) -> dict[str, Any]:
-    """同步插件产生的消息到 ST 会话文件"""
-    data_root = _st_data_root_for_user(user)
-    if not data_root:
-        return {"ok": False, "reason": "data_root_unavailable"}
-
-    if branch is None:
-        branch = _active_branch(db, session)
-
-    all_messages = _chat_messages(db, session, branch)
-    plugin_messages = [m for m in all_messages if is_plugin_message(m)]
-
-    if not plugin_messages:
-        return {"ok": True, "plugin_messages": 0, "synced_at": _utc_now_iso()}
-
-    chats_dir = _chats_dir(data_root)
-    char_chat_dir = chats_dir / (character.name or "character")
-    char_chat_dir.mkdir(parents=True, exist_ok=True)
-    plugin_file = char_chat_dir / f"{_session_file_name(session.id)}-plugins.jsonl"
-
-    lines: list[str] = []
-    for index, message in enumerate(plugin_messages):
-        record = _message_to_st_jsonl(message, index, character, user)
-        extra = record.get("extra") if isinstance(record.get("extra"), dict) else {}
-        extra["palink_plugin"] = True
-        record["extra"] = extra
-        record["mes"] = clean_message_for_st_sync(message.content or "", message)
-        lines.append(_safe_json_dumps(record))
-
-    if not _write_text(plugin_file, "\n".join(lines) + "\n"):
-        return {"ok": False, "reason": "write_plugin_file_failed"}
-
-    return {
-        "ok": True,
-        "plugin_messages": len(plugin_messages),
-        "file": str(plugin_file),
-        "synced_at": _utc_now_iso(),
-    }
 
 
 # ───────────────────────────────────────────────
@@ -1028,51 +837,6 @@ def import_jsonl_to_session(db: Session, character_id: str, jsonl_content: str, 
 # 第三方聊天格式转换（CAI / RisuAI / TavernAI / Pygmalion → ST JSONL）
 # ───────────────────────────────────────────────
 
-def _make_st_message(
-    text: str,
-    is_user: bool,
-    name: str = "",
-    is_system: bool = False,
-    send_date: str = "",
-    swipes: Optional[list[str]] = None,
-) -> dict[str, Any]:
-    """构建一条 ST 格式消息字典，供 import_jsonl_to_session 解析。"""
-    content = str(text or "")
-    swipe_list = [str(s or "") for s in swipes] if swipes else [content]
-    if content and content not in swipe_list:
-        swipe_list[0] = content
-    return {
-        "name": name or "",
-        "is_user": bool(is_user),
-        "is_system": bool(is_system),
-        "is_name": bool(name),
-        "send_date": send_date or "",
-        "mes": content,
-        "swipes": swipe_list,
-        "swipe_id": 0,
-        "swipe_info": [{"send_date": send_date or "", "extra": {}} for _ in swipe_list],
-        "extra": {},
-    }
-
-
-def _to_iso_send_date(value: Any) -> str:
-    """将时间戳（unix 秒/毫秒 或 ISO 字符串）转为 ISO 字符串，失败返回空串。"""
-    if value is None or value == "":
-        return ""
-    if isinstance(value, (int, float)):
-        try:
-            ts = value / 1000 if value > 1e12 else value
-            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-        except (OSError, ValueError, OverflowError):
-            return ""
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
-        except (ValueError, TypeError):
-            return value
-    return ""
-
-
 def convert_cai_to_st_format(data: Any) -> list[dict[str, Any]]:
     """转换 Character.AI 聊天记录为 ST 消息数组。
 
@@ -1216,37 +980,6 @@ def convert_tavern_to_st_format(data: Any) -> list[dict[str, Any]]:
 
 
 _PYGMALION_LINE_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9_\u4e00-\u9fa5 .'\-]{0,40}):\s*(.*)$")
-
-
-def _convert_pygmalion_plain_text(text: str) -> list[dict[str, Any]]:
-    """解析 Pygmalion 风格纯文本对话（"Name: 内容" 行块）。"""
-    result: list[dict[str, Any]] = []
-    current_name = ""
-    current_buf: list[str] = []
-
-    def flush():
-        nonlocal current_name, current_buf
-        if not current_name and not current_buf:
-            return
-        body = "\n".join(current_buf).strip()
-        if body:
-            lname = current_name.strip().lower()
-            is_user = lname in ("you", "user", "me")
-            result.append(_make_st_message(body, is_user, current_name.strip()))
-        current_name = ""
-        current_buf = []
-
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip("\n")
-        match = _PYGMALION_LINE_PREFIX.match(line)
-        if match:
-            flush()
-            current_name = match.group(1)
-            current_buf = [match.group(2)] if match.group(2) else []
-        else:
-            current_buf.append(line)
-    flush()
-    return result
 
 
 def _looks_like_json(text: str) -> bool:
@@ -1592,6 +1325,93 @@ async def async_sync_persona_to_st(db: Session, user: User, persona: Persona) ->
     import asyncio
     return await asyncio.to_thread(sync_persona_to_st, db, user, persona)
 
+
+def _characters_dir(data_root: Path) -> Path:
+    path = data_root / "characters"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _chats_dir(data_root: Path) -> Path:
+    path = data_root / "chats"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _build_character_card(character: Character) -> dict[str, Any]:
+    wb = next((item for item in (character.world_books or []) if item.type == "character_book"), None)
+    return convert_character_to_chara_card(character, world_book_data=_worldbook_to_charbook(wb))
+
+def _make_st_message(
+    text: str,
+    is_user: bool,
+    name: str = "",
+    is_system: bool = False,
+    send_date: str = "",
+    swipes: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """构建一条 ST 格式消息字典，供 import_jsonl_to_session 解析。"""
+    content = str(text or "")
+    swipe_list = [str(s or "") for s in swipes] if swipes else [content]
+    if content and content not in swipe_list:
+        swipe_list[0] = content
+    return {
+        "name": name or "",
+        "is_user": bool(is_user),
+        "is_system": bool(is_system),
+        "is_name": bool(name),
+        "send_date": send_date or "",
+        "mes": content,
+        "swipes": swipe_list,
+        "swipe_id": 0,
+        "swipe_info": [{"send_date": send_date or "", "extra": {}} for _ in swipe_list],
+        "extra": {},
+    }
+
+def _to_iso_send_date(value: Any) -> str:
+    """将时间戳（unix 秒/毫秒 或 ISO 字符串）转为 ISO 字符串，失败返回空串。"""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (int, float)):
+        try:
+            ts = value / 1000 if value > 1e12 else value
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        except (OSError, ValueError, OverflowError):
+            return ""
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+        except (ValueError, TypeError):
+            return value
+    return ""
+
+def _convert_pygmalion_plain_text(text: str) -> list[dict[str, Any]]:
+    """解析 Pygmalion 风格纯文本对话（"Name: 内容" 行块）。"""
+    result: list[dict[str, Any]] = []
+    current_name = ""
+    current_buf: list[str] = []
+
+    def flush():
+        nonlocal current_name, current_buf
+        if not current_name and not current_buf:
+            return
+        body = "\n".join(current_buf).strip()
+        if body:
+            lname = current_name.strip().lower()
+            is_user = lname in ("you", "user", "me")
+            result.append(_make_st_message(body, is_user, current_name.strip()))
+        current_name = ""
+        current_buf = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\n")
+        match = _PYGMALION_LINE_PREFIX.match(line)
+        if match:
+            flush()
+            current_name = match.group(1)
+            current_buf = [match.group(2)] if match.group(2) else []
+        else:
+            current_buf.append(line)
+    flush()
+    return result
 
 def trigger_sync_background(
     db_factory,

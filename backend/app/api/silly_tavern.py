@@ -1788,14 +1788,9 @@ async def st_version():
     return {"agent": "SillyTavern", "pkgVersion": "1.18.0", "gitRevision": "palink", "gitBranch": "palink"}
 
 
-@router.get("/csrf-token")
-async def st_csrf_token():
-    return {"token": "palink-csrf"}
-
-
-@router.get("/api/st/csrf-token")
-async def st_csrf_token_api_alias():
-    return await st_csrf_token()
+# /csrf-token 与 /api/st/csrf-token 已于 2026-09-04 删除（T5 评估：零消费方；
+# palink_csrf cookie 由登录响应 auth.py 双 Set-Cookie 建立，CSRF 守卫机制不受影响）。
+# 旧客户端如携带 X-CSRF-Token: palink-csrf 头仍被 csrf_guard 静态分支正常放行。
 
 
 @router.post("/api/tokenizers/{tokenizer_name}/{operation}")
