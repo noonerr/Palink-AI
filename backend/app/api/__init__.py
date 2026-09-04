@@ -29,16 +29,13 @@ from .tts import router as tts_router
 from .image_generation import router as image_generation_router
 from .plugins import router as plugins_router
 from .smart_card_assets import router as smart_card_assets_router
-from .openai_compat import router as openai_compat_router
 from .silly_tavern import router as silly_tavern_router
-from .st_sync import router as st_sync_router
 from .st_groups import router as st_groups_router
 from .regex_scripts import router as regex_scripts_router
 from .tokenizer import router as tokenizer_router
 from .expressions import router as expressions_router
 from .sd import router as sd_router
 from .backgrounds import router as backgrounds_router
-from .st_resources import router as st_resources_router
 from .stt import router as stt_router
 from .connection_profiles import router as connection_profiles_router
 from .themes import router as themes_router
@@ -51,12 +48,10 @@ api_router.include_router(chat_router)
 # MED-4: ST 兼容 router 统一挂 CSRF guard。ST 原生前端以 cookie 认证并携带
 # X-CSRF-Token；guard 对安全方法/带 Bearer 的请求放行，只拦"纯 cookie 跨站写请求"。
 api_router.include_router(silly_tavern_router, dependencies=[Depends(csrf_guard)])
-api_router.include_router(st_sync_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(st_groups_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(regex_scripts_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(expressions_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(sd_router, dependencies=[Depends(csrf_guard)])
-api_router.include_router(st_resources_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(backgrounds_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(stt_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(connection_profiles_router, dependencies=[Depends(csrf_guard)])
@@ -93,12 +88,10 @@ api_router.include_router(tts_router)
 api_router.include_router(image_generation_router)
 api_router.include_router(plugins_router)
 api_router.include_router(smart_card_assets_router)
-api_router.include_router(openai_compat_router)
 api_router.include_router(regex_scripts_router)
 api_router.include_router(tokenizer_router)
 api_router.include_router(expressions_router)
 api_router.include_router(sd_router)
-api_router.include_router(st_resources_router)
 api_router.include_router(backgrounds_router)
 api_router.include_router(stt_router)
 api_router.include_router(connection_profiles_router)

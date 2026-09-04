@@ -261,7 +261,7 @@ class TestMemSyncOnSwitch:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestNoUnmasked4xxDetail:
-    ALLOWLIST = {"openai_compat.py", "silly_tavern.py"}
+    ALLOWLIST = {"silly_tavern.py"}
 
     def test_api_layer_has_no_raw_4xx_str_detail_outside_allowlist(self):
         api_dir = Path(_BACKEND_DIR) / "app" / "api"

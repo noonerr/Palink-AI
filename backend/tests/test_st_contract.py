@@ -40,7 +40,7 @@ if _BACKEND_DIR not in sys.path:
 ST_ENDPOINTS = [
     # Version & CSRF
     "/version", "/csrf-token",
-    "/api/st/version", "/api/st/csrf-token",
+    "/api/st/csrf-token",
     # Settings
     "/api/settings/get", "/api/settings/save",
     # Characters
@@ -73,15 +73,6 @@ ST_ENDPOINTS = [
     # Quick Replies
     "/api/quick-replies/save", "/api/quick-replies/delete", "/api/quick-replies/list",
     "/api/quick-replies/execute", "/api/quick-replies/create", "/api/quick-replies/update",
-    # Backgrounds (st_resources.py)
-    "/api/backgrounds/all", "/api/backgrounds/folders", "/api/backgrounds/upload",
-    "/api/backgrounds/rename", "/api/backgrounds/delete",
-    # Avatars (st_resources.py)
-    "/api/avatars/get", "/api/avatars/upload", "/api/avatars/delete",
-    # Sprites (st_resources.py)
-    "/api/sprites/get", "/api/sprites/upload", "/api/sprites/upload-zip", "/api/sprites/delete",
-    # Assets (st_resources.py)
-    "/api/assets/get", "/api/assets/character", "/api/assets/download", "/api/assets/delete",
     # Secrets (Palink redirect to ConnectionProfiles)
     "/api/secrets/write", "/api/secrets/read", "/api/secrets/view", "/api/secrets/find",
     "/api/secrets/delete", "/api/secrets/rotate", "/api/secrets/rename",

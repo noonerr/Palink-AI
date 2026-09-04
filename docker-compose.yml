@@ -5,13 +5,9 @@ services:
       # [2026-08-31] 统一为 3000：dev/部署同端口，不再区分开发与部署。
       # 历史: 3000 曾被 WinNAT 动态保留段(2934-3033)吞掉临时改用 13000，现验证可绑定已改回
       - "3000:8080"
-      # 9001 落入 Windows 保留端口段(8958-9057)，docker 无法绑定，临时改到 9061（空闲段）
-      - "9061:8081"
     depends_on:
       backend:
         condition: service_healthy
-      sillytavern:
-        condition: service_started
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
@@ -36,60 +32,14 @@ services:
         reservations:
           memory: 128M
 
-  sillytavern:
-    build: ./SillyTavern-1.18.0/SillyTavern-1.18.0
-    expose:
-      - "8000"
-    volumes:
-      - sillytavern_config:/home/node/app/config
-      - sillytavern_data:/home/node/app/data
-      - sillytavern_plugins:/home/node/app/plugins
-      - sillytavern_extensions:/home/node/app/public/scripts/extensions/third-party
-    environment:
-      - NODE_ENV=production
-      - FORCE_COLOR=1
-      - SILLYTAVERN_DATAROOT=/home/node/app/data
-      - SILLYTAVERN_PORT=8000
-      - SILLYTAVERN_LISTEN=true
-      - SILLYTAVERN_WHITELISTMODE=false
-      - SILLYTAVERN_SECURITYOVERRIDE=true
-      - SILLYTAVERN_BROWSERLAUNCH_ENABLED=false
-      - SILLYTAVERN_HEARTBEATINTERVAL=30
-      - SILLYTAVERN_EXTENSIONS_ENABLED=true
-      - SILLYTAVERN_EXTENSIONS_AUTOUPDATE=true
-      - SILLYTAVERN_PRIVATEADDRESSWHITELIST_ENABLED=false
-      - PALINK_ST_NATIVE_USER_HEADER_ENABLED=${PALINK_ST_NATIVE_USER_HEADER_ENABLED:-true}
-      - ST_NATIVE_PALINK_OPENAI_URL=http://backend:8000/api/openai/v1
-      - ST_NATIVE_DEFAULT_MODEL=${ST_NATIVE_DEFAULT_MODEL:-palink-default}
-      - ST_NATIVE_SERVICE_KEY=${ST_NATIVE_SERVICE_KEY:-}
-    restart: always
-    healthcheck:
-      test: ["CMD-SHELL", "node src/healthcheck.js"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - frontend-backend
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-        reservations:
-          memory: 256M
-
   ollama:
     image: ollama/ollama:latest
     container_name: palink-ollama
     ports:
-      # 映射到宿主机便于调试（backend 走服务名 ollama:11434 直连，不依赖此映射）
-      - "11434:11434"
+      # 映射到宿主机便于调试（backend 走服务名 ollama:11434 直连，不依赖此映射）。
+      # [PENTEST-2026-09-02] 收口到回环：Ollama 默认无鉴权，0.0.0.0 会把模型算力
+      # 暴露给整个局域网；仅 127.0.0.1 可访问，容器网络内服务互连不受影响。
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -223,12 +173,6 @@ services:
       - DB_CONNECTION_BUDGET=40
       - DB_POOL_RECYCLE_SECONDS=1800
       - SEARXNG_PROXY_API_KEY=${SEARXNG_PROXY_API_KEY:-}
-      - ST_NATIVE_URL=${ST_NATIVE_URL:-}
-      - ST_NATIVE_PUBLIC_PORT=${ST_NATIVE_PUBLIC_PORT:-8000}
-      - ST_NATIVE_SERVICE_URL=http://sillytavern:8000
-      - ST_NATIVE_SERVICE_KEY=${ST_NATIVE_SERVICE_KEY:-}
-      - ST_NATIVE_PALINK_OPENAI_URL=http://backend:8000/api/openai/v1
-      - ST_NATIVE_DEFAULT_MODEL=${ST_NATIVE_DEFAULT_MODEL:-palink-default}
     expose:
       - "8000"
     depends_on:
@@ -302,10 +246,6 @@ volumes:
   postgres_data:
   ollama_data:
   newapi_data:
-  sillytavern_config:
-  sillytavern_data:
-  sillytavern_plugins:
-  sillytavern_extensions:
 
 networks:
   frontend-backend:
