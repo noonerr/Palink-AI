@@ -19,7 +19,7 @@
 
 1. **ST 双轨已于 2026-09-03 删除完毕**（用户授权，三笔 commit：`091023e` 阶段1 后端装配、`aeb8348` 阶段2 前端/静态/nginx、`4eadb86` 阶段3 路由/部署/源码副本）。权威施工 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`。
    - 历史脉络：2026-08-24 运行时强制封存（MODE-SEALED）→ 2026-09-03 代码剥离删除。封存守卫（`SEALED_ST_MODES`/`_st_mode_effective`/`_is_st_compat_mode`）已随删除消失，无解封开关。
-   - `silly_tavern_mode` 字段保留为死摆设（A2 口径）：`users.py`/`silly_tavern.py` 的 `_normalize_silly_tavern_mode` 恒返回 `"palink-native"`。**`backend/app/core/migrations.py` 的补列行不得删除**（否则重启把列加回来）；若要 drop 列需三件套同步（models 列 + 补列清单行 + alembic 迁移）。
+   - `silly_tavern_mode` / `silly_tavern_theme` 字段已于 2026-09-04 A1 收尾全链删除（`bbfe0f0`，alembic 0062 drop 列，DB 已迁移）。**T1 红线：`backend/app/core/migrations.py` 的 `_RUNTIME_COMPAT_COLUMNS` 补列清单禁止回填这两列**（否则后端重启把列重建回来）。PUT 请求体携带这两个旧键会被 pydantic 静默忽略（合法行为，非 bug）。
 2. **残留清理未完成的部分**（后续如要动，需另立议题）：
    - `st_groups.py` 虽名为 st_ 前缀，实为 **Palink 自有群聊后端**（前端 `lib/group-chat/manager.ts` 调 `/api/groups/*`，消费方 `NativeRoleplayChat` 的 groupChatManager）。**勿按名字误删**。
    - `st_sync_service.py` 为共用模块，被 character/personas/worldbook/character_ext 等主链路引用，**保留**。
