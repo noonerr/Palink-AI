@@ -10,14 +10,6 @@ from ..schemas import UserSettingUpdate
 
 router = APIRouter(prefix="/api/users/me", tags=["user-settings"])
 
-
-def _normalize_silly_tavern_mode(mode: str | None) -> str:
-    """[MODE-SEALED→已删除] st-compat/st-native 双轨已于 2026-09 删除。
-
-    字段保留为纯摆设（A2 分步）：DB 与 API 恒 "palink-native"。
-    """
-    return "palink-native"
-
 def _get_or_create_settings(user: User, db: Session) -> UserSetting:
     setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
     if not setting:
@@ -60,12 +52,12 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "author_note_depth": setting.author_note_depth if setting.author_note_depth is not None else 4,
         "show_character_status": setting.show_character_status if setting.show_character_status is not None else False,
         "auto_generate_chat_images": setting.auto_generate_chat_images if setting.auto_generate_chat_images is not None else False,
-        "silly_tavern_mode": _normalize_silly_tavern_mode(setting.silly_tavern_mode),
-        "silly_tavern_theme": setting.silly_tavern_theme or "palink",
+        # silly_tavern_mode/silly_tavern_theme 已于 2026-09-04 A1 删除（alembic 0062）
         "active_persona_id": setting.active_persona_id,
         "power_user": setting.power_user if setting.power_user is not None else "{}",
         "mvu_secondary_model": setting.mvu_secondary_model,
         "mvu_secondary_enabled": setting.mvu_secondary_enabled if setting.mvu_secondary_enabled is not None else False,
+        "memory_budget_level": setting.memory_budget_level if setting.memory_budget_level is not None else 1,
     }
 
 
@@ -106,10 +98,7 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.show_character_status = req.show_character_status
     if req.auto_generate_chat_images is not None:
         setting.auto_generate_chat_images = req.auto_generate_chat_images
-    if req.silly_tavern_mode is not None:
-        setting.silly_tavern_mode = _normalize_silly_tavern_mode(req.silly_tavern_mode)
-    if req.silly_tavern_theme is not None:
-        setting.silly_tavern_theme = req.silly_tavern_theme
+    # silly_tavern_mode/silly_tavern_theme PUT 写入已随 A1 删除（schema 不再接受）
     if req.active_persona_id is not None:
         setting.active_persona_id = req.active_persona_id or None
     if req.power_user is not None:
@@ -118,6 +107,9 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.mvu_secondary_model = req.mvu_secondary_model or None
     if req.mvu_secondary_enabled is not None:
         setting.mvu_secondary_enabled = req.mvu_secondary_enabled
+    if req.memory_budget_level is not None:
+        # 分层记忆 Phase 1：档位防呆，越界值归标准档 1
+        setting.memory_budget_level = req.memory_budget_level if req.memory_budget_level in (0, 1, 2, 3) else 1
     db.commit()
     # Phase 7 SubTask 7.1: 缓存失效 prefix 必须与 _build_key 生成的 key 完全匹配。
     # _build_key 在 kwargs 路径下使用 f"{k}={v.id}" 格式（cache.py:81），

@@ -570,12 +570,7 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-# [MODE-SEALED→已删除] st-compat/st-native 双轨已于 2026-09 删除。
-# 字段保留为纯摆设（A2 分步）：查询出口恒 "palink-native"。
-
-
-def _normalize_silly_tavern_mode(mode: Optional[str]) -> str:
-    return "palink-native"
+# silly_tavern_mode 已于 2026-09-04 A1 全链删除（模型列/补列行/schema/API，alembic 0062）。
 
 
 def _token_from_request(request: Request, token: Optional[str] = None) -> Optional[str]:
@@ -1714,8 +1709,7 @@ def _default_st_settings(db: Session, user: User, setting: UserSetting) -> dict[
         "proxies": [],
         "selected_proxy": "",
         "palink": {
-            "silly_tavern_mode": _normalize_silly_tavern_mode(setting.silly_tavern_mode),
-            "silly_tavern_theme": setting.silly_tavern_theme or "palink",
+            # silly_tavern_mode/theme 已于 2026-09-04 A1 删除（alembic 0062）
         },
     }
     return settings

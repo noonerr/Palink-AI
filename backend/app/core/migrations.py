@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 _RUNTIME_COMPAT_COLUMNS = (
     ("user_settings", "auto_generate_chat_images", sa.Boolean()),
-    ("user_settings", "silly_tavern_mode", sa.String()),
-    ("user_settings", "silly_tavern_theme", sa.String()),
+    # silly_tavern_mode/silly_tavern_theme 已于 2026-09-04 A1 删除（alembic 0062
+    # drop 列）。禁止回填本清单，否则后端重启会把列重建回来（T1 陷阱）。
     ("user_settings", "silly_tavern_settings", sa.Text()),
     ("generation_presets", "prompts_data", sa.Text()),
     ("generation_presets", "ban_sequences", sa.Text()),
@@ -120,6 +120,9 @@ _RUNTIME_COMPAT_COLUMNS = (
     # monthly_reset = 每自然月自动清零 used_tokens；period_month = 当前计数月（YYYY-MM）。
     ("user_quotas", "monthly_reset", sa.Boolean()),
     ("user_quotas", "period_month", sa.String()),
+    # [分层记忆 Phase 1] 记忆区注入预算档位（0-3，NULL=标准档 1500），
+    # 见 UserSetting.memory_budget_level 注释与 docs/SPEC_分层记忆注入_2026-09-02.md §4.1。
+    ("user_settings", "memory_budget_level", sa.Integer()),
 )
 
 

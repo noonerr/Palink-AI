@@ -44,8 +44,8 @@ class UserSetting(Base):
     use_custom_prompts = Column(Boolean, default=False)
     show_character_status = Column(Boolean, default=False)
     auto_generate_chat_images = Column(Boolean, default=False)
-    silly_tavern_mode = Column(String, default="palink-native")
-    silly_tavern_theme = Column(String, default="palink")
+    # silly_tavern_mode/silly_tavern_theme 已于 2026-09-04 A1 收尾删除
+    # （st 双轨移除后为死摆设，alembic 0062 drop；勿在 migrations.py 补列清单回填）
     silly_tavern_settings = Column(Text, nullable=True)
     # Active persona id (references Persona.id) — drives persona description
     # injection in roleplay prompt assembly. NULL means no active persona.
@@ -70,6 +70,12 @@ class UserSetting(Base):
     # mvu_secondary_enabled 为 False = 关闭（即使配了模型也不跑）。
     mvu_secondary_model = Column(String, nullable=True)
     mvu_secondary_enabled = Column(Boolean, default=False)
+    # 分层记忆 Phase 1（2026-09-03）：记忆区注入预算档位。
+    # 0=紧凑750 / 1=标准1500（默认，与历史硬编码一致，存量零变化）/
+    # 2=加量3000 / 3=尽量多6000。NULL 视为 1；越界值由写入侧归 1。
+    # 放大档位是安全的：_apply_token_budget 会兜底裁剪（记忆区优先级
+    # 低于人设与最近历史，预算不够时先被裁），不会撑爆 prompt。
+    memory_budget_level = Column(Integer, nullable=True)
     user = relationship("User", back_populates="settings")
 
 class GenerationPreset(Base):

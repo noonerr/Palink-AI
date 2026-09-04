@@ -699,87 +699,29 @@ def subtask_6_1_3(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────
-# SubTask 6.1.4 模式切换 palink-native ↔ st-native
+# SubTask 6.1.4 ST 模式字段 A1 收尾验证（2026-09-04）
 # ──────────────────────────────────────────────────────────────
-def _read_mode_from_db() -> str | None:
-    """直接查询 DB 获取 silly_tavern_mode，绕过 @cached 的缓存层。
-
-    已知 bug：``get_user_settings`` 使用 ``@cached(key_prefix="user_settings")``，
-    FastAPI 以 kwargs 传参，``_build_key`` 生成的 key 形如
-    ``user_settings:user=1:db=<id>``；而 ``update_user_settings`` 调用
-    ``invalidate_cache(f"user_settings:{user.id}")`` = ``user_settings:1``。
-    由于 ``startswith`` 不匹配（``user_settings:1`` vs ``user_settings:user=1``），
-    缓存失效不生效，GET 在 TTL（30s）内始终返回旧值。
-    本测试不修改源码，改为直接查 DB 验证持久化结果。
-    """
-    try:
-        from app.core import SessionLocal
-        from app.models import User, UserSetting
-
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.username == ADMIN_USER).first()
-            if not user:
-                return None
-            st = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
-            if not st:
-                return None
-            return _normalize_mode(st.silly_tavern_mode)
-        finally:
-            db.close()
-    except Exception as exc:
-        print(f"  [db read] error: {exc}")
-        return None
-
-
-def _normalize_mode(raw: str | None) -> str:
-    """与后端 _normalize_silly_tavern_mode 对齐的本地实现。
-
-    [MODE-SEALED] 2026-08-24：后端已封存 st-compat/st-native（运行时重定向
-    palink-native），本地副本同步该语义。
-    """
-    aliases = {"iframe": "compat", "native": "palink-native"}
-    r = str(raw or "palink-native").strip() or "palink-native"
-    r = aliases.get(r, r)
-    # 封存期：唯一可达模式为 palink-native
-    return "palink-native"
-
-
 def subtask_6_1_4(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
-    print("\n=== SubTask 6.1.4: 模式切换 ===")
+    print("\n=== SubTask 6.1.4: ST 模式字段 A1 契约 ===")
 
-    # st-compat/st-native 已删除（A2 口径）：PUT 任意 silly_tavern_mode 一律落库 palink-native
-    status, resp = http_request(
-        "PUT", "/api/users/me/settings", token=token, body={"silly_tavern_mode": "st-native"}
-    )
-    st_save_ok = status == 200
-    # 短暂等待 DB commit
-    time.sleep(0.3)
-    # 直接查 DB 验证持久化（绕过已知缓存 bug）
-    st_db_mode = _read_mode_from_db()
-    # 同时记录 GET 返回值（可能因缓存 bug 返回旧值）
+    # A1：GET 响应不再包含 silly_tavern_mode / silly_tavern_theme 键
     _, get_resp = http_request("GET", "/api/users/me/settings", token=token)
-    st_get_mode = get_resp.get("silly_tavern_mode") if isinstance(get_resp, dict) else None
-    if st_save_ok and st_db_mode == "palink-native":
-        cache_note = "" if st_get_mode == "palink-native" else f" (GET cached={st_get_mode}, known cache bug)"
-        record("switch_st_native_normalized_to_palink_native", "PASS", f"db_mode={st_db_mode}{cache_note}")
-    else:
-        record("switch_st_native_normalized_to_palink_native", "FAIL", f"save_status={status} db_mode={st_db_mode} get_mode={st_get_mode}")
+    get_ok = isinstance(get_resp, dict)
+    mode_gone = get_ok and "silly_tavern_mode" not in get_resp
+    theme_gone = get_ok and "silly_tavern_theme" not in get_resp
+    record("a1_get_omits_st_mode_keys", "PASS" if (mode_gone and theme_gone) else "FAIL",
+           f"mode_gone={mode_gone} theme_gone={theme_gone}")
 
-    # 切换回 palink-native
+    # A1：旧客户端 PUT 携带旧键 → 200 OK 且被 pydantic 忽略（不 422 不 500）
     status, resp = http_request(
-        "PUT", "/api/users/me/settings", token=token, body={"silly_tavern_mode": "palink-native"}
+        "PUT", "/api/users/me/settings",
+        token=token,
+        body={"silly_tavern_mode": "st-native", "silly_tavern_theme": "dark"},
     )
-    pn_save_ok = status == 200
-    time.sleep(0.3)
-    pn_db_mode = _read_mode_from_db()
-    _, get_resp = http_request("GET", "/api/users/me/settings", token=token)
-    pn_get_mode = get_resp.get("silly_tavern_mode") if isinstance(get_resp, dict) else None
-    if pn_save_ok and pn_db_mode == "palink-native":
-        cache_note = "" if pn_get_mode == "palink-native" else f" (GET cached={pn_get_mode}, known cache bug)"
-        record("switch_to_palink_native", "PASS", f"db_mode={pn_db_mode}{cache_note}")
-    else:
-        record("switch_to_palink_native", "FAIL", f"save_status={status} db_mode={pn_db_mode} get_mode={pn_get_mode}")
+    put_ignored = status == 200 and isinstance(resp, dict) and resp.get("status") == "ok" \
+        and "silly_tavern_mode" not in resp
+    record("a1_put_legacy_keys_ignored", "PASS" if put_ignored else "FAIL",
+           f"status={status} resp_keys_ok={put_ignored}")
 
     return ctx
 
@@ -1162,7 +1104,7 @@ def cleanup(token: str, ctx: dict[str, Any]) -> None:
                 db.close()
         except Exception as exc:
             print(f"  [cleanup plugins] error: {exc}")
-    # 清理 author note & 恢复 palink-native 模式
+    # 清理 author note（silly_tavern_mode 已于 2026-09-04 A1 删除，无需恢复）
     http_request(
         "PUT",
         "/api/users/me/settings",
@@ -1172,7 +1114,6 @@ def cleanup(token: str, ctx: dict[str, Any]) -> None:
             "author_note_position": 1,
             "author_note_depth": 4,
             "author_note_frequency": 0,
-            "silly_tavern_mode": "palink-native",
         },
     )
     record("cleanup", "PASS", "test data removed")
