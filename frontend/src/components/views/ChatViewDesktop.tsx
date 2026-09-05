@@ -1,5 +1,4 @@
 import React from 'react';
-import { Sparkles } from 'lucide-react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
@@ -175,21 +174,6 @@ export function ChatViewDesktop({
                       <span className="text-amber-500 dark:text-amber-400">· 预计 {Math.ceil(chat.queueInfo.estimatedWait)}s</span>
                     )}
                   </div>
-                </div>
-              )}
-
-              {chat.suggestions.length > 0 && !chat.streaming && (
-                <div className="flex flex-wrap gap-2 pl-12 animate-fade-in-up">
-                  {chat.suggestions.map((s, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSend(s)}
-                      className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-full text-xs font-medium transition-colors"
-                    >
-                      <Sparkles size={10} className="inline mr-1" />
-                      {s}
-                    </button>
-                  ))}
                 </div>
               )}
 

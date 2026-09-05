@@ -364,8 +364,6 @@ export function CharacterView({
     attachments,
     setAttachments,
     uploading,
-    suggestions,
-    setSuggestions,
     regeneratingMessageIndex,
     generatingImageMessageIds,
     currentError,
@@ -701,7 +699,6 @@ export function CharacterView({
   const loadMessages = useCallback(async (sessionId: string) => {
     loadingSessionRef.current = sessionId;
     try {
-      setSuggestions([]);
       setMemoryStats(null);
       setBranches([]);
       setSelectedBranch(null);
@@ -735,7 +732,7 @@ export function CharacterView({
     } catch (e) {
       console.error('Failed to load messages:', e);
     }
-  }, [loadMemoryStats, loadBranches, setSuggestions]);
+  }, [loadMemoryStats, loadBranches]);
 
   const loadOlderMessages = useCallback(async () => {
     if (!selectedSession || !hasMoreMessages || isLoadingOlderMessages || messages.length === 0) return;
@@ -1187,7 +1184,6 @@ export function CharacterView({
     setSelectedSession(null);
     setMessages([]);
     setMemoryStats(null);
-    setSuggestions([]);
     setForkPoint(null);
     setBranches([]);
     setSelectedBranch(null);
@@ -1217,7 +1213,7 @@ export function CharacterView({
     if (characterId !== fullCharacter.id) {
       navigate(`/characters/${fullCharacter.id}`);
     }
-  }, [loadSessions, loadMessages, navigate, characterId, setSuggestions]);
+  }, [loadSessions, loadMessages, navigate, characterId]);
 
   const handleBackToList = useCallback(() => {
     setViewState('list');
@@ -1499,7 +1495,6 @@ export function CharacterView({
     setMessages([]);
     setMemoryStats(null);
     setHasMoreMessages(false);
-    setSuggestions([]);
     setForkPoint(null);
   };
 
@@ -1784,7 +1779,6 @@ export function CharacterView({
           attachments={attachments}
           setAttachments={setAttachments}
           uploading={uploading}
-          suggestions={suggestions}
           regeneratingMessageIndex={regeneratingMessageIndex}
           generatingImageMessageIds={generatingImageMessageIds}
           currentError={currentError}

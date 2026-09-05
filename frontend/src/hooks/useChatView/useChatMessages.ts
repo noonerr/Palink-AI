@@ -17,7 +17,6 @@ export interface UseChatMessagesParams {
 export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [input, setInput] = useState('');
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showMessageSelect, setShowMessageSelect] = useState(false);
   const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
@@ -43,7 +42,6 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
     lastLoadedSessionIdRef.current = sessionId;
 
     try {
-      setSuggestions([]);
       const data = await api.get<MessageType[]>(`/api/sessions/${sessionId}/messages`);
       const loadedMessages = Array.isArray(data) ? data : [];
       setMessages(loadedMessages);
@@ -91,7 +89,6 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
     try {
       await api.delete(`/api/sessions/${activeSessionId}/messages`);
       setMessages([]);
-      setSuggestions([]);
       toast.success(t.messages_cleared || '消息已清空');
     } catch (error) {
       console.error('Failed to clear messages:', error);
@@ -200,8 +197,6 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
     setMessages,
     input,
     setInput,
-    suggestions,
-    setSuggestions,
     selectedMessages,
     showMessageSelect,
     regeneratingMessageIndex,

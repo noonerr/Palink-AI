@@ -213,7 +213,6 @@ export function useCharacterChat({
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
   const [generatingImageMessageIds, setGeneratingImageMessageIds] = useState<Set<string>>(new Set());
 
@@ -694,7 +693,6 @@ export function useCharacterChat({
 
     setRegeneratingMessageIndex(assistantMessageIndex);
     setIsGenerating(true);
-    setSuggestions([]);
 
     const assistantMessageId = generateMessageId();
     setMessages(prev => {
@@ -922,7 +920,6 @@ export function useCharacterChat({
     const originalContent = lastAssistant.content || '';
 
     setIsGenerating(true);
-    setSuggestions([]);
 
     abortControllerRef.current = new AbortController();
     let fullContent = '';
@@ -1122,7 +1119,6 @@ export function useCharacterChat({
     setInputValue('');
     setAttachments([]);
     setIsGenerating(true);
-    setSuggestions([]);
 
     setRetryMessageContent(options.suppressUserMessage ? '' : text);
     setRetryMessageImages(outgoingImages);
@@ -1753,8 +1749,6 @@ export function useCharacterChat({
     attachments,
     setAttachments,
     uploading,
-    suggestions,
-    setSuggestions,
     regeneratingMessageIndex,
     generatingImageMessageIds,
     currentError,

@@ -17,7 +17,7 @@
  * - 管理器对话框 UI 提取到 ChatManagerDialogs 组件
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Clock, GitBranch, Sparkles } from 'lucide-react';
+import { Clock, GitBranch } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api, invalidateCache } from '@/services/api';
 import { generationEngine } from '@/services/generation-engine';
@@ -204,7 +204,6 @@ export interface CharacterChatProps {
   attachments: any[];
   setAttachments: React.Dispatch<React.SetStateAction<any[]>>;
   uploading: boolean;
-  suggestions: string[];
   regeneratingMessageIndex: number | null;
   generatingImageMessageIds: Set<string>;
   currentError: any;
@@ -417,7 +416,7 @@ export function CharacterChat(props: CharacterChatProps) {
     isAtBottomRef,
     isGenerating, inputValue, setInputValue,
     attachments, setAttachments, uploading,
-    suggestions, regeneratingMessageIndex, generatingImageMessageIds,
+    regeneratingMessageIndex, generatingImageMessageIds,
     currentError, retryMessageContent, timeoutWarning,
     handleSendMessage, handleSmartCardTrigger, handleSendWithInput, handleRegenerate, handleContinue: propsHandleContinue,
     handleRetry, handleCloseError, handleUpload, handleDeleteMessage, handleEditMessage, handleGenerateImage,
@@ -1285,7 +1284,6 @@ export function CharacterChat(props: CharacterChatProps) {
 
   const displayedActiveSessionId = sessionVisualSnapshot ? sessionVisualSnapshot.activeSessionId : (selectedSession?.id || null);
   const displayedMessages = sessionVisualSnapshot ? sessionVisualSnapshot.messages : messages;
-  const displayedSuggestions = sessionVisualSnapshot ? [] : suggestions;
 
   // 稳定回调：按消息 id 定位索引，避免每条消息每帧创建新闭包导致 Message memo 失效
   const displayedMessagesRef = useRef(displayedMessages);
@@ -2003,21 +2001,6 @@ export function CharacterChat(props: CharacterChatProps) {
               />
               );
             })}
-
-            {displayedSuggestions.length > 0 && !isGenerating && (
-              <div className="flex flex-wrap gap-2 pl-4 sm:pl-12 animate-fade-in-up">
-                {displayedSuggestions.map((s, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => wrappedHandleSendMessage(s, [])}
-                    className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-full text-xs font-medium transition-colors"
-                  >
-                    <Sparkles size={10} className="inline mr-1" />
-                    {s}
-                  </button>
-                ))}
-              </div>
-            )}
 
             <div ref={messagesEndRef} />
           </div>

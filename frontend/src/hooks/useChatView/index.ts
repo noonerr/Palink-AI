@@ -29,9 +29,6 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
   });
   const attachments = useAttachments({ t });
 
-  // 从chatMessages中解构suggestions
-  const { suggestions, setSuggestions, ...restChatMessages } = chatMessages;
-
   // 流式传输状态
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [queueInfo, setQueueInfo] = useState<{ 
@@ -143,13 +140,6 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
         }
         streamPendingRef.current = null;
         chatMessages.setAssistantMessageSnapshot(assistantMessageId, fullContent, fullReasoning);
-        
-        // 获取建议
-        if (fullContent.length > 20) {
-          api.post('/api/chat/suggestions', { message: fullContent, model: currentModel })
-            .then(setSuggestions)
-            .catch(() => {});
-        }
       },
       onError: (error) => {
         // 使用AppError的方法
@@ -390,9 +380,7 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     toggleSessionSelect: sessionManager.toggleSessionSelection,
     
     // 消息管理
-    ...restChatMessages,
-    suggestions,
-    setSuggestions,
+    ...chatMessages,
     handleDeleteSelectedMessages: chatMessages.handleBatchDeleteMessages,
     setShowMessageSelect: (value: boolean) => chatMessages.toggleMessageSelect(),
     

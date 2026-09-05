@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Sparkles, X, Edit3, Trash2, Menu, Globe, Plus } from 'lucide-react';
+import { X, Edit3, Trash2, Menu, Globe, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { cn } from '@/lib/utils';
@@ -55,7 +55,6 @@ export function ChatViewMobile({
   });
 
   const historyOpen = !sidebarCollapsed;
-  const displayedSuggestions = anim.sessionVisualSnapshot ? [] : chat.suggestions;
   const hideBottomComposerDuringWelcomeDrop = anim.welcomeDropping && !anim.welcomeDropHandoffReady;
   const keepComposerVisualBright = anim.welcomeDropping || composerBottomLockPx !== null || chat.isSendingMessage;
   const getComposerTargetBottomPx = useCallback(() => {
@@ -102,7 +101,6 @@ export function ChatViewMobile({
       onApplySwitch: async () => {
         chat.setActiveSessionId(null);
         chat.setMessages([]);
-        chat.setSuggestions([]);
       },
       sessionId: '__new__',
       setSidebarCollapsed,
@@ -357,14 +355,6 @@ export function ChatViewMobile({
               maskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.3) 15%, rgba(0,0,0,0.7) 30%, rgba(0,0,0,1) 45%, rgba(0,0,0,1) 100%)',
             }}
           />
-          {/* 分隔线：自身也做透明度渐变，底端淡顶端显 */}
-          <div
-            className="absolute left-0 right-0 bottom-0 z-[5] border-b border-border/40 pointer-events-none"
-            style={{
-              WebkitMaskImage: 'linear-gradient(to top, black 0%, black 20%, transparent 100%)',
-              maskImage: 'linear-gradient(to top, black 0%, black 20%, transparent 100%)',
-            }}
-          />
           {/* 交互元素层：保持原排版不变 */}
           <div className="absolute inset-0 z-10 pointer-events-none px-5 pb-1 pt-[calc(env(safe-area-inset-top)+10px)]">
             <div className="mx-auto flex max-w-3xl items-center justify-between pointer-events-auto">
@@ -534,26 +524,6 @@ export function ChatViewMobile({
                     </div>
                   )}
 
-                  {displayedSuggestions.length > 0 && !chat.streaming && (
-                    <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
-                      {displayedSuggestions.map((s, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => handleSend(s)}
-                          className={cn(
-                            'rounded-full border px-3 py-1.5 text-xs font-medium transition',
-                            isDark
-                              ? 'border-slate-600/80 bg-[#2b314c] text-slate-100 hover:bg-[#363d5c]'
-                              : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f8f2e8]'
-                          )}
-                        >
-                          <Sparkles size={10} className="mr-1 inline" />
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
                   <div ref={chat.messagesEndRef} />
                 </div>
               </div>
@@ -674,26 +644,6 @@ export function ChatViewMobile({
                           <span className={isDark ? 'text-amber-400' : 'text-amber-500'}>· 预计 {Math.ceil(chat.queueInfo.estimatedWait)}s</span>
                         )}
                       </div>
-                    </div>
-                  )}
-
-                  {displayedSuggestions.length > 0 && !chat.streaming && (
-                    <div className="flex flex-wrap gap-2 pl-10 animate-fade-in-up">
-                      {displayedSuggestions.map((s, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => handleSend(s)}
-                          className={cn(
-                            'rounded-full border px-3 py-1.5 text-xs font-medium transition',
-                            isDark
-                              ? 'border-slate-600/80 bg-[#2b314c] text-slate-100 hover:bg-[#363d5c]'
-                              : 'border-[#ddd4c5] bg-[#FFFAFA] text-slate-700 hover:bg-[#f8f2e8]'
-                          )}
-                        >
-                          <Sparkles size={10} className="mr-1 inline" />
-                          {s}
-                        </button>
-                      ))}
                     </div>
                   )}
 
