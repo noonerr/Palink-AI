@@ -23,10 +23,10 @@
 2. **残留清理未完成的部分**（后续如要动，需另立议题）：
    - `st_groups.py` 虽名为 st_ 前缀，实为 **Palink 自有群聊后端**（前端 `lib/group-chat/manager.ts` 调 `/api/groups/*`，消费方 `NativeRoleplayChat` 的 groupChatManager）。**勿按名字误删**。
    - `st_sync_service.py` 为共用模块，被 character/personas/worldbook/character_ext 等主链路引用，**保留**。
-   - `backend/app/core/config.py` 的 `ST_NATIVE_*` 字段仍在用（`silly_tavern.py` 的 `/api/st/native/proxy`、`st_sync_service.py`、`core/security.py` 的 N-6 HMAC 签名），清理需与「silly_tavern.py 端点瘦身」同批。
-   - `api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token` 保留：csrf 静态豁免属 CSRF 安全链，留待安全专项评估。
+   - `backend/app/core/config.py` 的 `ST_NATIVE_*` 字段仍在用（`silly_tavern.py` 的 sidecar 转发函数——现仅 elevenlabs 语音三端点消费、`st_sync_service.py`、`core/security.py` 的 N-6 HMAC 签名），2026-09-05 端点瘦身已删 extensions 死代理族；`ST_NATIVE_SERVICE_URL` 的唯一消费链是 elevenlabs 转发，后续如删 elevenlabs 需同批清理。
+   - ~~`api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token` 保留~~ → **均已删除**（第三/四批端点瘦身，2026-09-04/05）。
 3. **Palink 前端插件体系（插件沙箱、regex 引擎、generate\_interceptor、`st-plugins/`** **目录）全部属于** **`palink-native`**，与已删的 st-native 无关。
-4. 提示词装配默认值是 `palink-native`（`backend/app/models/system.py` 的 `silly_tavern_mode` 列），不要无授权改动。
+4. 提示词装配唯一模式是 `palink-native`（`silly_tavern_mode` 列已删，装配无模式分支），不要无授权改动装配链。
 5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）。
 
 ## 待办（跨 agent 协作）

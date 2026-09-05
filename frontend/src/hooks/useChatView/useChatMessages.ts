@@ -164,17 +164,20 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
   // 批量删除消息
   const handleBatchDeleteMessages = useCallback(async () => {
     if (selectedMessages.size === 0) return;
-    
+
     try {
       const ids = Array.from(selectedMessages);
-      await Promise.all(ids.map(id => 
+      // 临时 id（乐观消息，"时间戳-随机串"）未落库，调后端 int 路由会 422——
+      // 仅对纯数字 id 调接口，其余只做本地移除
+      const deletable = ids.filter(id => /^\d+$/.test(String(id)));
+      await Promise.all(deletable.map(id =>
         api.delete(`/api/sessions/${activeSessionId}/messages/${id}`)
       ));
-      
+
       setMessages(prev => prev.filter(msg => !selectedMessages.has(String(msg.id))));
       setSelectedMessages(new Set());
       setShowMessageSelect(false);
-      
+
       toast.success(t.messages_deleted || '消息已删除');
     } catch (error) {
       console.error('Failed to delete messages:', error);

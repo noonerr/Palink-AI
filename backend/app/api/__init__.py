@@ -88,12 +88,9 @@ api_router.include_router(tts_router)
 api_router.include_router(image_generation_router)
 api_router.include_router(plugins_router)
 api_router.include_router(smart_card_assets_router)
-api_router.include_router(regex_scripts_router)
+# 【2026-09-05 修复】此处曾把 regex_scripts/expressions/sd/backgrounds/stt/
+# connection_profiles/themes 七个 router 与上方 52-58 行的带 csrf_guard 版本
+# 重复注册——Starlette 按注册顺序取第一个命中，安全边界靠顺序侥幸成立。
+# 重复段已删，唯一注册 = 带 csrf_guard 版本；tokenizer/live2d_pool 本就无守卫版，保留。
 api_router.include_router(tokenizer_router)
-api_router.include_router(expressions_router)
-api_router.include_router(sd_router)
-api_router.include_router(backgrounds_router)
-api_router.include_router(stt_router)
-api_router.include_router(connection_profiles_router)
-api_router.include_router(themes_router)
 api_router.include_router(live2d_pool_router)

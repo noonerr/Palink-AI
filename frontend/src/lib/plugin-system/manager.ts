@@ -113,6 +113,8 @@ export class PluginManager {
   private plugins: Map<string, PluginInstance> = new Map();
   private config: PluginManagerConfig;
   private loaded = false;
+  /** 管理面模式可用性：null=未试探，false=后端拒绝（非管理员）已回退默认模式 */
+  private includeDisabledAvailable: boolean | null = null;
 
   constructor(config?: Partial<PluginManagerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -122,12 +124,18 @@ export class PluginManager {
    * 发现插件
    */
   async discover(): Promise<PluginManifest[]> {
+    // include_disabled=1：管理面模式，返回全部已安装插件（含禁用，带 enabled 标志），
+    // 插件管理器需要看到禁用插件才能重新启用。该模式仅管理员可用（后端 403），
+    // 非管理员自动回退默认模式（仅启用插件）——App 启动时会对所有用户跑 init()，
+    // 不能让管理面权限要求影响普通用户的插件运行时。
+    const url = this.includeDisabledAvailable === false
+      ? '/api/plugins/runtime/config'
+      : '/api/plugins/runtime/config?include_disabled=1';
     try {
-      // include_disabled=1：管理面模式，返回全部已安装插件（含禁用，带 enabled 标志），
-      // 插件管理器需要看到禁用插件才能重新启用。
-      const result = await api.get<{ plugins: PluginRuntimePayload[] }>(
-        '/api/plugins/runtime/config?include_disabled=1'
-      );
+      const result = await api.get<{ plugins: PluginRuntimePayload[] }>(url);
+      if (url.includes('include_disabled=1')) {
+        this.includeDisabledAvailable = true;
+      }
       if (result?.plugins) {
         const manifests: PluginManifest[] = [];
         for (const payload of result.plugins) {
@@ -149,6 +157,11 @@ export class PluginManager {
       }
       return [];
     } catch (error) {
+      // 管理面模式被拒（非管理员 403 等）→ 降级重试一次默认模式
+      if (this.includeDisabledAvailable !== false) {
+        this.includeDisabledAvailable = false;
+        return this.discover();
+      }
       console.error('Failed to discover plugins:', error);
       return [];
     }
