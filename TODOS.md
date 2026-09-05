@@ -7,6 +7,10 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [待拍板·保留意见] ST 插件「全兼容」评估结论与 P1 垫片批 / extension-market 去留（2026-09-05）
+- **评估报告**：`docs/REPORT_ST插件全兼容可行性评估_2026-09-05.md`——结论：100% 全插件兼容是伪命题（server plugins/外部服务未配置/深度绑定 ST 内部三类架构性出界），但常用插件面已完成约八成，剩余缺口是有界清单（power_user 别名、/api/sprites、向量嵌入映射、translate/{provider}、caption/classify 薄代理等，合计 2-3 天）。
+- **用户拍板（2026-09-05）**：P1 垫片批与 extension-market 去留**均保留意见、暂不立项**；extension-market 当前维持死代码现状（无 UI 入口、后端零端点、无功能影响）。后续若实装新插件遇到缺口，按评估报告 §五 的按需适配口径逐项补，再顺势重启该批。
+
 ### [已完成·待体感验收] 三坑无损修复：插件管理接线 / 建议回复死链摘除 / dev compose 残片（2026-09-05 施工）
 - **任务书**：`docs/PLAN_三坑无损修复_2026-09-05.md`（含审计核实结论与验收标准）；**施工记录**：全部落地——①后端新增 `POST /api/plugins/import-url`（复用 `_import_sillytavern_extension_zip` 管线；SSRF=scheme/host 字符串校验+DNS 解析复检+重定向逐跳复检，口径同 3710837 先例，全部校验在 `asyncio.to_thread` 内不阻塞事件循环）；`runtime/config` 加 `include_disabled=1` 管理面模式（admin-only，payload 带 enabled 标志，默认模式字节级兼容智能卡消费方）；silly_tavern.py 删 extensions 死代理四端点（**`_forward_extensions_to_st_native` 函数保留**——elevenlabs 语音三端点仍复用它）。②前端接线：URL 安装→import-url、卸载→DELETE /api/plugins/{id}（不再吞异常+discover 只增不减故加 manager.forget()）、启停→PUT toggle（后端权威）；PluginInstance 透传 backendId；runtime/config 管理面模式使禁用状态跨刷新持久（init autoLoad 天然尊重 enabled=false）。③建议回复死链摘除 10 文件（**修正：死 POST 在普通聊天链 useChatView/index.ts 的 onDone**，角色扮演链无请求纯死状态；`/api/chat/suggestions` 全仓归零）。④dev compose 删 sillytavern 服务块+4 volumes；删根目录 dist_new_20260902_052213/（41MB）；ADAPTATION.md §3 按实弹重写（**四端点 404 实锤，且 classify/summarize/translate/generate-image/text-completions 也全错标 ✅**，仅 vector/* 与 chat-completions 真实）。⑤st_plugin_import 核心端点清单+st_contract 同步更新。
 - **验证**：pytest 全绿（新 test_plugin_import_url.py 14 例：SSRF 六态/下载三态/include_disabled 三态；曾抓到并修复 runtime/config 30s 缓存跨用例串扰→测试加 autouse 缓存清理）；tsc 干净；npm build 治愈体检报告 R1 坏 dist（主 chunk HTTP 200）；后端镜像重建部署，实弹 smoke：import-url→401（存在待认证）、extensions/install|discover→404（已删）。
