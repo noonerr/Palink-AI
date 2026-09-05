@@ -5,6 +5,11 @@ import base64
 import io
 import zipfile
 import hashlib
+import asyncio
+import logging
+import urllib.error
+import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response, Request
@@ -20,6 +25,10 @@ from ..database import get_db
 # 正则脚本导入到角色/预设时清除 character_ext 中的预编译缓存
 from .character_ext import invalidate_regex_pattern_cache
 from ..core.cache import cached, invalidate_cache
+# URL 安装的 SSRF 校验口径与头像拉取（3710837 先例）同源
+from ..utils import _is_public_http_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
@@ -69,6 +78,11 @@ class PluginConfigPatchPayload(BaseModel):
     description: Optional[str] = None
     version: Optional[str] = None
     author: Optional[str] = None
+
+
+class PluginImportUrlPayload(BaseModel):
+    """URL 安装请求体：公网扩展 ZIP 直链（不支持仓库主页等非直链）。"""
+    url: str
 
 
 def _plugin_to_dict(p: Plugin) -> dict:
@@ -593,6 +607,9 @@ def _plugin_runtime_payload(plugin: Plugin) -> dict:
         "id": plugin.id,
         "name": plugin.name,
         "plugin_type": plugin.plugin_type,
+        # DB 启用标志（管理面 include_disabled 模式靠它区分启用/禁用；
+        # 默认模式下恒为 True，消费方不读取该字段）
+        "enabled": bool(plugin.enabled),
         "version": plugin.version,
         "author": plugin.author,
         "source_type": plugin.source_type,
@@ -1091,7 +1108,9 @@ def _etag_matches(client_header: str | None, current_etag: str) -> bool:
 
 
 @cached(ttl_seconds=30, key_prefix=_RUNTIME_CONFIG_CACHE_PREFIX)
-def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -> dict:
+def _build_sillytavern_runtime_config(
+    db: Session, user_id: int | None = None, include_disabled: bool = False
+) -> dict:
     """拼装启用插件的 runtime payload（30s 内存缓存，插件 CRUD 时失效）。
 
     [A-7 多租户插件隔离] runtime config 按用户作用域隔离：
@@ -1101,18 +1120,51 @@ def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -
     单用户部署下存量插件全部为 NULL，行为与改造前完全一致（当前用户即全部）。
     缓存键含 user_id（_build_key 对 int 参数自动入键），多用户互不串扰；
     插件 CRUD 时 invalidate_cache(prefix) 仍能清掉全部用户变体。
+
+    include_disabled=True（管理面模式，仅供插件管理器使用）：
+    返回作用域内**全部已安装**插件（含禁用/被守卫拦执行的），每个 payload 带
+    ``enabled`` 标志；禁用插件不参与执行面聚合（extension_settings/拦截器）。
+    默认模式（False）行为与历史版本完全一致，只返回启用且过守卫的插件。
     """
     scope_filter = or_(Plugin.user_id == user_id, Plugin.user_id.is_(None))
-    plugins = (
-        db.query(Plugin)
-        .filter(Plugin.enabled == True, scope_filter)
-        .order_by(Plugin.created_at.asc())
-        .all()
-    )
+    if include_disabled:
+        plugins = (
+            db.query(Plugin)
+            .filter(scope_filter)
+            .order_by(Plugin.created_at.asc())
+            .all()
+        )
+    else:
+        plugins = (
+            db.query(Plugin)
+            .filter(Plugin.enabled == True, scope_filter)
+            .order_by(Plugin.created_at.asc())
+            .all()
+        )
     runtime_plugins = []
     extension_settings: dict[str, Any] = {}
 
     for plugin in plugins:
+        if include_disabled:
+            # 管理面：在作用域内的全部插件都进列表（含禁用/被守卫拦执行者），
+            # 插件管理器需要看到它们才能启停/卸载。
+            payload = _plugin_runtime_payload(plugin)
+            payload["enabled"] = bool(plugin.enabled)
+            runtime_plugins.append(payload)
+            if not plugin.enabled:
+                continue
+            # 执行面聚合沿用与默认模式相同的守卫，禁用/被拦执行者不进 settings 合并。
+            if _is_character_card_extension_plugin(plugin) and plugin.plugin_type != "tavern_helper":
+                continue
+            config = _plugin_config(plugin)
+            if config.get("global_runtime") is False and plugin.plugin_type != "tavern_helper":
+                continue
+            if config.get("runtime") is False:
+                continue
+            if isinstance(config.get("runtime"), dict) and config["runtime"].get("enabled") is False:
+                continue
+            _merge_extension_settings(extension_settings, _safe_dict(payload.get("extension_settings")))
+            continue
         # [CARD-EXT-SCOPE-GUARD] 卡内扩展来源插件禁止下发至前端全局运行时。
         # ST 对照（frontend/public/st/）：ST 核心不存在"卡内脚本提升为全局扩展"的路径
         # ——卡内 tavern_helper 脚本由酒馆助手随卡执行；卡内正则走 GLOBAL/SCOPED/PRESET
@@ -1159,7 +1211,8 @@ def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -
             "function": payload["generate_interceptor"],
         }
         for payload in runtime_plugins
-        if payload.get("generate_interceptor")
+        if payload.get("enabled") is not False
+        and payload.get("generate_interceptor")
         and _safe_dict(payload.get("runtime")).get("execute_scripts") is True
     ]
 
@@ -1174,6 +1227,7 @@ def _build_sillytavern_runtime_config(db: Session, user_id: int | None = None) -
 @router.get("/runtime/config")
 async def get_sillytavern_runtime_config(
     request: Request,
+    include_disabled: int = 0,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1188,8 +1242,17 @@ async def get_sillytavern_runtime_config(
 
     响应带强 ETag + Cache-Control(private, max-age=300)：插件内容未变时浏览器
     二次请求直接 304，弱网下不再重复下载全部插件代码。
+
+    ``include_disabled=1``：管理面模式，返回作用域内全部已安装插件（含禁用，
+    每个 payload 带 enabled 标志），仅供插件管理器（admin UI）展示/启停/卸载
+    使用；非管理员请求该模式返回 403。
     """
-    payload = _build_sillytavern_runtime_config(db, user.id)
+    include_disabled_flag = bool(include_disabled)
+    if include_disabled_flag and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    payload = _build_sillytavern_runtime_config(
+        db, user.id, include_disabled=include_disabled_flag
+    )
     etag = _runtime_config_etag(payload)
     headers = {
         "Cache-Control": "private, max-age=300",
@@ -1269,6 +1332,89 @@ async def import_plugin(
         return {"message": "正则脚本导入成功", "plugin": _plugin_to_dict(plugin)}
     else:
         raise HTTPException(status_code=400, detail=f"无法识别的文件格式。检测到的类型: {plugin_type}")
+
+
+# ===========================================================================
+# URL 安装（palink-native 原生管线）
+# 前端插件管理器「URL 安装」消费：服务端下载公网扩展 ZIP 直链后，复用与本地
+# 导入完全相同的 _import_sillytavern_extension_zip 管线入库。
+# SSRF 防护对齐 3710837 头像拉取先例：scheme/host 字符串校验（_is_public_http_url，
+# 拒绝 localhost/环回/私有/链路本地/CGNAT/保留地址）+ DNS 解析复检（防域名指向
+# 内网）+ 重定向逐跳复检（防 302 跳板）。
+# ===========================================================================
+
+
+class _PluginUrlRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """重定向逐跳 SSRF 复检（同 character_import_service._PublicUrlRedirectHandler 口径）。
+
+    _is_public_http_url 自带 DNS 解析复检（拒绝解析到内网/保留地址的域名），
+    每一跳重定向目标都会重新过完整校验。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_public_http_url(newurl):
+            logger.warning("Plugin URL install redirect blocked by SSRF protection: %s", newurl)
+            raise ValueError(f"Redirect to non-public URL blocked: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download_public_zip(url: str) -> bytes:
+    """下载公网扩展 ZIP（SSRF 校验 + 分块读取限大小 + ZIP 魔数校验）。
+
+    校验与下载全部走 _is_public_http_url 同一口径（scheme 白名单、localhost/
+    环回/私有/链路本地/CGNAT/保留地址拒绝、DNS 解析结果复检、重定向逐跳复检）。
+    本函数含阻塞 I/O 与 DNS 查询，调用方须放在 asyncio.to_thread 内执行。
+    """
+    if not _is_public_http_url(url):
+        raise ValueError("仅允许公网 http(s) URL（localhost/内网/保留地址一律拒绝）")
+    req = urllib.request.Request(url, headers={"User-Agent": "Palink-AI PluginImport/1.0"})
+    opener = urllib.request.build_opener(_PluginUrlRedirectHandler())
+    chunks: list[bytes] = []
+    total = 0
+    with opener.open(req, timeout=30) as resp:
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _PLUGIN_IMPORT_MAX_FILE_BYTES:
+                raise ValueError(
+                    f"下载内容超过 {_PLUGIN_IMPORT_MAX_FILE_BYTES // (1024 * 1024)}MB 上限"
+                )
+            chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data.startswith(b"PK\x03\x04"):
+        raise ValueError("URL 内容不是 ZIP 包（仅支持扩展 ZIP 直链，不支持仓库主页链接）")
+    return data
+
+
+@router.post("/import-url")
+async def import_plugin_from_url(
+    payload: PluginImportUrlPayload,
+    user: User = Depends(get_admin),
+    db: Session = Depends(get_db),
+):
+    """URL 安装：服务端拉取公网扩展 ZIP 直链并复用本地导入管线入库。"""
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少扩展 ZIP URL")
+    try:
+        # 阻塞下载 + DNS 解析放工作线程，避免阻塞事件循环
+        content = await asyncio.to_thread(_download_public_zip, url)
+    except ValueError as exc:
+        # ValueError 全部由本模块校验自产（文案即面向用户的脱敏信息），
+        # 非内部异常直传——detail 用 f-string 组装以保持 N-13 契约可静态审查。
+        raise HTTPException(status_code=400, detail=f"{exc}")
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(status_code=400, detail=f"扩展下载失败: HTTP {exc.code}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"扩展下载失败: {exc}")
+    filename = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1] or "extension.zip"
+    if not filename.lower().endswith(".zip"):
+        filename = f"{filename}.zip"
+    plugin = _import_sillytavern_extension_zip(db, content, filename)
+    _invalidate_runtime_config_cache()
+    return {"message": "SillyTavern 扩展包导入成功", "plugin": _plugin_to_dict(plugin)}
 
 
 @router.get("/{plugin_id}/asset/{asset_path:path}")

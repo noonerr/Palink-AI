@@ -75,9 +75,9 @@ ST_ENDPOINTS = [
     # Secrets (Palink redirect to ConnectionProfiles)
     "/api/secrets/write", "/api/secrets/read", "/api/secrets/view", "/api/secrets/find",
     "/api/secrets/delete", "/api/secrets/rotate", "/api/secrets/rename",
-    # Extensions (Palink redirect to extension market)
-    "/api/extensions/install", "/api/extensions/update", "/api/extensions/delete",
-    "/api/extensions/discover",
+    # Extensions（2026-09-05 端点瘦身：install/update/delete/discover 已删——
+    # sidecar 容器随 st-native 删除后对上游无条件 502；前端插件管理器
+    # 「URL 安装/卸载」已改走原生 /api/plugins/import-url 与 DELETE /api/plugins/{id}）
     # Images（2026-09-04 端点瘦身：upload/list/folders 已删；生成走 /api/images/generate）
     # Vector
     "/api/vector/index", "/api/vector/query", "/api/vector/insert", "/api/vector/delete",

@@ -311,8 +311,9 @@ _ST_CORE_ENDPOINTS = [
     "/api/characters/get",
     "/api/settings/get",
     "/api/settings/save",
-    "/api/extensions/discover",
-    "/api/extensions/install",
+    # （2026-09-05 端点瘦身：/api/extensions/discover|install 已删——sidecar 容器随
+    #   st-native 双轨删除（2026-09-03）后对上游无条件 502；插件管理器「URL 安装/
+    #   卸载」已改走原生 /api/plugins/import-url 与 DELETE /api/plugins/{id}）
     "/api/worldinfo/list",
     "/api/worldinfo/get",
     "/api/secrets/write",

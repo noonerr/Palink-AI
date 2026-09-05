@@ -5974,14 +5974,14 @@ async def st_secrets_rename(
 
 
 # ===========================================================================
-# Task 38 → T4 (ST 插件兼容): /api/extensions/* 真实代理
+# ST sidecar 代理基建（2026-09-05 起仅 /api/speech/elevenlabs/* 三端点消费）
 #
-# SillyTavern 的扩展管理（安装/更新/删除/发现）会调用 /api/extensions/*。
-# 扩展文件系统由 ST sidecar 持有，因此这些操作转发到
-# app_settings.ST_NATIVE_SERVICE_URL 对应的 sidecar。
-# sidecar 不可用时：
-#   - install/update/delete → 502 + 明确 JSON 错误（不再假成功）
-#   - discover → 降级返回 []（ST 前端启动即调用，502 会刷屏）
+# _forward_extensions_to_st_native 原为 /api/extensions/* 四端点（install/
+# update/delete/discover）与 elevenlabs 语音三端点的公共转发器。extensions
+# 四端点已随 2026-09-05 端点瘦身删除：sidecar 容器随 st-native 双轨删除
+# （2026-09-03）后它们对上游无条件 502；前端插件管理器「URL 安装/卸载」
+# 已改走原生 /api/plugins/import-url 与 DELETE /api/plugins/{id}。
+# elevenlabs 端点保留（st-plugins/tts 插件消费），sidecar 缺位时仍返回 502。
 # ===========================================================================
 
 
@@ -6038,43 +6038,3 @@ async def _forward_extensions_to_st_native(
         status_code=upstream.status_code,
         headers=response_headers,
     )
-
-
-@router.post("/api/extensions/install")
-async def st_extensions_install(
-    request: Request,
-    user: User = Depends(get_st_current_user),
-):
-    """代理到 ST sidecar 执行扩展安装。"""
-    return await _forward_extensions_to_st_native(request, user, "api/extensions/install")
-
-
-@router.post("/api/extensions/update")
-async def st_extensions_update(
-    request: Request,
-    user: User = Depends(get_st_current_user),
-):
-    """代理到 ST sidecar 执行扩展更新。"""
-    return await _forward_extensions_to_st_native(request, user, "api/extensions/update")
-
-
-@router.post("/api/extensions/delete")
-async def st_extensions_delete(
-    request: Request,
-    user: User = Depends(get_st_current_user),
-):
-    """代理到 ST sidecar 执行扩展删除。"""
-    return await _forward_extensions_to_st_native(request, user, "api/extensions/delete")
-
-
-@router.get("/api/extensions/discover")
-async def st_extensions_discover(
-    request: Request,
-    user: User = Depends(get_st_current_user),
-):
-    """代理到 ST sidecar 发现第三方扩展；sidecar 不可用时降级返回空列表。"""
-    response = await _forward_extensions_to_st_native(request, user, "api/extensions/discover")
-    if response.status_code == 502:
-        # 安全降级：无第三方扩展（ST 前端启动即调 discover，502 会刷屏）
-        return JSONResponse(status_code=200, content=[])
-    return response
