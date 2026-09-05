@@ -172,7 +172,7 @@ export function ChatHeader({
       </div>
 
       {/* Right side actions */}
-      <div className={cn(isMobile ? 'pointer-events-auto flex items-center gap-1' : 'relative z-10 flex items-center gap-1')}>
+      <div className={cn(isMobile ? 'pointer-events-auto flex items-center gap-1 flex-shrink-0' : 'relative z-10 flex items-center gap-1 flex-shrink-0')}>
         {/* Model selector icon button */}
         <ModelSelector
           models={models}
@@ -200,7 +200,7 @@ export function ChatHeader({
           <div className="flex items-center gap-1">
             <button
               className={cn(
-                "transition-all inline-flex items-center justify-center gap-1.5 text-sm font-medium backdrop-blur-[20px]",
+                "transition-all inline-flex items-center justify-center gap-1.5 text-sm font-medium backdrop-blur-[20px] whitespace-nowrap flex-shrink-0",
                 isMobile
                   ? "h-10 px-3 rounded-full"
                   : "h-12 px-3 rounded-2xl",

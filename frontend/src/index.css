@@ -1371,7 +1371,12 @@ body.ios-mobile-app-dark,
     overscroll-behavior: none !important;
   }
   .palink-app-shell {
-    height: 100svh !important;
+    /* 【尾部 dock 修复】iOS Home Indicator 区域不在 100svh 内（约 34px），
+       dock absolute bottom:0 会停在 shell 底=Home Indicator 之上的地方，
+       导致 dock 与屏幕底之间出现一片"空白区"。让 shell 高度延伸
+       至 shell.bottom = 屏幕底，dock 才能真正紧贴 Home Indicator 上沿。
+       桌面端不生效（coarse 限定）。 */
+    height: calc(100svh + env(safe-area-inset-bottom, 0px)) !important;
     min-height: 0 !important;
     overflow: hidden !important;
   }
@@ -1468,22 +1473,29 @@ nav[data-dock="true"] {
 
 /* ========================================
    【K13 原始基线】纯 CSS，零 JS 键盘代码：
-   聚焦任何输入框 → 输入框落到最底（bottom:0）、dock 下移淡出，
-   其余一切交给系统原生行为（iOS 是否把 fixed bottom:0 顶到键盘上沿，
-   由系统决定，本代码不做任何干预、不检测、不校正）。
-   仅触屏设备。 ======================================== */
+   聚焦任何输入框 → 输入框落到最底（bottom:0）。
+   【2026-09-05 修正】dock 隐藏不再跟 :focus 走——「键盘已收起但焦点仍在」
+   （Android 返回键 / iOS 收起键）时 :focus 仍匹配，dock 在无键盘时消失
+   （用户实测报障）。dock 隐藏改由 html.palink-dock-kb-hide 驱动
+   （useVirtualKeyboard 检测链：聚焦 + 视口实测收缩 >60px 才挂类），
+   规则见下方同名片块。仅触屏设备。 ======================================== */
 @media (hover: none) and (pointer: coarse) {
   html:has(:is(textarea, input, [contenteditable="true"]):focus) [data-palink-chat-composer="true"] {
     bottom: 0 !important;
   }
-  html:has(:is(textarea, input, [contenteditable="true"]):focus) nav[data-dock="true"] {
-    opacity: 0;
-    pointer-events: none;
-    animation: palink-kb-dock-fade 240ms ease both;
-  }
-  html:has(:is(textarea, input, [contenteditable="true"]):focus) nav[data-dock="true"] > div[data-dock="true"] {
-    animation: palink-kb-dock-slide 240ms cubic-bezier(0.4, 0, 0.2, 1) both;
-  }
+}
+
+/* dock 隐藏 = 键盘真实弹起（useVirtualKeyboard 检测链挂类，桌面无收缩不触发）。
+   视觉沿用 K9 方案：整条淡出 + 内层圆角条下移滑出（nav 内联 transition 只声明
+   transform，会覆盖 CSS 过渡，故用 animation 绕开；下移放内层，不碰 nav 的
+   routing transform）。 */
+html.palink-dock-kb-hide nav[data-dock="true"] {
+  opacity: 0;
+  pointer-events: none;
+  animation: palink-kb-dock-fade 240ms ease both;
+}
+html.palink-dock-kb-hide nav[data-dock="true"] > div[data-dock="true"] {
+  animation: palink-kb-dock-slide 240ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 /* 【已移除·勿恢复】html:has(:is(textarea,input,[contenteditable]):focus) 兜底块

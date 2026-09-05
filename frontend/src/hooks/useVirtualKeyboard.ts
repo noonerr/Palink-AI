@@ -157,16 +157,20 @@ export const useVirtualKeyboard = () => {
     };
   }, [getCurrentViewportHeight, getViewportDiffHeight, isEditableFocused, isEditableFocusedEl, scheduleUpdate, commitKeyboardState]);
 
-  // ── 键盘弹起时在 <html> 挂 palink-kb-open 类：全局隐藏底部 dock 栏、
-  // 让各聊天输入框吸到键盘上沿（CSS 与聊天屏消费该状态）
-  // 【K13 已停用】回到最原始基线：无类、无变量、无 JS 抬升/检测——聚焦态
-  // 由 index.css 的 :has(:focus) 纯 CSS 处理（输入框落底 + dock 隐藏），
-  // 其余交给系统原生行为。此 effect 保留空壳注释以防回滚时找不到锚点。
+  // ── 键盘真实弹起时在 <html> 挂 palink-dock-kb-hide 类：全局隐藏底部 dock 栏。
+  // 【2026-09-05 修正】K13 曾把 dock 隐藏交给 index.css 的 :has(:focus) 纯 CSS——
+  // 但「键盘已收起、焦点仍在输入框」（Android 返回键收键盘 / iOS 收起键）时
+  // :focus 仍匹配 → 没有键盘 dock 却消失（用户实测报障）。改为由本 hook 的
+  // 检测链（聚焦 + 视口实测收缩 >60px）驱动专用类，桌面无收缩永不隐藏。
+  // 类名刻意不用 palink-kb-open——那是 K9/K12 旧键盘布局的开关，其休眠规则
+  // （composer 抬升/rp-chat-area 封顶）依赖已停写的 --palink-kb-vh，不能激活。
+  // 诊断标记仍保留：⌨ = 键盘检测链判定为开（与布局无关，仅供真机读数）
   useEffect(() => {
     const root = document.documentElement;
-    const KbTitleMark = '⌨K15';
+    const KbTitleMark = '⌨K17';
+    const DockHideClass = 'palink-dock-kb-hide';
     const cleanTitle = (t: string) => t.replace(new RegExp(`^\\s*${KbTitleMark}\\s*`), '');
-    // 诊断标记仍保留：⌨ = 键盘检测链判定为开（与布局无关，仅供真机读数）
+    root.classList.toggle(DockHideClass, isKeyboardOpen);
     if (isKeyboardOpen) {
       if (!document.title.includes(KbTitleMark)) {
         document.title = `${KbTitleMark} ${cleanTitle(document.title)}`;

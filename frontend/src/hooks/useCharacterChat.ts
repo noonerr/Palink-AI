@@ -1553,6 +1553,17 @@ export function useCharacterChat({
 
   const handleDeleteMessage = useCallback(async (messageId: string | number, messageIndex: number) => {
     if (!selectedSession) return;
+    // 临时 id（前端乐观消息，格式"时间戳-随机串"）尚未落库，后端 DELETE 的
+    // message_id 是 int——直接调会 422。此类消息只存在于浏览器内存，本地移除即可。
+    if (!/^\d+$/.test(String(messageId))) {
+      setMessages(prev => prev.filter((msg, idx) => {
+        if (msg.id != null) {
+          return String(msg.id) !== String(messageId);
+        }
+        return idx !== messageIndex;
+      }));
+      return;
+    }
     try {
       await api.delete(`/api/character-sessions/${selectedSession.id}/messages/${messageId}`);
       setMessages(prev => prev.filter((msg, idx) => {
