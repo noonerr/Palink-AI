@@ -79,6 +79,8 @@ export interface PluginInstance {
   error?: string;
   loadedAt?: string;
   context?: PluginContext;
+  /** 后端插件记录 ID（卸载 DELETE / 启停 PUT toggle 接线用） */
+  backendId?: string;
   /** 后端返回的内联资源（JS/CSS/模板内容），避免额外 fetch */
   resources?: PluginRuntimeResources;
   /** 后端返回的扩展设置 */
@@ -107,6 +109,8 @@ export interface PluginRuntimePayload {
   id: string;
   name: string;
   plugin_type: string;
+  /** DB 启用标志（include_disabled=1 管理面模式区分启用/禁用） */
+  enabled?: boolean;
   version: string;
   author: string;
   source_type: string;

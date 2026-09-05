@@ -100,7 +100,9 @@ function payloadToManifest(payload: PluginRuntimePayload): PluginManifest {
     optional: rawManifest.optional,
     hooks: rawManifest.hooks,
     type: rawManifest.type,
-    enabled: true,
+    // 服务端 DB enabled 标志为权威（include_disabled 模式下发）；
+    // init() 的 autoLoad 依据它跳过禁用插件 → 禁用状态跨刷新持久。
+    enabled: payload.enabled !== false,
   };
 }
 
@@ -121,7 +123,11 @@ export class PluginManager {
    */
   async discover(): Promise<PluginManifest[]> {
     try {
-      const result = await api.get<{ plugins: PluginRuntimePayload[] }>('/api/plugins/runtime/config');
+      // include_disabled=1：管理面模式，返回全部已安装插件（含禁用，带 enabled 标志），
+      // 插件管理器需要看到禁用插件才能重新启用。
+      const result = await api.get<{ plugins: PluginRuntimePayload[] }>(
+        '/api/plugins/runtime/config?include_disabled=1'
+      );
       if (result?.plugins) {
         const manifests: PluginManifest[] = [];
         for (const payload of result.plugins) {
@@ -129,7 +135,8 @@ export class PluginManager {
             const manifest = payloadToManifest(payload);
             this.plugins.set(payload.name, {
               manifest,
-              status: PluginStatus.DISCOVERED,
+              status: payload.enabled === false ? PluginStatus.DISABLED : PluginStatus.DISCOVERED,
+              backendId: payload.id,
               resources: payload.resources,
               extensionSettings: payload.extension_settings,
               settings: payload.settings,
@@ -313,6 +320,14 @@ export class PluginManager {
 
     emitEvent('plugin:unloaded', { name });
     return true;
+  }
+
+  /**
+   * 从管理列表移除插件（后端 DELETE 成功后调用）。
+   * discover() 只增不减，若不显式 forget，已卸载的插件会永久留在内存列表里。
+   */
+  forget(name: string): void {
+    this.plugins.delete(name);
   }
 
   /**

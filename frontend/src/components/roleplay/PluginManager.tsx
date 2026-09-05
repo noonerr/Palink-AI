@@ -4,17 +4,19 @@
  * 提供 ST 插件的完整管理界面：
  * - 插件列表（名称、版本、作者、状态徽章、描述）
  * - 状态过滤标签页（all/enabled/disabled/error）
- * - 启用/禁用切换开关
- * - 卸载功能（确认对话框）
- * - 安装功能（URL 安装，调用后端 /api/extensions/install）
+ * - 启用/禁用切换开关（后端权威：PUT /api/plugins/{id}/toggle 持久化）
+ * - 卸载功能（确认对话框，DELETE /api/plugins/{id} 删库记录）
+ * - 安装功能（URL 安装，POST /api/plugins/import-url 服务端拉取公网 ZIP 直链）
+ * - 本地导入（POST /api/plugins/import，支持 ST预设/正则/酒馆助手/角色卡/ZIP 扩展包）
  * - 设置按钮（打开 PluginSettingsPanel）
  * - 错误状态显示和重新加载
  *
- * 后端 API：
- * - GET /api/plugins/runtime/config — 获取所有插件运行时配置
- * - POST /api/extensions/install — 安装 ST 扩展（代理到 ST sidecar）
- * - POST /api/extensions/delete — 卸载 ST 扩展
- * - GET /api/extensions/discover — 发现可安装扩展
+ * 后端 API（均为 palink-native 原生插件端点，admin 权限）：
+ * - GET  /api/plugins/runtime/config?include_disabled=1 — 全部插件运行时配置
+ * - POST /api/plugins/import-url — URL 安装（扩展 ZIP 直链）
+ * - POST /api/plugins/import — 本地文件导入
+ * - PUT  /api/plugins/{id}/toggle — 启用/禁用持久化
+ * - DELETE /api/plugins/{id} — 卸载（删 DB 记录与脚本）
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
@@ -38,6 +40,14 @@ export interface PluginManagerProps {
 }
 
 type FilterTab = 'all' | 'enabled' | 'disabled' | 'error';
+
+// 启用状态以服务端 enabled 标志 + 运行时状态综合判定：
+// 刚安装（DB enabled=true）尚未本地加载的插件是 DISCOVERED，也视作已启用；
+// 禁用插件由后端 include_disabled 下发为 DISABLED 状态。
+const isPluginEnabled = (p: PluginInstance) =>
+  p.status === PluginStatus.ACTIVE ||
+  p.status === PluginStatus.LOADED ||
+  (p.status === PluginStatus.DISCOVERED && p.manifest.enabled !== false);
 
 export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) => {
   const [plugins, setPlugins] = useState<PluginInstance[]>([]);
@@ -77,7 +87,7 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
     return plugins.filter(p => {
       switch (filter) {
         case 'enabled':
-          return p.status === PluginStatus.ACTIVE || p.status === PluginStatus.LOADED;
+          return isPluginEnabled(p);
         case 'disabled':
           return p.status === PluginStatus.DISABLED;
         case 'error':
@@ -91,16 +101,20 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
   // 统计信息
   const stats = useMemo(() => ({
     total: plugins.length,
-    enabled: plugins.filter(p => p.status === PluginStatus.ACTIVE || p.status === PluginStatus.LOADED).length,
+    enabled: plugins.filter(isPluginEnabled).length,
     disabled: plugins.filter(p => p.status === PluginStatus.DISABLED).length,
     error: plugins.filter(p => p.status === PluginStatus.ERROR).length,
   }), [plugins]);
 
-  // 切换启用/禁用
+  // 切换启用/禁用（后端权威：先持久化到 DB，成功后再更新本地运行时）
   const handleToggle = useCallback(async (plugin: PluginInstance) => {
     const name = plugin.manifest.name;
-    const isEnabled = plugin.status === PluginStatus.ACTIVE || plugin.status === PluginStatus.LOADED;
+    const isEnabled = isPluginEnabled(plugin);
     try {
+      if (!plugin.backendId) {
+        throw new Error('缺少后端插件 ID');
+      }
+      await api.put(`/api/plugins/${encodeURIComponent(plugin.backendId)}/toggle`);
       if (isEnabled) {
         await pluginManager.disable(name);
         toast.success(`已禁用 ${plugin.manifest.displayName || name}`);
@@ -129,18 +143,18 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
     }
   }, []);
 
-  // 卸载插件
+  // 卸载插件（后端权威：先删 DB 记录，成功后再清理本地运行时与列表）
   const handleUninstall = useCallback(async (name: string) => {
     setConfirmUninstall(null);
     try {
-      // 先在前端卸载
-      await pluginManager.unload(name);
-      // 调用后端删除（/api/extensions/delete）
-      try {
-        await api.post('/api/extensions/delete', { name });
-      } catch (e) {
-        console.warn('[PluginManager] 后端卸载请求失败（可能后端不支持）:', e);
+      const instance = pluginManager.getPlugin(name);
+      if (!instance?.backendId) {
+        throw new Error('缺少后端插件 ID，无法卸载');
       }
+      await api.delete(`/api/plugins/${encodeURIComponent(instance.backendId)}`);
+      // 清理本地运行时；discover() 只增不减，必须显式 forget 才会从列表消失
+      await pluginManager.unload(name);
+      pluginManager.forget(name);
       toast.success(`已卸载 ${name}`);
       setPlugins([...pluginManager.getAllPlugins()]);
     } catch (e) {
@@ -149,17 +163,17 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
     }
   }, []);
 
-  // 安装插件
+  // 安装插件（URL 安装：服务端拉取公网扩展 ZIP 直链，复用本地导入管线）
   const handleInstall = useCallback(async () => {
     const url = installUrl.trim();
     if (!url) {
-      toast.warning('请输入扩展 URL');
+      toast.warning('请输入扩展 ZIP 直链 URL');
       return;
     }
     setInstalling(true);
     try {
-      await api.post('/api/extensions/install', { url });
-      toast.success(`扩展安装请求已提交: ${url}`);
+      await api.post('/api/plugins/import-url', { url });
+      toast.success(`扩展安装成功: ${url}`);
       setInstallUrl('');
       // 重新加载插件列表
       await refreshPlugins();
@@ -287,7 +301,7 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
               type="text"
               value={installUrl}
               onChange={e => setInstallUrl(e.target.value)}
-              placeholder="输入 ST 扩展 URL（如 https://github.com/...）"
+              placeholder="输入 ST 扩展 ZIP 直链 URL（https://... .zip）"
               disabled={installing}
               className="flex-1 text-sm px-3 py-2 rounded-md bg-background border border-border focus:outline-none focus:ring-2 focus:ring-primary"
               onKeyDown={e => {
@@ -324,7 +338,7 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
             />
           </div>
           <div className="text-xs text-muted-foreground mt-1.5">
-            安装来源：SillyTavern Extension 仓库 URL，或直接导入本地文件（JSON/ZIP）。安装后默认禁用，需手动启用。
+            安装来源：SillyTavern 扩展 ZIP 包直链 URL（服务端下载），或导入本地文件（JSON/ZIP）。安装成功后默认启用，可用开关禁用（禁用状态会保存）。
           </div>
         </div>
 
@@ -358,7 +372,7 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
             </div>
           )}
         {filteredPlugins.map(plugin => {
-          const isEnabled = plugin.status === PluginStatus.ACTIVE || plugin.status === PluginStatus.LOADED;
+          const isEnabled = isPluginEnabled(plugin);
           const isError = plugin.status === PluginStatus.ERROR;
           const name = plugin.manifest.name;
           return (
@@ -509,7 +523,7 @@ export const PluginManager: React.FC<PluginManagerProps> = ({ open, onClose }) =
             <h3 className="text-base font-semibold mb-2">确认卸载</h3>
             <p className="text-sm text-muted-foreground mb-4">
               确定要卸载插件 <span className="font-medium text-foreground">{confirmUninstall}</span> 吗？
-              此操作将删除插件文件，不可恢复。
+              此操作将从后端删除该插件记录及其脚本配置，不可恢复。
             </p>
             <div className="flex justify-end gap-2">
               <button
