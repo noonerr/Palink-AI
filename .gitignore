@@ -228,3 +228,10 @@ backend/.mimosa/
 .v2c/
 .zcode/
 frontend/_seam_crop*.png
+
+# 2026-09-05 体检补漏：凭据/备份/一次性产物
+scripts/st_audit/_credentials.py
+scripts/st_audit/sec_smoke_card.png
+*.bak.dock-fix
+dist_new_*/
+backup/

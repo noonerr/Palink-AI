@@ -31,6 +31,6 @@ RUN adduser -D -u 1000 appuser && \
 # RUN apk add --no-cache nginx-mod-http-brotli && \
 #     sed -i '1i load_module /usr/lib/nginx/modules/ngx_http_brotli_static_module.so;' /etc/nginx/nginx.conf && \
 #     sed -i '1i load_module /usr/lib/nginx/modules/ngx_http_brotli_filter_module.so;' /etc/nginx/nginx.conf
-EXPOSE 8080 8081
+EXPOSE 8080
 USER appuser
 CMD ["nginx", "-g", "daemon off;"]
