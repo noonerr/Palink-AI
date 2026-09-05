@@ -21,14 +21,23 @@
 `#sd_container` ✅、`#expressions_container` ✅。
 （注：expressions 还动态用 `#expression-holder`/`#expression-image`，由插件自身在消息区创建，Palink 允许。）
 
-### 3. 后端 ST Extras 端点（已实现）
-`/api/extra/caption` ✅、`/api/extra/classify` + `/api/extra/classify/labels` ✅、
-`/api/vector/*`（index/query/insert/delete/list/query-multi/purge/purge-all 共 8 个）✅、
-`/api/summarize` ✅、`/api/translate` ✅（单一端点）、`/api/openai/generate-image` ✅、
-`/api/openai/generate-voice` ✅、`/api/backends/chat-completions/*` ✅、`/api/backends/text-completions/*` ✅。
+### 3. 后端 ST Extras 端点（2026-09-05 实弹复核修正：此前本节大面积错标 ✅）
 
-> 结论：**"只加显示面板 + 轻逻辑" 的插件，前端加载/渲染链路已通**（P0-1 桩已修、挂载点齐、getContext 齐）。
-> 真正的适配差异集中在 **(a) 后端端点缺失** 和 **(b) 个别 getContext 成员别名**。
+以下状态为对运行中 backend 实弹探测的真实结果（路由缺失=404；存在但未带认证=403）：
+
+| 端点 | 实测 | 此前标注 | 说明 |
+|---|---|---|---|
+| `/api/vector/*`（index/query/insert/delete 等 8 个） | ✅ 存在 | ✅ | 唯一真实的 Extras 实现 |
+| `/api/backends/chat-completions/generate` | ✅ 存在 | ✅ | 智能卡拦截链红线端点 |
+| `/api/backends/text-completions/*` | ❌ 404 | ✅（错标） | 已随端点瘦身删除 |
+| `/api/extra/caption` | ❌ 404 | ✅（错标） | 从未实现 |
+| `/api/extra/classify` + `/labels` | ❌ 404 | ✅（错标） | 从未实现 |
+| `/api/summarize` | ❌ 404 | ✅（错标） | 从未实现 |
+| `/api/translate` | ❌ 404 | ✅（错标） | 从未实现（或已删） |
+| `/api/openai/generate-image` | ❌ 404 | ✅（错标） | 生图走 Palink 自有 `/api/images/generate` |
+| `/api/openai/generate-voice` | ❌ 404 | ✅（错标） | 从未实现 |
+
+> 结论（2026-09-05 修正）：**依赖 ST Extras 转发代理面（caption/classify/summarize/translate/生图语音）的插件，其后端能力目前整体缺失**——不是"已实现待接线"，而是没有。对应插件的适配动作应按上方表格的"❌ 缺失"口径评估（补转发代理或接 Palink 自有抽象），不要被本节旧标注误导。其余结论不变：**"只加显示面板 + 轻逻辑"的插件，前端加载/渲染链路已通**。
 
 ## 二、Palink 缺失 / 不匹配的能力（适配重点）
 
