@@ -3,7 +3,21 @@
 > 背景：iOS 26 的 Safari / WebApp 对网页文本框强制显示系统"辅助条"（Form Assistant，含 Previous/Next/Done），Apple 未提供任何关闭开关。排查确认：聊天页仅 `ChatInput` 一个可聚焦文本字段（file input 为 `display:none` 不计数），故该辅助条为系统默认行为，非多余字段触发。业界唯一根治方案是将 `textarea` 改为 `contenteditable`（ChatGPT 做法）。本文评估该方案在本项目的适配度、改动范围与多端可行性。
 
 - 调研日期：2026-08-31（结论已存入项目记忆）
-- 状态：**未实施**，仅供决策
+- 状态：**已否决·封存（2026-09-02 Phase 0 真机证伪）**
+
+> **⚠️ 2026-09-02 Phase 0 真机验证结论（iOS 27.0，用户实测，测试页 /kb-test.html）：前提不成立，方案封存。**
+> textarea / input / contenteditable="true" / contenteditable="plaintext-only" **四种全部弹出辅助条**——与检索证据一致：辅助条是系统级 UI，对任何可编辑元素都出现，纯网页无 opt-out（w3c/editing#545 未实现；唯一根治 = 原生壳 WKWebView 重写 inputAccessoryView）。
+> 「ChatGPT 无辅助条」系其原生 App，非网页。textarea→contenteditable 改造收益归零，**不做**（省下约 2 天 + 中文 IME 回归风险）。
+> 剩余路径：① 接受现状（iOS Safari 里所有网页都有这条）；② 辅助条 ˄ 折叠状态的记忆性待确认（测试页第 ⑤ 项，随时可测）；③ 将来若做原生壳（TestFlight/App Store 的 WKWebView 壳），一行原生代码可永久去除。
+> 测试页保留于 frontend/public/kb-test.html（随构建自带），iOS 大版本升级后可复测。
+>
+> **第二轮深挖（2026-09-02，应用户要求穷尽检索）——仍无网页侧方案，结论加固：**
+> 1. 该条自 iOS 18 就存在，iOS 26 只是 Done→✓ 换皮（Liquid Glass 重设计）；[MacRumors](https://forums.macrumors.com/threads/what-is-the-odd-bar-above-keyboard-merged.2465255/) / [Apple Discussions](https://discussions.apple.com/thread/256177528) 用户共识：系统级，用户自己也关不掉。
+> 2. [SO「How to remove the Done bar in HTML」](https://stackoverflow.com/questions/65475463/how-to-remove-the-done-bar-above-the-ios-keyboard-in-html)：网页侧 HTML/CSS/JS 无解，唯一途径 = 原生 inputAccessoryView。
+> 3. [Safari 27 beta Release Notes](https://developer.apple.com/documentation/safari-release-notes/safari-27-release-notes) 与 [WebKit WWDC26 博客](https://webkit.org/blog/17967/news-from-wwdc26-webkit-in-safari-27-beta/)逐条查过：**没有**新增 web 侧辅助条控制 API。
+> 4. PWA 独立模式：检索只挖出一堆 PWA 键盘相关 bug（[键盘卡死](https://ferdychristant.com/keyboard-stuck-in-ios-add-to-homescreen-app-54aac3a37ff3)等），**无**独立模式隐藏辅助条的迹象。
+> 5. 原生壳两行代码方案（WKWebView `inputAccessoryView` 覆写 / `inputAssistantItem` 清空按钮组）：[SO 37800488](https://stackoverflow.com/questions/37800488/how-to-hide-the-keyboard-assistant-bar)、[Turbo iOS 实践](https://www.karlentwistle.com/turbo_native/2024/09/14/turbo-native-ios-custom-keyboard-toolbar.html)。
+> 6. 待测小项：辅助条 ˄ 折叠状态是否被系统记住（kb-test.html 第⑤项，30 秒）——若记住，是唯一的无代码缓解。
 - 结论：**可行，范围小（3 个文件），但含一个必须写对的难点（受控 contenteditable 的光标恢复 + 中文 IME）**
 
 ---

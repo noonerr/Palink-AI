@@ -1120,6 +1120,15 @@ export function useCharacterChat({
     setAttachments([]);
     setIsGenerating(true);
 
+    // [ST-ALIGN P0-4] GENERATION_AFTER_COMMANDS：命令已解析、即将发起生成。
+    // JS-Slash-Runner 等扩展正是监听此事件调用 injectPrompts（现已接真实现，
+    // 此前既无事件也无实现，双重失效）。同步 emit，插件可在此注册提示词。
+    try {
+      getGlobalSillyTavernRuntime()?.emitGenerationAfterCommands({ text });
+    } catch {
+      /* no-op */
+    }
+
     setRetryMessageContent(options.suppressUserMessage ? '' : text);
     setRetryMessageImages(outgoingImages);
 

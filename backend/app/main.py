@@ -404,6 +404,20 @@ async def csrf_protection_middleware(request: Request, call_next):
     if not session_cookie:
         return await call_next(request)
 
+    # [PENTEST-2026-09-02 C3] 外站 Origin 独立拒绝（先于双提交判定）。
+    # 此前 Origin 仅是令牌缺失时的兜底（OR 语义）：外站请求只要持有泄露的
+    # CSRF 配对值即可放行（实弹 C3=200）。Origin 是浏览器强制注入的跨站
+    # 信号，与令牌互相独立——非同源且不在 CORS 白名单一律 403；同源流量
+    # （含 ST iframe 桥接与插件同源 fetch，均经 nginx 同源）与无 Origin 的
+    # 服务端调用不受影响。
+    origin = request.headers.get("origin")
+    if origin and not _origin_same_site(origin, request):
+        request_id = getattr(request.state, "request_id", "unknown")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Cross-site origin rejected", "request_id": request_id},
+        )
+
     header_token = request.headers.get("x-csrf-token", "")
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME, "")
     if (

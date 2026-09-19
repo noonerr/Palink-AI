@@ -6,8 +6,8 @@ import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { Switch } from '@/components/ui/switch';
+import { SettingsGroup, SettingsRow } from './settings-ui';
 import type { AdminAuthConfig, OAuthProviderConfig } from '@/types';
 
 interface AuthSettingsTabProps {
@@ -185,77 +185,49 @@ export function AuthSettingsTab({ t, token }: AuthSettingsTabProps) {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in pb-28">
-        <h3 className="text-xl md:text-2xl font-semibold hidden md:block">认证设置</h3>
+    <div className="space-y-5 animate-fade-in pb-28">
 
-        <GlassCard className="p-4 md:p-6">
-          <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-              <div className="flex items-center gap-3">
-                <LogIn size={18} className="text-muted-foreground shrink-0" />
-                <div>
-                  <p className="font-medium text-sm">本地密码登录</p>
-                  <p className="text-xs text-muted-foreground">允许使用本地账号密码登录</p>
-                </div>
-              </div>
-              <Switch
-                checked={config.local_login_enabled}
-                onCheckedChange={(v) => updateConfig('local_login_enabled', v)}
-              />
-            </div>
+      <SettingsGroup label="本地账号">
+        <SettingsRow icon={<LogIn size={15} />} title="本地密码登录">
+          <Switch
+            checked={config.local_login_enabled}
+            onCheckedChange={(v) => updateConfig('local_login_enabled', v)}
+          />
+        </SettingsRow>
+        <SettingsRow icon={<UserPlus size={15} />} title="本地注册">
+          <Switch
+            checked={config.local_register_enabled}
+            onCheckedChange={(v) => updateConfig('local_register_enabled', v)}
+          />
+        </SettingsRow>
+        <div className="flex justify-end px-4 py-3">
+          <Button onClick={handleSave} disabled={saving} className="h-8 md:h-9 rounded-md px-3 text-xs">
+            {saving ? (
+              <Loader2 size={14} className="mr-1.5 animate-spin" />
+            ) : (
+              <Save size={14} className="mr-1.5" />
+            )}
+            {t.save || '保存'}
+          </Button>
+        </div>
+      </SettingsGroup>
 
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-t border-border/50">
-              <div className="flex items-center gap-3">
-                <UserPlus size={18} className="text-muted-foreground shrink-0" />
-                <div>
-                  <p className="font-medium text-sm">本地注册</p>
-                  <p className="text-xs text-muted-foreground">
-                    允许新用户通过本地注册创建账号
-                  </p>
-                </div>
-              </div>
-              <Switch
-                checked={config.local_register_enabled}
-                onCheckedChange={(v) => updateConfig('local_register_enabled', v)}
-              />
-            </div>
-          </div>
+      <SettingsGroup label="OAuth 登录提供商">
+        <SettingsRow icon={<Shield size={15} />} title="第三方 OAuth 登录">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { setAddingNew(true); setNewProvider({ ...emptyProvider }); }}
+            className="h-8 md:h-9 rounded-md px-3"
+          >
+            <Plus size={14} className="mr-1.5" />
+            添加
+          </Button>
+        </SettingsRow>
 
-          <div className="mt-6 flex justify-end">
-            <Button onClick={handleSave} disabled={saving} className="min-h-[44px]">
-              {saving ? (
-                <Loader2 size={16} className="mr-2 animate-spin" />
-              ) : (
-                <Save size={16} className="mr-2" />
-              )}
-              {t.save || '保存'}
-            </Button>
-          </div>
-        </GlassCard>
-
-        <GlassCard className="p-4 md:p-6">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Shield size={18} className="text-muted-foreground shrink-0" />
-                <div>
-                  <p className="font-medium text-sm">OAuth 登录提供商</p>
-                  <p className="text-xs text-muted-foreground">配置第三方 OAuth 登录</p>
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { setAddingNew(true); setNewProvider({ ...emptyProvider }); }}
-                className="min-h-[36px]"
-              >
-                <Plus size={14} className="mr-1.5" />
-                添加
-              </Button>
-            </div>
-
-            {addingNew && (
-              <div className="space-y-4 p-4 rounded-xl bg-secondary/50 animate-in slide-in-from-top-2 fade-in duration-300">
+        {addingNew && (
+          <div className="px-4 py-3">
+            <div className="space-y-4 rounded-xl bg-secondary/50 p-4 animate-in slide-in-from-top-2 fade-in duration-300">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-xs font-medium text-muted-foreground">快速模板:</span>
                   {PROVIDER_TEMPLATES.map(template => (
@@ -373,7 +345,8 @@ export function AuthSettingsTab({ t, token }: AuthSettingsTabProps) {
                   </Button>
                 </div>
               </div>
-            )}
+            </div>
+          )}
 
             {config.oauth_providers.length === 0 && !addingNew && (
               <div className="py-8 text-center">
@@ -384,10 +357,10 @@ export function AuthSettingsTab({ t, token }: AuthSettingsTabProps) {
             )}
 
             {config.oauth_providers.map((provider) => (
-              <div key={provider.name} className="border border-border/50 rounded-xl overflow-hidden">
+              <div key={provider.name}>
                 <button
                   onClick={() => setExpandedProvider(expandedProvider === provider.name ? null : provider.name)}
-                  className="w-full flex items-center justify-between p-3 hover:bg-secondary/50 transition-colors"
+                  className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-secondary/50 transition-colors"
                 >
                   <div className="flex items-center gap-3">
                     <div className={cn(
@@ -414,7 +387,7 @@ export function AuthSettingsTab({ t, token }: AuthSettingsTabProps) {
                 </button>
 
                 {expandedProvider === provider.name && (
-                  <div className="space-y-3 p-4 border-t border-border/50 bg-secondary/30 animate-in slide-in-from-top-2 fade-in duration-300">
+                  <div className="space-y-3 px-4 py-4 border-t border-border/40 bg-secondary/20 animate-in slide-in-from-top-2 fade-in duration-300">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-medium text-muted-foreground">启用</span>
                       <Switch
@@ -529,8 +502,7 @@ export function AuthSettingsTab({ t, token }: AuthSettingsTabProps) {
                 )}
               </div>
             ))}
-          </div>
-        </GlassCard>
+      </SettingsGroup>
     </div>
   );
 }

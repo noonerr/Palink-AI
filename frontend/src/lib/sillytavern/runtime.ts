@@ -891,6 +891,55 @@ export class SillyTavernRuntime {
     eventBus.emit('character:edited' as any, { characterId } as any);
   }
 
+  // ── [ST-ALIGN P0-4] 以下 5 个事件此前「枚举有定义但从不 emit」，依赖它们的
+  // 插件（世界书刷新、无限滚动、设置持久化、会话清理、命令后处理）静默失效。
+  // 统一在此暴露，业务侧集成点见各方法注释。
+
+  /**
+   * 世界书条目变更（ST: worldinfo_updated）
+   * 集成点：世界书条目增删改保存成功后
+   */
+  emitWorldInfoUpdated(args?: any): void {
+    this.eventSource.emit('worldinfo_updated', args);
+    eventBus.emit('worldbook:updated' as any, args as any);
+  }
+
+  /**
+   * 加载更多历史消息（ST: more_messages_loaded）
+   * 集成点：CharacterView.tsx 的 loadOlderMessages 拉取成功后
+   */
+  emitMoreMessagesLoaded(args?: any): void {
+    this.eventSource.emit('more_messages_loaded', args);
+    eventBus.emit('chat:more-messages-loaded' as any, args as any);
+  }
+
+  /**
+   * 命令解析完成、进入生成之前（ST: GENERATION_AFTER_COMMANDS）
+   * 集成点：slash 命令解析完成后、真正发起生成前
+   */
+  emitGenerationAfterCommands(args?: any): void {
+    this.eventSource.emit('GENERATION_AFTER_COMMANDS', args);
+    eventBus.emit('generation:after-commands' as any, args as any);
+  }
+
+  /**
+   * 会话删除（ST: chat_deleted）
+   * 集成点：确认删除会话并执行成功后
+   */
+  emitChatDeleted(args?: any): void {
+    this.eventSource.emit('chat_deleted', args);
+    eventBus.emit('chat:deleted' as any, args as any);
+  }
+
+  /**
+   * 设置更新（ST: settings_updated）
+   * 集成点：设置保存成功后（此前仅智能卡兼容轨 emit，主插件轨收不到）
+   */
+  emitSettingsUpdated(args?: any): void {
+    this.eventSource.emit('settings_updated', args);
+    eventBus.emit('settings:updated' as any, args as any);
+  }
+
   /**
    * 触发生成开始事件（带 type，区分 normal/regenerate/continue/swipe 等）
    * 同时触发 ST: generation_started 与 Palink: generation:started

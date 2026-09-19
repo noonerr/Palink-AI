@@ -65,13 +65,26 @@ export interface CharacterImportTask {
   avatarUrl?: string;
 }
 
-const CATEGORIES = [
-  { id: 'all', name: '全部' },
-  { id: '日常', name: '日常' },
-  { id: '游戏', name: '游戏' },
-  { id: '现代', name: '现代' },
-  { id: 'Vtuber', name: 'Vtuber' },
-];
+/**
+ * 从当前角色列表动态收集分类标签（来源：角色卡自带 tags 字段）。
+ * 大小写不敏感去重，保留首次出现的写法；占位角色（导入中）不参与。
+ * 返回空数组表示当前没有任何角色标签，调用方应隐藏整栏。
+ */
+const buildCategoryTags = (characters: CharacterListItem[]): string[] => {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const char of characters) {
+    if (char._importing) continue;
+    for (const rawTag of char.tags || []) {
+      const tag = rawTag.trim();
+      const key = tag.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      tags.push(tag);
+    }
+  }
+  return tags;
+};
 
 const getCharacterCategory = (char: Character) => {
   const desc = (char.description || '').toLowerCase();
@@ -205,7 +218,7 @@ const CharacterCard = ({
       if (char._importing) return;
       isSelectMode ? onToggleSelect(char.id) : onClick();
     }}
-    className={`group relative rounded-3xl cursor-pointer transition-all duration-500 overflow-hidden transform-gpu will-change-transform ${
+    className={`palink-press group relative rounded-3xl cursor-pointer transition-all duration-500 overflow-hidden transform-gpu will-change-transform ${
       isSelected ? 'ring-2 ring-primary ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-950' : ''
     }`}
   >
@@ -362,7 +375,8 @@ const DesktopSidebar = ({
   setSelectedIds,
   onImportCharacter,
   onCreateCharacter,
-  windowWidth
+  windowWidth,
+  categoryTags
 }: {
   searchQuery: string;
   setSearchQuery: (q: string) => void;
@@ -376,6 +390,7 @@ const DesktopSidebar = ({
   onImportCharacter: (file: File) => void;
   onCreateCharacter: () => void;
   windowWidth: number;
+  categoryTags: string[];
 }) => {
   const expandedWidth = windowWidth >= 640 ? 224 : 192;
 
@@ -466,24 +481,36 @@ const DesktopSidebar = ({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">分类</h3>
-              <div className="flex flex-wrap gap-1.5">
-                {CATEGORIES.map((category) => (
+            {categoryTags.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">分类</h3>
+                <div className="flex flex-wrap gap-1.5">
                   <button
-                    key={category.id}
-                    onClick={() => setActiveCategory(category.id)}
+                    onClick={() => setActiveCategory('all')}
                     className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
-                      activeCategory === category.id
+                      activeCategory === 'all'
                         ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
                         : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                     }`}
                   >
-                    {category.name}
+                    全部
                   </button>
-                ))}
+                  {categoryTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setActiveCategory(tag)}
+                      className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
+                        activeCategory === tag
+                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                          : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </motion.div>
       </motion.div>
@@ -535,6 +562,8 @@ const MobileView = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const maxScroll = 120;
 
+  const categoryTags = buildCategoryTags(characters);
+
   const filteredCharacters = characters.filter((char) => {
     // 占位角色始终显示，不受搜索/分类影响
     if (char._importing) return true;
@@ -543,8 +572,8 @@ const MobileView = ({
       char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
 
-    const charCategory = getCharacterCategory(char);
-    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
+    const matchesCategory = activeCategory === 'all' ||
+      (char.tags || []).some((tag) => tag.trim().toLowerCase() === activeCategory.toLowerCase());
 
     return matchesSearch && matchesCategory;
   });
@@ -626,26 +655,30 @@ const MobileView = ({
     return collapsedWidth + (baseWidth - collapsedWidth) * scrollProgress;
   };
   const getButtonGap = () => 1.2 - scrollProgress * 0.4;
-  const getButtonHeight = () => 42 - scrollProgress * 3;
+  const getButtonHeight = () => 34 - scrollProgress * 3;
 
   return (
     <div className="flex flex-col w-full h-full">
       <header className="px-5 sm:px-6 flex-shrink-0 transition-all duration-400 ease-in-out" style={getHeaderStyle()}>
-        <div className="flex items-center justify-between">
-          <div className="relative">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          {/* 左侧标题区：min-w-0 + truncate，窄屏时先收缩标题，保证右侧按钮组完整 */}
+          <div className="relative min-w-0 flex-1">
             <p 
-              className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-0.5 sm:mb-1 transition-all duration-400 ease-in-out"
+              className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mb-0.5 sm:mb-1 transition-all duration-400 ease-in-out truncate"
               style={{ opacity: getWelcomeOpacity(), maxHeight: getWelcomeMaxHeight(), overflow: 'hidden', marginBottom: getWelcomeMarginBottom() }}
             >
               欢迎回来
             </p>
             <div className="flex items-center gap-2.5 sm:gap-3 flex-nowrap min-w-0">
               <h1 
-                className="font-semibold text-slate-900 dark:text-white transition-all duration-400 ease-in-out flex-shrink-0"
-                style={{ fontSize: `${getH1Size()}px` }}
+                className="font-semibold text-slate-900 dark:text-white transition-all duration-400 ease-in-out min-w-0 whitespace-nowrap"
+                title="角色扮演"
+                style={{ fontSize: `clamp(14px, calc(${getH1Size()}px * (100vw / 375)), ${getH1Size()}px)` }}
               >
                 角色扮演
               </h1>
+              {/* 字号窄屏自动变小：clamp(下限 14px, 按 375px 设计稿等比缩放, 上限=滚动收缩后的原字号)。
+                  不再用 truncate——窄屏下标题会缩小而不是被省略号截没。 */}
               <div 
                 className="relative transition-all duration-400 ease-in-out flex-shrink-0"
                 style={{ opacity: getSmallSearchOpacity(), width: `${getSmallSearchWidth()}px` }}
@@ -664,7 +697,7 @@ const MobileView = ({
             </div>
           </div>
           <div 
-            className="flex items-center transition-all duration-400 ease-in-out"
+            className="flex items-center transition-all duration-400 ease-in-out flex-nowrap shrink-0 justify-end min-w-0"
             style={{ 
               opacity: getRightButtonsOpacity(), 
               gap: `${getButtonGap()}px`
@@ -673,23 +706,23 @@ const MobileView = ({
             <Button 
               variant={isSelectMode ? 'default' : 'ghost'} 
               onClick={() => { setIsSelectMode(!isSelectMode); setSelectedIds([]); }}
-              className={`text-xs sm:text-sm rounded-2xl transition-all duration-400 ease-in-out backdrop-blur-[20px] ${!isSelectMode ? 'bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80' : ''}`}
+              className={`palink-press-keep text-xs sm:text-sm rounded-2xl transition-all duration-400 ease-in-out backdrop-blur-[20px] ${!isSelectMode ? 'bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80' : ''}`}
               style={{ 
                 height: `${getButtonHeight()}px`,
-                paddingLeft: `${14 - scrollProgress * 3}px`,
-                paddingRight: `${14 - scrollProgress * 3}px`
+                paddingLeft: `${10 - scrollProgress * 3}px`,
+                paddingRight: `${10 - scrollProgress * 3}px`
               }}
             >
               {isSelectMode ? '取消' : '多选'}
             </Button>
             <div className="relative">
-              <Button variant="secondary" asChild className="rounded-2xl transition-all duration-400 ease-in-out" style={{ 
+              <Button variant="secondary" asChild className="palink-press-keep rounded-2xl transition-all duration-400 ease-in-out" style={{
                   height: `${getButtonHeight()}px`,
-                  paddingLeft: `${14 - scrollProgress * 3}px`,
-                  paddingRight: `${14 - scrollProgress * 3}px`
+                  paddingLeft: `${10 - scrollProgress * 3}px`,
+                  paddingRight: `${10 - scrollProgress * 3}px`
                 }}>
                 <label className="cursor-pointer flex items-center gap-1.5">
-                  <Upload size={14 - scrollProgress * 1.5} className="sm:w-4 sm:h-4" />
+                  <Upload size={12 - scrollProgress} className="sm:w-3.5 sm:h-3.5" />
                   <span className="transition-all duration-400 ease-in-out text-xs sm:text-sm">导入</span>
                 </label>
               </Button>
@@ -706,12 +739,12 @@ const MobileView = ({
                 }}
               />
             </div>
-            <Button onClick={onCreateCharacter} className="rounded-2xl transition-all duration-400 ease-in-out text-xs sm:text-sm backdrop-blur-[20px] bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80" style={{ 
+            <Button onClick={onCreateCharacter} className="palink-press-keep rounded-2xl transition-all duration-400 ease-in-out text-xs sm:text-sm backdrop-blur-[20px] bg-[#FFFAFA]/40 dark:bg-white/[0.07] border border-[#d9cfbf]/50 dark:border-white/[0.15] text-slate-700 dark:text-white/80" style={{
                 height: `${getButtonHeight()}px`,
-                paddingLeft: `${14 - scrollProgress * 3}px`,
-                paddingRight: `${14 - scrollProgress * 3}px`
+                paddingLeft: `${10 - scrollProgress * 3}px`,
+                paddingRight: `${10 - scrollProgress * 3}px`
               }}>
-              <Plus size={14 - scrollProgress * 1.5} className="sm:w-4 sm:h-4 mr-1 sm:mr-1.5" style={{ marginRight: `${5 - scrollProgress * 3}px` }} />
+              <Plus size={12 - scrollProgress} className="sm:w-3.5 sm:h-3.5 mr-1 sm:mr-1.5" style={{ marginRight: `${5 - scrollProgress * 3}px` }} />
               <span className="transition-all duration-400 ease-in-out">创建</span>
             </Button>
           </div>
@@ -738,24 +771,34 @@ const MobileView = ({
           />
         </div>
 
-        <div 
-          className="flex items-center justify-between transition-all duration-400 ease-in-out"
-          style={{ opacity: getCategoriesOpacity(), maxHeight: getCategoriesMaxHeight(), overflow: 'hidden' }}
-        >
-          <div className="flex space-x-1.5 sm:space-x-2 overflow-x-auto no-scrollbar">
-            {CATEGORIES.map((category) => (
+        {categoryTags.length > 0 && (
+          <div 
+            className="flex items-center justify-between transition-all duration-400 ease-in-out"
+            style={{ opacity: getCategoriesOpacity(), maxHeight: getCategoriesMaxHeight(), overflow: 'hidden' }}
+          >
+            <div className="flex space-x-1.5 sm:space-x-2 overflow-x-auto no-scrollbar">
               <button 
-                key={category.id}
-                onClick={() => setActiveCategory(category.id)}
-                className={`whitespace-nowrap px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
-                  activeCategory === category.id ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                onClick={() => setActiveCategory('all')}
+                className={`palink-press-keep whitespace-nowrap px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
+                  activeCategory === 'all' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                {category.name}
+                全部
               </button>
-            ))}
+              {categoryTags.map((tag) => (
+                <button 
+                  key={tag}
+                  onClick={() => setActiveCategory(tag)}
+                  className={`palink-press-keep whitespace-nowrap px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all ${
+                    activeCategory === tag ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </header>
 
       <div 
@@ -945,6 +988,8 @@ const DesktopView = ({
   const [layoutKey, setLayoutKey] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  const categoryTags = buildCategoryTags(characters);
+
   const filteredCharacters = characters.filter((char) => {
     // 占位角色始终显示，不受搜索/分类影响
     if (char._importing) return true;
@@ -953,8 +998,8 @@ const DesktopView = ({
       char.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (char.description || '').toLowerCase().includes(searchQuery.toLowerCase());
 
-    const charCategory = getCharacterCategory(char);
-    const matchesCategory = activeCategory === 'all' || charCategory === activeCategory;
+    const matchesCategory = activeCategory === 'all' ||
+      (char.tags || []).some((tag) => tag.trim().toLowerCase() === activeCategory.toLowerCase());
 
     return matchesSearch && matchesCategory;
   });
@@ -1142,6 +1187,7 @@ const DesktopView = ({
         onImportCharacter={onImportCharacter}
         onCreateCharacter={onCreateCharacter}
         windowWidth={windowWidth}
+        categoryTags={categoryTags}
       />
 
       <ConfirmDialog

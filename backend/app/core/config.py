@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
     CHAT_HISTORY_LIMIT: int = 24
     CHARACTER_CHAT_HISTORY_LIMIT: int = 24
+
+    # [ST-ALIGN P0-1] 记忆自动封存开关。
+    # ST 1.18 由 memory 扩展按 promptInterval / context 阈值滚动摘要，长会话不会无限涨。
+    # Palink 此前 check_and_auto_compress 只有定义、零调用方，记忆只增不减直到撞上下文窗口。
+    # 开启后：每轮对话落库后按阈值自动压缩（删除低权重记忆 + 生成压缩摘要）。
+    # 置 False 可全局熔断，仅保留手动端点 /api/memory/compress。
+    AUTO_MEMORY_COMPRESS: bool = True
     TRUST_PROXY_HEADERS: bool = False
     RUN_MIGRATIONS_ON_STARTUP: bool = False
     MIGRATIONS_FAIL_FAST: bool = True

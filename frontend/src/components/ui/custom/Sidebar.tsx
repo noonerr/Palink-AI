@@ -259,17 +259,47 @@ export function MobileBottomNav({
       pill.style.transform = `translate3d(${left}px, -50%, 0)`;
       pill.style.width = `${rects.items[Math.round(cp)].width}px`;
     }
-    mobilePager.p = p;
+    // 【拖动解耦】不再写 mobilePager：拖动 dock 时只移动滑块，页面停在当前
+    // tab；松手/路由切换时由 applyPageFrame 的弹簧把页面滑到目标页。
+  }, []);
+
+  // 页面轨道位置（0..3），与滑块拖动位置 pRef 分离。只有松手判定/路由变化时
+  // 才由弹簧驱动，保证"拖动时主页不跟着滑、松手后再动画到目标页"。
+  const pagePRef = React.useRef(0);
+  const pageSpringRef = React.useRef<{ stop: () => void } | null>(null);
+
+  const applyPageFrame = React.useCallback((pageP: number) => {
+    pagePRef.current = pageP;
+    mobilePager.p = pageP;
     mobilePager.emit();
   }, []);
 
   const springTo = React.useCallback((target: number, velocity = 0) => {
     const clamped = Math.min(3, Math.max(0, target));
     springTargetRef.current = clamped;
+    // 滑块：从当前位置（含拖动收尾速度）弹簧吸附到目标 tab
     springRef.current?.stop();
     springRef.current = animate(pRef.current, clamped, {
       type: 'spring',
       velocity,
+      ...PILL_SPRING,
+      onUpdate: applyFrame,
+    });
+    // 页面：从当前页位置弹簧滑到目标页（拖动期页面未移动，起点即当前页）
+    pageSpringRef.current?.stop();
+    pageSpringRef.current = animate(pagePRef.current, clamped, {
+      type: 'spring',
+      ...PILL_SPRING,
+      onUpdate: applyPageFrame,
+    });
+  }, [applyFrame, applyPageFrame]);
+
+  // 拖动中的"停留吸附"只收滑块：仍按住、目标只作视觉提示，页面继续等松手判定。
+  const snapPillTo = React.useCallback((target: number) => {
+    const clamped = Math.min(3, Math.max(0, target));
+    springRef.current?.stop();
+    springRef.current = animate(pRef.current, clamped, {
+      type: 'spring',
       ...PILL_SPRING,
       onUpdate: applyFrame,
     });
@@ -326,7 +356,7 @@ export function MobileBottomNav({
 
     if (!st.moved) {
       if (Math.abs(e.clientX - st.x0) < DRAG_START_PX) return;
-      // 进入拖动：停掉在途弹簧，滑块/页面开始 1:1 跟手
+      // 进入拖动：停掉在途弹簧，滑块开始 1:1 跟手（页面保持不动）
       st.moved = true;
       springRef.current?.stop();
       springTargetRef.current = null;
@@ -334,6 +364,7 @@ export function MobileBottomNav({
 
     // 停留吸附后再次移动 → 立即恢复跟手
     springRef.current?.stop();
+    pageSpringRef.current?.stop();
     springTargetRef.current = null;
     st.dwellTab = null;
 
@@ -343,7 +374,7 @@ export function MobileBottomNav({
     st.lastT = now;
     applyFrame(pFromX(e.clientX));
 
-    // 按住停留：在某个 tab 区域停住一小段时间 → 高亮与页面先吸附到该 tab（仍按住）
+    // 按住停留：滑块先吸附到该 tab 作视觉提示（仍按住，页面等松手再判定）
     if (Math.abs(e.clientX - st.lastMoveX) > 4) {
       st.lastMoveX = e.clientX;
       st.lastMoveAt = now;
@@ -351,9 +382,9 @@ export function MobileBottomNav({
       const idx = Math.min(3, Math.max(0, Math.round(pRef.current)));
       st.dwellTab = idx;
       navigateToTab(idx);
-      springTo(idx);
+      snapPillTo(idx);
     }
-  }, [applyFrame, pFromX, navigateToTab, springTo]);
+  }, [applyFrame, pFromX, navigateToTab, snapPillTo]);
 
   const handlePointerEnd = React.useCallback((e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
     const st = pointerRef.current;
@@ -392,6 +423,7 @@ export function MobileBottomNav({
     if (rectsRef.current && !initedRef.current) {
       initedRef.current = true;
       applyFrame(activeIndexRef.current);
+      applyPageFrame(activeIndexRef.current);
       setPillReady(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -417,6 +449,7 @@ export function MobileBottomNav({
   React.useEffect(() => {
     return () => {
       springRef.current?.stop();
+      pageSpringRef.current?.stop();
     };
   }, []);
 
@@ -465,6 +498,23 @@ export function MobileBottomNav({
       // translate3d + willChange 与侧栏/正文同走 GPU 合成层，帧调度一致。
       transition: 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1)',
       willChange: 'transform',
+      // 【尾部 dock 修复】shell 已含 env(safe-area-inset-bottom)（见 index.css
+      // coarse 块），dock absolute bottom:0 直接锚到屏幕底。Home Indicator 由
+      // env(safe-area-inset-bottom) 表达，dock paddingBottom 仅作视觉呼吸，
+      // 顺手让 dock pill 在浏览器模式（inset=0）下也别死贴屏底：
+      //   - inset=0（浏览器）  → max(0,8) = 8px
+      //   - inset=34（PWA）    → max(34,8) = 34px，pill 正好在 Home Indicator 上沿
+      // 原值 `max(0px, calc(env(...) - 22px))` 是 shell 不含 inset 时代的兼容写法，
+      // 后续 shell 改造后公式不再成立，改为更直白的 max 形式。
+      // 【K19 2026-09-03】iOS 27 PWA 把 env(safe-area-inset-bottom) 报成 ~83pt
+      // （真机截图取证：dock pill 底边 ≈769-774pt / 屏高 852pt——34pt Home
+      // Indicator + ~49pt 系统底栏区被合并上报；svh 同步变小，shell=svh+env
+      // 恰好仍满屏）。max(env,8) 因此把 dock 整个抬高 83pt = 用户报的
+      // 「dock 与屏底之间大空白」。加 34pt 上限，inset 正常的设备行为不变：
+      //   - inset=0（浏览器）       → 8px
+      //   - inset=34（旧 iOS PWA）  → 34px
+      //   - inset≈83（iOS 27 PWA）  → 34px（封顶，回到设计位）
+      paddingBottom: 'min(max(env(safe-area-inset-bottom, 0px), 8px), 34px)',
     }} data-dock="true">
       <div
         ref={dockRef}
@@ -516,7 +566,14 @@ export function MobileBottomNav({
                   suppressClickRef.current = false;
                   return;
                 }
-                if (item.id === routeActiveId) return;
+                if (item.id === routeActiveId) {
+                  // 再点已激活 tab = 回到该页根部（iOS 同款语义）：设置页返回键移除后，
+                  // 这是回设置菜单的唯一手势（SettingsView 监听 palink:settings-root）
+                  if (item.id === '/settings') {
+                    window.dispatchEvent(new CustomEvent('palink:settings-root'));
+                  }
+                  return;
+                }
                 // 键盘激活（Enter）等无指针事件的兜底路径：路由变化触发弹簧滑块
                 setPendingTab(item.id);
                 window.setTimeout(() => setPendingTab(null), 800);

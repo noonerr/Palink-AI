@@ -5,7 +5,7 @@ import { Plus, Trash2, ChevronDown, Check, Settings2, Save } from 'lucide-react'
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { GlassCard } from '@/components/ui/custom/GlassCard';
+import { SettingsGroup } from './settings-ui';
 import { api, invalidateCache, isAbortError } from '@/services/api';
 import { CompatStubStatsCard } from './CompatStubStatsCard';
 
@@ -267,14 +267,8 @@ export function AdminPluginsTab() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h3 className="text-2xl font-semibold">插件管理</h3>
-          <p className="text-sm text-muted-foreground mt-1">
-            管理 SillyTavern 第三方扩展、正则脚本、预设和表格模板
-          </p>
-        </div>
+    <div className="space-y-4 md:space-y-6 animate-fade-in">
+      <div className="flex items-center justify-end mb-4">
         <div className="flex gap-2">
           <input
             ref={fileInputRef}
@@ -283,34 +277,36 @@ export function AdminPluginsTab() {
             onChange={handleImport}
             className="hidden"
           />
-          <Button onClick={() => fileInputRef.current?.click()} disabled={importing}>
-            <Plus size={16} className="mr-2" />
+          <Button onClick={() => fileInputRef.current?.click()} disabled={importing} className="h-8 md:h-9 rounded-md px-3 text-xs">
+            <Plus size={14} className="mr-1.5" />
             {importing ? '导入中...' : '导入插件'}
           </Button>
         </div>
       </div>
 
-      <GlassCard className="p-4 sm:p-5">
-        <p className="text-sm font-medium mb-2">支持导入的文件类型</p>
-        <ul className="text-sm text-muted-foreground space-y-1 ml-4 list-disc">
-          <li>正则脚本 JSON（数组格式或角色卡内嵌）</li>
-          <li>酒馆助手脚本（tavern_helper）</li>
-          <li>推进预设 JSON（含 prompts/promptGroup）</li>
-          <li>chatSheets 表格模板（普通版/SQL版）</li>
-          <li>角色卡 JSON（自动提取其中的正则脚本和酒馆助手脚本）</li>
-          <li>SillyTavern 第三方扩展 manifest.json 或扩展 zip 包</li>
-        </ul>
-        <p className="text-xs text-amber-600 dark:text-amber-400 mt-3 leading-relaxed">
-          ⚠ 安全提示：酒馆助手 / 第三方扩展等经典脚本插件在主页面以高权限运行
-          （等同网页自身代码，可访问登录凭据与全部 DOM；fetch 跨源受域名白名单限制）。
-          请仅导入可信来源，详见 docs/PLUGIN_SECURITY_MODEL.md。
-        </p>
-      </GlassCard>
+      <SettingsGroup label="导入说明">
+        <div className="px-4 py-3">
+          <p className="text-sm font-medium mb-2">支持导入的文件类型</p>
+          <ul className="text-sm text-muted-foreground space-y-1 ml-4 list-disc">
+            <li>正则脚本 JSON（数组格式或角色卡内嵌）</li>
+            <li>酒馆助手脚本（tavern_helper）</li>
+            <li>推进预设 JSON（含 prompts/promptGroup）</li>
+            <li>chatSheets 表格模板（普通版/SQL版）</li>
+            <li>角色卡 JSON（自动提取其中的正则脚本和酒馆助手脚本）</li>
+            <li>SillyTavern 第三方扩展 manifest.json 或扩展 zip 包</li>
+          </ul>
+          <p className="text-xs text-amber-600 dark:text-amber-400 mt-3 leading-relaxed">
+            ⚠ 安全提示：酒馆助手 / 第三方扩展等经典脚本插件在主页面以高权限运行
+            （等同网页自身代码，可访问登录凭据与全部 DOM；fetch 跨源受域名白名单限制）。
+            请仅导入可信来源，详见 docs/PLUGIN_SECURITY_MODEL.md。
+          </p>
+        </div>
+      </SettingsGroup>
 
       <CompatStubStatsCard />
 
       {plugins.length === 0 ? (
-        <GlassCard className="p-8 text-center">
+        <div className="rounded-2xl border border-border/50 bg-card p-8 text-center">
           <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
             <Plus size={32} className="text-muted-foreground" />
           </div>
@@ -318,16 +314,18 @@ export function AdminPluginsTab() {
           <p className="text-sm text-muted-foreground">
             请点击上方的"导入插件"按钮上传插件文件
           </p>
-        </GlassCard>
+        </div>
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {plugins.map((plugin) => {
             const isExpanded = expandedPlugin === plugin.id;
             return (
-              <GlassCard
+              <div
                 key={plugin.id}
-                className={`overflow-hidden ${!plugin.enabled ? 'opacity-60' : ''}`}
-                hover
+                className={cn(
+                  "overflow-hidden rounded-2xl border border-border/50 bg-card",
+                  !plugin.enabled && "opacity-60"
+                )}
               >
                 <div
                   className="p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4 cursor-pointer hover:bg-muted/20 transition-colors"
@@ -347,7 +345,7 @@ export function AdminPluginsTab() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <h4 className="font-semibold truncate">{plugin.name}</h4>
+                        <h4 className="font-semibold text-[15px] truncate">{plugin.name}</h4>
                         <span
                           className={cn(
                             "px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0",
@@ -411,7 +409,7 @@ export function AdminPluginsTab() {
                 </div>
 
                 {settingsPluginId === plugin.id && (
-                  <div className="border-t border-border bg-muted/10 p-4 space-y-3">
+                  <div className="border-t border-border/40 bg-secondary/20 p-4 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-medium">SillyTavern 运行时设置</p>
@@ -442,7 +440,7 @@ export function AdminPluginsTab() {
                 )}
 
                 {isExpanded && (
-                  <div className="border-t border-border bg-muted/20 p-4">
+                  <div className="border-t border-border/40 bg-secondary/20 p-4">
                     {loadingScripts ? (
                       <div className="flex items-center justify-center py-4">
                         <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -497,7 +495,7 @@ export function AdminPluginsTab() {
                     )}
                   </div>
                 )}
-              </GlassCard>
+              </div>
             );
           })}
         </div>

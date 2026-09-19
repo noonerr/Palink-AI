@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { FlaskConical } from 'lucide-react';
 
 import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
 import { api, invalidateCache } from '@/services/api';
 import { toast } from 'sonner';
+import { SettingsGroup, SettingsRow } from './settings-ui';
 
 interface AboutTabProps {
   t: Record<string, string>;
@@ -46,7 +47,6 @@ export function AboutTab({ t }: AboutTabProps) {
         <div className="w-24 h-24 bg-gradient-to-br from-primary to-primary/60 rounded-3xl mx-auto flex items-center justify-center mb-6 shadow-xl shadow-primary/20">
           <span className="text-primary-foreground text-4xl font-bold">P</span>
         </div>
-        <h2 className="text-2xl font-semibold mb-2 hidden md:block">{t.about_title}</h2>
         <p className="text-muted-foreground mb-8">{t.about_desc}</p>
         <div className="flex justify-center gap-4 text-sm text-muted-foreground mb-8">
           <span>{t.version}</span>
@@ -55,23 +55,19 @@ export function AboutTab({ t }: AboutTabProps) {
         </div>
 
         {/* 开发者模式开关 */}
-        <div className="max-w-md mx-auto mt-8 p-5 border rounded-xl bg-card">
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="developer-mode" className="text-base">
-                开发者模式
-              </Label>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                启用后可在本地模型中看到测试模型，用于功能测试
-              </p>
-            </div>
-            <Switch
-              id="developer-mode"
-              checked={developerMode}
-              onCheckedChange={handleDeveloperModeToggle}
-              disabled={loading}
-            />
-          </div>
+        <div className="max-w-md mx-auto mt-8 text-left">
+          <SettingsGroup label="开发者">
+            <SettingsRow
+              icon={<FlaskConical size={15} />}
+              title="开发者模式"
+            >
+              <Switch
+                checked={developerMode}
+                onCheckedChange={handleDeveloperModeToggle}
+                disabled={loading}
+              />
+            </SettingsRow>
+          </SettingsGroup>
         </div>
     </div>
   );

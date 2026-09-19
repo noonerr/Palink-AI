@@ -27,7 +27,10 @@ class PersonaCreateRequest(BaseModel):
     character_bindings: Optional[Dict[str, str]] = None
     is_default: bool = False
     persona_show: bool = False
-    persona_description_position: int = 0
+    # ST 1.18 枚举（0 IN_PROMPT / 2 TOP_AN / 3 BOTTOM_AN / 4 AT_DEPTH / 9 NONE），默认 4
+    persona_description_position: int = 4
+    # AT_DEPTH 时的注入深度（personas.js:632），默认 4
+    persona_description_depth: int = 4
 
 
 class PersonaUpdateRequest(BaseModel):
@@ -38,6 +41,7 @@ class PersonaUpdateRequest(BaseModel):
     is_default: Optional[bool] = None
     persona_show: Optional[bool] = None
     persona_description_position: Optional[int] = None
+    persona_description_depth: Optional[int] = None
 
 
 class ActivePersonaRequest(BaseModel):
@@ -59,7 +63,8 @@ def _persona_to_dict(p: Persona) -> dict:
         "characterBindings": bindings,
         "isDefault": bool(p.is_default),
         "personaShow": bool(p.persona_show) if p.persona_show is not None else False,
-        "personaDescriptionPosition": int(p.persona_description_position) if p.persona_description_position is not None else 0,
+        "personaDescriptionPosition": int(p.persona_description_position) if p.persona_description_position is not None else 4,
+        "personaDescriptionDepth": int(p.persona_description_depth) if getattr(p, "persona_description_depth", None) is not None else 4,
         "createdAt": p.created_at.isoformat() if p.created_at else None,
         "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -101,6 +106,7 @@ async def create_persona(
         is_default=req.is_default,
         persona_show=req.persona_show,
         persona_description_position=req.persona_description_position,
+        persona_description_depth=req.persona_description_depth,
         created_at=_utc_now(),
         updated_at=_utc_now(),
     )
@@ -200,6 +206,8 @@ async def update_persona(
         p.persona_show = req.persona_show
     if req.persona_description_position is not None:
         p.persona_description_position = req.persona_description_position
+    if req.persona_description_depth is not None:
+        p.persona_description_depth = req.persona_description_depth
     p.updated_at = _utc_now()
     db.commit()
     db.refresh(p)

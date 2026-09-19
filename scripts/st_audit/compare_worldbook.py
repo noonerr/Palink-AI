@@ -3,9 +3,9 @@
 import json
 import urllib.request
 
-BASE = "http://localhost:3000"
-USER = "st_audit_2026"
-PASSWORD = "Audit2026Palink"
+# [PENTEST-2026-09-02] 凭据不再硬编码：从环境变量 / 本目录 .env（gitignored）读取
+from _credentials import BASE, USER, PASSWORD  # noqa: E402
+
 ST_ORIG = r"d:\项目\Palink-AI\SillyTavern-1.18.0\SillyTavern-1.18.0\default\content\Eldoria.json"
 
 

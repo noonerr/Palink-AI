@@ -145,7 +145,7 @@ const ChatSessionItem = React.memo<{
         }
       }}
       className={cn(
-        "flex items-center px-4 py-3 cursor-pointer transition-all overflow-hidden w-full min-w-0 border-b border-border/30",
+        "palink-press flex items-center px-4 py-3 cursor-pointer transition-all overflow-hidden w-full min-w-0 border-b border-border/30",
         isActive && !isDeleteMode
           ? "bg-secondary text-foreground"
           : "text-muted-foreground hover:text-foreground"

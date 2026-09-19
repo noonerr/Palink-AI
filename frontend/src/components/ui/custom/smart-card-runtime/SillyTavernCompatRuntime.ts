@@ -4598,12 +4598,14 @@ ${bootHeader}
         window.dispatchEvent(event);
       } catch {}
     };
-    const syncHash = (nextUrl) => {
-      const nextHash = hashOf(nextUrl);
-      if (!nextHash) return;
-      try {
-        if (window.location.hash !== nextHash) window.location.hash = nextHash;
-      } catch {}
+    // [iOS-HISTORY] 刻意不再写 window.location.hash：
+    // 本 iframe 是 srcdoc（继承父页面 origin，不是 opaque origin），改 hash 是一次
+    // 真实的 fragment 导航，会往 Safari 的联合会话历史（顶层 + 所有子框架）插入一条
+    // 幽灵条目——顶层 URL 不变，滑动返回时表现为先闪过若干与当前页相同的快照。
+    // 虚拟历史只需要把 hashchange 事件派发出去（见 dispatchHashChange），
+    // 真实 hash 的副作用由事件模拟，不再触发导航。
+    const syncHash = (_nextUrl) => {
+      /* no-op：见上方 [iOS-HISTORY] 说明 */
     };
     const notifyNavigation = (oldUrl, entry) => {
       syncHash(entry.url);

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from ..core import get_db
-from ..api.dependencies import get_current_user
+from ..api.dependencies import get_current_user, get_admin
 from ..models import User, ContextTemplate
 
 router = APIRouter(prefix="/api/roleplay/context-templates", tags=["roleplay-context-templates"])
@@ -92,9 +92,13 @@ def get_context_template(
 @router.post("")
 def create_context_template(
     req: ContextTemplateCreateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_admin),
     db: Session = Depends(get_db),
 ):
+    # [PENTEST-2026-09-02] 模板无 user_id 属主字段（全局共享资源），写操作曾仅需
+    # 登录即可改删他人/全部模板（渗透验证 D2/D3 实锤跨账号 200）。收口到 admin；
+    # GET 仍开放给登录用户（装配只读不受影响）。
+
     if db.query(ContextTemplate).filter(ContextTemplate.name == req.name).first():
         raise HTTPException(409, f"Context template '{req.name}' already exists")
     t = ContextTemplate(
@@ -118,7 +122,7 @@ def create_context_template(
 def update_context_template(
     template_id: int,
     req: ContextTemplateUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_admin),
     db: Session = Depends(get_db),
 ):
     t = db.query(ContextTemplate).filter(ContextTemplate.id == template_id).first()
@@ -145,7 +149,7 @@ def update_context_template(
 @router.delete("/{template_id}")
 def delete_context_template(
     template_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_admin),
     db: Session = Depends(get_db),
 ):
     t = db.query(ContextTemplate).filter(ContextTemplate.id == template_id).first()

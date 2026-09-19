@@ -18,6 +18,7 @@ from ..utils import apply_message_extra_patch
 from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting, ChatSession
 from ..memory_module.service import MemoryService
+from ..memory_module.lifecycle_service import maybe_auto_compress
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
 from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.inference_queue import inference_queue
@@ -422,6 +423,11 @@ async def chat_stream(
                                 mem_svc.store_memory(user.id, session_id, "assistant", result.full_content)
                                 save_db.commit()
                                 memory_stored = True
+                                # [ST-ALIGN P0-1] 记忆封存：落库后按阈值自动压缩，
+                                # 对齐 ST 1.18 的滚动摘要兜底，避免长会话记忆只增不减。
+                                await maybe_auto_compress(
+                                    save_db, user.id, session_id, memory_mode=memory_mode
+                                )
                     except Exception as e:
                         save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")

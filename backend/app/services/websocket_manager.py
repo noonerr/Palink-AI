@@ -86,17 +86,28 @@ class ChatRoom:
             self.connections.discard(conn)
             return len(self.connections) == 0
 
+    # [PERF-WS] 单连接发送超时：慢连接不再无限阻塞同房间其他连接的投递。
+    _SEND_TIMEOUT_SECONDS = 5
+
     async def broadcast(self, message: dict):
         payload = json.dumps(message, ensure_ascii=False)
         async with self._lock:
-            dead: list[Connection] = []
-            for conn in self.connections:
+            conns = list(self.connections)
+            if not conns:
+                return
+
+            async def _send(conn: Connection):
                 try:
-                    await conn.websocket.send_text(payload)
+                    await asyncio.wait_for(conn.websocket.send_text(payload), timeout=self._SEND_TIMEOUT_SECONDS)
+                    return None
                 except Exception:
-                    dead.append(conn)
-            for conn in dead:
-                self.connections.discard(conn)
+                    return conn
+
+            # 并行发送；锁内 gather 保持跨次广播的按序投递语义不变
+            results = await asyncio.gather(*(_send(c) for c in conns))
+            for conn in results:
+                if conn is not None:
+                    self.connections.discard(conn)
 
     async def send_to(self, conn: Connection, message: dict):
         try:
@@ -373,19 +384,29 @@ class WebSocketManager:
                 for conn in list(room.connections):
                     all_conns.append((room, conn))
 
-        for room, conn in all_conns:
+        if not all_conns:
+            return
+
+        # [PERF-WS] 并行发送 ping 并限时：慢连接不再拖慢整体心跳轮询
+        async def _ping_one(conn: Connection):
             try:
-                await conn.websocket.send_text(json.dumps({"type": "ping"}))
-                conn.missed_pongs += 1
-                if conn.missed_pongs > 3:
-                    logger.warning(
-                        "Too many missed pongs, removing: user=%s session=%s",
-                        conn.user_id,
-                        conn.session_id,
-                    )
-                    await self.unregister(conn)
+                await asyncio.wait_for(
+                    conn.websocket.send_text(json.dumps({"type": "ping"})),
+                    timeout=ChatRoom._SEND_TIMEOUT_SECONDS,
+                )
             except Exception:
                 await self.unregister(conn)
+                return
+            conn.missed_pongs += 1
+            if conn.missed_pongs > 3:
+                logger.warning(
+                    "Too many missed pongs, removing: user=%s session=%s",
+                    conn.user_id,
+                    conn.session_id,
+                )
+                await self.unregister(conn)
+
+        await asyncio.gather(*(_ping_one(conn) for _, conn in all_conns))
 
     def handle_pong(self, conn: Connection):
         conn.missed_pongs = 0
@@ -410,7 +431,10 @@ class WebSocketManager:
         async with self._stream_lock:
             for session_id, ss in list(self.stream_sessions.items()):
                 if ss.status in ("done", "error") and not ss.subscribers:
-                    if now - ss.created_at > 300:
+                    # [PERF-MEM] done 无订阅者 60s 后清理、error 无订阅者下一轮 tick 立即清理，
+                    # 替代原统一 300s——StreamSession 持有完整生成内容，长篇回复占用大。
+                    ttl = 60.0 if ss.status == "done" else 0.0
+                    if now - ss.created_at > ttl:
                         to_remove.append(session_id)
 
             for session_id in to_remove:

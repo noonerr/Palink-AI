@@ -49,6 +49,7 @@ export class PersonaManager {
         isDefault: boolean;
         personaShow?: boolean;
         personaDescriptionPosition?: number;
+        personaDescriptionDepth?: number;
         createdAt: string;
         updatedAt: string;
       }>>('/api/personas');
@@ -62,7 +63,9 @@ export class PersonaManager {
             isDefault: !!p.isDefault,
             characterBindings: p.characterBindings ?? {},
             personaShow: p.personaShow ?? false,
-            personaDescriptionPosition: p.personaDescriptionPosition ?? 0,
+            // ST 1.18 枚举（personas.js:88-97）：默认 4 = AT_DEPTH「对话中」
+            personaDescriptionPosition: p.personaDescriptionPosition ?? 4,
+            personaDescriptionDepth: p.personaDescriptionDepth ?? 4,
             createdAt: p.createdAt ?? new Date().toISOString(),
             updatedAt: p.updatedAt ?? new Date().toISOString(),
           };
@@ -76,10 +79,27 @@ export class PersonaManager {
             ?? this.personas.values().next().value?.id
             ?? null;
         }
+        // 后端 active_persona_id 为准（跨设备一致），对齐 ST：选中即当前使用
+        try {
+          const activeResp = await api.get<{ activePersonaId: string | null }>('/api/personas/active');
+          if (activeResp?.activePersonaId && this.personas.has(activeResp.activePersonaId)) {
+            this.settings.activePersonaId = activeResp.activePersonaId;
+          }
+        } catch {
+          // keep local fallback
+        }
       }
     } catch (error) {
       console.error('[PersonaManager] Failed to load personas from backend:', error);
     }
+  }
+
+  /**
+   * 强制从后端重新加载（init 只跑一次，编辑器需要刷新时用）
+   */
+  async reload(): Promise<void> {
+    this.backendInitialized = false;
+    await this.init();
   }
 
   /**
@@ -93,6 +113,11 @@ export class PersonaManager {
       avatar: persona.avatar,
       character_bindings: persona.characterBindings,
       is_default: persona.isDefault,
+      // ST 1.18.0 persona description injection controls
+      persona_show: persona.personaShow ?? false,
+      // ST 枚举（0 IN_PROMPT / 2 TOP_AN / 3 BOTTOM_AN / 4 AT_DEPTH / 9 NONE），默认 4
+      persona_description_position: persona.personaDescriptionPosition ?? 4,
+      persona_description_depth: persona.personaDescriptionDepth ?? 4,
     };
     if (isNew) {
       api.post('/api/personas', payload).catch((e) => {
@@ -211,6 +236,10 @@ export class PersonaManager {
    */
   selectPersona(id: string | null): void {
     this.settings.activePersonaId = id;
+    // 同步后端 active_persona_id（跨设备一致，ST 语义：选中即当前使用）
+    api.put('/api/personas/active', { persona_id: id }).catch((e) => {
+      console.error('[PersonaManager] Failed to set active persona on backend:', e);
+    });
     emitEvent('persona:selected', { personaId: id });
   }
 
@@ -219,6 +248,9 @@ export class PersonaManager {
    */
   setDefaultPersona(id: string): void {
     this.settings.defaultPersonaId = id;
+    api.put(`/api/personas/${id}`, { is_default: true }).catch((e) => {
+      console.error('[PersonaManager] Failed to set default persona on backend:', e);
+    });
   }
 
   /**

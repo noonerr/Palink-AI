@@ -197,6 +197,10 @@ module.exports = {
       transitionTimingFunction: {
         'aurora': 'cubic-bezier(0.4, 0, 0.2, 1)',
       },
+      // Tailwind 3 默认时长表无 400；CharacterList 滚动塌缩动画（15 处）依赖 duration-400
+      transitionDuration: {
+        '400': '400ms',
+      },
     },
   },
   plugins: [require("tailwindcss-animate")],

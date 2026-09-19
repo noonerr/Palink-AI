@@ -2867,6 +2867,26 @@ async def _assemble_roleplay_prompt_impl(
     if author_note_text is None and user_setting:
         author_note_text = user_setting.author_note or None
 
+    # [ST-ALIGN P0-3] TOP_AN(2) / BOTTOM_AN(3)：把人设描述拼进作者注记，随 AN 的
+    # 位置、深度、frequency 一起注入 —— 对齐 ST addPersonaDescriptionExtensionPrompt
+    # 的 TOP_AN/BOTTOM_AN 分支（persona 与 AN 合并成一个扩展提示词）。
+    # AN 为空时**不合并**，交给下方 persona 分支独立注入，避免人设丢失。
+    _persona_an = _resolve_active_persona(db, req, user_setting)
+    _persona_merged_into_an = False
+    if _persona_an is not None and author_note_text:
+        try:
+            # ⚠ 解构必须与 _resolve_active_persona 的返回元组长度一致（(text, pos, depth)）。
+            # 本段在装配主流程且位于 try 之外，解构错位会抛 ValueError 中断整次装配。
+            _p_text, _p_pos, _p_depth = _persona_an
+            if _p_pos == _ST_PERSONA_TOP_AN:
+                author_note_text = _p_text + "\n\n" + author_note_text
+                _persona_merged_into_an = True
+            elif _p_pos == _ST_PERSONA_BOTTOM_AN:
+                author_note_text = author_note_text + "\n\n" + _p_text
+                _persona_merged_into_an = True
+        except Exception as _exc:
+            logger.warning("Persona TOP_AN/BOTTOM_AN merge failed: %s", _exc)
+
     # Resolve position (single Integer field, ST 1.18.0 extension_prompt_types):
     #   -1 = NONE          (skip injection)
     #    0 = IN_PROMPT      (after post-history; appended to system prompt end)
@@ -2994,91 +3014,90 @@ async def _assemble_roleplay_prompt_impl(
                     detail=f"unknown position_int={author_note_position_int}",
                 ))
 
-    # Persona description injection (ST 1.18.0). When the active persona has
-    # persona_show=True and a non-empty description, inject it into the prompt
-    # according to persona_description_position:
-    #   0 = in story (depth insertion, depth=4)
-    #   1 = after post-history (append to system_prompt)
-    #   2 = last in chat (append as final system message)
-    #   3 = inactive (skip)
+    # Persona description injection (ST 1.18.0) —— 位置枚举见 personas.js:88-97。
+    # 解析（_resolve_active_persona）已在作者注记之前完成，TOP_AN/BOTTOM_AN 在
+    # 那里已合并进 AN；此处处理其余位置。
+    #   0 IN_PROMPT  → 追加到 system_prompt（ST 为独立 userPersona 块）
+    #   1 AFTER_CHAR → 已废弃，同 IN_PROMPT 处理
+    #   2 TOP_AN     → 已并入 AN 顶部；AN 为空时按 AT_DEPTH 兜底注入
+    #   3 BOTTOM_AN  → 已并入 AN 底部；AN 为空时作为最后一条 system 消息兜底
+    #   4 AT_DEPTH   → 对话中第 depth 条前（depth=4）
+    #   9 NONE       → 不注入
     persona_depth_entry: Optional[DepthInjection] = None
     persona_last_message: Optional[str] = None
-    try:
-        active_persona_id = getattr(user_setting, "active_persona_id", None) if user_setting else None
-        if active_persona_id:
-            active_persona = db.query(Persona).filter(
-                Persona.id == active_persona_id,
-                Persona.user_id == req.user.id,
-            ).first()
-        else:
-            active_persona = None
-        if active_persona is not None and active_persona.persona_show and (active_persona.description or "").strip():
-            persona_text = f"[Persona: {active_persona.description.strip()}]"
-            persona_position = 3
-            pos_val = getattr(active_persona, "persona_description_position", None)
-            if pos_val is not None:
-                try:
-                    persona_position = int(pos_val)
-                except (TypeError, ValueError):
-                    persona_position = 3
-            if persona_position == 3:
-                report.append(PromptAssemblyReportItem(
-                    "persona_description",
-                    "skipped",
-                    "inactive (position=3)",
-                ))
-            elif persona_position == 0:
-                # ST 对齐: 统一队列记录（depth=4, order=100）
-                # Palink 特有映射: ST persona 走 prompt-order 固定槽，此处按
-                # 数字前缀 key 置于 AN 之前（背景设定先于指令性内容）
-                persona_depth_entry = DepthInjection(
-                    depth=4,
-                    content=persona_text,
-                    role=_ROLE_NAME_TO_INT["system"],
-                    source="persona_description",
-                    sort_key=_KEY_PERSONA_DEPTH,
-                )
-                report.append(PromptAssemblyReportItem(
-                    "persona_description",
-                    "included",
-                    detail=f"position=0 (in-story); depth=4",
-                    tokens_estimate=_estimate_tokens(persona_text),
-                ))
-            elif persona_position == 1:
-                system_prompt = system_prompt + "\n\n" + persona_text
-                report.append(PromptAssemblyReportItem(
-                    "persona_description",
-                    "included",
-                    detail=f"position=1 (after post-history); appended to system_prompt",
-                    tokens_estimate=_estimate_tokens(persona_text),
-                ))
-            elif persona_position == 2:
-                persona_last_message = persona_text
-                report.append(PromptAssemblyReportItem(
-                    "persona_description",
-                    "included",
-                    detail=f"position=2 (last in chat); queued for message insertion",
-                    tokens_estimate=_estimate_tokens(persona_text),
-                ))
-            else:
-                report.append(PromptAssemblyReportItem(
-                    "persona_description",
-                    "skipped",
-                    detail=f"unknown position={persona_position}",
-                ))
+    if _persona_an is None:
+        report.append(PromptAssemblyReportItem(
+            "persona_description",
+            "skipped",
+            detail="no active persona / persona_show=False / empty description",
+        ))
+    else:
+        persona_text, persona_position, persona_depth = _persona_an
+        if _persona_merged_into_an:
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "included",
+                detail="position=2/3 (TOP_AN/BOTTOM_AN); merged into author_note",
+                tokens_estimate=_estimate_tokens(persona_text),
+            ))
+        elif persona_position in (_ST_PERSONA_IN_PROMPT, _ST_PERSONA_AFTER_CHAR):
+            system_prompt = system_prompt + "\n\n" + persona_text
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "included",
+                detail=f"position={persona_position} (IN_PROMPT/AFTER_CHAR); appended to system_prompt",
+                tokens_estimate=_estimate_tokens(persona_text),
+            ))
+        elif persona_position == _ST_PERSONA_TOP_AN:
+            # AN 为空兜底：按 AT_DEPTH 注入，避免人设整体丢失
+            persona_depth_entry = DepthInjection(
+                depth=persona_depth,
+                content=persona_text,
+                role=_ROLE_NAME_TO_INT["system"],
+                source="persona_description",
+                sort_key=_KEY_PERSONA_DEPTH,
+            )
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "included",
+                detail=f"position=2 (TOP_AN); author_note empty → depth={persona_depth} fallback",
+                tokens_estimate=_estimate_tokens(persona_text),
+            ))
+        elif persona_position == _ST_PERSONA_BOTTOM_AN:
+            # AN 为空兜底：作为最后一条 system 消息（沿用旧「聊天末尾」语义）
+            persona_last_message = persona_text
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "included",
+                detail="position=3 (BOTTOM_AN); author_note empty → last system message fallback",
+                tokens_estimate=_estimate_tokens(persona_text),
+            ))
+        elif persona_position == _ST_PERSONA_AT_DEPTH:
+            persona_depth_entry = DepthInjection(
+                depth=persona_depth,
+                content=persona_text,
+                role=_ROLE_NAME_TO_INT["system"],
+                source="persona_description",
+                sort_key=_KEY_PERSONA_DEPTH,
+            )
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "included",
+                detail=f"position=4 (AT_DEPTH); depth={persona_depth}",
+                tokens_estimate=_estimate_tokens(persona_text),
+            ))
+        elif persona_position == _ST_PERSONA_NONE:
+            report.append(PromptAssemblyReportItem(
+                "persona_description",
+                "skipped",
+                detail="inactive (position=9, NONE)",
+            ))
         else:
             report.append(PromptAssemblyReportItem(
                 "persona_description",
                 "skipped",
-                detail="no active persona / persona_show=False / empty description",
+                detail=f"unknown position={persona_position}",
             ))
-    except Exception as exc:
-        logger.warning("Persona description injection lookup failed: %s", exc)
-        report.append(PromptAssemblyReportItem(
-            "persona_description",
-            "skipped",
-            detail=f"lookup_error: {exc}",
-        ))
 
     # Palink slash-command injections (/inject) — read from session.chat_metadata.
     # Each entry: {"content": str, "position": int, "depth": int}
@@ -3704,6 +3723,7 @@ async def _assemble_roleplay_prompt_impl(
     _macro_last_swipe_id: Optional[int] = None
     _macro_current_swipe_id: Optional[int] = None
     _macro_first_included_id: Optional[int] = None
+    _macro_first_included_content: Optional[str] = None
     _macro_first_displayed_id: Optional[int] = None
     try:
         _last_db_msg = (
@@ -3736,6 +3756,8 @@ async def _assemble_roleplay_prompt_impl(
         )
         if _first_db_msg is not None:
             _macro_first_displayed_id = getattr(_first_db_msg, "id", None)
+            # {{firstIncludedMessage}} 内容形态（ST 语义：chat[firstIncludedMessageId].mes）
+            _macro_first_included_content = getattr(_first_db_msg, "content", None) or None
         # firstIncludedMessageId: 实际纳入 prompt 的第一条消息 id
         # 简化: 与 firstDisplayedMessageId 一致（精确值需要跟踪裁剪后的首条消息）
         _macro_first_included_id = _macro_first_displayed_id
@@ -3789,6 +3811,7 @@ async def _assemble_roleplay_prompt_impl(
         # Phase C3 修复: ST 1.18.0 缺失宏上下文 (macros.js:649-657, 721-739)
         chat_id_hash=_macro_chat_id_hash,
         first_included_message_id=_macro_first_included_id,
+        first_included_message=_macro_first_included_content,
         first_displayed_message_id=_macro_first_displayed_id,
         last_swipe_id=_macro_last_swipe_id,
         current_swipe_id=_macro_current_swipe_id,
@@ -4410,6 +4433,71 @@ def _flatten_stat_data(stat_data: Any) -> str:
     return "\n".join(lines)
 
 
+# ── [ST-ALIGN P0-3] Persona 注入位置：ST 1.18 persona_description_positions ──
+# ST 真值（personas.js:88-97）：
+#   IN_PROMPT=0, AFTER_CHAR=1(废弃), TOP_AN=2, BOTTOM_AN=3, AT_DEPTH=4, NONE=9
+#
+# Palink 旧值域（0=对话中depth4 / 1=system_prompt尾 / 2=聊天尾 / 3=不注入）与 ST
+# **数值冲突**：ST 的 2(TOP_AN) 会被当成"聊天尾"注入到错误一端、3(BOTTOM_AN)
+# 会被当成"不注入"静默丢失人设、4(AT_DEPTH) 走 unknown 分支跳过。
+# 自有前端此前只写 0/1/2/3 故自洽，但 silly_tavern.py 会从 ST power_user 原样
+# 同步 persona_description_position 入库，导入 ST 配置即触发错位。
+# 自 2026-09-08 起后端统一按 ST 枚举解释（前端同步改用 ST 值）。
+_ST_PERSONA_IN_PROMPT = 0
+_ST_PERSONA_AFTER_CHAR = 1      # 废弃，按 IN_PROMPT 处理
+_ST_PERSONA_TOP_AN = 2
+_ST_PERSONA_BOTTOM_AN = 3
+_ST_PERSONA_AT_DEPTH = 4
+_ST_PERSONA_NONE = 9
+# AT_DEPTH 深度：ST 由 persona_description_depth 可配，Palink 暂固定 4
+# （与 author_note_depth 默认一致）。可配化登记为 P1。
+_PERSONA_AT_DEPTH_DEFAULT = 4
+
+
+def _resolve_active_persona(
+    db: Session,
+    req: "PromptAssemblyRequest",
+    user_setting: Optional[UserSetting],
+) -> Optional[tuple]:
+    """解析当前生效 persona 的注入文本与 ST 位置枚举。
+
+    返回 `(persona_text, st_position, at_depth)`；以下情况返回 None（宁缺勿错）：
+    无 active_persona_id / persona 不存在 / persona_show=False /
+    description 为空 / 任何查询异常。只读，不写库。
+    """
+    try:
+        active_persona_id = getattr(user_setting, "active_persona_id", None) if user_setting else None
+        if not active_persona_id or req.user is None:
+            return None
+        active_persona = db.query(Persona).filter(
+            Persona.id == active_persona_id,
+            Persona.user_id == req.user.id,
+        ).first()
+        if active_persona is None or not active_persona.persona_show:
+            return None
+        desc = (active_persona.description or "").strip()
+        if not desc:
+            return None
+        pos_val = getattr(active_persona, "persona_description_position", None)
+        try:
+            pos = int(pos_val) if pos_val is not None else _ST_PERSONA_NONE
+        except (TypeError, ValueError):
+            pos = _ST_PERSONA_NONE
+        # AT_DEPTH 的可配深度（ST persona_description_depth，personas.js:632），
+        # 脏值/负值回退默认 4
+        depth_val = getattr(active_persona, "persona_description_depth", None)
+        try:
+            depth = int(depth_val) if depth_val is not None else _PERSONA_AT_DEPTH_DEFAULT
+        except (TypeError, ValueError):
+            depth = _PERSONA_AT_DEPTH_DEFAULT
+        if depth < 0:
+            depth = _PERSONA_AT_DEPTH_DEFAULT
+        return (f"[Persona: {desc}]", pos, depth)
+    except Exception as exc:
+        logger.warning("Persona description lookup failed: %s", exc)
+        return None
+
+
 def _load_session_stat_data(db: Session, session_id: str, group_id: Optional[str] = None) -> Any:
     """[PHASE-1] 读取当前会话的 MVU stat_data：群聊优先群组变量
     （GroupChat.chat_metadata，群聊装配走 _g_mode 同源）、回退会话变量
@@ -4440,6 +4528,58 @@ def _load_session_stat_data(db: Session, session_id: str, group_id: Optional[str
         except Exception:
             continue
     return None
+
+
+def _load_effective_stat_data(
+    db: Session,
+    session_id: str,
+    group_id: Optional[str] = None,
+    branch_id: Optional[str] = None,
+) -> Any:
+    """[ST-ALIGN P0-2] 读取「当前生效」的 MVU stat_data：消息级快照优先，回落会话级。
+
+    对齐 ST 1.18：变量镜像存在每条消息的 extra.variables，swipe / 重生成 /
+    切分支时自动取该消息对应的版本，变量随分支回退。
+
+    Palink 此前只读 session 级 chat_metadata.variables（见
+    _load_session_stat_data），导致 swipe / 重生成后：
+      - 前端状态栏按消息读（Mvu.getMvuData({type:'message'})）→ 显示正确
+      - 后端注入给模型的 stat_data 仍是最新值 → 模型看到的状态
+        与用户眼前显示的分支状态不一致
+
+    数据其实一直是齐的：websocket.py 落库时同时写了
+    cur_meta["variables"]（session 级）与 msg_extra["variables"]（消息级），
+    只是装配侧没读消息级。这里补上读取优先级即可，无 schema 变更。
+
+    群聊保持原行为（群组变量源不同，不做消息级回退，避免引入回归）。
+    只读，不写库；任何异常回落旧逻辑（宁缺勿错）。"""
+    if group_id:
+        return _load_session_stat_data(db, session_id, group_id)
+
+    try:
+        q = db.query(CharacterChatMessage).filter(
+            CharacterChatMessage.session_id == session_id,
+        )
+        if branch_id:
+            q = q.filter(CharacterChatMessage.branch_id == branch_id)
+        else:
+            q = q.filter(CharacterChatMessage.branch_id.is_(None))
+        # 只回看最近若干条：stat_data 每轮都会写，命中通常在 1-2 条内。
+        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
+        for row in rows:
+            extra = getattr(row, "extra", None)
+            if not isinstance(extra, dict):
+                continue
+            variables = extra.get("variables")
+            if not isinstance(variables, dict):
+                continue
+            stat = variables.get("stat_data")
+            if isinstance(stat, dict) and stat:
+                return stat
+    except Exception:
+        pass
+
+    return _load_session_stat_data(db, session_id, group_id)
 
 
 def _memory_gate_should_skip(
@@ -4483,9 +4623,14 @@ async def _append_memory_context(
         _card_probe = req.db.begin_nested()
         from ..services.status_bar_detector import _card_has_mvu_scripts
         if req.char is not None and _card_has_mvu_scripts(req.char):
-            # 群聊优先群组变量（GroupChat.chat_metadata，与装配 _g_mode 同源），
-            # 回退会话变量；脏形态全部由 helper 静默兜底
-            _stat = _load_session_stat_data(req.db, req.session_id, getattr(req, "group_id", None))
+            # 取值优先级：消息级 extra.variables（swipe/分支回退）> 群组变量
+            # > 会话变量；脏形态全部由 helper 静默兜底。见 _load_effective_stat_data。
+            _stat = _load_effective_stat_data(
+                req.db,
+                req.session_id,
+                getattr(req, "group_id", None),
+                getattr(req, "branch_id", None),
+            )
             _flat = _flatten_stat_data(_stat)
             if _flat:
                 _kept: list[str] = []

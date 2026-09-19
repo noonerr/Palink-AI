@@ -1,71 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
-import { 
-  User, 
-  Sparkles, 
-  AlertCircle, 
-  Users, 
-  Shield, 
-  HelpCircle,
-  Save,
-  Plus,
-  Edit3,
-  Trash2,
+import {
+  User,
+  AlertCircle,
+  Users,
+  Shield,
   Bot,
-  Database,
-  UploadCloud,
-  LogOut,
-  ChevronDown,
   Sun,
-  Moon,
-  RefreshCw,
   Zap,
   MessageSquareText,
-  Eye,
-  Image,
   Key,
-  Globe,
-  Settings2,
-  Sliders,
-  Download,
   Puzzle,
-  MonitorSmartphone,
-  BookOpen
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { api, invalidateCache } from '@/services/api';
-import {
-  WORLD_INFO_GLOBAL_DEFAULTS,
-  resolveWorldInfoGlobalSettings,
-  sanitizeWorldInfoGlobalSettings,
-  buildWorldInfoGlobalSavePayload,
-  type WorldInfoGlobalSettings,
-} from '@/lib/worldbook-global-settings';
-import { getSmartCardAssetMode, setSmartCardAssetMode } from '@/components/ui/custom/smart-card-runtime/asset-mode';
+import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { GlassCard } from '@/components/ui/custom/GlassCard';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { ModelSelector } from '@/components/ui/custom/ModelSelector';
-import { Switch } from '@/components/ui/switch';
 import { OCSettings } from '@/components/ui/custom/OCSettings';
 import { PromptSettings } from './settings-tabs/PromptSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelManagementTab } from './settings-tabs/ModelManagementTab';
 import { AboutTab } from './settings-tabs/AboutTab';
 import { ProfileTab } from './settings-tabs/ProfileTab';
 import { AuthSettingsTab } from './settings-tabs/AuthSettingsTab';
 import { AdminPluginsTab } from './settings-tabs/AdminPluginsTab';
-import { EMOJIS } from './settings-constants';
+import { AppearanceTab } from './settings-tabs/AppearanceTab';
+import { RoleplayEngineTab } from './settings-tabs/RoleplayEngineTab';
+import { AdminDefaultsTab } from './settings-tabs/AdminDefaultsTab';
+import { AdminUsersTab } from './settings-tabs/AdminUsersTab';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { useRoleplayTheme, RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
-import { PresetManager } from '@/components/ui/custom/PresetManager';
-import type { Model, Provider, User as UserType, RoleplayChatStyle, Theme } from '@/types';
+import type { Model, Provider, User as UserType, Theme } from '@/types';
 
 interface SettingsViewProps {
   token: string;
@@ -83,384 +52,7 @@ interface SettingsViewProps {
   onLangToggle?: () => void;
 }
 
-type SettingsTab = 'profile' | 'roleplay_engine' | 'appearance' | 'models' | 'memory' | 'oc' | 'prompts' | 'admin_users' | 'admin_auth' | 'admin_defaults' | 'admin_starters' | 'admin_plugins' | 'about' | 'usage' | 'user_usage';
-type ModelSubTab = 'llm' | 'local' | 'vision';
-type RoleplayEngineSubTab = 'theme' | 'regex' | 'preset' | 'sillytavern';
-
-function RoleplayThemeSettingsPanel() {
-  const { themes, currentThemeId, setCurrentThemeId, createTheme, deleteTheme, exportTheme, importTheme, updateTheme } = useRoleplayTheme();
-  const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState('');
-
-  return (
-    <div className="space-y-4">
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h4 className="text-lg font-medium">主题预设</h4>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-              <UploadCloud size={16} className="mr-2" />
-              导入
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => {
-              const data = exportTheme(currentThemeId);
-              const blob = new Blob([data], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `theme-${currentThemeId}.json`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}>
-              <Download size={16} className="mr-2" />
-              导出
-            </Button>
-          </div>
-        </div>
-
-        <div className="space-y-2 mb-4">
-          {themes.map((theme) => (
-            <div
-              key={theme.id}
-              className={cn(
-                'flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors',
-                currentThemeId === theme.id
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border/50 hover:border-border'
-              )}
-              onClick={() => setCurrentThemeId(theme.id)}
-            >
-              <span className="text-sm font-medium">{theme.name}</span>
-              {themes.length > 1 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteTheme(theme.id);
-                  }}
-                >
-                  <Trash2 size={14} />
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => createTheme({ name: '新主题' })}
-          className="w-full"
-        >
-          <Plus size={16} className="mr-2" />
-          新建主题
-        </Button>
-
-        {importOpen && (
-          <div className="mt-4 space-y-2">
-            <textarea
-              className="w-full h-24 p-2 text-sm rounded-md border border-border bg-background resize-none"
-              placeholder="粘贴主题 JSON..."
-              value={importText}
-              onChange={(e) => setImportText(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { setImportOpen(false); setImportText(''); }}
-              >
-                取消
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  const result = importTheme(importText);
-                  if (result) {
-                    toast.success('主题导入成功');
-                    setImportOpen(false);
-                    setImportText('');
-                  } else {
-                    toast.error('主题导入失败');
-                  }
-                }}
-              >
-                导入
-              </Button>
-            </div>
-          </div>
-        )}
-      </GlassCard>
-
-      <GlassCard className="p-4 md:p-6">
-        <h4 className="text-lg font-medium mb-4">聊天样式</h4>
-        <div className="flex gap-2">
-          {(['flat', 'bubbles', 'document'] as const).map((style) => (
-            <Button
-              key={style}
-              variant={themes.find(t => t.id === currentThemeId)?.chatStyle === style ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => updateTheme(currentThemeId, { chatStyle: style })}
-              className="flex-1"
-            >
-              {style === 'flat' && '扁平'}
-              {style === 'bubbles' && '气泡'}
-              {style === 'document' && '文档'}
-            </Button>
-          ))}
-        </div>
-      </GlassCard>
-    </div>
-  );
-}
-
-function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void }) {
-  const { currentTheme, currentThemeId, updateTheme } = useRoleplayTheme();
-
-  // 世界书全局设置（批次 C 前端半）：存于 silly_tavern_settings.world_info_settings
-  const [wiSettings, setWiSettings] = useState<WorldInfoGlobalSettings>({ ...WORLD_INFO_GLOBAL_DEFAULTS });
-  const [wiLoaded, setWiLoaded] = useState(false);
-  const [wiSaving, setWiSaving] = useState(false);
-
-  useEffect(() => {
-    const loadWorldInfo = async () => {
-      try {
-        // 读通道：POST /api/settings/get 返回的 settings 字段是 JSON 字符串
-        const res = await api.post<{ settings?: string }>('/api/settings/get', {});
-        const parsed = res?.settings ? JSON.parse(res.settings) : {};
-        const wis = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? parsed.world_info_settings
-          : undefined;
-        setWiSettings(resolveWorldInfoGlobalSettings(wis));
-      } catch (e) {
-        console.error('Failed to load world info settings:', e);
-        setWiSettings({ ...WORLD_INFO_GLOBAL_DEFAULTS });
-      } finally {
-        setWiLoaded(true);
-      }
-    };
-    loadWorldInfo();
-  }, []);
-
-  const handleSaveWorldInfo = async () => {
-    if (wiSaving) return;
-    setWiSaving(true);
-    try {
-      // 保存前钳制 UI 输入范围，并把钳制结果回写表单
-      const next = sanitizeWorldInfoGlobalSettings(wiSettings);
-      setWiSettings(next);
-      // 写通道：/api/settings/save 对除 extension_settings 外的字段是整 blob 覆盖，
-      // 必须先读全量 settings 再仅替换 world_info_settings（不覆盖其他数据）
-      const res = await api.post<{ settings?: string }>('/api/settings/get', {});
-      const full = res?.settings ? JSON.parse(res.settings) : null;
-      const payload = buildWorldInfoGlobalSavePayload(full, next);
-      await api.post('/api/settings/save', payload);
-      toast.success('世界书全局设置已保存');
-    } catch (e) {
-      console.error('Failed to save world info settings:', e);
-      toast.error('保存世界书全局设置失败');
-    } finally {
-      setWiSaving(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <Sliders size={20} className="text-muted-foreground shrink-0" />
-            <div>
-              <p className="font-medium">正则引擎</p>
-              <p className="text-xs text-muted-foreground">SillyTavern 兼容正则引擎（LRU 缓存、允许列表、深度过滤）</p>
-            </div>
-          </div>
-          <div className="text-xs text-muted-foreground">已就绪</div>
-        </div>
-      </GlassCard>
-
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <Puzzle size={20} className="text-muted-foreground shrink-0" />
-            <div>
-              <p className="font-medium">插件系统</p>
-              <p className="text-xs text-muted-foreground">SillyTavern 扩展插件管理</p>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onOpenPlugins}
-            className="min-h-[44px]"
-          >
-            打开插件管理
-          </Button>
-        </div>
-      </GlassCard>
-
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <BookOpen size={20} className="text-muted-foreground shrink-0" />
-            <div>
-              <p className="font-medium">世界书全局设置</p>
-              <p className="text-xs text-muted-foreground">SillyTavern World Info 全局扫描与注入行为（存于 silly_tavern_settings.world_info_settings）</p>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!wiLoaded || wiSaving}
-            onClick={() => void handleSaveWorldInfo()}
-            className="min-h-[44px]"
-          >
-            <Save size={16} className="mr-2" />
-            {wiSaving ? '保存中…' : '保存'}
-          </Button>
-        </div>
-
-        <div className="space-y-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">扫描深度</p>
-              <p className="text-xs text-muted-foreground">关键词扫描的聊天历史范围（ST Scan Depth，条目未自定义深度时生效，0-1000，默认 2）</p>
-            </div>
-            <Input
-              type="number"
-              min={0}
-              max={1000}
-              className="w-24 shrink-0"
-              disabled={!wiLoaded}
-              value={wiSettings.world_info_depth}
-              onChange={(e) => {
-                const num = e.target.value === '' ? 0 : Number(e.target.value);
-                if (!Number.isNaN(num)) {
-                  setWiSettings((s) => ({ ...s, world_info_depth: num }));
-                }
-              }}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">递归扫描</p>
-              <p className="text-xs text-muted-foreground">新激活条目的内容再次参与关键词扫描（ST Recursive Scan，ST 1.18 默认关）</p>
-            </div>
-            <Switch
-              className="shrink-0"
-              disabled={!wiLoaded}
-              checked={wiSettings.world_info_recursive}
-              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_recursive: v }))}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">预算百分比</p>
-              <p className="text-xs text-muted-foreground">世界书注入 token 预算占上下文长度的百分比（ST Context % Budget，0-100，默认 25）</p>
-            </div>
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              className="w-24 shrink-0"
-              disabled={!wiLoaded}
-              value={wiSettings.world_info_budget}
-              onChange={(e) => {
-                const num = e.target.value === '' ? 0 : Number(e.target.value);
-                if (!Number.isNaN(num)) {
-                  setWiSettings((s) => ({ ...s, world_info_budget: num }));
-                }
-              }}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">预算上限</p>
-              <p className="text-xs text-muted-foreground">世界书注入 token 绝对上限（ST Budget Cap，0 = 不启用）</p>
-            </div>
-            <Input
-              type="number"
-              min={0}
-              className="w-24 shrink-0"
-              disabled={!wiLoaded}
-              value={wiSettings.world_info_budget_cap}
-              onChange={(e) => {
-                const num = e.target.value === '' ? 0 : Number(e.target.value);
-                if (!Number.isNaN(num)) {
-                  setWiSettings((s) => ({ ...s, world_info_budget_cap: num }));
-                }
-              }}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">扫描含说话人名</p>
-              <p className="text-xs text-muted-foreground">关键词扫描范围包含消息的说话人名前缀（ST Include Names，默认开）</p>
-            </div>
-            <Switch
-              className="shrink-0"
-              disabled={!wiLoaded}
-              checked={wiSettings.world_info_include_names}
-              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_include_names: v }))}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">区分大小写</p>
-              <p className="text-xs text-muted-foreground">关键词匹配时区分大小写（ST Case Sensitive，默认关）</p>
-            </div>
-            <Switch
-              className="shrink-0"
-              disabled={!wiLoaded}
-              checked={wiSettings.world_info_case_sensitive}
-              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_case_sensitive: v }))}
-            />
-          </div>
-
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">全词匹配</p>
-              <p className="text-xs text-muted-foreground">仅匹配完整单词而非内容片段（ST Match Whole Words，默认关）</p>
-            </div>
-            <Switch
-              className="shrink-0"
-              disabled={!wiLoaded}
-              checked={wiSettings.world_info_match_whole_words}
-              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, world_info_match_whole_words: v }))}
-            />
-          </div>
-
-          <div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium">插入策略</p>
-              <p className="text-xs text-muted-foreground">角色世界书与全局世界书条目的插入顺序（ST Character Lore Insertion Strategy，默认角色优先）</p>
-            </div>
-            <div className="mt-2 flex gap-2">
-              {([0, 1, 2] as const).map((v) => (
-                <Button
-                  key={v}
-                  variant={wiSettings.world_info_character_strategy === v ? 'default' : 'outline'}
-                  size="sm"
-                  className="flex-1"
-                  disabled={!wiLoaded}
-                  onClick={() => setWiSettings((s) => ({ ...s, world_info_character_strategy: v }))}
-                >
-                  {v === 0 ? '均匀' : v === 1 ? '角色优先' : '全局优先'}
-                </Button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </GlassCard>
-    </div>
-  );
-}
+type SettingsTab = 'profile' | 'roleplay_engine' | 'appearance' | 'models' | 'oc' | 'prompts' | 'admin_users' | 'admin_auth' | 'admin_defaults' | 'admin_plugins' | 'about' | 'usage' | 'user_usage';
 
 export function SettingsView({
   token,
@@ -482,7 +74,7 @@ export function SettingsView({
   const bottomPadding = useMobileBottomPadding();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const state = location.state as { activeTab?: string } | null;
-    if (state?.activeTab && ['profile', 'roleplay_engine', 'appearance', 'models', 'memory', 'oc', 'prompts', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_starters', 'admin_plugins', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
+    if (state?.activeTab && ['profile', 'roleplay_engine', 'appearance', 'models', 'oc', 'prompts', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
       return state.activeTab as SettingsTab;
     }
     return 'profile';
@@ -491,28 +83,20 @@ export function SettingsView({
     const state = location.state as { activeTab?: string } | null;
     return !!state?.activeTab;
   });
-  const [modelSubTab, setModelSubTab] = useState<ModelSubTab>('llm');
-  const [roleplayEngineSubTab, setRoleplayEngineSubTab] = useState<RoleplayEngineSubTab>('theme');
-
-  // Roleplay engine regex scripts state
-  const [regexScripts, setRegexScripts] = useState<any[]>([]);
-  const [regexScriptsLoading, setRegexScriptsLoading] = useState(false);
-
-  // Roleplay engine preset state
-  const [presets, setPresets] = useState<any[]>([]);
-  const [currentPreset, setCurrentPreset] = useState<any>(null);
-  const [presetManagerOpen, setPresetManagerOpen] = useState(false);
-  const [presetsLoading, setPresetsLoading] = useState(false);
-
-  // ST 1.18.0 context template state — loaded alongside presets so the
-  // preset editor can show a template selector bound to preset.context_template_name.
-  const [contextTemplates, setContextTemplates] = useState<any[]>([]);
-  const [contextTemplatesLoading, setContextTemplatesLoading] = useState(false);
 
   useEffect(() => {
     if (location.state) {
       window.history.replaceState({}, '');
     }
+  }, []);
+
+  // 返回键已按用户拍板（2026-09-06 实验）移除：dock 再点「设置」= 回到设置菜单
+  // （iOS「点活跃 tab 回根」语义，事件由 Sidebar MobileBottomNav 派发）。
+  // 注意：四槽常驻下本组件的 useLocation 被钉在 /settings，不能用 pathname 判断离开。
+  useEffect(() => {
+    const handler = () => setMobileTabSelected(false);
+    window.addEventListener('palink:settings-root', handler);
+    return () => window.removeEventListener('palink:settings-root', handler);
   }, []);
 
   useEffect(() => {
@@ -539,12 +123,6 @@ export function SettingsView({
   }, []);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [usersList, setUsersList] = useState<UserType[]>([]);
-  // 用户 token 额度编辑（管理员）
-  const [quotaEditUser, setQuotaEditUser] = useState<UserType | null>(null);
-  const [quotaInput, setQuotaInput] = useState('');
-  const [quotaResetUsed, setQuotaResetUsed] = useState(false);
-  const [quotaMonthlyReset, setQuotaMonthlyReset] = useState(false);
-  const [quotaSaving, setQuotaSaving] = useState(false);
   const [localModels, setLocalModels] = useState<any[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   
@@ -555,8 +133,6 @@ export function SettingsView({
     testing: boolean 
   }>>({});
   
-  // Ollama model running status
-  const [ollamaModelStatus, setOllamaModelStatus] = useState<Record<string, boolean>>({});
   
   // Profile state
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
@@ -566,42 +142,6 @@ export function SettingsView({
   const [pwdNew, setPwdNew] = useState('');
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
-  // Memory mode state
-  const [memoryMode, setMemoryMode] = useState<string>('rule');
-  // 分层记忆 Phase 1：记忆区注入预算档位（0=紧凑750/1=标准1500/2=加量3000/3=尽量多6000）
-  const [memoryBudgetLevel, setMemoryBudgetLevel] = useState<number>(1);
-  const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
-  const [promptLanguage, setPromptLanguage] = useState<string>('auto');
-  const [characterDisplayMode, setCharacterDisplayMode] = useState<string>('framed');
-  // MVU 副 AI 变量更新（2026-08-19）：主模型未输出变量块时用副模型补
-  const [mvuSecondaryEnabled, setMvuSecondaryEnabled] = useState<boolean>(false);
-  const [mvuSecondaryModel, setMvuSecondaryModel] = useState<string>('');
-  // 亮色模式智能卡对比度自动增强开关（localStorage 持久化，增强器实时读取）
-  const [autoContrast, setAutoContrast] = useState<boolean>(true);
-  // 角色扮演角色卡头像展示开关（localStorage 持久化，Message 实时读取；默认开启）
-  const [showCharacterAvatar, setShowCharacterAvatar] = useState<boolean>(true);
-  // 智能卡第三方资源加载模式（localStorage 持久化；默认 direct 用户直连，
-  // 开启 = proxy 服务器中转；CharacterCardRenderer 监听事件实时重建）
-  const [smartCardAssetProxy, setSmartCardAssetProxy] = useState<boolean>(
-    () => getSmartCardAssetMode() === 'proxy'
-  );
-
-  // Admin defaults state
-  const [defChat, setDefChat] = useState(systemDefaults.default_chat_model || '');
-  const [defWs, setDefWs] = useState(systemDefaults.default_workspace_model || '');
-  const [defOutline, setDefOutline] = useState(systemDefaults.default_outline_model || '');
-  const [dailyTopicModel, setDailyTopicModel] = useState(systemDefaults.daily_topic_model || '');
-  const [defCharacterParse, setDefCharacterParse] = useState(systemDefaults.default_character_parse_model || '');
-  const [defCharacterTranslate, setDefCharacterTranslate] = useState(systemDefaults.default_character_translate_model || '');
-  const [defCharacterChat, setDefCharacterChat] = useState(systemDefaults.default_character_chat_model || '');
-  const [defSummarization, setDefSummarization] = useState(systemDefaults.default_summarization_model || '');
-  const [defOCAnalysis, setDefOCAnalysis] = useState(systemDefaults.default_oc_analysis_model || '');
-  const [allowOCAnalysis, setAllowOCAnalysis] = useState(systemDefaults.allow_oc_analysis !== false);
-  const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
-  const [startersExpanded, setStartersExpanded] = useState(false);
-  const [imageCleanupEnabled, setImageCleanupEnabled] = useState(true);
-  const [imageCleanupMaxAge, setImageCleanupMaxAge] = useState(30);
-  const [imageCleanupExpanded, setImageCleanupExpanded] = useState(false);
   const isMobile = useIsMobile();
   const isDesktop = !isMobile;
 
@@ -617,290 +157,13 @@ export function SettingsView({
     if (isAdmin) {
       fetchProviders();
       fetchUsers();
-      fetchStarters();
       fetchLocalModels();
-      fetchImageCleanupConfig();
     }
-    // Load memory settings
-    fetchMemoryMode();
-    fetchRegexPluginsAndScripts();
-    fetchPresets();
-    fetchContextTemplates();
   }, [isAdmin]);
 
-  const isLocalProvider = (provider: any): boolean => {
-    const localKeywords = ['ollama', 'localhost', '127.0.0.1'];
-    const providerName = (provider.name || '').toLowerCase();
-    const baseUrl = (provider.base_url || '').toLowerCase();
-    return localKeywords.some(keyword => 
-      providerName.includes(keyword) || baseUrl.includes(keyword)
-    ) || baseUrl.startsWith('ollama:');
-  };
 
-  const fetchMemoryMode = async () => {
-    try {
-      const settings = await api.get('/api/users/me/settings', { cacheTtlMs: 30_000 });
-      setMemoryMode(settings.memory_mode || 'rule');
-      setMemoryBudgetLevel(typeof settings.memory_budget_level === 'number' ? settings.memory_budget_level : 1);
-      setShowModelReasoning(settings.show_model_reasoning !== false);
-      setPromptLanguage(settings.prompt_language || 'auto');
-      setCharacterDisplayMode(settings.character_display_mode || 'framed');
-      setMvuSecondaryEnabled(settings.mvu_secondary_enabled === true);
-      setMvuSecondaryModel(settings.mvu_secondary_model || '');
-    } catch (e) {
-      console.error('Failed to fetch memory mode:', e);
-    }
-  };
 
-  useEffect(() => {
-    try {
-      setAutoContrast(localStorage.getItem('palink-auto-contrast') !== '0');
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
-  useEffect(() => {
-    try {
-      setShowCharacterAvatar(localStorage.getItem('palink-rp-character-avatar') !== '0');
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const handleToggleAutoContrast = (checked: boolean) => {
-    setAutoContrast(checked);
-    try {
-      localStorage.setItem('palink-auto-contrast', checked ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-    window.dispatchEvent(new CustomEvent('palink-auto-contrast-changed', { detail: { enabled: checked } }));
-  };
-
-  const handleToggleCharacterAvatar = (checked: boolean) => {
-    setShowCharacterAvatar(checked);
-    try {
-      localStorage.setItem('palink-rp-character-avatar', checked ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-    window.dispatchEvent(new CustomEvent('palink-rp-character-avatar-changed', { detail: { enabled: checked } }));
-  };
-
-  const handleToggleSmartCardAssetProxy = (checked: boolean) => {
-    setSmartCardAssetProxy(checked);
-    setSmartCardAssetMode(checked ? 'proxy' : 'direct');
-  };
-
-  const handleSaveMemoryMode = async (newMode: string) => {
-    try {
-      await api.put('/api/users/me/settings', { memory_mode: newMode });
-      invalidateCache('/api/users/me/settings');
-      setMemoryMode(newMode);
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
-    } catch (e) {
-      console.error('Failed to save memory mode:', e);
-      toast.error('保存记忆模式失败');
-    }
-  };
-
-  // 分层记忆 Phase 1：记忆区注入档位切换（即时保存，模式对齐 handleSaveMemoryMode）
-  const handleSaveMemoryBudgetLevel = async (level: number) => {
-    try {
-      await api.put('/api/users/me/settings', { memory_budget_level: level });
-      invalidateCache('/api/users/me/settings');
-      setMemoryBudgetLevel(level);
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
-    } catch (e) {
-      console.error('Failed to save memory budget level:', e);
-      toast.error('保存记忆注入档位失败');
-    }
-  };
-
-  // MVU 副 AI 变量更新：开关 + 副模型 ID
-  const handleSaveMvuSecondary = async (patch: { mvu_secondary_enabled?: boolean; mvu_secondary_model?: string }) => {
-    try {
-      await api.put('/api/users/me/settings', patch);
-      invalidateCache('/api/users/me/settings');
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated'));
-      toast.success('副 AI 变量更新设置已保存');
-    } catch (e) {
-      console.error('Failed to save MVU secondary settings:', e);
-      toast.error('保存副 AI 设置失败');
-    }
-  };
-
-  const handleSaveModelReasoning = async (enabled: boolean) => {
-    try {
-      await api.put('/api/users/me/settings', { show_model_reasoning: enabled });
-      invalidateCache('/api/users/me/settings');
-      setShowModelReasoning(enabled);
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { showModelReasoning: enabled } }));
-    } catch (e) {
-      console.error('Failed to save model reasoning setting:', e);
-      toast.error('保存深度思考设置失败');
-    }
-  };
-
-  const handleSavePromptLanguage = async (newLang: string) => {
-    try {
-      await api.put('/api/users/me/settings', { prompt_language: newLang });
-      invalidateCache('/api/users/me/settings');
-      setPromptLanguage(newLang);
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { promptLanguage: newLang } }));
-    } catch (e) {
-      console.error('Failed to save prompt language:', e);
-      toast.error('保存提示词语言失败');
-    }
-  };
-
-  const handleSaveCharacterDisplayMode = async (mode: string) => {
-    try {
-      await api.put('/api/users/me/settings', { character_display_mode: mode });
-      invalidateCache('/api/users/me/settings');
-      setCharacterDisplayMode(mode);
-      window.dispatchEvent(new CustomEvent('userSettingsUpdated', { detail: { characterDisplayMode: mode } }));
-    } catch (e) {
-      console.error('Failed to save character display mode:', e);
-      toast.error('保存角色扮演显示模式失败');
-    }
-  };
-
-  const fetchRegexPluginsAndScripts = async () => {
-    setRegexScriptsLoading(true);
-    try {
-      const plugins: any[] = await api.get('/api/plugins');
-      const regexTypes = ['regex_scripts', 'regex_script_single'];
-      const regexPlugs = plugins.filter((p: any) => regexTypes.includes(p.plugin_type));
-      const allScripts: any[] = [];
-      await Promise.all(
-        regexPlugs.map(async (plugin: any) => {
-          try {
-            const data = await api.get(`/api/plugins/${plugin.id}`);
-            const scripts = (data.scripts || []).filter((s: any) => s.script_type === 'regex');
-            scripts.forEach((s: any) => {
-              allScripts.push({ ...s, plugin_id: plugin.id });
-            });
-          } catch (e) {
-            console.error('Failed to fetch plugin scripts:', e);
-          }
-        })
-      );
-      allScripts.sort((a, b) => (a.order_no ?? 0) - (b.order_no ?? 0));
-      setRegexScripts(allScripts);
-    } catch (e) {
-      console.error('Failed to fetch regex plugins:', e);
-    } finally {
-      setRegexScriptsLoading(false);
-    }
-  };
-
-  const handleToggleRegexScript = async (pluginId: string, scriptId: string) => {
-    try {
-      await api.put(`/api/plugins/${pluginId}/scripts/${scriptId}/toggle`);
-      await fetchRegexPluginsAndScripts();
-      toast.success('脚本状态已更新');
-    } catch (e) {
-      toast.error('操作失败');
-      console.error('Failed to toggle script:', e);
-    }
-  };
-
-  const handleImportRegex = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const scripts = JSON.parse(text);
-        const result: any = await api.post('/api/plugins/import/regex-target', {
-          scripts,
-          target: 'global',
-        });
-        await fetchRegexPluginsAndScripts();
-        toast.success(`已导入 ${result.count || scripts.length} 条正则脚本`);
-      } catch (err: any) {
-        toast.error(err?.message || '正则脚本导入失败');
-      }
-    };
-    input.click();
-  };
-
-  const handleExportRegex = () => {
-    const blob = new Blob([JSON.stringify(regexScripts, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'regex-scripts.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const fetchPresets = async () => {
-    setPresetsLoading(true);
-    try {
-      await api.post('/api/roleplay/presets/ensure-defaults');
-      const data = await api.get('/api/roleplay/presets');
-      setPresets(data);
-      if (!currentPreset && data.length > 0) {
-        const def = data.find((p: any) => p.is_default) || data[0];
-        setCurrentPreset(def);
-      }
-    } catch (e) {
-      console.error('Failed to load presets:', e);
-    } finally {
-      setPresetsLoading(false);
-    }
-  };
-
-  // ST 1.18.0 context templates — fetch the list so the preset editor can
-  // show a template selector. Idempotent: ensure-builtin writes seeds if missing.
-  const fetchContextTemplates = async () => {
-    setContextTemplatesLoading(true);
-    try {
-      await api.post('/api/roleplay/context-templates/ensure-builtin');
-      const data = await api.get('/api/roleplay/context-templates');
-      setContextTemplates(data);
-    } catch (e) {
-      console.error('Failed to load context templates:', e);
-    } finally {
-      setContextTemplatesLoading(false);
-    }
-  };
-
-  const handlePresetChange = (preset: any) => {
-    setCurrentPreset(preset);
-  };
-
-  const handleUpdatePresetParam = async (key: string, value: number) => {
-    if (!currentPreset) return;
-    const next = { ...currentPreset, [key]: value };
-    setCurrentPreset(next);
-    try {
-      await api.put(`/api/roleplay/presets/${currentPreset.id}`, { [key]: value });
-    } catch (e) {
-      console.error('Failed to update preset:', e);
-    }
-  };
-
-  // ST 1.18.0 context template binding — update preset.context_template_name.
-  // Empty/null falls back to "Default" on the backend (passthrough behavior).
-  const handleUpdatePresetContextTemplate = async (templateName: string) => {
-    if (!currentPreset) return;
-    const next = { ...currentPreset, context_template_name: templateName || null };
-    setCurrentPreset(next);
-    try {
-      await api.put(`/api/roleplay/presets/${currentPreset.id}`, {
-        context_template_name: templateName || null,
-      });
-    } catch (e) {
-      console.error('Failed to update context template binding:', e);
-    }
-  };
 
   const fetchLocalModels = async () => {
     try {
@@ -926,17 +189,6 @@ export function SettingsView({
     }
   };
 
-  const [mmprojFiles, setMmprojFiles] = useState<Array<{filename: string; path: string; size_bytes: number}>>([]);
-  const [mmprojSelectorFor, setMmprojSelectorFor] = useState<string | null>(null);
-
-  const fetchMmprojFiles = async () => {
-    try {
-      const files = await api.get('/api/admin/models/local/mmproj-files');
-      setMmprojFiles(files);
-    } catch (e) {
-      console.error('Failed to fetch mmproj files:', e);
-    }
-  };
 
   const handleMmprojToggle = async (modelId: string, enabled: boolean) => {
     try {
@@ -951,21 +203,6 @@ export function SettingsView({
     }
   };
 
-  const handleMaxConcurrentChange = async (modelId: string, maxConcurrent: number) => {
-    try {
-      const modelName = modelId.replace('local:', '');
-      await api.put(`/api/admin/models/local/${modelName}/max-concurrent`, {
-        max_concurrent: maxConcurrent,
-      });
-      setLocalModels(prev => prev.map(m =>
-        m.id === modelId ? { ...m, max_concurrent: maxConcurrent } : m
-      ));
-      toast.success(`并发数已设置为 ${maxConcurrent}`);
-    } catch (e) {
-      console.error(e);
-      toast.error('设置并发数失败');
-    }
-  };
 
 
 
@@ -1077,55 +314,8 @@ export function SettingsView({
     }
   };
 
-  const openQuotaEditor = (u: UserType) => {
-    setQuotaEditUser(u);
-    setQuotaInput(u.quota_tokens != null ? String(u.quota_tokens) : '');
-    setQuotaResetUsed(false);
-    setQuotaMonthlyReset(u.quota_monthly_reset ?? false);
-  };
 
-  const saveUserQuota = async () => {
-    if (!quotaEditUser) return;
-    const raw = quotaInput.trim().replace(/,/g, '');
-    const parsed = raw === '' ? null : parseInt(raw, 10);
-    if (raw !== '' && (isNaN(parsed!) || parsed! < 0)) {
-      toast.error('额度需为非负整数（token 数），留空表示不限');
-      return;
-    }
-    setQuotaSaving(true);
-    try {
-      await api.put(`/api/admin/users/${quotaEditUser.id}/quota`, {
-        quota_tokens: parsed,
-        reset_used: quotaResetUsed,
-        monthly_reset: quotaMonthlyReset,
-      });
-      toast.success('额度已更新');
-      setQuotaEditUser(null);
-      fetchUsers();
-    } catch (e: any) {
-      toast.error(e?.detail || e?.message || '保存失败');
-    } finally {
-      setQuotaSaving(false);
-    }
-  };
 
-  const formatQuotaStatus = (u: UserType): { text: string; cls: string } => {
-    if (u.quota_tokens == null) return { text: '额度不限', cls: 'bg-muted/60 text-muted-foreground' };
-    const remaining = Math.max(u.quota_tokens - (u.quota_used_tokens ?? 0), 0);
-    if (remaining <= 0) return { text: '已超限', cls: 'bg-red-500/15 text-red-500' };
-    const fmt = (n: number) => n >= 10000 ? `${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}万` : String(n);
-    return { text: `剩 ${fmt(remaining)}`, cls: 'bg-primary/10 text-primary' };
-  };
-
-  const fetchStarters = async () => {
-    try {
-      const data = await api.get('/api/recommendations/starters');
-      setStarterQuestions(data);
-    } catch (e) {
-      console.error('Failed to fetch starters:', e);
-      toast.error('加载推荐问题失败');
-    }
-  };
 
   const handleUpdateProfile = async () => {
     try {
@@ -1167,27 +357,6 @@ export function SettingsView({
     }
   };
 
-  const handleSaveDefaults = async () => {
-    try {
-      await api.post('/api/admin/system/defaults', {
-        default_chat_model: defChat,
-        default_workspace_model: defWs,
-        default_outline_model: defOutline,
-        daily_topic_model: dailyTopicModel,
-        default_character_parse_model: defCharacterParse,
-        default_character_translate_model: defCharacterTranslate,
-        default_character_chat_model: defCharacterChat,
-        default_summarization_model: defSummarization,
-        default_oc_analysis_model: defOCAnalysis,
-        allow_oc_analysis: allowOCAnalysis
-      });
-      onUpdateDefaults();
-      toast.success(t.defaults_saved || '默认配置已保存');
-    } catch (e) {
-      console.error('Failed to save defaults:', e);
-      toast.error('保存默认配置失败');
-    }
-  };
 
   const handleDeleteUser = (userId: string | number) => {
     setUserDeleteConfirm({ open: true, userId });
@@ -1203,46 +372,7 @@ export function SettingsView({
     }
   };
 
-  const handleSaveStarters = async () => {
-    try {
-      await api.post('/api/admin/recommendations/starters', starterQuestions);
-      toast.success('Starters saved');
-    } catch (e) {
-      console.error('Failed to save starters:', e);
-      toast.error('保存推荐问题失败');
-    }
-  };
 
-  const fetchImageCleanupConfig = async () => {
-    try {
-      const config = await api.get('/api/admin/image-cleanup');
-      setImageCleanupEnabled(config.enabled !== false);
-      setImageCleanupMaxAge(config.max_age_days || 30);
-    } catch (e) {
-      console.error('Failed to fetch image cleanup config:', e);
-    }
-  };
-
-  const handleSaveImageCleanup = async () => {
-    try {
-      await api.put('/api/admin/image-cleanup', {
-        enabled: imageCleanupEnabled,
-        max_age_days: imageCleanupMaxAge,
-      });
-      toast.success('图片清理配置已保存');
-    } catch (e) {
-      toast.error('保存图片清理配置失败');
-    }
-  };
-
-  const handleRunImageCleanup = async () => {
-    try {
-      const result = await api.post('/api/admin/image-cleanup/run', {});
-      toast.success(`清理完成：删除 ${result.deleted_count} 个文件，释放 ${result.freed_mb} MB`);
-    } catch (e) {
-      toast.error('执行图片清理失败');
-    }
-  };
 
   const handleEditProvider = (provider?: Provider) => {
     if (provider) {
@@ -1273,27 +403,6 @@ export function SettingsView({
     }
   };
 
-  // Toggle Ollama model running status
-  const toggleOllamaModel = async (provider: Provider, modelId: string, modelName: string, enable: boolean) => {
-    const key = `${provider.id}-${modelId}`;
-    try {
-      if (enable) {
-        // Start/pull the model in Ollama
-        toast.info(`正在加载 ${modelName}...`);
-        // We'll check status after a short delay
-        setTimeout(() => {
-          setOllamaModelStatus(prev => ({ ...prev, [key]: true }));
-          toast.success(`${modelName} 已准备就绪`);
-        }, 1000);
-      } else {
-        // We don't actually stop models in Ollama (it manages memory automatically)
-        setOllamaModelStatus(prev => ({ ...prev, [key]: false }));
-        toast.info(`${modelName} 已禁用`);
-      }
-    } catch (error) {
-      toast.error('操作失败');
-    }
-  };
 
   const testProviderConnection = async (provider: Provider) => {
     setProviderStatus(prev => ({
@@ -1339,7 +448,7 @@ export function SettingsView({
 
   const menuItems = [
     { id: 'profile' as SettingsTab, label: t.settings_profile, icon: User },
-    { id: 'oc' as SettingsTab, label: '原创角色(OC)', icon: User },
+    { id: 'oc' as SettingsTab, label: '用户人设', icon: User },
     { id: 'roleplay_engine' as SettingsTab, label: '角色扮演引擎', icon: Bot },
     { id: 'appearance' as SettingsTab, label: t.appearance || '外观与语言', icon: Sun },
     { id: 'prompts' as SettingsTab, label: '提示词', icon: MessageSquareText },
@@ -1359,6 +468,16 @@ export function SettingsView({
     { id: 'usage' as SettingsTab, label: '用量统计', icon: Zap },
     { id: 'about' as SettingsTab, label: t.settings_about, icon: AlertCircle }
   );
+
+  // 移动端菜单分组（仅 md:hidden 分支消费）：iOS 风格分组列表，桌面侧栏仍是平铺 menuItems
+  const mobileMenuGroups: { title: string; ids: SettingsTab[] }[] = [
+    { title: '账号', ids: ['profile', 'oc'] },
+    { title: '角色扮演', ids: ['roleplay_engine', 'prompts'] },
+    { title: '通用', ids: ['appearance', 'usage', 'about'] },
+  ];
+  if (isAdmin) {
+    mobileMenuGroups.push({ title: '管理', ids: ['models', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins'] });
+  }
 
   return (
     <div className={cn('relative flex h-full overflow-hidden', isMobile ? '' : 'bg-background' /* 移动端透明：轨道容器层垫屏幕锚定的单一渐变 */)}>
@@ -1393,47 +512,19 @@ export function SettingsView({
       
       {/* Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Mobile Header - 悬浮覆盖在滚动内容上方，让毛玻璃可以"接住"下面经过的内容模糊
-          视觉统一样式以角色聊天页顶栏（ChatHeader/ChatViewMobile）为母版。 */}
-        <div
-          className="md:hidden absolute top-0 left-0 right-0 z-20"
-          style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)' }}
-        >
-          {/* 从下到上渐变模糊的毛玻璃层：底部完全透明，越向上越不透明+模糊越强 */}
-          <div
-            className="absolute inset-0 z-0 pointer-events-none"
-            style={{
-              backdropFilter: 'blur(16px) saturate(160%)',
-              WebkitBackdropFilter: 'blur(16px) saturate(160%)',
-              backgroundImage: isDark
-                ? 'linear-gradient(to top, rgba(20,20,30,0) 0%, rgba(20,20,30,0.04) 30%, rgba(20,20,30,0.15) 50%, rgba(20,20,30,0.35) 70%, rgba(20,20,30,0.65) 100%)'
-                : 'linear-gradient(to top, rgba(255,255,255,0) 0%, rgba(255,255,255,0.04) 30%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.35) 70%, rgba(255,255,255,0.65) 100%)',
-              WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.3) 15%, rgba(0,0,0,0.7) 30%, rgba(0,0,0,1) 45%, rgba(0,0,0,1) 100%)',
-              maskImage: 'linear-gradient(to top, rgba(0,0,0,0) 0%, rgba(0,0,0,0.3) 15%, rgba(0,0,0,0.7) 30%, rgba(0,0,0,1) 45%, rgba(0,0,0,1) 100%)',
-            }}
-          />
-          <div
-            className="absolute inset-0 z-10 flex items-center px-5 pointer-events-none"
-            style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}
+        {/* 顶栏已按用户拍板（2026-09-06 实验）整体删除：无毛玻璃条、无「设置」标题，
+            内容沉浸式直达顶部；安全区仅以 spacer 让出状态栏高度。 */}
+        {/* 二级页悬浮返回键（用户拍板 2026-09-06）：样式对齐角色聊天页 ChatHeader 同款圆钮 */}
+        {isMobile && mobileTabSelected && (
+          <button
+            onClick={() => setMobileTabSelected(false)}
+            aria-label="返回设置菜单"
+            className="absolute z-30 flex !h-10 !w-10 items-center justify-center rounded-full border border-[#ddd4c5]/40 bg-transparent backdrop-blur-[20px] transition-all duration-300 ease-in-out active:scale-95 hover:!bg-[#FFFAFA]/30 dark:hover:!bg-white/[0.05]"
+            style={{ top: 'calc(max(env(safe-area-inset-top), 8px) + 4px)', left: '1.25rem' }}
           >
-            <div className="pointer-events-auto flex items-center h-[48px] w-full">
-              {mobileTabSelected ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setMobileTabSelected(false)}
-                  className="flex items-center gap-1"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                  返回
-                </Button>
-              ) : (
-                <h2 className="pointer-events-none text-lg font-semibold">{t.nav_config}</h2>
-              )}
-            </div>
-          </div>
-        </div>
-
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+        )}
         {/* Mobile - Vertical Tabs (scrollable with bottom safe area) */}
         {!mobileTabSelected && isMobile && (
           <div
@@ -1441,24 +532,35 @@ export function SettingsView({
             // 移除固定的 paddingTop，由下方 spacer 精确提供 = header 完整高度
           >
             {/* 顶部安全空间：高度与 header 完全一致(safe+3rem+8px)，确保"个人资料"等第一个按钮不被 header 挡住 */}
-            <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
-            <div className="space-y-2">
-              {menuItems.map(item => (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setActiveTab(item.id);
-                    setMobileTabSelected(true);
-                  }}
-                  className="w-full flex items-center justify-between px-4 py-3 rounded-2xl transition-all duration-200 bg-gradient-to-r from-secondary/90 to-secondary hover:from-secondary hover:to-secondary/90 hover:shadow-md active:scale-[0.98] min-h-[56px] box-border"
-                >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <item.icon size={18} className="text-muted-foreground shrink-0" />
-                    <span className="font-medium truncate">{item.label}</span>
+            <div aria-hidden style={{ height: 'max(env(safe-area-inset-top), 8px)', width: '100%' }} />
+            <div className="space-y-5">
+              {mobileMenuGroups.map(group => {
+                const items = menuItems.filter(mi => group.ids.includes(mi.id));
+                if (items.length === 0) return null;
+                return (
+                  <div key={group.title}>
+                    <p className="px-1 pb-1.5 text-xs font-medium text-muted-foreground/80">{group.title}</p>
+                    <div className="overflow-hidden rounded-2xl border border-border/50 bg-card divide-y divide-border/40">
+                      {items.map(item => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            setActiveTab(item.id);
+                            setMobileTabSelected(true);
+                          }}
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors active:bg-secondary/70 min-h-[52px]"
+                        >
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary">
+                            <item.icon size={15} className="text-muted-foreground" />
+                          </span>
+                          <span className="flex-1 truncate text-[15px] font-medium">{item.label}</span>
+                          <ChevronRight size={16} className="shrink-0 text-muted-foreground/50" />
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <ChevronDown size={18} className="text-muted-foreground rotate-90 shrink-0" />
-                </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1466,11 +568,21 @@ export function SettingsView({
         {(mobileTabSelected || isDesktop) && (
           <div
             className="flex-1 min-w-0 w-full p-4 md:p-8 h-full overflow-y-auto overflow-x-hidden"
-            // 移动端移除固定 paddingTop，由下方 spacer 精确提供
+            // 移动端移除固定 paddingTop，由滚动流首部的安全区 spacer 精确提供
           >
-            {/* 顶部安全空间：高度与 header 完全一致，确保 Tab 内容最顶部不会被 header 挡住 */}
-            <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
             <div className="max-w-4xl mx-auto h-full overflow-y-auto overflow-x-hidden">
+              {/* 安全区必须位于滚动容器内部：初始让出「状态栏 + 返回键高度」，
+                  按钮下方首屏无元素被遮挡；spacer 自身透明且随内容一起滚动，
+                  下滚时内容可自然从返回键后方穿过显示（沉浸穿透） */}
+              <div
+                aria-hidden
+                style={{
+                  height: isMobile && mobileTabSelected
+                    ? 'calc(max(env(safe-area-inset-top), 8px) + 40px)'
+                    : 'max(env(safe-area-inset-top), 8px)',
+                  width: '100%',
+                }}
+              />
               {/* Profile Tab */}
               {activeTab === 'profile' && (
                 <ProfileTab
@@ -1517,162 +629,20 @@ export function SettingsView({
 
           {/* Admin Defaults Tab */}
           {activeTab === 'admin_defaults' && isAdmin && (
-            <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-              <h3 className="text-xl md:text-2xl font-semibold">{t.admin_defaults}</h3>
-              
-              <GlassCard className="p-4 md:p-6">
-                <div className="space-y-4">
-                  {[
-                    { label: t.def_chat_model, value: defChat, set: setDefChat },
-                    { label: t.def_ws_model, value: defWs, set: setDefWs },
-                    { label: t.def_outline_model, value: defOutline, set: setDefOutline },
-                    { label: '解析/翻译人物卡默认模型', value: defCharacterParse, set: setDefCharacterParse },
-                    { label: '人物卡翻译默认模型', value: defCharacterTranslate, set: setDefCharacterTranslate },
-                    { label: '角色扮演默认模型', value: defCharacterChat, set: setDefCharacterChat },
-                    { label: '摘要生成默认模型', value: defSummarization, set: setDefSummarization }
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 py-3 border-b border-border/50 last:border-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Bot size={18} className="text-muted-foreground shrink-0" />
-                        <span className="text-sm font-medium truncate">{item.label}</span>
-                      </div>
-                      <div className="shrink-0 ml-auto">
-                      <ModelSelector
-                        models={models}
-                        currentModel={item.value}
-                        onSelect={(modelId: string) => item.set(modelId)}
-                        size="sm"
-                      />
-                      </div>
-                    </div>
-                  ))}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-t border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Sparkles size={18} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="text-sm font-medium">允许AI分析用户个人OC卡</p>
-                        <p className="text-xs text-muted-foreground">启用后AI可以深度分析用户的原创角色设定</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={allowOCAnalysis}
-                      onCheckedChange={setAllowOCAnalysis}
-                    />
-                  </div>
-                  {allowOCAnalysis && (
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3 border-b border-border/50">
-                      <div className="flex items-center gap-3">
-                        <Bot size={18} className="text-muted-foreground shrink-0" />
-                        <span className="text-sm">OC分析默认模型</span>
-                      </div>
-                      <ModelSelector
-                        models={models}
-                        currentModel={defOCAnalysis}
-                        onSelect={setDefOCAnalysis}
-                        size="sm"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-6 flex justify-end">
-                  <Button onClick={handleSaveDefaults} className="min-h-[44px]">
-                    <Save size={16} className="mr-2" />
-                    {t.save}
-                  </Button>
-                </div>
-              </GlassCard>
-
-              <div className="space-y-4 mt-4">
-                <button
-                  onClick={() => setImageCleanupExpanded(!imageCleanupExpanded)}
-                  className="w-full flex items-center justify-between p-3 rounded-xl transition-all bg-secondary hover:bg-secondary/80 active:bg-secondary/60 min-h-[48px]"
-                >
-                  <div className="flex items-center gap-3">
-                    <Trash2 size={18} className="text-muted-foreground shrink-0" />
-                    <span className="font-medium text-sm">图片过期清理</span>
-                  </div>
-                  <ChevronDown
-                    size={18}
-                    className={cn(
-                      "text-muted-foreground transition-transform duration-300 shrink-0",
-                      imageCleanupExpanded && "rotate-180"
-                    )}
-                  />
-                </button>
-
-                {imageCleanupExpanded && (
-                  <div className="animate-in slide-in-from-top-2 fade-in duration-300">
-                    <GlassCard className="p-4 md:p-6">
-                      <p className="text-sm text-muted-foreground mb-4">
-                        配置上传图片的自动清理策略，超过指定天数的图片将被自动删除。
-                      </p>
-                      <div className="space-y-4">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2">
-                          <div>
-                            <p className="font-medium text-sm">启用自动清理</p>
-                            <p className="text-xs text-muted-foreground">开启后系统将按设定时间自动清理过期图片</p>
-                          </div>
-                          <Switch
-                            checked={imageCleanupEnabled}
-                            onCheckedChange={setImageCleanupEnabled}
-                          />
-                        </div>
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2 border-t border-border/50">
-                          <div>
-                            <p className="font-medium text-sm">过期天数</p>
-                            <p className="text-xs text-muted-foreground">超过此天数的图片将被自动清理</p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={1}
-                              max={365}
-                              value={imageCleanupMaxAge}
-                              onChange={e => setImageCleanupMaxAge(Math.max(1, Math.min(365, parseInt(e.target.value) || 30)))}
-                              className="w-20 px-3 py-1.5 rounded-lg bg-secondary border-none outline-none text-center text-sm touch-input"
-                            />
-                            <span className="text-sm text-muted-foreground">天</span>
-                          </div>
-                        </div>
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2 border-t border-border/50">
-                          <div>
-                            <p className="font-medium text-sm">立即执行清理</p>
-                            <p className="text-xs text-muted-foreground">手动触发一次过期图片清理</p>
-                          </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleRunImageCleanup}
-                            className="min-h-[44px] w-full sm:w-auto"
-                          >
-                            <Trash2 size={14} className="mr-1.5" />
-                            执行清理
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="mt-4 flex justify-end">
-                        <Button onClick={handleSaveImageCleanup} className="min-h-[44px]">
-                          <Save size={16} className="mr-2" />
-                          {t.save}
-                        </Button>
-                      </div>
-                    </GlassCard>
-                  </div>
-                )}
-              </div>
-              </div>
-            </ScrollArea>
+            <AdminDefaultsTab
+              t={t}
+              systemDefaults={systemDefaults}
+              models={models}
+              onUpdateDefaults={onUpdateDefaults}
+              bottomPadding={bottomPadding}
+            />
           )}
 
           {/* Admin Plugins Tab */}
           {activeTab === 'admin_plugins' && isAdmin && (
-            <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-                <AdminPluginsTab />
-              </div>
-            </ScrollArea>
+            <div className={`space-y-4 md:space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
+              <AdminPluginsTab />
+            </div>
           )}
 
           {/* Admin Auth Tab */}
@@ -1682,583 +652,43 @@ export function SettingsView({
 
           {/* Admin Users Tab */}
           {activeTab === 'admin_users' && isAdmin && (
-            <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-              <h3 className="text-xl md:text-2xl font-semibold">{t.admin_users}</h3>
-              
-              <div className="space-y-2">
-                {usersList.map(u => (
-                  <GlassCard key={u.id} className="p-3 md:p-4">
-                    <div className="flex items-center justify-between">
-                      <button 
-                        onClick={() => { setViewingUser(u); setActiveTab('user_usage'); }}
-                        className="flex items-center gap-3 md:gap-4 text-left flex-1 min-w-0"
-                      >
-                        <Avatar className="shrink-0">
-                          <AvatarImage src={u.avatar} />
-                          <AvatarFallback>{u.username?.[0]?.toUpperCase()}</AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium text-sm truncate">{u.username}</p>
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {t.role}: {u.role}
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5 md:gap-2 mt-2">
-                            <div className="p-1.5 md:p-2 rounded-lg bg-muted/40 border border-border/40">
-                              <p className="text-xs text-blue-500 font-medium">输入</p>
-                              <p className="text-xs md:text-sm font-bold">{(u.tokens_chat || 0) + (u.tokens_workspace || 0) + (u.tokens_character || 0)}</p>
-                            </div>
-                            <div className="p-1.5 md:p-2 rounded-lg bg-muted/40 border border-border/40">
-                              <p className="text-xs text-green-500 font-medium">输出</p>
-                              <p className="text-xs md:text-sm font-bold">0</p>
-                            </div>
-                            <div className="p-1.5 md:p-2 rounded-lg bg-muted/40 border border-border/40">
-                              <p className="text-xs text-muted-foreground font-medium">请求</p>
-                              <p className="text-xs md:text-sm font-bold">{u.chat_count}次</p>
-                            </div>
-                            <div className="p-1.5 md:p-2 rounded-lg bg-muted/40 border border-border/40">
-                              <p className="text-xs text-muted-foreground font-medium">存储</p>
-                              <p className="text-xs md:text-sm font-bold">{((u.storage_used ?? 0) / 1024 / 1024).toFixed(1)}MB</p>
-                            </div>
-                            <div className={`p-1.5 md:p-2 rounded-lg border border-border/40 ${formatQuotaStatus(u).cls}`}>
-                              <p className="text-xs font-medium">Token 额度</p>
-                              <p className="text-xs md:text-sm font-bold">{formatQuotaStatus(u).text}</p>
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                      <div className="flex gap-2 ml-2 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground hover:bg-secondary min-h-[44px] min-w-[44px]"
-                          aria-label="编辑额度"
-                          onClick={(e) => { e.stopPropagation(); openQuotaEditor(u); }}
-                        >
-                          <Settings2 size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:bg-destructive/10 min-h-[44px] min-w-[44px]"
-                          onClick={(e) => { e.stopPropagation(); handleDeleteUser(u.id); }}
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    </div>
-                  </GlassCard>
-                ))}
-              </div>
-
-              {/* 额度编辑弹窗 */}
-              <Dialog open={quotaEditUser !== null} onOpenChange={(open) => { if (!open) setQuotaEditUser(null); }}>
-                <DialogContent className="max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>设置 Token 额度 — {quotaEditUser?.username}</DialogTitle>
-                  </DialogHeader>
-                  <div className="space-y-4 py-2">
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground mb-1 block">
-                        总额度（tokens），留空表示不限
-                      </label>
-                      <Input
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="如 5000000（500 万 tokens）"
-                        value={quotaInput}
-                        onChange={(e) => setQuotaInput(e.target.value)}
-                      />
-                      {quotaEditUser && quotaEditUser.quota_used_tokens != null && quotaEditUser.quota_used_tokens > 0 && (
-                        <p className="text-[11px] text-muted-foreground mt-1.5">当前已用：{quotaEditUser.quota_used_tokens.toLocaleString()} tokens</p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Switch checked={quotaResetUsed} onCheckedChange={setQuotaResetUsed} />
-                      <span className="text-sm">同时清零已用量</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Switch checked={quotaMonthlyReset} onCheckedChange={setQuotaMonthlyReset} />
-                      <span className="text-sm">每月自动重置</span>
-                      <span className="text-[11px] text-muted-foreground">（按自然月清零已用量）</span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      计入口径：对话生成的 prompt + 补全 + 思考 tokens 总和。额度耗尽后该用户发起聊天会被拦截。
-                    </p>
-                  </div>
-                  <DialogFooter>
-                    <Button variant="ghost" onClick={() => setQuotaEditUser(null)}>取消</Button>
-                    <Button onClick={saveUserQuota} disabled={quotaSaving}>{quotaSaving ? '保存中…' : '保存'}</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-              </div>
-            </ScrollArea>
+            <AdminUsersTab
+              t={t}
+              usersList={usersList}
+              onRefreshUsers={fetchUsers}
+              onDeleteUser={handleDeleteUser}
+              onViewUsage={(u) => { setViewingUser(u); setActiveTab('user_usage'); }}
+              bottomPadding={bottomPadding}
+            />
           )}
 
           {/* Roleplay Engine Tab */}
           {activeTab === 'roleplay_engine' && (
-            <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-                <h3 className="text-xl md:text-2xl font-semibold">角色扮演引擎</h3>
-
-                <div className="flex gap-2 border-b border-border/50">
-                  {[
-                    { id: 'theme' as RoleplayEngineSubTab, label: '主题' },
-                    { id: 'regex' as RoleplayEngineSubTab, label: '正则脚本' },
-                    { id: 'preset' as RoleplayEngineSubTab, label: '生成预设' },
-                    { id: 'sillytavern' as RoleplayEngineSubTab, label: 'SillyTavern' },
-                  ].map(sub => (
-                    <button
-                      key={sub.id}
-                      onClick={() => setRoleplayEngineSubTab(sub.id)}
-                      className={cn(
-                        'px-4 py-2 text-sm font-medium transition-colors',
-                        roleplayEngineSubTab === sub.id
-                          ? 'text-primary border-b-2 border-primary'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      {sub.label}
-                    </button>
-                  ))}
-                </div>
-
-                {roleplayEngineSubTab === 'theme' && (
-                  <div className="space-y-6">
-                    <GlassCard className="p-4 md:p-6">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <Bot size={20} className="text-muted-foreground shrink-0" />
-                          <div>
-                            <p className="font-medium">角色扮演显示模式</p>
-                            <p className="text-xs text-muted-foreground">选择角色扮演对话的显示方式</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2 w-full sm:w-auto">
-                          <Button
-                            variant={characterDisplayMode === 'framed' ? 'default' : 'outline'}
-                            size="sm"
-                            onClick={() => handleSaveCharacterDisplayMode('framed')}
-                            className="flex-1 sm:flex-none min-h-[44px]"
-                          >
-                            分框模式
-                          </Button>
-                          <Button
-                            variant={characterDisplayMode === 'frameless' ? 'default' : 'outline'}
-                            size="sm"
-                            onClick={() => handleSaveCharacterDisplayMode('frameless')}
-                            className="flex-1 sm:flex-none min-h-[44px]"
-                          >
-                            无分框模式
-                          </Button>
-                        </div>
-                      </div>
-                    </GlassCard>
-
-                    <RoleplayThemeProvider>
-                      <RoleplayThemeSettingsPanel />
-                    </RoleplayThemeProvider>
-
-                    <GlassCard className="p-4 md:p-6">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Puzzle size={20} className="text-muted-foreground shrink-0" />
-                          <div>
-                            <p className="font-medium">插件管理</p>
-                            <p className="text-xs text-muted-foreground">管理角色扮演引擎插件</p>
-                          </div>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setActiveTab('admin_plugins')}
-                          className="min-h-[44px]"
-                        >
-                          打开插件管理
-                        </Button>
-                      </div>
-                    </GlassCard>
-                  </div>
-                )}
-
-                {roleplayEngineSubTab === 'regex' && (
-                  <div className="space-y-6">
-                    <GlassCard className="p-4 md:p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-lg font-medium">正则脚本</h4>
-                        <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={handleImportRegex}>
-                            <UploadCloud size={16} className="mr-2" />
-                            导入
-                          </Button>
-                          <Button variant="outline" size="sm" onClick={handleExportRegex}>
-                            <Download size={16} className="mr-2" />
-                            导出
-                          </Button>
-                        </div>
-                      </div>
-                      {regexScriptsLoading ? (
-                        <div className="text-muted-foreground text-sm">加载中...</div>
-                      ) : regexScripts.length === 0 ? (
-                        <div className="text-muted-foreground text-sm">暂无正则脚本</div>
-                      ) : (
-                        <div className="space-y-2">
-                          {regexScripts.map((script) => (
-                            <div key={`${script.plugin_id}-${script.id}`} className="flex items-center justify-between p-3 rounded-lg border border-border/50">
-                              <div className="min-w-0">
-                                <p className="font-medium text-sm">{script.name}</p>
-                                <p className="text-xs text-muted-foreground truncate">{script.description || script.source || '无描述'}</p>
-                              </div>
-                              <Switch
-                                checked={script.enabled !== false}
-                                onCheckedChange={() => handleToggleRegexScript(script.plugin_id, script.id)}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </GlassCard>
-                  </div>
-                )}
-
-                {roleplayEngineSubTab === 'preset' && (
-                  <div className="space-y-6">
-                    <GlassCard className="p-4 md:p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-lg font-medium">生成参数预设</h4>
-                        <Button variant="outline" size="sm" onClick={() => setPresetManagerOpen(true)}>
-                          <Sliders size={16} className="mr-2" />
-                          预设管理
-                        </Button>
-                      </div>
-                      {presetsLoading ? (
-                        <div className="text-muted-foreground text-sm">加载中...</div>
-                      ) : !currentPreset ? (
-                        <div className="text-muted-foreground text-sm">暂无预设</div>
-                      ) : (
-                        <div className="space-y-4">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium">当前预设</span>
-                            <span className="text-sm">{currentPreset.name}</span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium">上下文模板</span>
-                              <span className="text-xs text-muted-foreground">ST 1.18.0 Context Template</span>
-                            </div>
-                            <select
-                              value={currentPreset.context_template_name || 'Default'}
-                              onChange={(e) => handleUpdatePresetContextTemplate(e.target.value)}
-                              disabled={contextTemplatesLoading}
-                              className="text-sm rounded-md border border-border bg-background px-3 py-2 max-w-[60%] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-                            >
-                              {contextTemplatesLoading ? (
-                                <option value="">加载中...</option>
-                              ) : contextTemplates.length === 0 ? (
-                                <option value="Default">Default</option>
-                              ) : (
-                                contextTemplates.map((tpl: any) => (
-                                  <option key={tpl.id} value={tpl.name}>
-                                    {tpl.display_name || tpl.name}{tpl.is_builtin ? ' (内置)' : ''}
-                                  </option>
-                                ))
-                              )}
-                            </select>
-                          </div>
-                          {[
-                            { key: 'temperature', label: '温度', min: 0, max: 2, step: 0.05 },
-                            { key: 'top_p', label: 'Top-P', min: 0, max: 1, step: 0.05 },
-                            { key: 'max_tokens', label: '最大令牌数', min: 64, max: 8192, step: 64 },
-                            { key: 'frequency_penalty', label: '频率惩罚', min: -2, max: 2, step: 0.1 },
-                            { key: 'presence_penalty', label: '存在惩罚', min: -2, max: 2, step: 0.1 },
-                          ].map((param) => (
-                            <div key={param.key}>
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-sm">{param.label}</span>
-                                <span className="text-sm text-muted-foreground">{(currentPreset as any)[param.key]}</span>
-                              </div>
-                              <input
-                                type="range"
-                                min={param.min}
-                                max={param.max}
-                                step={param.step}
-                                value={(currentPreset as any)[param.key] ?? 0}
-                                onChange={(e) => handleUpdatePresetParam(param.key, parseFloat(e.target.value))}
-                                className="w-full accent-primary"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </GlassCard>
-                  </div>
-                )}
-
-                {roleplayEngineSubTab === 'sillytavern' && (
-                  <RoleplayThemeProvider>
-                    <SillyTavernSettingsPanel onOpenPlugins={() => setActiveTab('admin_plugins')} />
-                  </RoleplayThemeProvider>
-                )}
-              </div>
-            </ScrollArea>
+            <RoleplayEngineTab
+              bottomPadding={bottomPadding}
+              onOpenAdminPlugins={() => setActiveTab('admin_plugins')}
+            />
           )}
 
           {/* Appearance Tab */}
           {activeTab === 'appearance' && (
-            <ScrollArea className="h-full">
-              <div className={`space-y-6 animate-fade-in pr-2 ${bottomPadding}`}>
-              <h3 className="text-xl md:text-2xl font-semibold">{t.appearance || '外观与语言'}</h3>
-              
-              <GlassCard className="p-4 md:p-6">
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      {isDark ? <Moon size={20} className="text-muted-foreground shrink-0" /> : <Sun size={20} className="text-muted-foreground shrink-0" />}
-                      <div>
-                        <p className="font-medium">{t.theme || '主题'}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {themeMode === 'auto' ? (t.theme_auto || '跟随系统') : isDark ? (t.dark_mode || '深色模式') : (t.light_mode || '浅色模式')}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      {(['auto', 'light', 'dark'] as const).map((mode) => {
-                        const Icon = mode === 'auto' ? MonitorSmartphone : mode === 'light' ? Sun : Moon;
-                        const label = mode === 'auto' ? (t.theme_auto || '跟随系统') : mode === 'light' ? (t.theme_light || '亮色') : (t.theme_dark || '暗色');
-                        const active = themeMode === mode;
-                        return (
-                          <Button
-                            key={mode}
-                            variant={active ? 'default' : 'outline'}
-                            size="sm"
-                            onClick={() => onThemeSet?.(mode)}
-                            disabled={!onThemeSet}
-                            className="min-h-[44px] flex-1 sm:flex-none"
-                          >
-                            <Icon size={16} className="mr-1.5" />
-                            {label}
-                          </Button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Sparkles size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">亮色模式自动增强卡片对比度</p>
-                        <p className="text-xs text-muted-foreground">自动提升角色卡中难以阅读的文字对比度；暗色模式仍按卡片原始样式显示</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={autoContrast}
-                      onCheckedChange={handleToggleAutoContrast}
-                    />
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Image size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">角色扮演角色卡头像</p>
-                        <p className="text-xs text-muted-foreground">角色扮演对话中显示角色卡头像；关闭后仅显示角色名</p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={showCharacterAvatar}
-                      onCheckedChange={handleToggleCharacterAvatar}
-                    />
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Image size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">智能卡图片走服务器代理</p>
-                        <p className="text-xs text-muted-foreground">
-                          默认关闭：图片/样式/字体由浏览器直连第三方加载（与 SillyTavern 一致，服务器零媒体
-                          流量；第三方可见你的 IP，少数仅 http 或不发 CORS 头的字体源可能失效）。开启：经
-                          服务器中转（不暴露 IP、转压 webp、统一缓存）
-                        </p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={smartCardAssetProxy}
-                      onCheckedChange={handleToggleSmartCardAssetProxy}
-                    />
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Zap size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">模型深度思考</p>
-                        <p className="text-xs text-muted-foreground">显示模型的思考过程</p>
-                      </div>
-                    </div>
-                    <Button
-                      variant={showModelReasoning ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => handleSaveModelReasoning(!showModelReasoning)}
-                      className="min-h-[44px] w-full sm:w-auto"
-                    >
-                      {showModelReasoning ? '已开启' : '已关闭'}
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Database size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">{t.memory_mode || '记忆模式'}</p>
-                        <p className="text-xs text-muted-foreground">{t.memory_mode_desc || '向量记忆提供更好的语义理解和更大的记忆容量'}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto">
-                      <Button
-                        variant={memoryMode === 'rule' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => handleSaveMemoryMode('rule')}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.memory_mode_rule || '规则记忆'}
-                      </Button>
-                      <Button
-                        variant={memoryMode === 'vector' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => handleSaveMemoryMode('vector')}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.memory_mode_vector || '向量记忆'}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Database size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">{t.memory_budget || '记忆注入量'}</p>
-                        <p className="text-xs text-muted-foreground">{t.memory_budget_desc || '每轮注入历史记忆的 token 上限：紧凑 750 / 标准 1500 / 加量 3000 / 尽量多 6000，超预算自动裁剪'}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto">
-                      {([['紧凑', 0], ['标准', 1], ['加量', 2], ['尽量多', 3]] as [string, number][]).map(([label, lvl]) => (
-                        <Button
-                          key={lvl}
-                          variant={memoryBudgetLevel === lvl ? 'default' : 'outline'}
-                          size="sm"
-                          onClick={() => handleSaveMemoryBudgetLevel(lvl)}
-                          className="flex-1 sm:flex-none min-h-[44px]"
-                        >
-                          {label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                    <div className="flex items-center gap-3">
-                      <Database size={20} className="text-muted-foreground shrink-0" />
-                      <div>
-                        <p className="font-medium">副 AI 变量更新</p>
-                        <p className="text-xs text-muted-foreground">
-                          主模型未输出变量块时，用独立副模型解析剧情并更新角色面板（时间/好感度/服饰等），适配所有带变量系统的角色卡
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 w-full sm:w-auto">
-                      <Switch
-                        checked={mvuSecondaryEnabled}
-                        onCheckedChange={(checked) => {
-                          setMvuSecondaryEnabled(checked);
-                          handleSaveMvuSecondary({ mvu_secondary_enabled: checked });
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {mvuSecondaryEnabled && (
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3 border-b border-border/50">
-                      <div className="flex items-center gap-3">
-                        <Database size={20} className="text-muted-foreground shrink-0" />
-                        <div>
-                          <p className="font-medium">副 AI 模型</p>
-                          <p className="text-xs text-muted-foreground">
-                            填写用于解析变量更新的模型 ID（建议用比主模型更强的模型，如 deepseek-v4-pro）
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 w-full sm:w-auto items-center">
-                        <Input
-                          value={mvuSecondaryModel}
-                          onChange={(e) => setMvuSecondaryModel(e.target.value)}
-                          placeholder="如 deepseek-v4-pro"
-                          className="w-full sm:w-56"
-                        />
-                        <Button
-                          size="sm"
-                          onClick={() => handleSaveMvuSecondary({ mvu_secondary_model: mvuSecondaryModel })}
-                          className="min-h-[44px]"
-                        >
-                          保存
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-3">
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg font-semibold w-8 text-center shrink-0">{lang?.toUpperCase()}</span>
-                      <div>
-                        <p className="font-medium">{t.language_setting || '语言设置'}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {t.language_setting_desc || '同时设置界面语言和AI提示词语言'}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto">
-                      <Button
-                        variant={lang === 'zh' && promptLanguage === 'zh' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={async () => {
-                          onLangToggle?.();
-                          await handleSavePromptLanguage('zh');
-                        }}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.lang_zh || '中文'}
-                      </Button>
-                      <Button
-                        variant={lang === 'en' && promptLanguage === 'en' ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={async () => {
-                          if (lang !== 'en') onLangToggle?.();
-                          await handleSavePromptLanguage('en');
-                        }}
-                        className="flex-1 sm:flex-none min-h-[44px]"
-                      >
-                        {t.lang_en || 'English'}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </GlassCard>
-              </div>
-            </ScrollArea>
+            <AppearanceTab
+              t={t}
+              isDark={isDark}
+              themeMode={themeMode}
+              onThemeSet={onThemeSet}
+              lang={lang}
+              onLangToggle={onLangToggle}
+              models={models}
+              bottomPadding={bottomPadding}
+            />
           )}
 
           {/* Prompts Tab */}
           {activeTab === 'prompts' && (
-            <ScrollArea className="h-full">
             <div className={`animate-fade-in pr-2 ${bottomPadding}`}>
-             <PromptSettings token={token} />
-         </div>
-            </ScrollArea>
+              <PromptSettings token={token} />
+            </div>
           )}
 
           {/* OC Settings Tab */}
@@ -2270,35 +700,31 @@ export function SettingsView({
 
           {/* Usage Tab */}
           {activeTab === 'usage' && (
-            <ScrollArea className="h-full">
-              <div className={`p-4 sm:p-6 ${bottomPadding}`}>
-                <TokenUsagePanel token={token} />
-              </div>
-            </ScrollArea>
+            <div className={`animate-fade-in ${bottomPadding}`}>
+              <TokenUsagePanel token={token} />
+            </div>
           )}
 
           {/* User Usage Tab */}
           {activeTab === 'user_usage' && viewingUser && (
-            <ScrollArea className="h-full">
-              <div className={`p-4 sm:p-6 ${bottomPadding}`}>
-                <div className="mb-4">
-                  <Button
-                    variant="ghost"
-                    onClick={() => { setActiveTab('admin_users'); setViewingUser(null); }}
-                    className="mb-4"
-                  >
-                    <ChevronDown size={18} className="mr-2 -rotate-90" />
-                    返回用户管理
-                  </Button>
-                </div>
-                <TokenUsagePanel 
-                  token={token} 
-                  userId={viewingUser.id}
-                  userName={viewingUser.username}
-                  hideCharacterUsage={true}
-                />
+            <div className={`animate-fade-in ${bottomPadding}`}>
+              <div className="mb-4">
+                <Button
+                  variant="ghost"
+                  onClick={() => { setActiveTab('admin_users'); setViewingUser(null); }}
+                  className="mb-4"
+                >
+                  <ChevronDown size={18} className="mr-2 -rotate-90" />
+                  返回用户管理
+                </Button>
               </div>
-            </ScrollArea>
+              <TokenUsagePanel 
+                token={token} 
+                userId={viewingUser.id}
+                userName={viewingUser.username}
+                hideCharacterUsage={true}
+              />
+            </div>
           )}
 
           {/* About Tab */}
@@ -2334,12 +760,6 @@ export function SettingsView({
         description="确定要删除此服务商并清除其模型配置吗？此操作不可恢复。"
         confirmText="删除"
         onConfirm={() => doDeleteProvider(providerDeleteConfirm.providerId)}
-      />
-      <PresetManager
-        currentPreset={currentPreset}
-        onPresetChange={handlePresetChange}
-        open={presetManagerOpen}
-        onClose={() => setPresetManagerOpen(false)}
       />
     </div>
   );

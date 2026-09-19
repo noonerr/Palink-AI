@@ -363,7 +363,7 @@ export function ChatViewMobile({
                 size="icon"
                 onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
                 className={cn(
-                  '!h-10 !w-10 rounded-full transition-all duration-300 ease-in-out',
+                  'active:scale-95 !h-10 !w-10 rounded-full transition-all duration-300 ease-in-out',
                   historyOpen && 'rotate-180'
                 )}
                 data-history-toggle="true"
@@ -377,7 +377,7 @@ export function ChatViewMobile({
                 <button
                   onClick={() => setWebSearchEnabled(prev => !prev)}
                   className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200',
+                    'active:scale-95 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200',
                     webSearchEnabled
                       ? cn(
                           isDark
@@ -533,7 +533,6 @@ export function ChatViewMobile({
               data-palink-chat-composer="true"
               className={cn(
                 'absolute left-0 right-0 z-[20] px-3 pt-2 transform-gpu',
-                'bg-gradient-to-t from-transparent via-transparent to-transparent',
                 hideBottomComposerDuringWelcomeDrop
                   ? 'invisible pointer-events-none'
                   : 'visible'
@@ -656,7 +655,6 @@ export function ChatViewMobile({
               data-palink-chat-composer="true"
               className={cn(
                 'absolute left-0 right-0 z-[20] px-3 pt-2 transform-gpu',
-                'bg-gradient-to-t from-transparent via-transparent to-transparent',
                 hideBottomComposerDuringWelcomeDrop
                   ? 'invisible pointer-events-none'
                   : 'visible'

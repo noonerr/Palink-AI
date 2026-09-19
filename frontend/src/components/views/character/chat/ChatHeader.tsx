@@ -115,7 +115,7 @@ export function ChatHeader({
           <Button
             variant="ghost"
             size="icon"
-            className="!h-10 !w-10 rounded-full transition-all duration-300 ease-in-out backdrop-blur-[20px] bg-transparent hover:!bg-[#FFFAFA]/30 dark:hover:!bg-white/[0.05] border border-[#ddd4c5]/40"
+            className="active:scale-95 !h-10 !w-10 rounded-full transition-all duration-300 ease-in-out backdrop-blur-[20px] bg-transparent hover:!bg-[#FFFAFA]/30 dark:hover:!bg-white/[0.05] border border-[#ddd4c5]/40"
             onClick={onBackToList}
             aria-label="返回角色列表"
           >
@@ -130,7 +130,7 @@ export function ChatHeader({
             variant="ghost"
             size="icon"
             className={cn(
-              '!h-10 !w-10 rounded-full transition-all duration-300 ease-in-out backdrop-blur-[20px] bg-transparent hover:!bg-[#FFFAFA]/30 dark:hover:!bg-white/[0.05] border border-[#ddd4c5]/40',
+              'active:scale-95 !h-10 !w-10 rounded-full transition-all duration-300 ease-in-out backdrop-blur-[20px] bg-transparent hover:!bg-[#FFFAFA]/30 dark:hover:!bg-white/[0.05] border border-[#ddd4c5]/40',
               mobileSidebarOpen && 'rotate-180'
             )}
             onClick={onToggleMobileSidebar}

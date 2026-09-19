@@ -67,6 +67,7 @@ from ..api.character_ext import (
     REGEX_PLACEMENT_WORLD_INFO,
 )
 from ..memory_module.service import MemoryService
+from ..memory_module.lifecycle_service import maybe_auto_compress
 from ..memory_module.storage import delete_by_message_id
 from ..utils import normalize_image_url, build_memory_context, clean_memory_content, apply_message_extra_patch
 
@@ -495,6 +496,11 @@ async def run_chat_generation(
                                                  message_id=assistant_message_id)
                             save_db.commit()
                             memory_stored = True
+                            # [ST-ALIGN P0-1] 记忆封存：落库后按阈值自动压缩。
+                            # WebSocket 链路与 HTTP 链路必须各接一次，否则 WS 会话不压缩。
+                            await maybe_auto_compress(
+                                save_db, user_id, session_id, memory_mode=memory_mode
+                            )
                 except Exception as e:
                     save_db.rollback()
                     logger.warning("Memory storage failed: %s", e)

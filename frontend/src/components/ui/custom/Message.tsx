@@ -626,11 +626,21 @@ function FramelessContent({ segments, streaming, markdownComponents }: {
 };
 
 // [N-12] 出视口智能卡休眠：智能卡容器外包一层 IntersectionObserver（rootMargin 一屏缓冲）。
-// 出视口 → 记录容器当前 offsetHeight → 卸载卡片（iframe 随之卸载，释放内存与合成层开销）
-// → 渲染同高占位 div 防止滚动跳动；重新入视口 → 按原内容恢复渲染（srcDoc 重挂载）。
+// 出视口 → 记录容器当前 offsetHeight → 让卡片休眠；重新入视口 → 恢复渲染。
 // 仅包裹智能卡分支；普通文本/图片消息不参与。休眠状态不持久化（刷新即全部恢复）；
-// 消毒在上游 pipelineResult 已完成，此处只做挂载/卸载，与 N-1 不冲突。
+// 消毒在上游 pipelineResult 已完成，此处只做挂载/隐藏，与 N-1 不冲突。
 // Observer 实例随组件卸载 disconnect（对齐 CodeBlock timer 清理模式）。
+//
+// [iOS-HISTORY] 休眠方式由「卸载 DOM」改为「隐藏 DOM」，默认不再卸载：
+// 卸载后重新入视口会重建 iframe（srcDoc 重挂载）= 一次真实导航，而 Safari 的会话
+// 历史是「联合」的（顶层 + 所有子框架），每次 iframe 导航都会往里面插一条幽灵条目
+// （顶层 URL 不变，地址栏仍是当前页）。滑动返回 = 沿联合历史逐条 pop，于是先快速
+// 闪过 N 个与当前页一模一样的快照，最后才回到真正的上一级。iOS 没有 API 删除已
+// 存在的历史条目，只能从源头避免创建，因此这里保留 DOM、只做视觉休眠。
+// 若确需恢复「卸载省内存」行为（超长会话内存吃紧），把下面常量置为 true 即可，
+// 代价是重新引入 iframe 导航与 iOS 幽灵历史条目。
+const PALINK_CARD_DORMANCY_UNMOUNT = false;
+
 function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dormant, setDormant] = useState(false);
@@ -664,10 +674,24 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
       className="w-full"
       data-palink-card-dormancy={dormant ? 'sleeping' : 'awake'}
     >
-      {dormant ? (
+      {PALINK_CARD_DORMANCY_UNMOUNT && dormant ? (
         <div aria-hidden="true" style={{ height: dormantHeight != null ? `${dormantHeight}px` : undefined }} />
       ) : (
-        children
+        // 隐藏而非卸载：保留 iframe 文档，重新入视口不产生新导航（不新增历史条目）。
+        // content-visibility:hidden 让浏览器跳过子树渲染（省掉合成层开销），
+        // visibility:hidden 作为不支持 content-visibility 的旧版兜底。
+        <div
+          aria-hidden={dormant || undefined}
+          style={dormant ? ({
+            height: dormantHeight != null ? `${dormantHeight}px` : undefined,
+            overflow: 'hidden',
+            visibility: 'hidden',
+            contentVisibility: 'hidden',
+            containIntrinsicSize: dormantHeight != null ? `${dormantHeight}px` : undefined,
+          } as React.CSSProperties) : undefined}
+        >
+          {children}
+        </div>
       )}
     </div>
   );

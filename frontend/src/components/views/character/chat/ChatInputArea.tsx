@@ -31,6 +31,8 @@ export interface ChatInputAreaProps {
   // 角色
   character: Character;
   t: Record<string, string>;
+  // 移动端故事线侧栏展开时，输入框与正文/dock 同步右移 80vw（默认收起）
+  mobileSidebarOpen?: boolean;
 }
 
 export function ChatInputArea({
@@ -51,6 +53,7 @@ export function ChatInputArea({
   onNewSession,
   character,
   t,
+  mobileSidebarOpen = false,
 }: ChatInputAreaProps) {
   // 键盘未弹起时输入框停在 dock 栏上方；弹起后 dock 隐藏。
   const cssDockHeight = typeof getComputedStyle !== 'undefined'
@@ -108,12 +111,22 @@ export function ChatInputArea({
       <div
         data-palink-chat-composer="true"
         className={cn(
-          'fixed left-0 right-0 z-[20] px-3 pt-2 animate-chat-input-appear',
+          'fixed left-0 right-0 z-[20] px-3 pt-2',
           'bg-gradient-to-t from-transparent via-transparent to-transparent'
         )}
-        style={{ bottom: mobileComposerBottom }}
+        style={{
+          bottom: mobileComposerBottom,
+          // 故事线侧栏展开：正文右移 80%、dock 右移 80vw，输入框同为 body 内
+          // fixed 元素，需手动平移 80vw 并沿用同一条 300ms 曲线，三者同步右移
+          // 【K19】此元素不得挂 animate-chat-input-appear：该动画 forwards fill 的
+          // transform 会永久覆盖本 inline transform（CSS 动画 > 内联样式），
+          // 侧栏展开后输入框停在原地——2026-09-03 真机+浏览器实测根因。
+          // 入场动画移到内层 div（两层 transform 可叠加）。
+          transform: mobileSidebarOpen ? 'translate3d(80vw, 0, 0)' : 'translate3d(0, 0, 0)',
+          transition: 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1)',
+        }}
       >
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-3xl animate-chat-input-appear">
           {/* 移动端"新对话"按钮已按用户要求移除（2026-08-30）：入口与桌面 Dock/侧栏重复，
               且遮挡输入区左侧。桌面端按钮保留（[TAG:DESKTOP-DO-NOT-TOUCH] 范围）。 */}
           <ChatInput

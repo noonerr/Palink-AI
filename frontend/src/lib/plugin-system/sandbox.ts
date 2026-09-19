@@ -3338,6 +3338,11 @@ export class PluginSandbox {
           return palinkType === PopupType.INPUT ? null : false;
         }
       },
+      // [ST-ALIGN P0-4] callPopup 是 ST 的经典别名（大量第三方插件直接用它），
+      // 此前沙箱轨完全缺失 → 插件报 "callPopup is not a function"。
+      // 包一层箭头函数而非直接赋值：本对象字面量构造期间 sandbox 仍在 TDZ，
+      // 箭头函数体在**调用时**才求值，那时 sandbox 已就绪。
+      callPopup: (...args: any[]) => (sandbox as Record<string, any>).callGenericPopup(...args),
       // Popup 类：与 POPUP_TYPE 保持一致的字符串值
       // N3/N4 修复（批次 F）: ST popup.js POPUP_TYPE/POPUP_RESULT 为数字枚举
       // （popup.js:9-27 TEXT:1/CONFIRM:2/INPUT:3/DISPLAY:4），此前字符串值导致
@@ -3648,8 +3653,20 @@ export class PluginSandbox {
         }
         console.warn('[PluginSandbox] setChatMessages: 无可用桥接（window.setChatMessages 缺失）');
       },
-      deleteChatMessages: (_range?: any) => {
-        console.warn('[PluginSandbox] deleteChatMessages stub（两轨均无底层实现）');
+      // [ST-ALIGN] deleteChatMessages：桥接经典轨真实现（映射索引→消息 id 调删除 API）。
+      // ⚠ UI 刷新依赖宿主监听 message_deleted，主 UI 未监听前删除后需手动刷新。
+      deleteChatMessages: async (ids?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.deleteChatMessages === 'function') {
+            return await w.deleteChatMessages(ids);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] deleteChatMessages 桥接失败:', e);
+          return false;
+        }
+        console.warn('[PluginSandbox] deleteChatMessages: 无可用桥接（window.deleteChatMessages 缺失）');
+        return false;
       },
       // getCharacter / getCurrentCharacterName / getCharacterNames / getCharData:
       // 尝试从 window 上的全局聊天状态读取角色信息，不可用时返回安全默认值
@@ -3687,23 +3704,105 @@ export class PluginSandbox {
           return ctx?.characters?.[_id] || null;
         } catch { return null; }
       },
-      getCharAvatarPath: (_id?: any) => null,
-      getWorldbook: (_name?: any) => null,
-      // 世界书全局 API：插件常调用 getGlobalWorldbookNames 获取全局世界书列表
-      // Palink 世界书由 worldbookApi 管理，无"全局/本地"区分，返回空数组避免插件报错
-      getGlobalWorldbookNames: (): string[] => [],
+      // [ST-ALIGN] getCharAvatarPath / getCharacters：转发主 window 真实现
+      // （角色数组来自 getContext().characters 同源数据）。
+      getCharAvatarPath: (id?: any): string => {
+        try {
+          const w = window as any;
+          if (typeof w.getCharAvatarPath === 'function') {
+            return String(w.getCharAvatarPath(id) ?? '');
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] getCharAvatarPath 桥接失败:', e);
+        }
+        return '';
+      },
+      getCharacters: (): any[] => {
+        try {
+          const w = window as any;
+          if (typeof w.getCharacters === 'function') {
+            const list = w.getCharacters();
+            if (Array.isArray(list)) return list;
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] getCharacters 桥接失败:', e);
+        }
+        return [];
+      },
+      // [ST-ALIGN] getThumbnailUrl：转发主 window 真实现（后端 /api/st/thumbnail，
+      // 签名 type+file 与 ST 一致）。此前沙箱轨完全缺失 → 插件头像/背景拿不到 URL。
+      getThumbnailUrl: (type?: any, id?: any): string => {
+        try {
+          const w = window as any;
+          if (typeof w.getThumbnailUrl === 'function') {
+            return String(w.getThumbnailUrl(type, id) ?? '');
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] getThumbnailUrl 桥接失败:', e);
+        }
+        return '';
+      },
+      // [ST-ALIGN P0-4] 世界书系列由空桩改为转发主 window 真实现。
+      // 此前沙箱轨 getWorldbook 恒 null、写入类全 no-op，与经典轨（桥接
+      // /api/worldinfo/get|edit）双轨分裂，依赖世界书的插件在沙箱轨静默失效。
+      getWorldbook: async (name?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.getWorldbook === 'function') return await w.getWorldbook(name);
+        } catch (e) {
+          console.warn('[PluginSandbox] getWorldbook 桥接失败:', e);
+        }
+        return [];
+      },
+      // 世界书全局 API：插件常调用 getGlobalWorldbookNames 获取世界书列表。
+      // Palink 无「全局/本地」区分，转发主 window 实现；缺失时返回空数组避免插件报错。
+      getGlobalWorldbookNames: (): string[] => {
+        try {
+          const w = window as any;
+          if (typeof w.getGlobalWorldbookNames === 'function') {
+            const names = w.getGlobalWorldbookNames();
+            if (Array.isArray(names)) return names;
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] getGlobalWorldbookNames 桥接失败:', e);
+        }
+        return [];
+      },
       // saveWorldInfoToChat：将世界书绑定到聊天，Palink 无此概念，no-op
       saveWorldInfoToChat: (_name?: string) => { /* no-op */ },
       // removeWorldInfoFromChat：解绑，no-op
       removeWorldInfoFromChat: (_name?: string) => { /* no-op */ },
-      // getWorldInfoData：获取世界书条目数据，返回 null（插件会回退到 getWorldbook）
+      // getWorldInfoData：ST 语义是**同步**返回 { entries }，但 Palink 世界书需异步
+      // 拉取，改成 async 会破坏同步调用方。保持返回 null —— 插件会回退到
+      // getWorldbook（现已桥接真实现），比给一个 Promise 更安全。
       getWorldInfoData: (_name?: string) => null,
       // checkWorldInfo：触发世界书扫描，no-op（Palink 在后端 build_worldbook_context 处理）
       checkWorldInfo: (_trigger: string = '') => { /* no-op */ },
-      // createOrReplaceWorldbook / createOrReplaceCharWorldbook：创建或替换世界书
-      // Palink 世界书由后端 worldbookApi 管理，sandbox 层 no-op 避免插件 ReferenceError
-      createOrReplaceWorldbook: async (_name?: any, _entries?: any, _options?: any) => { /* no-op */ },
-      createOrReplaceCharWorldbook: async (_name?: any, _entries?: any, _options?: any) => { /* no-op */ },
+      createOrReplaceWorldbook: async (name?: any, entries?: any, _options?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.createOrReplaceWorldbook === 'function') {
+            return await w.createOrReplaceWorldbook(name, entries);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] createOrReplaceWorldbook 桥接失败:', e);
+        }
+        return false;
+      },
+      createOrReplaceCharWorldbook: async (name?: any, entries?: any, _options?: any) => {
+        try {
+          const w = window as any;
+          if (typeof w.createOrReplaceCharWorldbook === 'function') {
+            return await w.createOrReplaceCharWorldbook(name, entries);
+          }
+          if (typeof w.createOrReplaceWorldbook === 'function') {
+            return await w.createOrReplaceWorldbook(name, entries);
+          }
+        } catch (e) {
+          console.warn('[PluginSandbox] createOrReplaceCharWorldbook 桥接失败:', e);
+        }
+        return false;
+      },
       getMessageId: () => {
         try {
           const w = window as any;
@@ -4513,9 +4612,38 @@ export class PluginSandbox {
             return chatId;
           }
         },
-        getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+        // [ST-ALIGN P0-4] 补齐 CSRF：此前只有 Content-Type，插件调 ST 端点
+        // （/api/characters/chats 等）会被双提交中间件 403。
+        // 优先转发主 window 真实现（经典轨已注入带 X-CSRF-Token 的版本，保证双轨一致），
+        // 缺失时自行按同一口径读 __palinkGetCsrfToken 兜底。
+        getRequestHeaders: () => {
+          const fallback = { 'Content-Type': 'application/json' };
+          try {
+            const w = window as any;
+            if (typeof w.getRequestHeaders === 'function') {
+              return w.getRequestHeaders();
+            }
+            const csrf = (w.__palinkGetCsrfToken || (() => ''))();
+            return csrf ? { ...fallback, 'X-CSRF-Token': csrf } : fallback;
+          } catch {
+            return fallback;
+          }
+        },
         messageFormatting: sandbox.messageFormatting,
-        reloadCurrentChat: async () => { /* no-op in palink-native */ },
+        // [ST-ALIGN] reloadCurrentChat：桥接主 window 实现。主 window 当前无此函数
+        // （需要视图层注册 refresh 钩子，已登记待接）——桥接就位后本轨自动生效。
+        reloadCurrentChat: async () => {
+          try {
+            const w = window as any;
+            if (typeof w.reloadCurrentChat === 'function') {
+              return await w.reloadCurrentChat();
+            }
+          } catch (e) {
+            console.warn('[PluginSandbox] reloadCurrentChat 桥接失败:', e);
+            return;
+          }
+          console.warn('[PluginSandbox] reloadCurrentChat: 宿主未注册刷新钩子（待视图层接入）');
+        },
         // Phase 1: 扩展惯用「原地改嵌套字段 + saveSettingsDebounced()」持久化，
         // 嵌套写不触发 Proxy set 拦截器，故此处必须同时持久化共享 store
         saveSettingsDebounced: (...args: unknown[]) => {
@@ -4541,6 +4669,9 @@ export class PluginSandbox {
         animation_easing: 'ease',
         activateSendButtons: () => {},
         deactivateSendButtons: () => {},
+        // [ST-ALIGN] appendMediaToMessage：ST 语义是把消息内媒体渲染进**消息 DOM 元素**，
+        // Palink 消息渲染是 React 管线且插件拿不到真实消息元素 → 无法正确桥接，
+        // 强行实现只会让插件误以为渲染成功（与 refreshOneMessage 同批，需渲染管线配合）。
         appendMediaToMessage: () => {},
         saveChatConditional: async () => {},
         // P-6: shared.js 顶层 import（CONNECT_API_MAP/createModelIcon）→ 此前缺失 undefined
@@ -4864,10 +4995,20 @@ export class PluginSandbox {
         collapseNewlines: (s: string) => String(s ?? '').replace(/\n{3,}/g, '\n\n'),
         registerDebugFunction: () => {},
         // P-9 相关：ST power-user.js 导出 persona_description_positions
-        persona_description_positions: { IN_PROMPT: 0, IN_CHAT: 1, AFTER_CHAT: 2 },
+        // ⚠ 2026-09-08 修正：原写成 { IN_PROMPT: 0, IN_CHAT: 1, AFTER_CHAT: 2 } 与 ST 真值不符
+        // （ST personas.js:88-97 = IN_PROMPT 0 / AFTER_CHAR 1(废弃) / TOP_AN 2 / BOTTOM_AN 3 /
+        // AT_DEPTH 4 / NONE 9）。插件照旧常量写库会导致人设注入到错误位置或被静默丢弃。
+        persona_description_positions: {
+          IN_PROMPT: 0,
+          AFTER_CHAR: 1,
+          TOP_AN: 2,
+          BOTTOM_AN: 3,
+          AT_DEPTH: 4,
+          NONE: 9,
+        },
         power_user: {
           persona_show_user_name: false,
-          persona_description_position: 0,
+          persona_description_position: 4,
           waifuMode: false,
           experimental_macro_engine: true,
           macro_in_chat: true,

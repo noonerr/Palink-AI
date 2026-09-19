@@ -400,8 +400,9 @@ export function ModelManagementTab({
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in">
+      {/* 移动端 flex-wrap 全量可见（7 个胶囊单行放不下，滚动条会有截断观感）；sm+ 维持原横向滚动条 */}
       {showSubTabs && (
-      <div className="flex items-center gap-2 border-b border-border/50 pb-4 shrink-0 overflow-x-auto">
+      <div className="flex flex-wrap items-center gap-1 p-1 bg-secondary/60 rounded-xl shrink-0 sm:flex-nowrap sm:overflow-x-auto">
         {visibleSubTabs.map((tab) => {
           if (tab.key === 'local' && !isAdmin) return null;
           if (tab.key === 'models' && !isAdmin) return null;
@@ -410,11 +411,12 @@ export function ModelManagementTab({
             <button
               key={tab.key}
               onClick={() => setSubTab(tab.key)}
-              className={
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all duration-200 active:scale-95 whitespace-nowrap',
                 subTab === tab.key
-                  ? 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all bg-primary text-primary-foreground shadow-lg shadow-primary/20 whitespace-nowrap'
-                  : 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all text-muted-foreground hover:bg-secondary hover:text-foreground whitespace-nowrap'
-              }
+                  ? 'bg-background shadow-sm text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
             >
               {tab.icon}
               {tab.label}
@@ -425,15 +427,12 @@ export function ModelManagementTab({
       )}
 
               {subTab === 'providers' && (
-        <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="text-2xl font-semibold hidden md:block">{t.provider_config || '服务提供商配置'}</h3>
-                <Button onClick={() => handleEditProvider()}>
-                  <Plus size={16} className="mr-2" />
-                  {t.add_provider || '添加提供商'}
-                </Button>
-              </div>
+        <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
+            <div className="flex items-center justify-end mb-4">
+              <Button onClick={() => handleEditProvider()} className="h-8 md:h-9 rounded-md px-3 text-xs">
+                <Plus size={14} className="mr-1.5" />
+                {t.add_provider || '添加提供商'}
+              </Button>
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -498,7 +497,7 @@ export function ModelManagementTab({
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                      <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-border/40">
                         {gw?.is_gateway && gw.admin_url && (
                           <a
                             href={gw.admin_url}
@@ -551,12 +550,10 @@ export function ModelManagementTab({
       )}
 
       {subTab === 'local' && isAdmin && (
-        <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
+        <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-2xl font-semibold">{t.local_models || '本地模型'}</h3>
-                  <div className="flex bg-muted/50 rounded-lg p-0.5">
+                <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl">
                     {(() => {
                       const isMmprojModel = (m: any) =>
                         (m.key && m.key.toLowerCase().includes('mmproj')) ||
@@ -569,7 +566,7 @@ export function ModelManagementTab({
                           <button
                             onClick={() => setLocalSubView('language')}
                             className={cn(
-                              "flex items-center gap-1.5 px-3 py-1 text-xs rounded-md transition-all",
+                              "flex items-center gap-1.5 px-3 py-1 text-xs rounded-lg transition-all duration-200",
                               localSubView === 'language'
                                 ? "bg-background text-foreground shadow-sm font-medium"
                                 : "text-muted-foreground hover:text-foreground"
@@ -582,7 +579,7 @@ export function ModelManagementTab({
                           <button
                             onClick={() => setLocalSubView('vision')}
                             className={cn(
-                              "flex items-center gap-1.5 px-3 py-1 text-xs rounded-md transition-all",
+                              "flex items-center gap-1.5 px-3 py-1 text-xs rounded-lg transition-all duration-200",
                               localSubView === 'vision'
                                 ? "bg-background text-foreground shadow-sm font-medium"
                                 : "text-muted-foreground hover:text-foreground"
@@ -596,14 +593,13 @@ export function ModelManagementTab({
                       );
                     })()}
                   </div>
-                </div>
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={fetchLocalModels}>
-                    <Database size={16} className="mr-2" />
+                  <Button onClick={fetchLocalModels} className="h-8 md:h-9 rounded-md px-3 text-xs">
+                    <Database size={14} className="mr-1.5" />
                     {t.refresh_models || '刷新模型列表'}
                   </Button>
-                  <Button onClick={() => document.getElementById('model-upload-input')?.click()} disabled={uploadProgress !== null}>
-                    <UploadCloud size={16} className="mr-2" />
+                  <Button onClick={() => document.getElementById('model-upload-input')?.click()} disabled={uploadProgress !== null} className="h-8 md:h-9 rounded-md px-3 text-xs">
+                    <UploadCloud size={14} className="mr-1.5" />
                     {t.upload_model || '上传模型'}
                   </Button>
                   <input
@@ -734,7 +730,7 @@ export function ModelManagementTab({
                                     </div>
                                   )}
                                 </div>
-                                <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                                <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-border/40">
                                   <div className="flex flex-col gap-2">
                                     <div className="flex items-center gap-2 flex-shrink-0">
                                       <Switch
@@ -839,7 +835,7 @@ export function ModelManagementTab({
                                     </div>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-200 dark:border-gray-700">
+                                <div className="flex items-center gap-2 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-border/40">
                                   <Switch
                                     checked={model.enabled !== false}
                                     onCheckedChange={(checked) => handleModelEnable(model.id, checked)}
@@ -938,16 +934,11 @@ export function ModelManagementTab({
       )}
 
       {subTab === 'models' && isAdmin && (
-        <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
+        <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-              <div className="min-w-0">
-                <h3 className="text-2xl font-semibold">模型管理</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  管理 API / 本地模型的显示名称、图标与 token 上限设置
-                </p>
-              </div>
-              <Button onClick={fetchUnifiedModels} disabled={loading} className="shrink-0">
-                <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} />
+              <div className="min-w-0" />
+              <Button onClick={fetchUnifiedModels} disabled={loading} className="h-8 md:h-9 rounded-md px-3 text-xs shrink-0">
+                <RefreshCw size={14} className={`mr-1.5 ${loading ? 'animate-spin' : ''}`} />
                 刷新
               </Button>
             </div>
@@ -1241,11 +1232,11 @@ export function ModelManagementTab({
                     <div className="flex items-center gap-2 px-1">
                       <LayoutGrid size={14} className="text-muted-foreground shrink-0" />
                       <span className="text-xs text-muted-foreground shrink-0">分组方式</span>
-                      <div className="flex bg-muted/50 rounded-lg p-0.5">
+                      <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl">
                         <button
                           onClick={() => setGroupingMode('family')}
                           className={cn(
-                            "px-3 py-1 text-xs rounded-md transition-all",
+                            "px-3 py-1 text-xs rounded-lg transition-all duration-200",
                             groupingMode === 'family'
                               ? "bg-background text-foreground shadow-sm font-medium"
                               : "text-muted-foreground hover:text-foreground"
@@ -1256,7 +1247,7 @@ export function ModelManagementTab({
                         <button
                           onClick={() => setGroupingMode('provider')}
                           className={cn(
-                            "px-3 py-1 text-xs rounded-md transition-all",
+                            "px-3 py-1 text-xs rounded-lg transition-all duration-200",
                             groupingMode === 'provider'
                               ? "bg-background text-foreground shadow-sm font-medium"
                               : "text-muted-foreground hover:text-foreground"
@@ -1330,15 +1321,9 @@ export function ModelManagementTab({
         </div>
       )}
       {subTab === 'web_search' && (
-        <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
+        <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                <div className="min-w-0">
-                  <h3 className="text-2xl font-semibold">网络搜索</h3>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    配置对话中的网络搜索功能，支持多种搜索引擎
-                  </p>
-                </div>
               </div>
             </div>
 
@@ -1564,16 +1549,9 @@ export function ModelManagementTab({
       
       {/* TTS 语音设置 */}
       {subTab === 'tts' && (
-        <div className="space-y-6 animate-fade-in pb-28 w-full max-w-full">
+        <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <Volume2 size={24} className="text-primary shrink-0" />
-                <div>
-                  <h3 className="text-2xl font-semibold">语音合成设置</h3>
-                  <p className="text-sm text-muted-foreground">
-                    为角色扮演对话配置语音合成服务商和语音
-                  </p>
-                </div>
               </div>
             </div>
 

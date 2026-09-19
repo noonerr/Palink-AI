@@ -8,6 +8,7 @@ import { generationEngine } from '@/services/generation-engine';
 import { getContext as getStContext } from '@/lib/sillytavern/getContext';
 import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
 import { promptInjection } from '@/services/prompt-injection';
+import { eventBus } from '@/lib/event-bus';
 
 interface RuntimePluginResource {
   path?: string;
@@ -564,8 +565,18 @@ export class SillyTavernPluginRuntime {
           }
           const resp = await api.post('/api/worldinfo/edit', { name, data: { entries: dict } });
           const ok = Boolean(resp?.ok);
-          if (ok && !worldbookNamesCache.includes(name)) {
-            worldbookNamesCache.push(name);
+          if (ok) {
+            if (!worldbookNamesCache.includes(name)) {
+              worldbookNamesCache.push(name);
+            }
+            // [ST-ALIGN P0-4] worldinfo_updated 此前从不 emit，监听它的世界书类
+            // 插件（变更后自动刷新/联动）静默失效。eventBus 与 eventSource 同源
+            // （context.ts:66/80 双向桥接），此处 emit 即可让 eventSource.on 收到。
+            try {
+              eventBus.emit('worldinfo_updated' as any, { name } as any);
+            } catch {
+              /* no-op */
+            }
           }
           return ok;
         } catch (e) {
@@ -1112,13 +1123,138 @@ export class SillyTavernPluginRuntime {
         }
 
         // injectPrompts 兜底：BubbleDialogue 插件会尝试用该 API 注入格式规则。
-        // Palink 暂不支持，让插件优雅降级（登记降级桩，不再静默），不抛 ReferenceError。
+        // [ST-ALIGN P0-4] injectPrompts 真实现（JS-Slash-Runner / BubbleDialogue 约定，
+        // 签名见 st-plugins/third-party/JS-Slash-Runner-main/@types/function/inject.d.ts）。
+        // 此前是返回 null 的降级桩 —— BubbleDialogue 的格式规则、JS-Slash-Runner 的
+        // 注入全部静默失效。改为遍历转发到 window.setExtensionPrompt 真实现（已注册到
+        // prompt-injection 服务，装配期消费）。
         if (typeof window.injectPrompts !== 'function') {
-          window.injectPrompts = function() {
-            if (runtime && typeof runtime.recordStubHit === 'function') {
-              runtime.recordStubHit('injectPrompts', 'Palink 暂不支持提示词注入（BubbleDialogue 格式规则等不生效）');
+          window.injectPrompts = function(prompts, _options) {
+            var list = Array.isArray(prompts) ? prompts : [];
+            var injectedIds = [];
+            for (var i = 0; i < list.length; i++) {
+              var p = list[i];
+              if (!p || typeof p !== 'object') continue;
+              var id = String(p.id ?? '');
+              if (!id || typeof p.content !== 'string') continue;
+              // position: 'in_chat' → IN_CHAT(1)；'none' → NONE(-1，不发给 AI 但参与世界书扫描)
+              var pos = p.position === 'none' ? -1 : 1;
+              // role: ST extension_prompt_roles 0=system / 1=user / 2=assistant
+              var role = p.role === 'assistant' ? 2 : (p.role === 'user' ? 1 : 0);
+              try {
+                window.setExtensionPrompt(
+                  id,
+                  p.content,
+                  pos,
+                  typeof p.depth === 'number' ? p.depth : 4,
+                  p.should_scan !== false,
+                  role,
+                  typeof p.filter === 'function' ? p.filter : undefined,
+                );
+                injectedIds.push(id);
+              } catch (e) {
+                console.warn('[SillyTavernPluginRuntime] injectPrompts 单项失败:', id, e);
+              }
             }
-            return null;
+            return {
+              uninject: function() {
+                try { window.uninjectPrompts(injectedIds); } catch (e) { /* no-op */ }
+              },
+            };
+          };
+        }
+        if (typeof window.uninjectPrompts !== 'function') {
+          window.uninjectPrompts = function(ids) {
+            var list = Array.isArray(ids) ? ids : [];
+            for (var i = 0; i < list.length; i++) {
+              try { promptInjection.removeExtensionPrompt(String(list[i])); }
+              catch (e) { /* no-op */ }
+            }
+          };
+        }
+
+        // [ST-ALIGN] window.getThumbnailUrl 真实现：后端**已有** /api/st/thumbnail
+        // （silly_tavern.py:1853，同时注册 /thumbnail），签名 type+file 与 ST 完全一致。
+        // 此前主 window 无此函数 → 沙箱轨桥接找不到实现，插件头像/背景渲染出裂图。
+        // type != 'avatar'（如 'bg'）时后端返回 svg 占位图，已属优雅降级。
+        if (typeof window.getThumbnailUrl !== 'function') {
+          window.getThumbnailUrl = function(type, id) {
+            if (!type || (!id && id !== 0)) return '';
+            return '/api/st/thumbnail?type=' + encodeURIComponent(type) + '&file=' + encodeURIComponent(id);
+          };
+        }
+
+        // [ST-ALIGN] window.getCharacters：返回角色数组副本（ST 高频 API，插件遍历
+        // 角色列表）。数据源与 Ctx 轨 getContext().characters 同源；返回深拷贝防止
+        // 插件直接改写内部状态。此前该 API 完全缺失。
+        if (typeof window.getCharacters !== 'function') {
+          window.getCharacters = function() {
+            try {
+              var st = getStContext();
+              var list = st && Array.isArray(st.characters) ? st.characters : [];
+              return JSON.parse(JSON.stringify(list));
+            } catch (e) {
+              return [];
+            }
+          };
+        }
+
+        // [ST-ALIGN] window.getCharAvatarPath(id)：返回角色头像标识。ST 语义为头像
+        // 文件名；Palink 为 "palink-{uuid}.png"（可直传 getThumbnailUrl('avatar', …)）。
+        // id 兼容数字索引 / 角色名 / avatar 串 / UUID。此前恒 null → 头像类插件失明。
+        if (typeof window.getCharAvatarPath !== 'function') {
+          window.getCharAvatarPath = function(id) {
+            try {
+              var st = getStContext();
+              var list = st && Array.isArray(st.characters) ? st.characters : [];
+              var found = null;
+              if (typeof id === 'number') found = list[id] || null;
+              if (!found && typeof id === 'string') {
+                for (var i = 0; i < list.length; i++) {
+                  var c = list[i] || {};
+                  if (c.name === id || c.avatar === id || String(c.id ?? '') === id || String(c.uuid ?? '') === id) { found = c; break; }
+                }
+              }
+              return found ? String(found.avatar || '') : '';
+            } catch (e) {
+              return '';
+            }
+          };
+        }
+
+        // [ST-ALIGN] window.deleteChatMessages(ids)：删除当前聊天的指定消息。
+        // ST 的 ids 是 chat 数组索引；映射为 Palink 消息 id 后逐个调
+        // DELETE /api/character-sessions/{chatId}/messages/{id}（走 api client，
+        // 自动注入 Bearer/CSRF），并 emit message_deleted。
+        // ⚠ 局限：UI 刷新依赖宿主监听 message_deleted，当前主 UI 未监听 → 删除后
+        // 需手动刷新聊天。比此前恒 false 的桩前进了一步，完整闭环需视图层接入。
+        if (typeof window.deleteChatMessages !== 'function') {
+          window.deleteChatMessages = async function(ids) {
+            try {
+              var st = getStContext();
+              var chat = st && Array.isArray(st.chat) ? st.chat : [];
+              var chatId = st && st.chatId;
+              if (!chatId) return false;
+              var list = Array.isArray(ids) ? ids : [];
+              var okAll = true;
+              for (var i = 0; i < list.length; i++) {
+                var idx = Number(list[i]);
+                var msg = (!isNaN(idx)) ? chat[idx] : null;
+                var mid = msg ? (msg.id ?? msg.message_id ?? msg.uid) : list[i];
+                if (mid === undefined || mid === null || mid === '') { okAll = false; continue; }
+                try {
+                  await api.delete('/api/character-sessions/' + chatId + '/messages/' + mid);
+                  if (typeof window.eventSource !== 'undefined' && window.eventSource && window.eventSource.emit) {
+                    window.eventSource.emit('message_deleted', idx);
+                  }
+                } catch (e) {
+                  okAll = false;
+                }
+              }
+              return okAll;
+            } catch (e) {
+              return false;
+            }
           };
         }
 

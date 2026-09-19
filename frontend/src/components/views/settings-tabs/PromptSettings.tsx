@@ -4,8 +4,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { api, invalidateCache } from '@/services/api';
-import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { SettingsGroup, SettingsRow } from './settings-ui';
 import { AlertCircle, RotateCcw } from 'lucide-react';
 
 interface PromptSettingsProps {
@@ -140,159 +140,160 @@ export function PromptSettings({ token }: PromptSettingsProps) {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-xl md:text-2xl font-semibold hidden md:block">提示词设置</h3>
-          <p className="text-sm text-muted-foreground mt-1">
-            自定义AI的系统提示词，控制AI的行为和回复风格
-          </p>
-        </div>
-      </div>
-
-      <GlassCard className="p-4 md:p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <p className="font-medium">启用自定义提示词</p>
-            <p className="text-sm text-muted-foreground">
-              关闭后将使用默认提示词
-            </p>
-          </div>
+    <div className="space-y-4 md:space-y-6">
+      <SettingsGroup label="自定义提示词">
+        <SettingsRow title="启用自定义提示词">
           <Switch
             checked={useCustomPrompts}
             onCheckedChange={setUseCustomPrompts}
-        />
-        </div>
+          />
+        </SettingsRow>
 
      {useCustomPrompts && (
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
-            <div className="flex gap-2">
-              <AlertCircle className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-              <div className="text-sm">
-                <p className="font-medium text-blue-500 mb-1">提示词变量说明</p>
-                <ul className="text-muted-foreground space-y-1">
-            <li>• 角色扮演提示词支持变量：<code className="bg-black/20 px-1 rounded">{'{name}'}</code>（角色名）、<code className="bg-black/20 px-1 rounded">{'{user}'}</code>（用户昵称）</li>
-                <li>• 其他变量：<code className="bg-black/20 px-1 rounded">{'{personality}'}</code>、<code className="bg-black/20 px-1 rounded">{'{background}'}</code>、<code className="bg-black/20 px-1 rounded">{'{scenario}'}</code>、<code className="bg-black/20 px-1 rounded">{'{description}'}</code>、<code className="bg-black/20 px-1 rounded">{'{system_prompt}'}</code></li>
-            <li>• 角色状态表格：在角色聊天菜单中开启"显示角色状态"后，系统会自动在提示词末尾追加角色状态表格指令，无需手动添加</li>
-            </ul>
+          <div className="px-4 py-3">
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
+              <div className="flex gap-2">
+                <AlertCircle className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+                <div className="text-sm">
+                  <p className="font-medium text-blue-500 mb-1">提示词变量说明</p>
+                  <ul className="text-muted-foreground space-y-1">
+                    <li>• 角色扮演提示词支持变量：<code className="bg-black/20 px-1 rounded">{'{name}'}</code>（角色名）、<code className="bg-black/20 px-1 rounded">{'{user}'}</code>（用户昵称）</li>
+                    <li>• 其他变量：<code className="bg-black/20 px-1 rounded">{'{personality}'}</code>、<code className="bg-black/20 px-1 rounded">{'{background}'}</code>、<code className="bg-black/20 px-1 rounded">{'{scenario}'}</code>、<code className="bg-black/20 px-1 rounded">{'{description}'}</code>、<code className="bg-black/20 px-1 rounded">{'{system_prompt}'}</code></li>
+                    <li>• 角色状态表格：在角色聊天菜单中开启"显示角色状态"后，系统会自动在提示词末尾追加角色状态表格指令，无需手动添加</li>
+                  </ul>
+                </div>
               </div>
             </div>
           </div>
         )}
+      </SettingsGroup>
 
-        <Tabs defaultValue="chat" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="chat">普通对话</TabsTrigger>
-            <TabsTrigger value="character">角色扮演</TabsTrigger>
-          </TabsList>
-
-     <TabsContent value="chat" className="space-y-4 mt-4">
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">中文提示词</label>
-                  <Button
-                variant="ghost"
-                 size="sm"
-              onClick={() => handleReset('chat_zh')}
-                  disabled={!useCustomPrompts}
-                  >
-               <RotateCcw className="w-4 h-4 mr-1" />
-               恢复默认
-                  </Button>
-              </div>
-                <Textarea
-           value={chatPromptZh}
-                onChange={(e) => setChatPromptZh(e.target.value)}
-               disabled={!useCustomPrompts}
-               rows={8}
-          className="font-mono text-sm"
-             placeholder="输入中文提示词..."
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">英文提示词</label>
-               <Button
-                  variant="ghost"
-                 size="sm"
-               onClick={() => handleReset('chat_en')}
-                    disabled={!useCustomPrompts}
-                  >
-                 <RotateCcw className="w-4 h-4 mr-1" />
-            Reset
-                  </Button>
-             </div>
-                <Textarea
-                  value={chatPromptEn}
-                  onChange={(e) => setChatPromptEn(e.target.value)}
-                  disabled={!useCustomPrompts}
-              rows={8}
-             className="font-mono text-sm"
-                  placeholder="Enter English prompt..."
-                />
-         </div>
-          </div>
-          </TabsContent>
-
-        <TabsContent value="character" className="space-y-4 mt-4">
-            <div className="space-y-4">
-         <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">中文提示词</label>
-              <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleReset('character_zh')}
-                disabled={!useCustomPrompts}
-               >
-                  <RotateCcw className="w-4 h-4 mr-1" />
-                    恢复默认
-           </Button>
-                </div>
-                <Textarea
-              value={characterPromptZh}
-                onChange={(e) => setCharacterPromptZh(e.target.value)}
-                  disabled={!useCustomPrompts}
-                rows={12}
-            className="font-mono text-sm"
-           placeholder="输入中文角色扮演提示词..."
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium">英文提示词</label>
-            <Button
-                    variant="ghost"
-               size="sm"
-                  onClick={() => handleReset('character_en')}
-                    disabled={!useCustomPrompts}
+      <SettingsGroup label="提示词内容">
+        <div className="p-4 space-y-4">
+          <Tabs defaultValue="chat" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 gap-1 h-auto bg-secondary/60 rounded-xl p-1">
+              <TabsTrigger
+                value="chat"
+                className="rounded-lg py-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm dark:data-[state=active]:bg-background dark:data-[state=active]:text-foreground"
               >
-             <RotateCcw className="w-4 h-4 mr-1" />
-                    Reset
-            </Button>
-            </div>
-          <Textarea
-                  value={characterPromptEn}
-              onChange={(e) => setCharacterPromptEn(e.target.value)}
-             disabled={!useCustomPrompts}
-                rows={12}
-                  className="font-mono text-sm"
-              placeholder="Enter English character prompt..."
-         />
-            </div>
-            </div>
-          </TabsContent>
-        </Tabs>
+                普通对话
+              </TabsTrigger>
+              <TabsTrigger
+                value="character"
+                className="rounded-lg py-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm dark:data-[state=active]:bg-background dark:data-[state=active]:text-foreground"
+              >
+                角色扮演
+              </TabsTrigger>
+            </TabsList>
 
-        <div className="flex justify-end mt-6">
-          <Button onClick={handleSave} disabled={loading}>
-            {loading ? '保存中...' : '保存设置'}
-          </Button>
+            <TabsContent value="chat" className="space-y-4 mt-4">
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">中文提示词</label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleReset('chat_zh')}
+                      disabled={!useCustomPrompts}
+                    >
+                      <RotateCcw className="w-4 h-4 mr-1" />
+                      恢复默认
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={chatPromptZh}
+                    onChange={(e) => setChatPromptZh(e.target.value)}
+                    disabled={!useCustomPrompts}
+                    rows={8}
+                    className="font-mono text-sm"
+                    placeholder="输入中文提示词..."
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">英文提示词</label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleReset('chat_en')}
+                      disabled={!useCustomPrompts}
+                    >
+                      <RotateCcw className="w-4 h-4 mr-1" />
+                      Reset
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={chatPromptEn}
+                    onChange={(e) => setChatPromptEn(e.target.value)}
+                    disabled={!useCustomPrompts}
+                    rows={8}
+                    className="font-mono text-sm"
+                    placeholder="Enter English prompt..."
+                  />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="character" className="space-y-4 mt-4">
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">中文提示词</label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleReset('character_zh')}
+                      disabled={!useCustomPrompts}
+                    >
+                      <RotateCcw className="w-4 h-4 mr-1" />
+                      恢复默认
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={characterPromptZh}
+                    onChange={(e) => setCharacterPromptZh(e.target.value)}
+                    disabled={!useCustomPrompts}
+                    rows={12}
+                    className="font-mono text-sm"
+                    placeholder="输入中文角色扮演提示词..."
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium">英文提示词</label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleReset('character_en')}
+                      disabled={!useCustomPrompts}
+                    >
+                      <RotateCcw className="w-4 h-4 mr-1" />
+                      Reset
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={characterPromptEn}
+                    onChange={(e) => setCharacterPromptEn(e.target.value)}
+                    disabled={!useCustomPrompts}
+                    rows={12}
+                    className="font-mono text-sm"
+                    placeholder="Enter English character prompt..."
+                  />
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          <div className="flex items-center justify-end">
+            <Button onClick={handleSave} disabled={loading} className="h-8 md:h-9 rounded-md px-3 text-xs">
+              {loading ? '保存中...' : '保存设置'}
+            </Button>
+          </div>
         </div>
-      </GlassCard>
+      </SettingsGroup>
     </div>
   );
 }

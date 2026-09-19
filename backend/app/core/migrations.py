@@ -64,6 +64,8 @@ _RUNTIME_COMPAT_COLUMNS = (
     # ST 1.18.0 persona description injection controls
     ("personas", "persona_show", sa.Boolean()),
     ("personas", "persona_description_position", sa.Integer()),
+    # ST 1.18.0 persona_description_depth（AT_DEPTH 位置时的注入深度，默认 4）
+    ("personas", "persona_description_depth", sa.Integer()),
     # Active persona binding on user settings (references Persona.id)
     ("user_settings", "active_persona_id", sa.String()),
     # ST 1.18.0 power_user persistence (JSON string, full power_user object)

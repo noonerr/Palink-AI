@@ -192,12 +192,16 @@ export function ProviderEditPage({
   return (
     <div className="flex-1 min-w-0 w-full p-4 md:p-8 h-full overflow-hidden overflow-x-hidden">
       <div className="max-w-4xl mx-auto h-full overflow-hidden flex flex-col">
+        {/* 顶部状态栏安全区（与设置其它二级菜单页一致，让出状态栏高度） */}
+        <div aria-hidden style={{ height: 'max(env(safe-area-inset-top), 8px)', width: '100%' }} />
         {/* Header */}
         <div className="flex items-center gap-3 shrink-0 pb-4">
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('/settings', { state: { activeTab: 'models' } })}
+            // [iOS-HISTORY] 返回用 replace：编辑页属于「临时子页」，push 会留下一条
+            // 已关闭的 /settings/providers/:id 条目，滑动返回会回到这个已退出的页面
+            onClick={() => navigate('/settings', { replace: true, state: { activeTab: 'models' } })}
             className="flex items-center gap-1"
           >
             <ChevronLeft size={16} />
@@ -211,11 +215,11 @@ export function ProviderEditPage({
 
         {/* Scrollable Content */}
         <ScrollArea className="flex-1 min-h-0">
-          <div className={`space-y-6 animate-fade-in pr-2 overflow-x-hidden max-w-full ${bottomPadding}`}>
+          <div className={`space-y-4 md:space-y-6 animate-fade-in pr-2 overflow-x-hidden max-w-full ${bottomPadding}`}>
 
             {/* Presets */}
             {!(providerId && providerId !== 'new') && (
-              <GlassCard className="p-5 overflow-hidden">
+              <GlassCard className="p-4 md:p-6 overflow-hidden">
                 <div className="flex items-center gap-2 mb-4">
                   <Sparkles size={18} className="text-primary" />
                   <h4 className="font-semibold text-foreground">快速预设</h4>
@@ -239,7 +243,7 @@ export function ProviderEditPage({
             <GlassCard className="overflow-hidden">
               <button
                 onClick={() => setConfigExpanded(!configExpanded)}
-                className="w-full flex items-center justify-between p-5 text-left hover:bg-background/30 transition-all duration-200"
+                className="w-full flex items-center justify-between px-4 md:px-6 py-4 text-left hover:bg-background/30 transition-all duration-200"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-primary/10 flex items-center justify-center">
@@ -270,7 +274,7 @@ export function ProviderEditPage({
                 "overflow-hidden transition-all duration-500 ease-in-out",
                 configExpanded ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0"
               )}>
-                <div className="px-5 pb-5 pt-2 space-y-5 border-t border-border/50 overflow-x-hidden">
+                <div className="px-4 md:px-6 pb-5 pt-2 space-y-5 border-t border-border/50 overflow-x-hidden">
                   <div className="space-y-2">
                     <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       显示名称
@@ -405,7 +409,7 @@ export function ProviderEditPage({
 
             {/* Model Management */}
             <GlassCard className="overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50 bg-gradient-to-r from-background/50 to-background/30">
+              <div className="px-4 md:px-6 py-4 border-b border-border/50 bg-gradient-to-r from-background/50 to-background/30">
                 <div className="flex items-center gap-2">
                   <Bot size={18} className="text-primary" />
                   <span className="font-semibold text-foreground">模型管理</span>
@@ -414,7 +418,7 @@ export function ProviderEditPage({
                   </span>
                 </div>
               </div>
-              <div className="p-5 overflow-x-hidden">
+              <div className="p-4 md:p-6 overflow-x-hidden">
                 <ModelEditor
                   models={pModels}
                   onChange={setPModels}
@@ -427,12 +431,12 @@ export function ProviderEditPage({
             </GlassCard>
 
             {/* Save Button */}
-            <div className="pt-2">
+            <div className="flex items-center justify-end">
               <Button
                 onClick={handleSaveProvider}
-                className="w-full h-11 text-base font-semibold"
+                className="h-9 md:h-10 rounded-md px-6 font-semibold"
               >
-                <Save size={18} className="mr-2" />
+                <Save size={16} className="mr-2" />
                 {t.save || '保存'}
               </Button>
             </div>

@@ -254,25 +254,21 @@ export function MCPTab({ t: _t }: MCPTabProps) {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold">MCP 服务器</h3>
-          <p className="text-sm text-muted-foreground mt-1">管理 MCP 工具服务器，兼容 LobeChat MCP 命令体系</p>
-        </div>
+    <div className="space-y-4 md:space-y-6 animate-fade-in">
+      <div className="flex items-center justify-end mb-4">
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => { setMarketQuery(''); setMarketResults([]); searchMarket(); }}>
+          <Button variant="outline" className="h-8 md:h-9 rounded-md px-3 text-xs" onClick={() => { setMarketQuery(''); setMarketResults([]); searchMarket(); }}>
             <Globe size={14} className="mr-1.5" />
             市场
           </Button>
-          <Button size="sm" onClick={() => openInstallDialog()}>
+          <Button className="h-8 md:h-9 rounded-md px-3 text-xs" onClick={() => openInstallDialog()}>
             <Plus size={14} className="mr-1.5" />
             添加服务器
           </Button>
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {loading ? (
           <GlassCard className="p-8 text-center">
             <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -294,7 +290,7 @@ export function MCPTab({ t: _t }: MCPTabProps) {
           servers.map(server => (
             <GlassCard key={server.id} className="overflow-hidden">
               <div
-                className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors"
+                className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-secondary/50 transition-all duration-200"
                 onClick={() => {
                   const next = expandedServer === server.id ? null : server.id;
                   setExpandedServer(next);
@@ -374,10 +370,10 @@ export function MCPTab({ t: _t }: MCPTabProps) {
 
       {marketResults.length > 0 && (
         <div className="space-y-3">
-          <h4 className="text-sm font-semibold flex items-center gap-1.5">
+          <p className="px-1 pb-1.5 text-xs font-medium text-muted-foreground/80 flex items-center gap-1.5">
             <Globe size={14} />
             MCP 市场
-          </h4>
+          </p>
           <div className="grid gap-2">
             {marketResults.map((item, idx) => (
               <GlassCard key={idx} className="p-3 flex items-start justify-between gap-3">
@@ -421,13 +417,22 @@ export function MCPTab({ t: _t }: MCPTabProps) {
 
                   <div className="space-y-2">
                     <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">传输类型</label>
-                    <div className="flex gap-2">
+                    <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl">
                       {(['sse', 'streamable-http', 'stdio'] as const).map(type => (
-                        <Button key={type} size="sm" variant={installForm.type === type ? 'default' : 'outline'}
-                          onClick={() => setInstallForm(p => ({ ...p, type }))}>
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setInstallForm(p => ({ ...p, type }))}
+                          className={cn(
+                            'inline-flex flex-1 items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-all duration-200',
+                            installForm.type === type
+                              ? 'bg-background shadow-sm text-foreground'
+                              : 'text-muted-foreground hover:text-foreground'
+                          )}
+                        >
                           {typeIcon(type)}
-                          <span className="ml-1.5">{typeLabel(type)}</span>
-                        </Button>
+                          <span>{typeLabel(type)}</span>
+                        </button>
                       ))}
                     </div>
                   </div>

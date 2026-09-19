@@ -1,5 +1,7 @@
 # REPORT_安全检测_Mimosa深度扫描_2026-09-02
 
+> **✅ 修复标记（2026-09-02 渗透验证线施工 + 2026-09-03 后续批次）**：本报告 §7 行动清单中 **#1（凭据轮换+脚本环境变量化）已全部完成**、**#2（context_templates 收口 get_admin）已完成**、**#3（依赖通告）后端已闭环**（pip-audit 真实 2 条：ecdsa 已摘除 a9f012e、diskcache 登记豁免；前端 dompurify 3.4.14 已升）、**#4（重定向 SSRF）已完成半边**（character_import_service 侧 3710837 逐跳复检；`_download_image` ST 适配面半边按用户指令保持登记不动）；另有 F-1 智能卡手势闸门加固（8c46b72）。详情见 `docs/REPORT_安全渗透验证_2026-09-02.md` 顶部修复记录。**#6（沙箱逃逸专项评估）已由后续会话完成并出报告**（`docs/REPORT_插件沙箱逃逸面评估_2026-09-02.md`，F-1 已修复）。#6（可选全仓扫描）与 react-router/mermaid/showdown 升级仍待窗口。
+
 > **⚠️ 阅读前必读：扫描期间代码在并行变动**
 >
 > 本次扫描（2026-09-01 深夜 ~ 09-02 凌晨）执行期间，**用户正在同一工作区并行进行其他修复工作**（分支 `st-plugin-compat-20260727` 有大量未提交改动）。因此：
@@ -56,9 +58,9 @@ CWE 分布头部：CWE-22 路径穿越 ×39、CWE-330 随机性不足 ×29、CWE
 ### 5.1 真实/需处理（按优先级）
 
 **P1-1 硬编码测试账号密码入仓（CWE-798，2 处，✅已复核为真实）**
-- `scripts/st_audit/audit_api.py:11` — `USER="st_audit_2026" / PASSWORD="Audit2026Palink"`
+- `scripts/st_audit/audit_api.py:11` — `st_audit_2026 / [密码已轮换]`
 - `scripts/st_audit/compare_worldbook.py:8` — 同款账号密码
-- 影响评估：均为本地审查脚本，但 **TODOS.md 记录该测试账号在库内有效**（`fv_browser / FvBrowser2026!`、`st_audit_2026` 等留存），且分支已于 2026-08-24 推送 GitHub——**凭据已随仓库出网**。
+- 影响评估：均为本地审查脚本，但 **TODOS.md 记录该测试账号在库内有效**（`fv_browser / [已轮换]`、`st_audit_2026` 等留存），且分支已于 2026-08-24 推送 GitHub——**凭据已随仓库出网**。
 - 建议：①轮换/停用这些测试账号；②脚本改从环境变量读凭据；③如仓库为公开或半公开，评估是否需要清理历史。
 
 **P1-2 context_templates 改删端点缺属主/角色校验（business-logic candidate，✅已复核证实）**

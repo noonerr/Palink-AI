@@ -22,7 +22,9 @@ export interface Persona {
 
   // ST 1.18.0 persona description injection controls
   personaShow?: boolean;              // 是否将 description 注入提示词
-  personaDescriptionPosition?: number; // 0=in story, 1=after post-history, 2=last in chat, 3=inactive
+  // ST 1.18 枚举（personas.js:88-97）：0 IN_PROMPT / 2 TOP_AN / 3 BOTTOM_AN / 4 AT_DEPTH / 9 NONE
+  personaDescriptionPosition?: number;
+  personaDescriptionDepth?: number;   // AT_DEPTH(4) 时的注入深度，默认 4
 
   // 元数据
   createdAt: string;

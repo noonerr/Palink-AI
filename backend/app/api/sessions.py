@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel, Field, field_validator
@@ -101,18 +101,30 @@ async def get_sessions(
 @router.get("/{sid}/messages")
 async def get_session_messages(
     sid: str,
+    response: Response,
+    limit: int = Query(0, ge=0, le=500),
+    before_id: Optional[int] = Query(None, ge=0),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     session = db.query(ChatSession).filter(ChatSession.id == sid, ChatSession.user_id == user.id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.session_id == sid)
-        .order_by(ChatMessage.created_at)
-        .all()
-    )
+
+    # limit=0（默认）保持原行为：全量返回。
+    # limit>0 时走 SQL 游标分页：取 before_id 之前（不含）的最近 limit 条，按时间升序返回，
+    # 并通过 X-Has-More 响应头提示是否还有更早消息。
+    query = db.query(ChatMessage).filter(ChatMessage.session_id == sid)
+    if before_id is not None:
+        query = query.filter(ChatMessage.id < before_id)
+    if limit > 0:
+        messages = list(query.order_by(ChatMessage.id.desc()).limit(limit).all())
+        messages.reverse()
+        if response is not None:
+            response.headers["X-Has-More"] = "1" if len(messages) == limit else "0"
+    else:
+        messages = list(query.order_by(ChatMessage.created_at).all())
+
     result = []
     for m in messages:
         entry = {

@@ -100,6 +100,12 @@ function payloadToManifest(payload: PluginRuntimePayload): PluginManifest {
     optional: rawManifest.optional,
     hooks: rawManifest.hooks,
     type: rawManifest.type,
+    // [ST-ALIGN] ST 1.18.0 更新与冲突字段。后端已随 payload.manifest 下发，
+    // 此前前端丢弃 → update_url/auto_update 形同虚设、excludes 不生效。
+    homePage: rawManifest.home_page || rawManifest.homePage,
+    updateURL: rawManifest.update_url || rawManifest.updateURL,
+    autoUpdate: rawManifest.auto_update ?? rawManifest.autoUpdate ?? false,
+    excludes: Array.isArray(rawManifest.excludes) ? rawManifest.excludes : undefined,
     // 服务端 DB enabled 标志为权威（include_disabled 模式下发）；
     // init() 的 autoLoad 依据它跳过禁用插件 → 禁用状态跨刷新持久。
     enabled: payload.enabled !== false,
@@ -510,8 +516,17 @@ export class PluginManager {
 
     // 自动加载
     if (this.config.autoLoad) {
+      // [ST-ALIGN] excludes：被任一「将要加载」的插件显式排除的插件跳过加载，
+      // 对齐 ST manifest.excludes 语义（此前该字段完全不生效，互斥插件会一起加载）。
+      const excluded = new Set<string>();
+      for (const inst of this.plugins.values()) {
+        if (inst.manifest.enabled === false) continue;
+        for (const ex of inst.manifest.excludes ?? []) {
+          if (typeof ex === 'string' && ex) excluded.add(ex);
+        }
+      }
       for (const [name, instance] of this.plugins.entries()) {
-        if (instance.manifest.enabled !== false) {
+        if (instance.manifest.enabled !== false && !excluded.has(name)) {
           await this.enable(name);
         }
       }
@@ -525,6 +540,73 @@ export class PluginManager {
    */
   updateConfig(config: Partial<PluginManagerConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  /**
+   * [ST-ALIGN] 检查插件是否有新版本。
+   *
+   * ST 的 manifest.update_url 通常指向新版 manifest.json（用于版本比对），也可能
+   * 直接指向 ZIP 直链。前者取回 JSON 读 version 与本地比对；后者不做下载（代价
+   * 过大，且解包读版本需后端配合），仅回传 updateURL 供调用方直接触发更新。
+   *
+   * 注：本方法是**版本检查**，不含插件市场/列表发现——市场明确不做。
+   */
+  async checkUpdate(
+    name: string,
+  ): Promise<{ hasUpdate: boolean; current?: string; latest?: string; updateURL?: string }> {
+    const instance = this.plugins.get(name);
+    if (!instance) return { hasUpdate: false };
+    const url = instance.manifest.updateURL;
+    if (!url) return { hasUpdate: false };
+    const current = instance.manifest.version;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return { hasUpdate: false, current, updateURL: url };
+      const text = (await res.text()).trim();
+      let latest: string | undefined;
+      if (text.startsWith('{')) {
+        try { latest = (JSON.parse(text) || {}).version; } catch { /* 非 manifest JSON */ }
+      }
+      return {
+        hasUpdate: Boolean(latest && current && latest !== current),
+        current,
+        latest,
+        updateURL: url,
+      };
+    } catch {
+      return { hasUpdate: false, current, updateURL: url };
+    }
+  }
+
+  /**
+   * [ST-ALIGN] 一键更新插件：用 manifest.update_url 走已有的
+   * `POST /api/plugins/import-url` 装新版本，再卸载旧版本。
+   *
+   * 顺序刻意「先装新、后删旧」——中途失败最多留下重复项，不会让插件彻底消失。
+   * 复用既有 URL 安装管线（含 SSRF 校验），不新增后端端点。
+   */
+  async updatePlugin(name: string): Promise<{ ok: boolean; message: string }> {
+    const instance = this.plugins.get(name);
+    if (!instance) return { ok: false, message: '插件不存在' };
+    const url = instance.manifest.updateURL;
+    if (!url) return { ok: false, message: '该插件未声明 update_url，无法更新' };
+    const oldId = instance.manifest.id;
+    try {
+      await api.post('/api/plugins/import-url', { url });
+      if (oldId) {
+        try {
+          await api.delete(`/api/plugins/${oldId}`);
+        } catch (e) {
+          console.warn('[PluginManager] 旧版本卸载失败（新版本已装入）:', e);
+        }
+      }
+      // 清掉本地缓存条目，否则 discover() 会因「已存在同名」跳过刷新
+      this.plugins.delete(name);
+      await this.discover();
+      return { ok: true, message: '更新完成' };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || '更新失败' };
+    }
   }
 
   /**

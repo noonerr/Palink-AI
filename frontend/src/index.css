@@ -312,19 +312,18 @@ h6,
 
 /* ========================================
    Glass Morphism Components
+   「毛玻璃」已按 2026-08-31 用户拍板（怕吃性能）退役为实底卡：
+   类名保留兼容全部既有消费方（GlassCard 及下拉/弹窗浮层的 glass-strong），
+   视觉统一为设置页分组列表同款实底 + 细边框；浮层自带的 shadow-* 不受影响。
    ======================================== */
 .glass {
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border) / 0.5);
 }
 
 .glass-strong {
-  background: var(--glass-bg);
-  backdrop-filter: blur(40px);
-  -webkit-backdrop-filter: blur(40px);
-  border: 1px solid var(--glass-border);
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border) / 0.5);
 }
 
 /* ========================================
@@ -461,23 +460,6 @@ h6,
 .animate-mobile-chat-content-in {
   animation: mobile-chat-content-in 280ms cubic-bezier(0.22, 0.72, 0.18, 1) both;
   will-change: transform, opacity;
-}
-
-/* ========================================
-   Mobile Chat Top Bar - Gradient Frosted Glass
-   毛玻璃效果从下到上逐渐变强
-   ======================================== */
-#mobile-chat-top-bar::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: rgba(255, 255, 255, 0);
-  pointer-events: none;
-}
-
-.dark #mobile-chat-top-bar::before {
-  background: rgba(15, 15, 18, 0);
 }
 
 .animate-fade-out-delayed {
@@ -1116,6 +1098,28 @@ select.touch-input {
 /* Prevent tap highlight on mobile */
 * {
   -webkit-tap-highlight-color: transparent;
+}
+
+/* ========================================
+   P0-3 触控反馈（2026-09-06 移动端精致度批）
+   仅触屏（无 hover 指针）生效，桌面端零波及。
+   - .palink-press：自带 120ms 压感过渡，会接管元素的
+     transition-property（仅 transform/opacity）。勿加在
+     依赖其他属性过渡的元素上（如滚动联动的高度/内边距）。
+   - .palink-press-keep：只挂 :active 样式，保留元素自身
+     过渡（用于滚动联动动画元素，压感时长跟随元素自身）。
+   ======================================== */
+@media (hover: none) and (pointer: coarse) {
+  .palink-press {
+    transition-property: transform, opacity;
+    transition-duration: 120ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .palink-press:active,
+  .palink-press-keep:active {
+    transform: scale(0.97);
+    opacity: 0.75;
+  }
 }
 
 /* Better touch scrolling */

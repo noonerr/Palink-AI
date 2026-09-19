@@ -52,6 +52,14 @@ export interface PluginManifest {
   // 元数据
   type?: 'system' | 'local' | 'global';
   enabled?: boolean;
+
+  // ── ST 1.18.0 manifest 更新与冲突字段 ──
+  // 后端本就随 payload.manifest 下发（= config["manifest"]，plugins.py:562），
+  // 此前前端完全不消费 → update_url / auto_update 形同虚设、excludes 不生效。
+  homePage?: string;      // home_page / homePage
+  updateURL?: string;     // update_url：新版本包 URL
+  autoUpdate?: boolean;   // auto_update：是否允许自动更新检查
+  excludes?: string[];    // 互斥插件名清单，被列入者不加载
 }
 
 // ============================================================

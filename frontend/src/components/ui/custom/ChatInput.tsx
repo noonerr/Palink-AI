@@ -234,7 +234,7 @@ export function ChatInput({
                 }}
                 type="button"
                 tabIndex={visualOnly ? -1 : undefined}
-                className="absolute top-0.5 right-0.5 w-6 h-6 sm:w-5 sm:h-5 bg-muted rounded-full flex items-center justify-center text-muted-foreground hover:text-destructive opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shadow-sm"
+                className="palink-press absolute top-0.5 right-0.5 w-6 h-6 sm:w-5 sm:h-5 bg-muted rounded-full flex items-center justify-center text-muted-foreground hover:text-destructive opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shadow-sm after:absolute after:-inset-2.5 after:content-['']"
               >
                 <X size={14} className="sm:w-3 sm:h-3" />
               </button>
@@ -255,7 +255,7 @@ export function ChatInput({
           'flex gap-2 overflow-visible',
           variant === 'mobile-demo' ? 'items-center' : 'items-end',
           variant === 'mobile-demo' && !noContainerStyle && cn(
-            'min-h-[58px] rounded-[28px] px-3 py-2.5 backdrop-blur-2xl',
+            'min-h-[52px] rounded-[26px] px-3 py-1.5 backdrop-blur-2xl',
             isDarkTheme
               ? 'border border-slate-700/80 bg-[#23283c] shadow-[0_12px_30px_rgba(2,6,23,0.45)]'
               : 'border border-[#ddd4c5] bg-[#FFFAFA] shadow-[0_10px_28px_rgba(120,106,79,0.14)]'
@@ -273,7 +273,7 @@ export function ChatInput({
           }}
           disabled={interactiveControlsDisabled}
           tabIndex={visualOnly ? -1 : undefined}
-          className="shrink-0 rounded-full p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="palink-press shrink-0 rounded-full p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title="上传图片或文件"
         >
           <Paperclip size={18} />
@@ -298,7 +298,7 @@ export function ChatInput({
             dimDisabled && 'disabled:opacity-50',
             variant === 'mobile-demo'
               ? cn(
-                  'px-1 py-1.5 text-sm max-h-[120px]',
+                  'px-1 py-1.5 text-base max-h-[120px]',
                   isDarkTheme
                     ? 'text-slate-100 placeholder:text-slate-400'
                     : 'text-slate-700 placeholder:text-slate-400'

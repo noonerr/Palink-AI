@@ -2,6 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+// 【K18 临时诊断】?vpdebug=1 视口读数浮层；问题闭环后连同 viewportDebug.ts 一起删除
+import { mountViewportDebug } from './lib/viewportDebug'
+
+mountViewportDebug()
 
 // Suppress harmless ResizeObserver errors
 // https://github.com/WICG/resize-observer/issues/38

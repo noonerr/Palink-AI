@@ -1,9 +1,9 @@
-# iOS 虚拟键盘适配 · 交接文档 v2（K4→K14 真实调试记录）
+# iOS 虚拟键盘适配 · 交接文档 v2（K4→K17 真实调试记录）
 
 > **文档性质**：在 `IOS_KEYBOARD_HANDOVER.md`（v1）基础上的**全面更新**。v1 的核心前提「iOS 把 `position:fixed;bottom:0` 顶到键盘上沿」已被 **iOS 26/27 真机证伪**，v1 的「化繁为简」方案因此在用户设备上**完全失效**。v2 记录从 v1 部署后开始的真实排障过程（K4→K14）、每次真机数据、当前代码真实状态与未解决问题。
-> **生成时间**：2026-09-02 02:15（GMT+8）；02:45 K9；03:05 K10；**03:30 K11**；**03:55 更新 K12（用户澄清「主页=底部输入框页也要弹起」+ 底部露色跟主题 + t=0 记忆值落位）**
+> **生成时间**：2026-09-02 02:15（GMT+8）；02:45 K9；03:05 K10；**03:30 K11**；**03:55 更新 K12**；**04:10 K13**；**04:25 K14**；**05:25 K15+沉浸感 meta**；**06:00 K17**
 > **作者**：上一轮 agent（接手者请直接读本文 + 以下标出的源码文件，不要翻分散的聊天记录）
-> **当前线上版本**：**K11 =** **`index-DgaFAWis.js`**（已部署，容器 healthy，**真机待验证**）
+> **当前线上版本**：**K17 =** **`index-d_yhXtPw.js`**（已部署，容器 healthy，**真机待验证**）
 > **一句话结论（务必先看）**：
 >
 > 1. 问题根因是 **iOS 26/27 Safari/WebKit 的视口行为回归**（WebKit Bug 304976）：键盘弹起时**只有 visual viewport 收缩，layout viewport 不变**，`position:fixed`/`absolute` 的 `bottom` 继续锚定**原布局视口底部** → 输入框被键盘盖住 → 必须 JS 主动抬升。
@@ -97,7 +97,7 @@ body=655  shell=655  →  背景层恒定，无背景蠕动
 
 | **K14** `index-BDCYCUcE.js`（**当前**） | **修键盘区域染色断层（K13 真机截图定位）**：用户截图采样显示键盘配件条区域被染成 #26293a 而页面画布是 #020617。根因 = App.tsx 运行时仍把 html/body 内联背景设为旧渐变时代的 **#1a1a2e/#f5f5f5**，而 iOS 26/27 采样 html/body background-color 给顶部工具条与键盘区域（含配件条）染色 → 染色与页面画布不一致 = 断层。修复：① App.tsx themeBackground → **#020617/#F8FAFC**（与 MobilePager 容器同源）；② index.html 启动脚本 launchBackground 同步；③ index.html 静态 theme-color meta → #020617；④ manifest.json theme_color → #020617。**K13 原始基线其余一切未动**（无 JS 键盘布局代码） | 待真机验证 | ⏳ 已部署（2026-09-02 04:25）。K13 同时证实：**iOS 27.0 原生会把 fixed bottom:0 顶到键盘上沿**（系统行为可用，v1 的 Bug 304976 结论在 27.0 上不成立或已修复） |
 
-> ⚠️ **注意**：K14 是**最后一版已部署**的代码（`index-BDCYCUcE.js`，角标 `B:K14`）——**仍是 K13 原始基线（无 JS 键盘布局代码），只修了染色源**。
+> ⚠️ **注意**：**当前最新已部署** = **K17** `index-d_yhXtPw.js`（角标 `⌨K17`，键盘弹出时标题栏可见）。K13 原始基线（无 JS 键盘布局代码）一路保留至今，K14 只修染色源，K15 删角标 + 沉浸感 meta，K17 补 dock 安全区。
 
 ***
 
@@ -161,7 +161,7 @@ os:27.0 shrink:299              ← iOS 版本 / innerHeight−vv.height(=键盘
 
 ## 5. 部署状态
 
-- **当前线上**：`palink-ai-frontend-1` 容器 + 本地 `frontend/dist` = **`index-mUPvrJEg.js`（K15）**，容器 healthy（2026-09-02 04:40 部署，K14+删除诊断角标）。
+- **当前线上**：`palink-ai-frontend-1` 容器 + 本地 `frontend/dist` = **`index-d_yhXtPw.js`（K17）**，容器 healthy（2026-09-02 06:00 部署）。
 
 - 历史产物：`frontend/dist_bak_*` 多份（K4\~K10 各版 dist 备份），以及 `dist_new_*`（镜像提取中间目录，已用完可删）。
 
@@ -302,7 +302,9 @@ kbvh 静止但 iOS 27 在动画期间对 fixed 容器本身有部分上推/偏�
 - [ ] 清理 `frontend/dist_bak_*` / `dist_new_*` 历史目录释放磁盘
 
 - [ ] 确认是否提交本轮源码改动（当前未 commit）
-- [ ] Phase 0 真机验证：`/kb-test.html` 测试页（frontend/public/kb-test.html，随构建自带）——验证 contenteditable 是否避开辅助条 + ˄ 折叠记忆；结论回填 ChatInput-contenteditable改造调研.md
+- [x] Phase 0 真机验证已完成（2026-09-02）：四种可编辑元素辅助条**全弹** → contenteditable 改造**证伪封存**，结论已回填 ChatInput-contenteditable改造调研.md；辅助条唯一根治 = 原生壳（超范围）
+- [x] K16 沉浸感解锁（2026-09-02）：index.html 增加 `apple-mobile-web-app-status-bar-style=black-translucent`（viewport-fit=cover 原本就有，各移动端顶栏均已用 env(safe-area-inset-top) 避让）→ 主屏幕 web app 模式下页面延伸到灵动岛/状态栏背后。iOS 26 起任何网站加主屏幕默认即 web app（WebKit 官方）。**待用户真机验证**；注意 iOS 26/26.1 有 meta 行为变化的社区报告（Reddit r/Frontend），以实机为准；亮色模式状态栏文字为白色，浅色画布上对比度待观察
+- [x] K17 兜底安全区（2026-09-02）：dock（Sidebar.tsx 的 `nav[data-dock="true"]`）style 增加 `paddingBottom: env(safe-area-inset-bottom, 0px)`——沉浸式（standalone web app）模式下 dock 上移到 Home 指示条之上，不被手势条遮挡；dock 高度变化由既有 ResizeObserver 测量 `--palink-dock-height` 自动传播给 composer，无需改 CSS 常数。同一轮：manifest.json `background_color` `#1a1a2e` → `#020617`（启动闪屏底色与深色画布同源）。**待用户真机验证**
 
 ***
 
@@ -312,7 +314,7 @@ kbvh 静止但 iOS 27 在动画期间对 fixed 容器本身有部分上推/偏�
 >
 > **背景**：Palink-AI 前端（React + Vite + Tailwind），移动端 iOS Safari 浏览器模式。用户 K9 拍板的最终口径：**点输入框 → 渲染区域一步到位 = 屏幕高 − 键盘高，零过渡零跟随；仅角色聊天页适用；登录页与对话主页（ChatViewMobile）排除**。
 >
-> **当前状态**：线上已部署 **K10 =** **`index-B-tUicDq.js`**（角标首字段 `B:K10`）。实现 = focusin 同帧写 `--palink-kb-vh`（localStorage 缓存 `palink-kb-height`）+ 同帧挂 `palink-kb-open`（唯一开关）+ seenOpen 门控稳定检测（升起前绝不动作）+ 无任何 transition + 删除 `:has(:focus)` 双轨。**待真机验证**。
+> **当前状态**：线上已部署 **K17 =** **`index-d_yhXtPw.js`**（键盘弹出时标题栏 `⌨K17` 标记；诊断角标已删）。实现 = **K13 原始基线**：无任何 JS 键盘布局代码，聚焦态纯 CSS（`:has(:focus)` → 输入框 bottom:0 + dock 下移淡出），html/body 背景色跟主题（#F8FAFC/#020617），沉浸感 meta（black-translucent），dock 安全区（env(safe-area-inset-bottom)）。**待真机验证**。
 >
 > **你的任务**：
 >

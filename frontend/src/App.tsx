@@ -9,6 +9,7 @@ import { NetworkStatus } from '@/components/ui/custom/NetworkStatus';
 import { cn } from '@/lib/utils';
 import { useVirtualKeyboard } from '@/hooks/useVirtualKeyboard';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useGhostHistoryProbe } from '@/hooks/useGhostHistoryProbe';
 import { WidescreenPrompt } from '@/components/ui/custom/WidescreenPrompt';
 import { StPluginMountPoints } from '@/components/st-plugin-ui-host/StPluginMountPoints';
 import { Popup } from '@/lib/popup-system';
@@ -448,6 +449,9 @@ function MobilePager({ renderSlot, dark = false }: { renderSlot: (tabId: string,
 
 function App() {
   const isMobile = useIsMobile();
+  // [iOS-HISTORY] 幽灵历史条目探针：popstate 但 URL 未变时 console.warn 计数。
+  // 只在移动端开启——桌面端不使用 iOS 边缘返回手势，噪声无意义。
+  useGhostHistoryProbe(isMobile);
   // N8-c 终态：哨兵值驱动既有渲染门控（/api/users/me 探测判定登录态）。
   // 值为常量 _ 即可满足类型断言，不影响被下发子组件（其默认已不消费凭据）。
   const [token] = useState<string | null>('_');
@@ -580,6 +584,14 @@ function App() {
 
   const loadSystemDefaults = useCallback(async () => {
     if (!token || !user || !privateConfigReady) return;
+    // [P0-4 2026-09-15] 该接口由后端 get_admin 守卫
+    // （backend/app/api/dependencies.py:97 `user.role != "admin"` → 403），
+    // 此前非管理员每次启动与每次改设置都会白发一次必然失败的请求并打 console.error。
+    // 这里用与 fetchProviders 完全相同的谓词门控；/api/users/me 直接返回 user.role
+    // （backend/app/api/auth.py:215），前后端判定同源。
+    // 行为等价性：非管理员 systemDefaults 保持 useState 初始 {} 不变，
+    // 下游 `systemDefaults.default_chat_model || models[0].id` 的回落结果与"拿到 403 后"一致。
+    if (user.role !== 'admin') return;
     try {
       const data = await api.get('/api/admin/system/defaults', { cacheTtlMs: 5 * 60 * 1000 });
       setSystemDefaults(data);
@@ -1099,7 +1111,8 @@ function App() {
           )
         } />
       </Routes>
-      <Toaster richColors position="top-right" />
+      {/* P0-4：移动端 toast 居中——top-right 是桌面位，窄屏贴灵动岛且遮顶栏内容 */}
+      <Toaster richColors position={isMobile ? 'top-center' : 'top-right'} />
       <Popup />
     </BrowserRouter>
     </ErrorBoundary>

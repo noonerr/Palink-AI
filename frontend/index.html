@@ -18,6 +18,13 @@
     <title>Palink AI v0.21.2</title>
     
     <link rel="manifest" href="/manifest.json" />
+    <!-- 【K18/K19 2026-09-03】theme-color 分工已重新实测（iOS 27.0 真机截图取证）：
+         PWA（主屏幕 web app）模式下顶部系统栏颜色【只认 manifest 的 theme_color
+         （添加主屏幕时快照）】，不读运行时 meta——运行时 meta 改什么、html/body 背景是什么
+         都不影响系统栏（真机实证：meta=#f5f5f5 时系统栏仍是 #656565 深灰）。
+         manifest 静态无法跟主题 → 启动脚本按主题换链接：亮=manifest.json(#F8FAFC)、
+         暗=manifest-dark.json(#020617)，用户添加 PWA 时快照到正确主题色。
+         本 meta 仍按主题动态设置，只影响浏览器模式（iOS 15+ 工具条染色）。 -->
     <!-- theme-color 必须与 manifest.json 的 theme_color 一致，避免启动阶段颜色跳变。
          颜色 = 当前画布色（与 App.tsx MobilePager 容器同源）：iOS 26/27 会采样
          html/body 背景色给顶部工具条与键盘区域染色，用旧渐变色会造成断层。 -->
@@ -27,6 +34,10 @@
     <meta name="application-name" content="Palink AI" />
 
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- black-translucent：独立模式（添加到主屏幕）下页面延伸到状态栏/灵动岛背后。
+         所有移动端顶栏已用 env(safe-area-inset-top) 避让；状态栏文字为白色，
+         亮色模式下依赖顶栏自身的对比度处理。浏览器模式不受此 meta 影响。 -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Palink" />
     <script>
       try {
@@ -40,6 +51,14 @@
         document.documentElement.style.backgroundColor = launchBackground;
         document.documentElement.style.colorScheme = launchTheme;
         document.querySelector('meta[name="theme-color"]')?.setAttribute('content', launchBackground);
+        // 【K19】iOS 26.1+/27 PWA 的系统状态栏颜色只认 manifest 的 theme_color，
+        // 且是「添加到主屏幕」时的快照（运行时 meta 与 html/body 背景均不影响它，
+        // 真机实证见 TODOS.md K18/K19）。manifest 是静态单文件无法跟主题，改为
+        // 按启动主题换链接：暗色用户添加 PWA 时快照到 manifest-dark.json（#020617），
+        // 亮色用默认 manifest.json（#F8FAFC），系统栏与画布同色、状态栏文字对比度正确。
+        if (launchTheme === 'dark') {
+          document.querySelector('link[rel="manifest"]')?.setAttribute('href', '/manifest-dark.json');
+        }
       } catch {
         // Storage can be unavailable in hardened browsing modes.
       }

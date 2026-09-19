@@ -63,6 +63,20 @@ const SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE: Set<string> = new Set([
   'generate',
   'generateRaw',
   'generateQuietPrompt',
+  // [SEC-2026-09-02 F-1] 清空会话：唯一一个「不可逆 + 会落库 + 不存在无手势正当用法」的动作。
+  // 取值变化：__palinkUserGesture 已由父侧（CharacterCardRenderer）在 message 事件里
+  // **改写为帧内密钥的验证结果**，卡片自填 true 不再有效（见 SEC HARDEN/F-1 父侧裁决注释）。
+  //
+  // 【为什么只加这一个 —— 兼容性论证，请勿随意扩大本集合】
+  // 1. 用户激活**不会向下传播到 opaque-origin iframe**（HTML 规范 6.4.2 第 4 步：向下传播
+  //    仅限同源后代）。因此 untrusted 卡（sandbox="allow-scripts"）内部**感知不到**用户在
+  //    父页面点「发送」，shim 的 lastUserGestureAt 不会更新。
+  // 2. 而「生成结束后改写/追加消息、写世界书条目」是卡片最常见也最正当的一类用法
+  //    （本项目 MVU 变量更新、状态栏、格式化卡都属此类），它们天然发生在无手势上下文里。
+  //    → 若把这些动作纳入手势闸门，会直接打断上述正常流程，属于实打实的 ST 兼容回归。
+  // 3. 反过来，clearChat = 清空整个会话并逐条 DELETE 落库，语义上只能由用户主动发起；
+  //    没有任何合理场景需要卡片在无人点击时自动清空会话。故此处收口是安全的。
+  'clearChat',
 ]);
 
 function smartCardPayloadHasUserGesture(payload: Record<string, unknown>): boolean {

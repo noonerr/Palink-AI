@@ -1,621 +1,385 @@
-﻿
-import React, { useState, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   User,
   Save,
   Upload,
-  Sparkles,
   Plus,
   Trash2,
-  Bot,
-  Brain,
-  ChevronDown,
-  Check
+  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { api } from '@/services/api';
-import type { OCData, OCCustomField, OCConfig, Model } from '@/types';
+import { toast } from 'sonner';
+import { personaManager } from '@/lib/personas/manager';
+import type { Persona } from '@/lib/personas/types';
 
+// 旧「原创角色(OC)」本地数据：首次进入本页时一次性迁移为 Persona
 const OC_STORAGE_KEY = 'palink_oc_data';
 const OC_CONFIG_KEY = 'palink_oc_config';
 
-const defaultCustomFields: OCCustomField[] = [
-  { id: '1', label: '', value: '' },
-  { id: '2', label: '', value: '' },
-  { id: '3', label: '', value: '' },
+// persona_description_position 采用 ST 1.18 枚举（personas.js:88-97）：
+// IN_PROMPT 0 / AFTER_CHAR 1(废弃) / TOP_AN 2 / BOTTOM_AN 3 / AT_DEPTH 4 / NONE 9
+// ⚠ 与旧 Palink 值域（0=对话中 / 1=系统提示末尾 / 2=聊天末尾）**数值冲突**，
+// 2026-09-08 起前后端统一到 ST 枚举（后端装配同步按 ST 语义解释）。
+// 「不注入」由上方 personaShow 开关控制，故不暴露 NONE=9。
+const POSITION_OPTIONS = [
+  { value: 4, label: '对话中（跟随上下文，深度 4）' },
+  { value: 0, label: '系统提示末尾' },
+  { value: 2, label: '作者注释顶部' },
+  { value: 3, label: '聊天末尾（作者注释底部）' },
 ];
 
-const defaultOCData: OCData = {
-  id: 'default',
-  name: '',
-  traits: '',
-  personality: '',
-  hobbies: '',
-  background: '',
-  customFields: defaultCustomFields,
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-};
-
-const defaultOCConfig: OCConfig = {
-  allowAIAnalysis: true,
-  defaultAnalysisModel: '',
-};
-
 interface OCSettingsProps {
-  token: string;
-  models: Model[];
+  token?: string;
+  models?: unknown[];
   onUpdate?: () => void;
 }
 
-export function OCSettings({ token: _token, models, onUpdate }: OCSettingsProps) {
-  const [ocData, setOCData] = useState<OCData>(defaultOCData);
-  const [ocConfig, setOCConfig] = useState<OCConfig>(defaultOCConfig);
+interface PersonaForm {
+  name: string;
+  description: string;
+  avatar?: string;
+  personaShow: boolean;
+  position: number;
+  depth: number;
+  isDefault: boolean;
+}
+
+export function OCSettings({ onUpdate }: OCSettingsProps) {
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [form, setForm] = useState<PersonaForm | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<string>('profile');
-  const [customAnalysisText, setCustomAnalysisText] = useState<string>('');
-  const [modelDropdownOpen, setModelDropdownOpen] = useState<boolean>(false);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; width: number } | null>(null);
-  const modelButtonRef = React.useRef<HTMLButtonElement>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const confirmTimerRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    const savedOCData = localStorage.getItem(OC_STORAGE_KEY);
-    const savedOCConfig = localStorage.getItem(OC_CONFIG_KEY);
-
-    if (savedOCData) {
-      try {
-        setOCData(JSON.parse(savedOCData));
-      } catch {
-        setOCData(defaultOCData);
-      }
-    }
-
-    if (savedOCConfig) {
-      try {
-        setOCConfig(JSON.parse(savedOCConfig));
-      } catch {
-        setOCConfig(defaultOCConfig);
-      }
-    }
+  const syncFromManager = useCallback(() => {
+    const list = personaManager.getAllPersonas();
+    setPersonas(list);
+    const activeIdNow = personaManager.getSettings().activePersonaId;
+    setActiveId(activeIdNow);
+    const active = list.find(p => p.id === activeIdNow) ?? null;
+    setForm(active ? {
+      name: active.name,
+      description: active.description ?? '',
+      avatar: active.avatar,
+      personaShow: active.personaShow ?? false,
+      position: active.personaDescriptionPosition ?? 4,
+      depth: active.personaDescriptionDepth ?? 4,
+      isDefault: !!active.isDefault,
+    } : null);
+    setDirty(false);
   }, []);
 
+  // 初始化 + 旧 OC 数据一次性迁移
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (modelDropdownOpen && modelButtonRef.current && !modelButtonRef.current.contains(e.target as Node)) {
-        setModelDropdownOpen(false);
+    let cancelled = false;
+    (async () => {
+      await personaManager.init();
+      if (cancelled) return;
+      if (personaManager.getAllPersonas().length === 0) {
+        const raw = localStorage.getItem(OC_STORAGE_KEY);
+        if (raw) {
+          try {
+            const oc = JSON.parse(raw);
+            if (oc?.name) {
+              const descParts = [
+                oc.traits ? `人物特点：${oc.traits}` : '',
+                oc.personality ? `性格：${oc.personality}` : '',
+                oc.hobbies ? `爱好：${oc.hobbies}` : '',
+                oc.background ? `人物背景：${oc.background}` : '',
+                ...(Array.isArray(oc.customFields)
+                  ? oc.customFields.filter((f: { label?: string; value?: string }) => f?.label && f?.value)
+                      .map((f: { label: string; value: string }) => `${f.label}：${f.value}`)
+                  : []),
+              ].filter(Boolean).join('\n');
+              const migrated = personaManager.createPersona(oc.name, descParts, {
+                avatar: oc.avatar,
+                personaShow: true,
+                // ST 枚举：4 = AT_DEPTH「对话中」（旧值 0 现语义为 IN_PROMPT，已切换）
+                personaDescriptionPosition: 4,
+                personaDescriptionDepth: 4,
+                isDefault: true,
+              });
+              personaManager.selectPersona(migrated.id);
+              localStorage.removeItem(OC_STORAGE_KEY);
+              localStorage.removeItem(OC_CONFIG_KEY);
+              toast.success('已将原「原创角色(OC)」资料迁移为人设卡');
+            }
+          } catch {
+            // 迁移失败不影响正常使用
+          }
+        }
       }
-    };
+      if (!cancelled) syncFromManager();
+    })();
+    return () => { cancelled = true; };
+  }, [syncFromManager]);
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [modelDropdownOpen]);
+  const doSave = useCallback(() => {
+    if (!activeId || !form) return;
+    personaManager.updatePersona(activeId, {
+      name: form.name.trim() || '未命名',
+      description: form.description,
+      avatar: form.avatar,
+      personaShow: form.personaShow,
+      personaDescriptionPosition: form.position,
+      personaDescriptionDepth: form.depth,
+      isDefault: form.isDefault,
+    });
+    setDirty(false);
+  }, [activeId, form]);
 
-  const handleModelButtonClick = () => {
-    if (modelButtonRef.current) {
-      const rect = modelButtonRef.current.getBoundingClientRect();
-      setDropdownPosition({
-        top: rect.bottom + window.scrollY + 8,
-        left: rect.left + window.scrollX,
-        width: rect.width,
-      });
-    }
-    setModelDropdownOpen(!modelDropdownOpen);
-  };
-
-  const saveData = useCallback(() => {
+  const handleSave = useCallback(() => {
+    doSave();
     setIsSaving(true);
-    const updatedData = {
-      ...ocData,
-      updatedAt: new Date().toISOString(),
-    };
-    localStorage.setItem(OC_STORAGE_KEY, JSON.stringify(updatedData));
-    localStorage.setItem(OC_CONFIG_KEY, JSON.stringify(ocConfig));
-    setTimeout(() => {
-      setIsSaving(false);
-      onUpdate?.();
-    }, 500);
-  }, [ocData, ocConfig, onUpdate]);
+    onUpdate?.();
+    setTimeout(() => setIsSaving(false), 400);
+    toast.success('人设已保存');
+  }, [doSave, onUpdate]);
+
+  const flushIfDirty = useCallback(() => {
+    if (dirty) doSave();
+  }, [dirty, doSave]);
+
+  const handleSelect = useCallback((id: string) => {
+    if (id === activeId) return;
+    flushIfDirty();
+    personaManager.selectPersona(id);
+    syncFromManager();
+  }, [activeId, flushIfDirty, syncFromManager]);
+
+  const handleCreate = useCallback(() => {
+    flushIfDirty();
+    const created = personaManager.createPersona('新的人设', '', {
+      personaShow: true,
+      // ST 枚举：4 = AT_DEPTH「对话中」
+      personaDescriptionPosition: 4,
+      personaDescriptionDepth: 4,
+    });
+    personaManager.selectPersona(created.id);
+    syncFromManager();
+  }, [flushIfDirty, syncFromManager]);
+
+  const handleDeleteClick = useCallback(() => {
+    if (!activeId) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = window.setTimeout(() => setConfirmDelete(false), 3000);
+      return;
+    }
+    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+    setConfirmDelete(false);
+    personaManager.deletePersona(activeId);
+    toast.success('人设已删除');
+    syncFromManager();
+  }, [activeId, confirmDelete, syncFromManager]);
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!file.type.startsWith('image/')) {
-      console.error('请上传图片文件');
+      toast.error('请上传图片文件');
       return;
     }
-
     if (file.size > 5 * 1024 * 1024) {
-      console.error('图片大小不能超过 5MB');
+      toast.error('图片大小不能超过 5MB');
       return;
     }
-
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      setOCData(prev => ({ ...prev, avatar: dataUrl }));
+      setForm(prev => (prev ? { ...prev, avatar: dataUrl } : prev));
+      setDirty(true);
     };
     reader.readAsDataURL(file);
   };
 
-  const handleCustomFieldChange = (id: string, field: 'label' | 'value', value: string) => {
-    setOCData(prev => ({
-      ...prev,
-      customFields: prev.customFields.map(f =>
-        f.id === id ? { ...f, [field]: value } : f
-      ),
-    }));
-  };
-
-  const addCustomField = () => {
-    const newField: OCCustomField = {
-      id: Date.now().toString(),
-      label: '',
-      value: '',
-    };
-    setOCData(prev => ({
-      ...prev,
-      customFields: [...prev.customFields, newField],
-    }));
-  };
-
-  const removeCustomField = (id: string) => {
-    setOCData(prev => ({
-      ...prev,
-      customFields: prev.customFields.filter(f => f.id !== id),
-    }));
-  };
-
-  const handleAIAnalysis = async () => {
-    if (!ocConfig.allowAIAnalysis) {
-      console.error('请先在设置中启用AI分析功能');
-      return;
-    }
-
-    if (!ocConfig.defaultAnalysisModel) {
-      console.error('请先在设置中选择AI分析模型');
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setAnalysisResult('');
-
-    try {
-      let prompt;
-      if (customAnalysisText.trim()) {
-        prompt = `请深度分析以下文本，提供专业的分析和建议：
-
-${customAnalysisText}
-
-请提供：
-1. 内容完整性评估
-2. 关键要点总结
-3. 潜在的优化建议
-4. 互动场景建议`;
-      } else {
-        prompt = `请深度分析以下原创角色(OC)设定，提供专业的角色扮演建议和优化意见：
-
-角色名称：${ocData.name}
-人物特点：${ocData.traits}
-性格：${ocData.personality}
-爱好：${ocData.hobbies}
-人物背景：${ocData.background}
-${ocData.customFields.filter(f => f.label && f.value).map(f => `${f.label}：${f.value}`).join('\n')}
-
-请提供：
-1. 角色设定的完整性评估
-2. 角色扮演时的关键要点
-3. 潜在的优化建议
-4. 互动场景建议`;
-      }
-
-      const res = await api.stream('/api/chat', {
-        message: prompt,
-        model: ocConfig.defaultAnalysisModel,
-        temperature: 0.7,
-      });
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let result = '';
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.content) {
-                  result += parsed.content;
-                  setAnalysisResult(result);
-                }
-              } catch {
-                // Ignore malformed SSE chunks while continuing the stream.
-              }
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Analysis error:', error);
-      console.error('分析失败，请稍后重试');
-    } finally {
-      setIsAnalyzing(false);
-    }
+  const updateForm = (patch: Partial<PersonaForm>) => {
+    setForm(prev => (prev ? { ...prev, ...patch } : prev));
+    setDirty(true);
   };
 
   return (
     <div className="w-full animate-fade-in pb-28">
-      <div className="flex items-start md:items-center justify-between flex-shrink-0 mb-4 gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-xl md:text-2xl font-semibold flex items-center gap-2">
-            <User className="text-primary shrink-0" />
-            <span className="truncate">原创角色(OC)设置</span>
-          </h3>
-          <p className="text-xs md:text-sm text-muted-foreground mt-1 line-clamp-2">
-            设定您的原创角色信息，AI将根据这些设定与您互动
-          </p>
-        </div>
-        <Button onClick={saveData} disabled={isSaving} size="sm" className="shrink-0">
+      {/* 顶部操作区：保存 —— 与 SettingsView 悬浮返回键镜像（fixed 仅移动端，md:static 回滚动流） */}
+      <div
+        className="fixed z-30 right-5 md:static flex items-center justify-end mb-4"
+        style={{ top: 'calc(max(env(safe-area-inset-top), 8px) + 4px)' }}
+      >
+        <Button onClick={handleSave} disabled={isSaving || !form} className="h-8 md:h-9 rounded-md px-4 text-xs shrink-0 shadow-sm">
           <Save size={14} className="mr-1.5" />
           {isSaving ? '保存中...' : '保存'}
         </Button>
       </div>
 
-      <div className="w-full flex-shrink-0">
-        <div className="w-full grid grid-cols-2 bg-muted rounded-lg p-1 mb-4">
+      {/* 人设列表：选中即当前使用（ST 语义），激活者带对勾 */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        {personas.map((p) => (
           <button
-            onClick={() => setActiveTab('profile')}
+            key={p.id}
+            onClick={() => handleSelect(p.id)}
             className={cn(
-              "flex items-center justify-center gap-2 px-3 py-2.5 h-10 rounded-md text-sm font-medium transition-all",
-              activeTab === 'profile' 
-                ? "bg-background shadow-sm" 
-                : "text-muted-foreground hover:text-foreground"
+              'flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border text-[13px] transition-all duration-200 active:scale-95',
+              p.id === activeId
+                ? 'bg-primary/10 border-primary text-foreground'
+                : 'border-border text-muted-foreground hover:text-foreground'
             )}
           >
-            <User size={14} />
-            基本信息
+            <Avatar className="w-7 h-7 border border-border/50">
+              {p.avatar ? (
+                <AvatarImage src={p.avatar} alt={p.name} />
+              ) : (
+                <AvatarFallback className="bg-secondary/60">
+                  <User size={13} className="text-muted-foreground" />
+                </AvatarFallback>
+              )}
+            </Avatar>
+            {p.name || '未命名'}
+            {p.id === activeId && <Check size={12} className="text-primary shrink-0" />}
           </button>
-          <button
-            onClick={() => setActiveTab('analysis')}
-            className={cn(
-              "flex items-center justify-center gap-2 px-3 py-2.5 h-10 rounded-md text-sm font-medium transition-all",
-              activeTab === 'analysis' 
-                ? "bg-background shadow-sm" 
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <Brain size={14} />
-            AI分析
-          </button>
-        </div>
+        ))}
+        <button
+          onClick={handleCreate}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-dashed border-border text-[13px] text-muted-foreground hover:text-foreground transition-all duration-200 active:scale-95"
+        >
+          <Plus size={13} />
+          新建人设
+        </button>
       </div>
 
-      <div>
-        <AnimatePresence mode="wait">
-          {activeTab === 'profile' ? (
-            <motion.div
-              key="profile"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              className="w-full"
-            >
-              <div className="space-y-4 md:space-y-6 pb-6">
-          <Card>
-            <CardHeader className="px-4 md:px-6">
-              <CardTitle className="text-base md:text-lg">角色头像</CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 md:px-6">
-              <div className="flex flex-col md:flex-row items-center md:items-start gap-4 md:gap-6">
-                <div className="relative shrink-0">
-                  <Avatar className="w-20 h-20 md:w-24 md:h-24 border-2 border-border">
-                    {ocData.avatar ? (
-                      <AvatarImage src={ocData.avatar} alt="OC Avatar" />
-                    ) : (
-                      <AvatarFallback className="text-2xl bg-gradient-to-br from-primary/20 to-primary/10">
-                        <User size={28} className="text-primary" />
-                      </AvatarFallback>
-                    )}
-                  </Avatar>
-                  <label className="absolute -bottom-2 -right-2 cursor-pointer">
-                    <input
-                      type="file"
-                      accept=".jpg,.jpeg,.png"
-                      className="hidden"
-                      onChange={handleAvatarUpload}
-                    />
-                    <div className="w-8 h-8 flex items-center justify-center rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80 active:bg-secondary/60 transition-colors">
-                      <Upload size={14} />
-                    </div>
-                  </label>
-                </div>
-                <div className="flex-1 space-y-2 w-full">
-                  <Label>角色名称</Label>
-                  <Input
-                    placeholder="输入您的角色名称"
-                    value={ocData.name}
-                    onChange={(e) => setOCData(prev => ({ ...prev, name: e.target.value }))}
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-            <Card>
-              <CardHeader className="px-4 md:px-6 pb-2">
-                <CardTitle className="text-sm font-medium">人物特点</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 md:px-6 pt-0">
-                <Textarea
-                  placeholder="描述角色的外貌特征、身体特点等"
-                  value={ocData.traits}
-                  onChange={(e) => setOCData(prev => ({ ...prev, traits: e.target.value }))}
-                  rows={3}
+      {form ? (
+        <div className="space-y-6 pb-6 max-w-2xl">
+          {/* 头像 + 名称（无卡片包裹） */}
+          <div className="flex items-center gap-4">
+            <div className="relative shrink-0">
+              <Avatar className="w-16 h-16 md:w-20 md:h-20 border border-border/50">
+                {form.avatar ? (
+                  <AvatarImage src={form.avatar} alt="Persona Avatar" />
+                ) : (
+                  <AvatarFallback className="bg-secondary/60">
+                    <User size={24} className="text-muted-foreground" />
+                  </AvatarFallback>
+                )}
+              </Avatar>
+              <label className="absolute -bottom-1 -right-1 cursor-pointer">
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png"
+                  className="hidden"
+                  onChange={handleAvatarUpload}
                 />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="px-4 md:px-6 pb-2">
-                <CardTitle className="text-sm font-medium">性格</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 md:px-6 pt-0">
-                <Textarea
-                  placeholder="描述角色的性格特点、行为方式等"
-                  value={ocData.personality}
-                  onChange={(e) => setOCData(prev => ({ ...prev, personality: e.target.value }))}
-                  rows={3}
-                />
-              </CardContent>
-            </Card>
+                <div className="w-7 h-7 flex items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-transform duration-200 active:scale-95">
+                  <Upload size={13} />
+                </div>
+              </label>
+            </div>
+            <div className="flex-1 min-w-0">
+              <label className="text-[13px] font-medium text-muted-foreground">人设名称</label>
+              <Input
+                placeholder="对话中 AI 如何称呼你"
+                value={form.name}
+                onChange={(e) => updateForm({ name: e.target.value })}
+                className="mt-1.5"
+              />
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:gap-6">
-            <Card>
-              <CardHeader className="px-4 md:px-6 pb-2">
-                <CardTitle className="text-sm font-medium">爱好</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 md:px-6 pt-0">
-                <Textarea
-                  placeholder="描述角色的兴趣爱好、喜欢的事物等"
-                  value={ocData.hobbies}
-                  onChange={(e) => setOCData(prev => ({ ...prev, hobbies: e.target.value }))}
-                  rows={2}
-                />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="px-4 md:px-6 pb-2">
-                <CardTitle className="text-sm font-medium">人物背景</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 md:px-6 pt-0">
-                <Textarea
-                  placeholder="描述角色的成长背景、重要经历等"
-                  value={ocData.background}
-                  onChange={(e) => setOCData(prev => ({ ...prev, background: e.target.value }))}
-                  rows={4}
-                />
-              </CardContent>
-            </Card>
+          {/* 人设描述 */}
+          <div>
+            <p className="text-[13px] font-medium text-muted-foreground mb-1.5">人设描述</p>
+            <Textarea
+              placeholder="你是谁、性格、背景、说话方式等。开启注入后此内容会进入提示词；留空则只生效名称。"
+              value={form.description}
+              onChange={(e) => updateForm({ description: e.target.value })}
+              rows={6}
+            />
           </div>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between px-4 md:px-6">
-              <CardTitle className="text-base md:text-lg">自定义属性</CardTitle>
-              <Button size="sm" variant="secondary" onClick={addCustomField}>
-                <Plus size={14} className="mr-1" />
-                添加
-              </Button>
-            </CardHeader>
-            <CardContent className="px-4 md:px-6 space-y-4">
-              {ocData.customFields.map((field, index) => (
-                <div key={field.id} className="group relative space-y-2">
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="属性名称"
-                      value={field.label}
-                      onChange={(e) => handleCustomFieldChange(field.id, 'label', e.target.value)}
-                      className="flex-1"
-                    />
-                    {index >= 3 && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0"
-                        onClick={() => removeCustomField(field.id)}
-                      >
-                        <Trash2 size={16} className="text-destructive" />
-                      </Button>
-                    )}
-                  </div>
-                  <Textarea
-                    placeholder="属性内容"
-                    value={field.value}
-                    onChange={(e) => handleCustomFieldChange(field.id, 'value', e.target.value)}
-                    rows={2}
-                  />
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div
-              key="analysis"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              className="w-full"
-            >
-              <div className="space-y-4 md:space-y-6 pb-6">
-              <Card className="flex-1">
-                <CardHeader className="px-4 md:px-6">
-                  <CardTitle className="text-base md:text-lg">AI深度分析</CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 md:px-6 space-y-4">
-                  <div className="flex items-center justify-between p-4 bg-muted/30 rounded-xl">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">分析功能状态</p>
-                      <p className="text-xs text-muted-foreground">
-                        {ocConfig.allowAIAnalysis ? '已启用' : '已禁用'}
-                      </p>
-                    </div>
-                    <Switch
-                      checked={ocConfig.allowAIAnalysis}
-                      onCheckedChange={(checked) =>
-                        setOCConfig(prev => ({ ...prev, allowAIAnalysis: checked }))
-                      }
-                    />
-                  </div>
+          {/* 注入提示词开关 */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[15px] font-medium leading-snug">注入提示词</p>
+              <p className="text-xs text-muted-foreground mt-0.5">关闭后仅人设名称生效（作为对话中的称呼）</p>
+            </div>
+            <Switch
+              checked={form.personaShow}
+              onCheckedChange={(checked) => updateForm({ personaShow: checked })}
+            />
+          </div>
 
-                  {ocConfig.allowAIAnalysis && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-4">
-                        <Label>分析模型</Label>
-                        <div className="relative ml-auto">
-                          <button
-                            ref={modelButtonRef}
-                            type="button"
-                            onClick={handleModelButtonClick}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-secondary hover:bg-secondary/80 transition-all border border-border"
-                          >
-                            <span className="flex items-center gap-2">
-                              <Bot size={16} />
-                              {ocConfig.defaultAnalysisModel 
-                                ? (() => { const m = models.find(m => m.id === ocConfig.defaultAnalysisModel); return m?.alias || m?.name || ocConfig.defaultAnalysisModel; })()
-                                : '请选择模型'}
-                            </span>
-                            <ChevronDown 
-                              size={14} 
-                              className={`transition-transform ${modelDropdownOpen ? 'rotate-180' : ''}`}
-                            />
-                          </button>
-                        </div>
-                      </div>
-
-                      {modelDropdownOpen && dropdownPosition && createPortal(
-                        <motion.div
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          transition={{ duration: 0.15 }}
-                          style={{
-                            position: 'fixed',
-                            top: dropdownPosition.top,
-                            left: dropdownPosition.left,
-                            width: dropdownPosition.width,
-                            zIndex: 9999,
-                          }}
-                          className="py-1 bg-secondary border border-border rounded-xl shadow-lg overflow-hidden"
-                        >
-                          {models.map((model) => (
-                            <button
-                              key={model.id}
-                              type="button"
-                              onClick={() => {
-                                setOCConfig(prev => ({ ...prev, defaultAnalysisModel: model.id }));
-                                setModelDropdownOpen(false);
-                              }}
-                              className={`w-full flex items-center justify-between px-4 py-2 text-sm hover:bg-background transition-colors ${
-                                ocConfig.defaultAnalysisModel === model.id ? 'bg-background' : ''
-                              }`}
-                            >
-                              <span>{model.alias || model.name || model.id}</span>
-                              {ocConfig.defaultAnalysisModel === model.id && (
-                                <Check size={14} className="text-primary" />
-                              )}
-                            </button>
-                          ))}
-                        </motion.div>,
-                        document.body
-                      )}
-
-                      <div className="space-y-2">
-                        <Label>自定义分析文本（可选）</Label>
-                        <Textarea
-                          placeholder="在此粘贴或输入要分析的文本。如果留空，将分析OC设置中的基本信息。"
-                          value={customAnalysisText}
-                          onChange={(e) => setCustomAnalysisText(e.target.value)}
-                          rows={4}
-                        />
-                      </div>
-
-                      <Button
-                        className="w-full"
-                        onClick={handleAIAnalysis}
-                        disabled={isAnalyzing || (!ocData.name && !customAnalysisText.trim())}
-                      >
-                        {isAnalyzing ? (
-                          <>
-                            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
-                            分析中...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles size={16} className="mr-2" />
-                            开始AI分析
-                          </>
-                        )}
-                      </Button>
-
-                      {analysisResult && (
-                        <Card>
-                          <CardHeader className="px-4 md:px-6">
-                            <CardTitle className="text-sm flex items-center gap-2">
-                              <Bot size={16} />
-                              分析结果
-                            </CardTitle>
-                          </CardHeader>
-                          <CardContent className="px-4 md:px-6">
-                            <div className="text-sm whitespace-pre-wrap text-muted-foreground">
-                              {analysisResult}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-              </div>
-            </motion.div>
+          {/* 注入位置（对齐 ST persona_description_position 语义） */}
+          {form.personaShow && (
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-[13px] font-medium text-muted-foreground shrink-0">注入位置</p>
+              <select
+                value={form.position}
+                onChange={(e) => updateForm({ position: Number(e.target.value) })}
+                className="h-9 rounded-lg bg-secondary border border-border px-3 text-[13px] outline-none max-w-[70%]"
+              >
+                {POSITION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
           )}
-        </AnimatePresence>
-      </div>
+
+          {/* 注入深度（仅 ST AT_DEPTH=4 时生效，personas.js:632） */}
+          {form.personaShow && form.position === 4 && (
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-[13px] font-medium text-muted-foreground shrink-0">注入深度</p>
+              <input
+                type="number"
+                min={0}
+                max={99}
+                value={form.depth}
+                onChange={(e) => updateForm({ depth: Math.max(0, Number(e.target.value) || 0) })}
+                className="h-9 rounded-lg bg-secondary border border-border px-3 text-[13px] outline-none w-24 text-right"
+              />
+            </div>
+          )}
+
+          {/* 默认人设 */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[15px] font-medium leading-snug">设为默认人设</p>
+              <p className="text-xs text-muted-foreground mt-0.5">未指定时新会话使用该人设</p>
+            </div>
+            <Switch
+              checked={form.isDefault}
+              onCheckedChange={(checked) => updateForm({ isDefault: checked })}
+            />
+          </div>
+
+          {/* 删除（两击确认） */}
+          <div className="pt-2">
+            <Button
+              variant="ghost"
+              onClick={handleDeleteClick}
+              className={cn(
+                'h-9 rounded-md px-3 text-xs',
+                confirmDelete ? 'bg-destructive/10 text-destructive hover:bg-destructive/20' : 'text-destructive hover:bg-destructive/10'
+              )}
+            >
+              <Trash2 size={14} className="mr-1.5" />
+              {confirmDelete ? '再点一次确认删除' : '删除此人设'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="max-w-2xl py-10 text-center">
+          <User size={28} className="mx-auto text-muted-foreground/50" />
+          <p className="text-sm text-muted-foreground mt-3">
+            还没有人设。点上方「新建人设」创建你的用户资料卡。
+          </p>
+        </div>
+      )}
     </div>
   );
-};
-
-export const getOCData = (): OCData | null => {
-  const saved = localStorage.getItem(OC_STORAGE_KEY);
-  return saved ? JSON.parse(saved) : null;
-};
-
-export const getOCConfig = (): OCConfig => {
-  const saved = localStorage.getItem(OC_CONFIG_KEY);
-  return saved ? JSON.parse(saved) : defaultOCConfig;
-};
-
+}

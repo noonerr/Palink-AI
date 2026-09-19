@@ -8,7 +8,7 @@ import { usePlotLine } from '@/hooks/usePlotLine';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api, invalidateCache, getCsrfToken } from '@/services/api';
 import { toast } from 'sonner';
-import { getOCData } from '@/components/ui/custom/OCSettings';
+import { personaManager } from '@/lib/personas/manager';
 
 import { Button } from '@/components/ui/button';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
@@ -123,14 +123,25 @@ export function CharacterView({
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
   const [editingCharacter, setEditingCharacter] = useState<Partial<Character>>({});
-  
+
+  // 活跃 Persona 异步就绪后触发重渲染，使 getDisplayName 取到人设名（对齐 ST：{{user}} = persona 名）
+  const [personaReadyTick, setPersonaReadyTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    personaManager.init()
+      .then(() => { if (!cancelled) setPersonaReadyTick(v => v + 1); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const getDisplayName = (character?: Character | Partial<Character> | null): string => {
-    const ocData = getOCData();
-    if (ocData?.name) return ocData.name;
+    void personaReadyTick; // persona 加载完成后重算
+    const personaName = personaManager.getActivePersona()?.name?.trim();
+    if (personaName) return personaName;
     if (character?.user_nickname) return character.user_nickname;
     return user.username || (t.user_label || '用户');
   };
-  
+
   const [sessions, setSessions] = useState<CharacterChatSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<CharacterChatSession | null>(null);
   const [messages, setMessages] = useState<CharacterChatMessage[]>([]);
@@ -749,6 +760,17 @@ export function CharacterView({
         });
       }
       setHasMoreMessages(data.has_more || false);
+      // [ST-ALIGN P0-4] more_messages_loaded 此前从不 emit，依赖它的无限滚动/
+      // 懒加载类插件静默失效。事件失败不影响加载主流程。
+      try {
+        getGlobalSillyTavernRuntime()?.emitMoreMessagesLoaded({
+          sessionId: selectedSession.id,
+          loaded: data.messages?.length ?? 0,
+          hasMore: data.has_more || false,
+        });
+      } catch {
+        /* no-op */
+      }
     } catch (e) {
       console.error('Failed to load older messages:', e);
     } finally {
@@ -884,7 +906,10 @@ export function CharacterView({
       } catch (error) {
         console.warn('Failed to open imported character:', error);
         routeCharacterSyncRef.current = null;
-        navigate(`/characters/${characterId}`);
+        // [iOS-HISTORY] 同 URL 不再重复 push（否则多出一条幽灵历史条目）
+        if (window.location.pathname !== `/characters/${characterId}`) {
+          navigate(`/characters/${characterId}`);
+        }
       }
     };
 
@@ -1210,7 +1235,9 @@ export function CharacterView({
       setSelectedSession(latestSession);
       await loadMessages(latestSession.id);
     }
-    if (characterId !== fullCharacter.id) {
+    // [iOS-HISTORY] 目标地址与当前地址相同时不再 push：react-router 对同 URL 的 push
+    // 照样会往 history 里加一条，iOS 滑动返回时表现为「闪过一页一模一样的页面」。
+    if (characterId !== fullCharacter.id && window.location.pathname !== `/characters/${fullCharacter.id}`) {
       navigate(`/characters/${fullCharacter.id}`);
     }
   }, [loadSessions, loadMessages, navigate, characterId]);
@@ -1526,6 +1553,12 @@ export function CharacterView({
       if (pendingDelete.type === 'batch') {
         for (const sessionId of Array.from(selectedSessions)) {
           await api.delete(`/api/character-sessions/${sessionId}`);
+          // [ST-ALIGN P0-4] chat_deleted 此前从不 emit，依赖它做清理的插件失效
+          try {
+            getGlobalSillyTavernRuntime()?.emitChatDeleted({ sessionId });
+          } catch {
+            /* no-op */
+          }
         }
         
         setSelectedSessions(new Set());
@@ -1541,6 +1574,12 @@ export function CharacterView({
         }
       } else if (pendingDelete.type === 'single') {
         await api.delete(`/api/character-sessions/${pendingDelete.id}`);
+        // [ST-ALIGN P0-4] chat_deleted 此前从不 emit
+        try {
+          getGlobalSillyTavernRuntime()?.emitChatDeleted({ sessionId: pendingDelete.id });
+        } catch {
+          /* no-op */
+        }
         invalidateCache(`/api/characters/${selectedCharacter!.id}/sessions`);
         await loadSessions(selectedCharacter!.id);
         if (selectedSession?.id === pendingDelete.id) {

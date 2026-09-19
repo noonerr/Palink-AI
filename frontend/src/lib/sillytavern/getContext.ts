@@ -1388,6 +1388,15 @@ function saveSettingsDebounced(delay: number = 500): void {
       // K-10 修复: 此前裸 fetch 无 Authorization 头，被 CSRF 守卫（MED-4）拦截为 403，
       // 插件设置无法持久化。改用 api.post（services/api 自动注入 Bearer token）。
       await api.post('/api/settings/save', {});
+      // [ST-ALIGN P0-4] settings_updated：此前仅智能卡兼容轨 emit
+      // （SillyTavernCompatRuntime.ts:1915/5016），主插件轨的监听器收不到，
+      // 靠该事件做持久化的插件静默失效。eventBus 与 eventSource 同源
+      // （context.ts:66/80 双向桥接），此处 emit 即可让 eventSource.on 收到。
+      try {
+        eventBus.emit('settings_updated' as any, {} as any);
+      } catch {
+        /* no-op */
+      }
     } catch (err) {
       console.warn('[getContext] saveSettingsDebounced error:', err);
     }
@@ -2491,9 +2500,15 @@ export function getContext(): StGetContext {
     },
 
     // 角色 / 缩略图
-    getThumbnailUrl: (_type: string, _filename: string) => {
-      // Palink 缩略图由后端 CDN 处理，此处返回空字符串
-      return '';
+    // [ST-ALIGN] 后端**已有** /api/st/thumbnail（silly_tavern.py:1853，同时注册
+    // /thumbnail），签名与 ST 完全一致（type + file）。此前返回空字符串 →
+    // 插件拿不到头像/背景 URL，渲染出裂图。
+    // id 语义：ST 传的是 character.avatar（如 "xxx.png"），Palink 侧为
+    // "palink-{uuid}.png" 或裸 UUID，后端 _character_id_from_avatar 均可解析；
+    // type != 'avatar'（如 'bg'）时后端返回 svg 占位图，已属优雅降级。
+    getThumbnailUrl: (type: string, filename: string) => {
+      if (!type || !filename) return '';
+      return `/api/st/thumbnail?type=${encodeURIComponent(type)}&file=${encodeURIComponent(filename)}`;
     },
     selectCharacterById: async (_characterId: number) => {
       // Palink 角色选择由路由层处理，此处 no-op

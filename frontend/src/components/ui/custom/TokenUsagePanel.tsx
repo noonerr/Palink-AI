@@ -10,6 +10,7 @@ import {
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 
 /* ───────────── types ───────────── */
 interface DailyEntry { date: string; input: number; output: number; reasoning: number; }
@@ -61,7 +62,7 @@ const PERIOD_LABELS: Record<Period, string> = {
 
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: string; icon: React.ElementType; color: string }) {
   return (
-    <div className="flex flex-col gap-1 p-3 rounded-xl bg-muted/40 border border-border/40">
+    <div className="flex flex-col gap-1 p-3 rounded-xl bg-secondary/40 border border-border/40">
       <div className={`flex items-center gap-1.5 text-xs font-medium ${color}`}>
         <Icon size={13} />
         {label}
@@ -140,7 +141,7 @@ function QuotaCard({ quota }: { quota: NonNullable<UsageData['quota']> }) {
   const used = quota.used_tokens ?? 0;
   if (quota.unlimited) {
     return (
-      <div className="p-4 rounded-2xl border border-border/50 bg-card/60 space-y-2">
+      <div className="p-4 rounded-2xl border border-border/50 bg-card space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 font-medium">
             <Gauge size={16} className="text-muted-foreground" />
@@ -157,7 +158,7 @@ function QuotaCard({ quota }: { quota: NonNullable<UsageData['quota']> }) {
   const pct = total > 0 ? Math.min((used / total) * 100, 100) : 0;
   const exhausted = remaining <= 0;
   return (
-    <div className={`p-4 rounded-2xl border bg-card/60 space-y-3 ${exhausted ? 'border-red-500/40' : 'border-border/50'}`}>
+    <div className={`p-4 rounded-2xl border bg-card space-y-3 ${exhausted ? 'border-red-500/40' : 'border-border/50'}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 font-medium">
             <Gauge size={16} className={exhausted ? 'text-red-500' : 'text-primary'} />
@@ -217,35 +218,33 @@ export function TokenUsagePanel({
   const periods: Period[] = ['day', 'week', 'month', 'all'];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           {detail && (
             <button
               onClick={() => setDetail(null)}
-              className="p-1.5 hover:bg-secondary rounded-lg transition-colors mr-1"
+              className="p-1.5 hover:bg-secondary rounded-lg transition-all duration-200 active:scale-95 mr-1"
             >
               <ChevronLeft size={18} />
             </button>
           )}
-          <BarChart2 size={20} className="text-primary" />
-          <h2 className="text-lg font-semibold">
-            {userName ? `${userName}的用量统计` : detail === 'character' ? '角色聊天详情' : detail === 'regular' ? '普通聊天详情' : '用量统计'}
-          </h2>
         </div>
-        {/* Period selector */}
-        <div className="flex gap-1 bg-muted/40 rounded-xl p-1">
+        <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl">
           {periods.map((p) => (
-            <Button
+            <button
               key={p}
-              variant={period === p ? 'default' : 'ghost'}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
               onClick={() => setPeriod(p)}
+              className={cn(
+                'px-2.5 py-1 text-xs font-medium rounded-lg transition-all duration-200 whitespace-nowrap',
+                period === p
+                  ? 'bg-background shadow-sm text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
             >
               {PERIOD_LABELS[p]}
-            </Button>
+            </button>
           ))}
         </div>
       </div>
@@ -267,7 +266,7 @@ export function TokenUsagePanel({
           <div className={`grid gap-4 ${hideCharacterUsage ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
           {/* Regular chat card */}
           <button
-            className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
+            className="text-left p-4 rounded-2xl border border-border/50 bg-card hover:bg-secondary/40 transition-all duration-200 active:scale-[0.99] space-y-3"
             onClick={() => setDetail('regular')}
           >
             <div className="flex items-center gap-2 font-medium">
@@ -285,7 +284,7 @@ export function TokenUsagePanel({
           {/* Character chat card - only show if not hiding */}
           {!hideCharacterUsage && (
             <button
-              className="text-left p-4 rounded-2xl border border-border/50 bg-card/60 hover:bg-card/90 transition-all duration-200 hover:shadow-md space-y-3"
+              className="text-left p-4 rounded-2xl border border-border/50 bg-card hover:bg-secondary/40 transition-all duration-200 active:scale-[0.99] space-y-3"
               onClick={() => setDetail('character')}
             >
               <div className="flex items-center gap-2 font-medium">
@@ -306,7 +305,7 @@ export function TokenUsagePanel({
 
       {/* Detail view */}
       {!loading && data && detail && (
-        <div className="space-y-5">
+        <div className="space-y-4 md:space-y-6">
           {/* Summary cards */}
           {(() => {
             const stats = detail === 'character' ? data.character_chat : data.regular_chat;
@@ -320,21 +319,23 @@ export function TokenUsagePanel({
                 </div>
 
                 {/* Trend chart */}
-                <div className="rounded-xl border border-border/40 p-4 bg-muted/20">
-                  <p className="text-xs text-muted-foreground mb-3 font-medium">每日趋势</p>
-                  <TrendChart daily={stats.daily} />
+                <div>
+                  <p className="px-1 pb-1.5 text-xs font-medium text-muted-foreground/80">每日趋势</p>
+                  <div className="rounded-2xl border border-border/50 bg-card p-4">
+                    <TrendChart daily={stats.daily} />
+                  </div>
                 </div>
 
                 {/* By model */}
                 <div>
-                  <p className="text-xs text-muted-foreground mb-2 font-medium">按模型</p>
+                  <p className="px-1 pb-1.5 text-xs font-medium text-muted-foreground/80">按模型</p>
                   <ModelBadgeList models={stats.by_model} />
                 </div>
 
                 {/* By character (only for character chat and not hiding) */}
                 {detail === 'character' && !hideCharacterUsage && (
                   <div>
-                    <p className="text-xs text-muted-foreground mb-2 font-medium">按角色</p>
+                    <p className="px-1 pb-1.5 text-xs font-medium text-muted-foreground/80">按角色</p>
                     <CharacterTable rows={(data.character_chat as CharacterChatStats).by_character} />
                   </div>
                 )}

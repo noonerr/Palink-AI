@@ -35,25 +35,27 @@ import {
 } from '../worldbook-global-settings';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SETTINGS_VIEW_SOURCE = readFileSync(
-  join(__dirname, '..', '..', 'components', 'views', 'SettingsView.tsx'),
+// 2026-09-05 设置页拆分：世界书全局设置 UI 从 SettingsView.tsx 内联迁至
+// settings-tabs/RoleplayEngineTab.tsx（角色扮演引擎 → SillyTavern 子 tab），锚点随迁。
+const SETTINGS_TAB_SOURCE = readFileSync(
+  join(__dirname, '..', '..', 'components', 'views', 'settings-tabs', 'RoleplayEngineTab.tsx'),
   'utf-8',
 );
 
 // ============================================================
-// 源码契约：SettingsView.tsx 8 个 key 读写接线 + 通道接线
+// 源码契约：RoleplayEngineTab.tsx 8 个 key 读写接线 + 通道接线
 // ============================================================
 
-describe('世界书全局设置 源码契约：SettingsView 接线', () => {
-  it('SettingsView.tsx 含全部 8 个 world_info_* key', () => {
+describe('世界书全局设置 源码契约：设置页接线', () => {
+  it('设置页含全部 8 个 world_info_* key', () => {
     for (const key of WORLD_INFO_GLOBAL_KEYS) {
-      expect(SETTINGS_VIEW_SOURCE.includes(key)).toBe(true);
+      expect(SETTINGS_TAB_SOURCE.includes(key)).toBe(true);
     }
   });
 
-  it('SettingsView.tsx 走 /api/settings/get 读、/api/settings/save 写（既有通道，非新造）', () => {
-    expect(SETTINGS_VIEW_SOURCE.includes("'/api/settings/get'")).toBe(true);
-    expect(SETTINGS_VIEW_SOURCE.includes("'/api/settings/save'")).toBe(true);
+  it('设置页走 /api/settings/get 读、/api/settings/save 写（既有通道，非新造）', () => {
+    expect(SETTINGS_TAB_SOURCE.includes("'/api/settings/get'")).toBe(true);
+    expect(SETTINGS_TAB_SOURCE.includes("'/api/settings/save'")).toBe(true);
   });
 });
 

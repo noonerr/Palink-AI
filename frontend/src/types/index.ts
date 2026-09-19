@@ -495,30 +495,8 @@ export interface CharacterChatMessage {
   extra?: Record<string, unknown>;
 }
 
-// OC (Original Character) 相关类型
-export interface OCCustomField {
-  id: string;
-  label: string;
-  value: string;
-}
-
-export interface OCData {
-  id: string;
-  name: string;
-  traits: string;
-  personality: string;
-  hobbies: string;
-  background: string;
-  avatar?: string;
-  customFields: OCCustomField[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface OCConfig {
-  allowAIAnalysis: boolean;
-  defaultAnalysisModel: string;
-}
+// OC (Original Character) 旧类型已于 2026-09-07 移除：设置页「用户人设」统一走
+// lib/personas（Persona 体系，/api/personas），见 components/ui/custom/OCSettings.tsx
 
 // ── World Book (世界书) ──
 

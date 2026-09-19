@@ -205,6 +205,7 @@ class MacroEnv:
         # Phase C 修复: ST 1.18.0 缺失宏所需上下文
         chat_id_hash: Optional[str] = None,  # {{pick}} 确定性种子 (ST getChatIdHash)
         first_included_message_id: Optional[int] = None,  # {{firstIncludedMessageId}}
+        first_included_message: Optional[str] = None,  # {{firstIncludedMessage}}（内容形态，ST macros.js:663）
         first_displayed_message_id: Optional[int] = None,  # {{firstDisplayedMessageId}}
         last_swipe_id: Optional[int] = None,  # {{lastSwipeId}}
         current_swipe_id: Optional[int] = None,  # {{currentSwipeId}}
@@ -243,6 +244,7 @@ class MacroEnv:
         # Phase C 修复: 缺失宏上下文
         self.chat_id_hash = chat_id_hash
         self.first_included_message_id = first_included_message_id
+        self.first_included_message = first_included_message
         self.first_displayed_message_id = first_displayed_message_id
         self.last_swipe_id = last_swipe_id
         self.current_swipe_id = current_swipe_id
@@ -517,6 +519,11 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
         return env.last_generation_type or "normal"
     if name_lower == "firstincludedmessageid":
         return str(env.first_included_message_id) if env.first_included_message_id is not None else ""
+    if name_lower == "firstincludedmessage":
+        # ST 1.18.0 {{firstIncludedMessage}}：第一条纳入 prompt 的消息**内容**
+        # （macros.js:663-664，chat[firstIncludedMessageId].mes）。与
+        # {{firstIncludedMessageId}}（id 形态）是两个宏，此前 Palink 只有 id 形态。
+        return env.first_included_message or ""
     if name_lower == "firstdisplayedmessageid":
         return str(env.first_displayed_message_id) if env.first_displayed_message_id is not None else ""
     if name_lower == "lastswipeid":

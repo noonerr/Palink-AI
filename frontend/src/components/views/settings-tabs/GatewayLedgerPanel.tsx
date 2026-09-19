@@ -119,11 +119,7 @@ export function GatewayLedgerPanel({ t, providers, gatewayInfo }: GatewayLedgerP
 
   if (gatewayProviders.length === 0) {
     return (
-      <div className="space-y-4 animate-fade-in pb-28 w-full max-w-full">
-        <div className="flex items-center gap-3">
-          <Network size={20} className="text-primary" />
-          <h3 className="text-2xl font-semibold">网关对账</h3>
-        </div>
+      <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
         <GlassCard className="p-8 text-center">
           <Server size={32} className="mx-auto text-muted-foreground/50 mb-3" />
           <p className="text-sm text-muted-foreground">
@@ -141,11 +137,9 @@ export function GatewayLedgerPanel({ t, providers, gatewayInfo }: GatewayLedgerP
   const driftGood = drift ? Math.abs(drift.percent ?? 0) <= 2 : false;
 
   return (
-    <div className="space-y-4 animate-fade-in pb-28 w-full max-w-full">
+    <div className="space-y-4 md:space-y-6 animate-fade-in pb-28 w-full max-w-full">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Network size={20} className="text-primary" />
-          <h3 className="text-2xl font-semibold">网关对账</h3>
           {selected && gatewayInfo[selected.id]?.version && (
             <span className="text-[10px] bg-amber-500/15 text-amber-500 px-2 py-0.5 rounded-full">
               {gatewayInfo[selected.id]?.flavor === 'new-api' ? 'New API' : 'One API'} {gatewayInfo[selected.id]?.version}
@@ -162,13 +156,13 @@ export function GatewayLedgerPanel({ t, providers, gatewayInfo }: GatewayLedgerP
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
-          <div className="flex bg-muted/50 rounded-lg p-0.5">
+          <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl">
             {HOURS_OPTIONS.map(opt => (
               <button
                 key={opt.hours}
                 onClick={() => setHours(opt.hours)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                  hours === opt.hours ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
+                  hours === opt.hours ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
                 {opt.label}
@@ -239,7 +233,7 @@ export function GatewayLedgerPanel({ t, providers, gatewayInfo }: GatewayLedgerP
           )}
 
           <GlassCard className="p-4 overflow-x-auto">
-            <h4 className="text-sm font-semibold mb-3">按模型对照</h4>
+            <h4 className="font-semibold text-base mb-3">按模型对照</h4>
             <table className="w-full text-xs min-w-[520px]">
               <thead>
                 <tr className="text-muted-foreground border-b border-border/50 text-left">
@@ -287,7 +281,7 @@ export function GatewayLedgerPanel({ t, providers, gatewayInfo }: GatewayLedgerP
           </GlassCard>
 
           <GlassCard className="p-4 overflow-x-auto">
-            <h4 className="text-sm font-semibold mb-3">网关最近请求</h4>
+            <h4 className="font-semibold text-base mb-3">网关最近请求</h4>
             <table className="w-full text-xs min-w-[560px]">
               <thead>
                 <tr className="text-muted-foreground border-b border-border/50 text-left">

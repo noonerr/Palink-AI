@@ -415,12 +415,15 @@ const IframeRenderer = React.memo(function IframeRenderer({
     setImmersiveTheme(inferredImmersiveTheme);
   }, [inferredImmersiveTheme, sourceFingerprint]);
 
+  // [iOS-HISTORY] 文档内容取防抖值：流式期间不再每个 token 重建一次 iframe
+  // （每次重建 = 一次导航 = 一条 Safari 联合历史幽灵条目）
+  const srcDocHtml = useStabilizedCardHtml(html);
   const srcDoc = useMemo(() => {
     const legacyShim = buildShim(bootContext, frameIdRef.current);
     const compatV2Shim = buildSillyTavernCompatRuntimeV2Shim({
       context: bootContext,
       frameId: frameIdRef.current,
-      sourceHtml: `${html}\n${customCss || ''}`,
+      sourceHtml: `${srcDocHtml}\n${customCss || ''}`,
       mode: toSmartCardRuntimeMode(effectiveMode),
       nonce: SMART_CARD_CSP_NONCE,
       origin: typeof window !== 'undefined' && window.location ? window.location.origin : 'http://localhost:3000',
@@ -430,7 +433,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
     });
     const shim = `${legacyShim}${compatV2Shim}`;
     const sourceHtml = effectiveMode === 'static-html'
-      ? DOMPurify.sanitize(html, {
+      ? DOMPurify.sanitize(srcDocHtml, {
           ADD_TAGS: ['style', 'link', 'meta', 'div', 'span', 'font', 'center', 'marquee', 'hr', 'br', 'details', 'summary', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'video', 'audio', 'source', 'iframe', 'button', 'input', 'select', 'option', 'textarea', 'section', 'main', 'article'],
           ADD_ATTR: ['class', 'style', 'color', 'bgcolor', 'align', 'valign', 'data-*', 'href', 'src', 'alt', 'target', 'rel', 'width', 'height', 'controls', 'autoplay', 'loop', 'muted', 'poster', 'preload', 'type', 'value', 'name', 'placeholder', 'disabled', 'readonly', 'checked', 'selected'],
         })
@@ -453,7 +456,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // context-update postMessage 通道热更新进 iframe（见 handleMessage context-update 分支），
     // 无需重建文档；真正的内容变化由 sourceFingerprint / html 表达。
     // assetModeVersion 例外：资源模式切换改变 URL 改写结果，必须重建。
-  }, [html, isFullDocument, customCss, effectiveMode, prefersImmersive, resourcePlan, assetModeVersion]);
+  }, [srcDocHtml, isFullDocument, customCss, effectiveMode, prefersImmersive, resourcePlan, assetModeVersion]);
 
   // [P0-SRCDOC-SLIM] 把插件脚本包（js/modules 源码）单次推送给 iframe。
   // [P1-SRCDOC-SLIM] 推送的是「清单」：仅元数据 + source URL（剥离 content），
@@ -1596,6 +1599,31 @@ function buildSmartCardImmersiveBridge(frameId: string): string {
 // 收紧到 window.location.origin；opaque origin iframe 无法指定且无放大，维持 '*'
 const smartCardFrameTargetOrigin = (sameOrigin: boolean): string =>
   sameOrigin ? window.location.origin : '*';
+
+// [iOS-HISTORY] 智能卡文档内容防抖。
+// srcDoc 每次变化都会让 iframe 整页重载 = 一次真实导航，而 Safari 的会话历史是
+// 「联合」的（顶层 + 所有子框架），每次 iframe 导航都会往里插一条幽灵条目（顶层
+// URL 不变，地址栏仍是当前页），iOS 滑动返回于是先闪过 N 个与当前页一模一样的
+// 快照才回到上一级。流式输出时 content 每个 token 都变，会把重载次数放大到几十次。
+// 这里对「文档内容」做尾部防抖（首帧立即渲染，不延迟首屏），把整段流式期间的
+// N 次重载收敛成 1 次；运行时状态（variables/extensions）本来就不走 srcDoc，
+// 由 context-update postMessage 热更新，不受防抖影响。
+const SMART_CARD_DOC_DEBOUNCE_MS = 120;
+function useStabilizedCardHtml(html: string): string {
+  const [stable, setStable] = useState(html);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    // 首帧直接采用当前 html，不引入任何延迟
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return undefined;
+    }
+    if (html === stable) return undefined;
+    const timer = window.setTimeout(() => setStable(html), SMART_CARD_DOC_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [html, stable]);
+  return stable;
+}
 
 function CharacterCardRendererInner({
   content,
