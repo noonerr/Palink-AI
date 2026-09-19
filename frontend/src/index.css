@@ -93,10 +93,6 @@
   --aurora-2: #8b5cf6;
   --aurora-3: #06b6d4;
   
-  /* Glass Effect */
-  --glass-bg: rgba(255, 255, 255, 0.9);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  
   /* Mobile dock height - updated at runtime by MobileBottomNav */
   --palink-dock-height: 90px;
 
@@ -147,10 +143,6 @@
   --aurora-1: #60a5fa;
   --aurora-2: #a78bfa;
   --aurora-3: #22d3ee;
-  
-  /* Glass Effect - Dark */
-  --glass-bg: rgba(20, 20, 25, 0.9);
-  --glass-border: rgba(255, 255, 255, 0.08);
   
   /* Sidebar Colors - Dark */
   --sidebar-background: 240 10% 3.9%;
@@ -2244,46 +2236,6 @@ html.palink-dock-kb-hide nav[data-dock="true"] > div[data-dock="true"] {
 .settings-nav-arrow {
   color: hsl(var(--primary));
   flex-shrink: 0;
-}
-
-.settings-menu-btn {
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 16px);
-  left: 14px;
-  z-index: 60;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: hsl(var(--card) / 0.8);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
-  border: 1px solid hsl(var(--border));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: hsl(var(--foreground));
-  cursor: pointer;
-  transition: all 0.4s cubic-bezier(0.22, 0.65, 0.22, 1);
-}
-
-.settings-menu-btn:active {
-  transform: scale(0.92);
-}
-
-.settings-menu-btn.offset {
-  left: calc(280px - 14px - 40px);
-  background: hsl(var(--primary) / 0.25);
-  border-color: hsl(var(--primary) / 0.4);
-  box-shadow: 0 14px hsl(var(--primary) / 0.35);
-  color: hsl(var(--primary));
-}
-
-.settings-menu-btn svg {
-  transition: transform 0.4s cubic-bezier(0.22, 0.65, 0.22, 1);
-}
-
-.settings-menu-btn.offset svg {
-  transform: rotate(180deg);
 }
 
 .settings-shell {

@@ -21,13 +21,14 @@
    - 历史脉络：2026-08-24 运行时强制封存（MODE-SEALED）→ 2026-09-03 代码剥离删除。封存守卫（`SEALED_ST_MODES`/`_st_mode_effective`/`_is_st_compat_mode`）已随删除消失，无解封开关。
    - `silly_tavern_mode` / `silly_tavern_theme` 字段已于 2026-09-04 A1 收尾全链删除（`bbfe0f0`，alembic 0062 drop 列，DB 已迁移）。**T1 红线：`backend/app/core/migrations.py` 的 `_RUNTIME_COMPAT_COLUMNS` 补列清单禁止回填这两列**（否则后端重启把列重建回来）。PUT 请求体携带这两个旧键会被 pydantic 静默忽略（合法行为，非 bug）。
 2. **残留清理未完成的部分**（后续如要动，需另立议题）：
-   - `st_groups.py` 虽名为 st_ 前缀，实为 **Palink 自有群聊后端**（前端 `lib/group-chat/manager.ts` 调 `/api/groups/*`，消费方 `NativeRoleplayChat` 的 groupChatManager）。**勿按名字误删**。
+   - `st_groups.py` 虽名为 st_ 前缀，实为 **Palink 自有群聊后端**。**勿按名字误删**。
+     ⚠️ 消费链已于 2026-09-20 变更（原描述"消费方 `NativeRoleplayChat` 的 groupChatManager"已失效）：该组件已删除（其 import 在删除前早已注释于 `CharacterChat.tsx:69`）。现 `lib/group-chat/*` 的唯一存活消费者是 **`lib/sillytavern/getContext.ts:21`**（向 ST 插件提供 `groupId`/`groups`，并经 `sandbox.ts` 的 `group-chats.js` 模块名下发）。口径：**群聊数据链路仅经插件面可达，第一方群聊 UI 目前为空**；`overview.md` 记录的 ≈85% 后端群聊对齐属该插件面能力。动 `st_groups.py` 前按此评估影响面。
    - `st_sync_service.py` 为共用模块，被 character/personas/worldbook/character_ext 等主链路引用，**保留**。
    - `backend/app/core/config.py` 的 `ST_NATIVE_*` 字段仍在用（`silly_tavern.py` 的 sidecar 转发函数——现仅 elevenlabs 语音三端点消费、`st_sync_service.py`、`core/security.py` 的 N-6 HMAC 签名），2026-09-05 端点瘦身已删 extensions 死代理族；`ST_NATIVE_SERVICE_URL` 的唯一消费链是 elevenlabs 转发，后续如删 elevenlabs 需同批清理。
    - ~~`api/st/native/proxy`、`/csrf-token`、`/api/st/csrf-token` 保留~~ → **均已删除**（第三/四批端点瘦身，2026-09-04/05）。
 3. **Palink 前端插件体系（插件沙箱、regex 引擎、generate\_interceptor、`st-plugins/`** **目录）全部属于** **`palink-native`**，与已删的 st-native 无关。
 4. 提示词装配唯一模式是 `palink-native`（`silly_tavern_mode` 列已删，装配无模式分支），不要无授权改动装配链。
-5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）。
+5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）、`lib/group-chat/`（第一方 UI 已删但它经 `getContext.ts` 活着，勿连带误删）。
 
 ## 待办（跨 agent 协作）
 

@@ -235,3 +235,4 @@ scripts/st_audit/sec_smoke_card.png
 *.bak.dock-fix
 dist_new_*/
 backup/
+.ui-backup-*/

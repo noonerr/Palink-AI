@@ -1,3 +1,18 @@
+# ⚠️ 本文件已过期（2026-09-20 标注）——仅作历史留档，勿作为现状依据
+
+本文件记录的「后端群聊对齐阶段 1/2/3」施工以 **st-compat 装配轨存在**为前提。其中引用的
+`build_st_compat_messages`、`user_setting.silly_tavern_mode` 读取与 st-compat 回退分支，
+已于 2026-09-03/09-04 随 ST 双轨剥离删除（commit `091023e`、`bbfe0f0`；alembic 0062 drop 列），
+现仅存注释。文中"阶段1 前 ≈45% → … → ≈85%"的对齐度口径已不可复现。
+
+- 现状依据请用：`AGENTS.md`（方向声明）+ `TODOS.md`（待办与决策）+
+  `docs/ANALYSIS_项目现状与遗留清理_2026-09-20.md`。
+- 群聊能力的当前可达面：后端逻辑仍在，但**仅经 `lib/sillytavern/getContext.ts:21` 面向 ST 插件可达**；
+  第一方群聊 UI 已随 `components/roleplay/NativeRoleplayChat.tsx` 删除（见 `AGENTS.md` 第 2 条）。
+- 本文件保留不删，是为留存各阶段修法（B1–B6 / C1–C2 / D1–D5 / E1–E2 / F1）的设计推理。
+
+---
+
 # 后端群聊对齐 · 阶段1（低难度正确性修复）实施完成
 
 > 用户指令：「开始动工1号」——实现 Spec 中阶段1 的群聊对齐正确性修复。
