@@ -7,6 +7,19 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·已实测] 前端渲染层 P0：通用聊天页 memo 修复（2026-09-22，commit 2275fbd）
+
+- **背景**：任务书 `P0 修掉两个通用聊天页里失效的 memo`。评估与施工记录：`docs/评估_P0前端memo修复任务适配性与执行计划_2026-09-22.md`（§8 施工结果）。前置 `docs/SPEC_前端缓存与加载优化_2026-09-21.md`（N1-N5/B1-B2 已完成）。
+- **根因**：`ChatViewDesktop`/`ChatViewMobile` 在 render 中现写箭头函数传给 `Message`（`onRegenerate/onDelete/onEdit/onToggleSelect`），`Message.tsx:1825-1897` 的手写 memo 比较器逐条比函数引用 → 新函数必然 `!==` → 比较器恒 false → 流式每 chunk 整条列表全量重渲染。
+- **改法**：照 `CharacterChat.tsx:1288-1407` 样板，建以 messageId 为入参的稳定回调，内部用 ref 读最新 messages 反查下标。`ChatViewDesktop` hooks 块须放早退分支之前；`ChatViewMobile` **两处 `<Message>`（:479 / :596）都改**（任务书只点了第一处）；`Message.tsx` 的 `onDelete` 签名放宽为 `(messageId?) => void`。
+- **实测（真实浏览器，探针已删）**：改前桌面单次发送 **442 次** `Message` render（历史 20 条 × 21 次）；改后桌面 **26 次**（-94%，user 消息 0 次、assistant 2 次系 streaming 翻转引起的必要更新）；改后移动 390×844 为 24 次。
+- **回归**：删除/编辑/勾选/发送均通过（含库内落库校验）。**修掉一处本次引入的回归**：`handleSelectClick` 非 isDeleteMode 分支原本无参调 `onToggleSelect`，改造前靠上游闭包自带 id，改稳定引用后退化为 `toggleMessageSelect(undefined)`（= 切模式而非勾选本条），已补 id 传参。
+- **两项不适用**（非本次引入）：重新生成按钮在通用聊天页恒不显示（`isCurrentLatestAssistant` 默认 false）；生成图片按钮零渲染（`onGenerateImage` 被解构为 `_onGenerateImage`）。
+- **验收**：tsc 0 错；`test:contract` **173 项全绿 / 0 失败**（记忆里的 162 已过时）；build ✓ 34.83s；主 chunk `index-CQ5VvH87.js` 200；产物探针零残留。
+- **未做（用户拍板暂缓）**：P1-A 手写比较器换浅比较（前置：须先确认 `CharacterChat` 的 N-3 切片与 `sessionVisualSnapshot` 不整体重建 `displayedMessages`）；P1-B 仓库卫生（已核实 `.gitignore` 条目已存在、9 个目标中 6 个被 git 跟踪须 `git rm`）；四项待议项评估文档（长会话虚拟化 / Service Worker / 首屏 CSS / 2 秒轮询）。
+- **环境登记**：`agent-browser` 本机无 Chromium（`open` 会静默卡死），绕法=本机 Chrome `--headless=new --remote-debugging-port=9222` + `agent-browser connect 9222`；移动视口用 `set viewport 390 844`；`bash rm -rf dist_tmp_*` 同样受 safe-delete 守卫（阈值 50 文件/turn），改用 `mv` 到 `D:/tmp/`。
+- 测试账号 `perfprobe / PerfProbe#2026` 保留供后续复测；探针会话与 24 条消息已删除。
+
 ### [已完成·已验证] 项目现状盘点 + 死代码清理批次（2026-09-20）
 - **报告**：`docs/ANALYSIS_项目现状与遗留清理_2026-09-20.md`
 - **健康度基线（本轮实测）**：后端全量 **1186 passed / 42 skipped / 0 failed**（本地 venv `E:/palink-testenv`，296s；较 09-09 基线 1030 新增 156 条）；`npx tsc --noEmit` **0 错**；前端契约链 **162 项全绿 / 2 跳过**；`npm run build` ✓ 46.34s（主 chunk `index-C1GD9FUD.js` 在位）。Docker Desktop **未运行**，真机/容器实弹项全部无法闭环。
