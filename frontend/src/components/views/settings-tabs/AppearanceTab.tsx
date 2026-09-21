@@ -41,7 +41,7 @@ export function AppearanceTab({
   bottomPadding
 }: AppearanceTabProps) {
   const [autoContrast, setAutoContrast] = useState<boolean>(true);
-  // 角色扮演角色卡头像展示开关（localStorage 持久化，Message 实时读取；默认开启）
+  // AI 消息头像展示开关（通用聊天与角色扮演共用；localStorage 持久化，Message 实时读取）
   const [showCharacterAvatar, setShowCharacterAvatar] = useState<boolean>(true);
   // 智能卡第三方资源加载模式（localStorage 持久化；默认 direct 用户直连，
   // 开启 = proxy 服务器中转；CharacterCardRenderer 监听事件实时重建）
@@ -206,7 +206,7 @@ export function AppearanceTab({
       <SettingsGroup label="角色扮演显示">
         <SettingsRow
           icon={<Image size={15} />}
-          title="角色扮演角色卡头像"
+          title="AI 消息头像（通用聊天 / 角色扮演）"
         >
           <Switch checked={showCharacterAvatar} onCheckedChange={handleToggleCharacterAvatar} />
         </SettingsRow>

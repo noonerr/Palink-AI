@@ -468,13 +468,15 @@ export function ChatViewMobile({
               <div className="px-3 pb-4">
                 <div
                   ref={kb.messageStackRef}
-                  className="mx-auto w-[92%] max-w-[560px] space-y-6"
+                  className="mx-auto w-[92%] max-w-[560px] space-y-5"
                   style={{ paddingBottom: `${kb.messageBottomPaddingPx}px` }}
                 >
                   {/* 顶部安全空间：高度与 header 完全一致(env(safe-area-inset-top)+4.5rem+8px)，确保最上面的消息不被 header 挡住 */}
                   <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
                   {anim.displayedMessages.map((msg, idx) => (
-                    <div key={msg.id || idx} className="flex items-start gap-2" style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
+                    // 分隔线放在列表层而非 Message 组件内：/chat 不传 chatStyle，恒为 flat 无边界；
+                    // 改共享组件会连累主题为 flat 的角色扮演页。
+                    <div key={msg.id || idx} className={cn('flex items-start gap-2', msg.role === 'assistant' && 'border-b border-[var(--rp-color-ui-border)] pb-5')} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
                       <div className="flex-1">
                         <Message
                           message={msg}
@@ -590,13 +592,15 @@ export function ChatViewMobile({
               <div className="px-3 pb-4">
                 <div
                   ref={kb.messageStackRef}
-                  className="mx-auto w-[92%] max-w-[560px] space-y-6"
+                  className="mx-auto w-[92%] max-w-[560px] space-y-5"
                   style={{ paddingBottom: `${kb.messageBottomPaddingPx}px` }}
                 >
                   {/* 顶部安全空间：高度与 header 完全一致(env(safe-area-inset-top)+4.5rem+8px)，确保最上面的消息不被 header 挡住 */}
                   <div aria-hidden style={{ height: 'calc(env(safe-area-inset-top) + 3rem + 8px)', width: '100%' }} />
                   {anim.displayedMessages.map((msg, idx) => (
-                    <div key={msg.id || idx} className="flex items-start gap-2" style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
+                    // 分隔线放在列表层而非 Message 组件内：/chat 不传 chatStyle，恒为 flat 无边界；
+                    // 改共享组件会连累主题为 flat 的角色扮演页。
+                    <div key={msg.id || idx} className={cn('flex items-start gap-2', msg.role === 'assistant' && 'border-b border-[var(--rp-color-ui-border)] pb-5')} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
                       <div className="flex-1">
                         <Message
                           message={msg}

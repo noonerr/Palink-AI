@@ -794,7 +794,8 @@ function MessageInner({
     return () => window.removeEventListener('palink-auto-contrast-changed', handleContrastToggle);
   }, []);
 
-  // 角色扮演角色卡头像展示开关（localStorage 持久化，设置页实时切换；默认开启）
+  // AI 消息头像展示开关（localStorage 持久化，设置页实时切换；默认开启）。
+  // 通用聊天页与角色扮演页共用同一开关。
   const [showCharacterAvatar, setShowCharacterAvatar] = useState<boolean>(() => {
     try {
       return localStorage.getItem('palink-rp-character-avatar') !== '0';
@@ -1286,10 +1287,10 @@ function MessageInner({
     >
       <div className={cn(
         isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]",
-        isUser ? "items-end flex" : cn("items-start flex", isCharacterChat ? "w-full" : "gap-3 w-full"),
+        isUser ? "items-end flex" : cn("items-start flex", isCharacterChat ? "w-full" : cn("w-full", showCharacterAvatar && "gap-3")),
         chatStyle === 'bubbles' && !isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]"
       )}>
-        {!isUser && chatStyle !== 'document' && (!isCharacterChat || showCharacterAvatar) && (
+        {!isUser && chatStyle !== 'document' && showCharacterAvatar && (
           <div className="w-9 h-9 rounded-2xl overflow-hidden flex-shrink-0">
             {characterAvatar ? (
               <img src={characterAvatar} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />

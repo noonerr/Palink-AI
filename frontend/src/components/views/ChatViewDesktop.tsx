@@ -128,9 +128,10 @@ export function ChatViewDesktop({
 
         <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full px-3 sm:px-6 py-4 sm:py-6" onScroll={chat.handleScroll}>
-            <div className={`max-w-3xl mx-auto space-y-6`}>
+            <div className={`max-w-3xl mx-auto space-y-5`}>
               {chat.messages.map((msg, idx) => (
-                <div key={msg.id || idx} className="flex items-start gap-2" style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
+                // 分隔线在列表层加，理由同 ChatViewMobile：/chat 恒为 flat 无边界，改共享组件会波及角色扮演页。
+                <div key={msg.id || idx} className={`flex items-start gap-2${msg.role === 'assistant' ? ' border-b border-[var(--rp-color-ui-border)] pb-5' : ''}`} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
                   <div className="flex-1">
                     <Message
                       message={msg}
