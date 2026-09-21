@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useCallback } from 'react';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/components/ui/custom/Message';
@@ -33,6 +33,49 @@ export function ChatViewDesktop({
   showModelReasoning = true,
 }: ChatViewProps) {
   const chat = useChatView({ currentModel, t });
+
+  // [PERF-P0] 稳定回调：以 messageId 为入参，内部经 ref 读最新 messages 反查下标。
+  // 背景：流式期间每个 chunk 都会 setMessages → 本组件重渲染；若在 render 中现写
+  // 箭头函数传给 Message，每条消息都会拿到新引用，Message.tsx 的手写 memo 比较器
+  // 逐条比函数引用必然 !== ，整条列表全量重渲染（含 pipelineResult / sanitize /
+  // formatMessage）。样板对齐 CharacterChat.tsx:1288-1407。
+  const messagesRef = useRef(chat.messages);
+  messagesRef.current = chat.messages;
+  const handleRegenerateRef = useRef(chat.handleRegenerate);
+  handleRegenerateRef.current = chat.handleRegenerate;
+  const handleEditMessageRef = useRef(chat.handleEditMessage);
+  handleEditMessageRef.current = chat.handleEditMessage;
+  const handleDeleteMessageRef = useRef(chat.handleDeleteMessage);
+  handleDeleteMessageRef.current = chat.handleDeleteMessage;
+  const toggleMessageSelectRef = useRef(chat.toggleMessageSelect);
+  toggleMessageSelectRef.current = chat.toggleMessageSelect;
+
+  const findMessageIndex = useCallback((messageId?: string | number) => {
+    if (messageId === undefined || messageId === null) return -1;
+    return messagesRef.current.findIndex((m) => String(m.id) === String(messageId));
+  }, []);
+
+  // 重新生成强依赖正确下标（handleRegenerate 内部取 messages[idx-1] 作 user 消息），
+  // 反查失败时静默返回，避免用错误下标重生成其它轮次。
+  const handleRegenerateAt = useCallback((messageId?: string | number) => {
+    const idx = findMessageIndex(messageId);
+    if (idx < 0) return;
+    void handleRegenerateRef.current(idx);
+  }, [findMessageIndex]);
+
+  // 编辑 / 删除只按 messageId 落库（useChatMessages 的 messageIndex 形参未参与请求），
+  // 故不因反查失败而短路，保持与改造前完全等价的调用行为。
+  const handleEditAt = useCallback((newContent: string, messageId?: string | number) => {
+    void handleEditMessageRef.current(messageId as string | number, findMessageIndex(messageId), newContent);
+  }, [findMessageIndex]);
+
+  const handleDeleteAt = useCallback((messageId?: string | number) => {
+    void handleDeleteMessageRef.current(messageId as string | number, findMessageIndex(messageId));
+  }, [findMessageIndex]);
+
+  const handleToggleSelectAt = useCallback((messageId?: string) => {
+    toggleMessageSelectRef.current(messageId);
+  }, []);
 
   const handleSend = async (overrideText?: string) => {
     await chat.handleSend(overrideText);
@@ -145,15 +188,15 @@ export function ChatViewDesktop({
                       memoryStats={chat.memoryMode === 'rule' && idx === chat.messages.length - 1 && msg.role === 'assistant' ? chat.memoryStats : null}
                       onCompress={chat.memoryMode === 'rule' && idx === chat.messages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                       compressing={chat.compressing}
-                      onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
+                      onRegenerate={msg.role === 'assistant' && !chat.streaming ? handleRegenerateAt : undefined}
                       canRegenerate={msg.role === 'assistant' && !chat.streaming}
-                      onDelete={msg.id != null ? () => chat.handleDeleteMessage(msg.id as string | number, idx) : undefined}
-                      onEdit={msg.id != null ? (newContent: string) => chat.handleEditMessage(msg.id as string | number, idx, newContent) : undefined}
+                      onDelete={msg.id != null ? handleDeleteAt : undefined}
+                      onEdit={msg.id != null ? handleEditAt : undefined}
                       canEdit={msg.role === 'assistant' && !chat.streaming}
                       onGenerateImage={msg.id != null ? chat.handleGenerateImage : undefined}
                       isGeneratingImage={msg.id != null ? chat.generatingImageMessageIds.has(String(msg.id)) : false}
                       isSelected={msg.id !== undefined ? chat.selectedMessages.has(String(msg.id)) : false}
-                      onToggleSelect={msg.id !== undefined ? () => chat.toggleMessageSelect(String(msg.id)) : undefined}
+                      onToggleSelect={msg.id !== undefined ? handleToggleSelectAt : undefined}
                       showSelect={chat.showMessageSelect}
                       isCharacterChat={false}
                       memoryMode={chat.memoryMode}

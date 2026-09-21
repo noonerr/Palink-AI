@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, Edit3, Trash2, Menu, Globe, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
@@ -177,6 +177,44 @@ export function ChatViewMobile({
   const handleDeleteMessage = (messageId: string | number, messageIndex: number) => {
     chat.handleDeleteMessage(messageId as number, messageIndex);
   };
+
+  // [PERF-P0] 稳定回调：以 messageId 为入参，内部经 ref 读最新 displayedMessages 反查
+  // 下标。背景同 ChatViewDesktop —— 流式期间每个 chunk 都会 setMessages，若在 render
+  // 中现写箭头函数，Message.tsx 的手写 memo 比较器逐条比函数引用必然 !== ，整条列表
+  // 全量重渲染。样板对齐 CharacterChat.tsx:1288-1407。
+  // 注意：反查用 displayedMessages 而非 chat.messages，与改造前传入的 idx 同源
+  // （动画播放期间两者长度可能不同）。
+  const displayedMessagesRef = useRef(anim.displayedMessages);
+  displayedMessagesRef.current = anim.displayedMessages;
+  const handleRegenerateRef = useRef(chat.handleRegenerate);
+  handleRegenerateRef.current = chat.handleRegenerate;
+  const handleEditMessageRef = useRef(chat.handleEditMessage);
+  handleEditMessageRef.current = chat.handleEditMessage;
+  const handleDeleteMessageRef = useRef(handleDeleteMessage);
+  handleDeleteMessageRef.current = handleDeleteMessage;
+
+  const findMessageIndex = useCallback((messageId?: string | number) => {
+    if (messageId === undefined || messageId === null) return -1;
+    return displayedMessagesRef.current.findIndex((m) => String(m.id) === String(messageId));
+  }, []);
+
+  // 重新生成强依赖正确下标（handleRegenerate 内部取 messages[idx-1] 作 user 消息），
+  // 反查失败时静默返回，避免用错误下标重生成其它轮次。
+  const handleRegenerateAt = useCallback((messageId?: string | number) => {
+    const idx = findMessageIndex(messageId);
+    if (idx < 0) return;
+    void handleRegenerateRef.current(idx);
+  }, [findMessageIndex]);
+
+  // 编辑 / 删除只按 messageId 落库（useChatMessages 的 messageIndex 形参未参与请求），
+  // 故不因反查失败而短路，保持与改造前完全等价的调用行为。
+  const handleEditAt = useCallback((newContent: string, messageId?: string | number) => {
+    void handleEditMessageRef.current(messageId as string | number, findMessageIndex(messageId), newContent);
+  }, [findMessageIndex]);
+
+  const handleDeleteAt = useCallback((messageId?: string | number) => {
+    void handleDeleteMessageRef.current(messageId as string | number, findMessageIndex(messageId));
+  }, [findMessageIndex]);
 
   useEffect(() => {
     api.get('/api/admin/web-search', { cacheTtlMs: 60_000 }).then((data: any) => {
@@ -490,10 +528,10 @@ export function ChatViewMobile({
                           memoryStats={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.memoryStats : null}
                           onCompress={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                           compressing={chat.compressing}
-                          onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
+                          onRegenerate={msg.role === 'assistant' && !chat.streaming ? handleRegenerateAt : undefined}
                           canRegenerate={msg.role === 'assistant' && !chat.streaming}
-                          onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
-                          onEdit={msg.id ? (newContent: string) => chat.handleEditMessage(msg.id, idx, newContent) : undefined}
+                          onDelete={msg.id ? handleDeleteAt : undefined}
+                          onEdit={msg.id ? handleEditAt : undefined}
                           canEdit={msg.role === 'assistant' && !chat.streaming}
                           onGenerateImage={msg.id != null ? chat.handleGenerateImage : undefined}
                           isGeneratingImage={msg.id != null ? chat.generatingImageMessageIds.has(String(msg.id)) : false}
@@ -614,10 +652,10 @@ export function ChatViewMobile({
                           memoryStats={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.memoryStats : null}
                           onCompress={chat.memoryMode === 'rule' && idx === anim.displayedMessages.length - 1 && msg.role === 'assistant' ? chat.manualCompressMemory : undefined}
                           compressing={chat.compressing}
-                          onRegenerate={msg.role === 'assistant' && !chat.streaming ? () => chat.handleRegenerate(idx) : undefined}
+                          onRegenerate={msg.role === 'assistant' && !chat.streaming ? handleRegenerateAt : undefined}
                           canRegenerate={msg.role === 'assistant' && !chat.streaming}
-                          onDelete={msg.id ? () => handleDeleteMessage(msg.id, idx) : undefined}
-                          onEdit={msg.id ? (newContent: string) => chat.handleEditMessage(msg.id, idx, newContent) : undefined}
+                          onDelete={msg.id ? handleDeleteAt : undefined}
+                          onEdit={msg.id ? handleEditAt : undefined}
                           canEdit={msg.role === 'assistant' && !chat.streaming}
                           onGenerateImage={msg.id != null ? chat.handleGenerateImage : undefined}
                           isGeneratingImage={msg.id != null ? chat.generatingImageMessageIds.has(String(msg.id)) : false}

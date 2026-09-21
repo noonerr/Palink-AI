@@ -129,7 +129,7 @@ interface MessageProps {
   showModelReasoning?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id?: string) => void;
-  onDelete?: () => void;
+  onDelete?: (messageId?: string | number) => void;
   showSelect?: boolean;
   isDeleteMode?: boolean;
   messageIndex?: number;
@@ -1163,7 +1163,12 @@ function MessageInner({
   const handleSelectClick = () => {
     if (isMixedDeleteMode && onToggleWholeMessageSelect && messageIndex !== undefined) {
       onToggleWholeMessageSelect(messageIndex);
-    } else if (isDeleteMode && onToggleSelect && message.id !== undefined) {
+    } else if (onToggleSelect && message.id !== undefined) {
+      // [PERF-P0] 勾选态必须带 messageId 调用。改造前上游传的是绑定了 id 的闭包
+      // （() => chat.toggleMessageSelect(String(msg.id))），即便此处无参调用也能勾选
+      // 到正确的消息；改为引用稳定的 onToggleSelect 后，无参调用会退化成
+      // toggleMessageSelect(undefined) —— 语义是「切换多选模式」而非「勾选本条」。
+      // 补齐 id 传参后，isDeleteMode 与 showSelect 两种场景行为均与改造前一致。
       onToggleSelect(String(message.id));
     } else if (onToggleSelect) {
       onToggleSelect();
@@ -1737,7 +1742,7 @@ function MessageInner({
 
                 {onDelete && (
                   <button
-                    onClick={onDelete}
+                    onClick={() => onDelete(message.id)}
                     className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                     title="删除消息"
                   >
