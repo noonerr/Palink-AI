@@ -208,6 +208,12 @@ frontend/dist_*/
 frontend/dist.prev/
 frontend/src_bak_*/
 
+# 2026-09-22 仓库卫生批次：历史 dist 备份目录与一次性产物已清场，
+# 补通用模式防止未来再被顺带提交（原先只有 frontend/dist_*/ 与 frontend/index.html.bak.*）。
+# 注：frontend/dist_old_<date>/ 是发布兜底目录，同样落在 dist_*/ 下，不入库属预期。
+dist_*/
+*.bak.*
+
 # 2026-08-23 分离存储批次：会话备份（含 DB 转储，禁止入库）、调试目录与临时文件
 _backup/
 .dbg/
