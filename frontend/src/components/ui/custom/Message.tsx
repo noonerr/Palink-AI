@@ -1827,63 +1827,36 @@ function MessageInner({
   );
 };
 
-export const Message = React.memo(MessageInner, (prev, next) => {
-  if (prev.message.id !== next.message.id) return false;
-  if (prev.message.content !== next.message.content) return false;
-  if (prev.message.role !== next.message.role) return false;
-  if (prev.message.model !== next.message.model) return false;
-  if (prev.message.webSearchResults !== next.message.webSearchResults) return false;
-  if (prev.streaming !== next.streaming) return false;
-  if (prev.isLast !== next.isLast) return false;
-  if (prev.isSelected !== next.isSelected) return false;
-  if (prev.showSelect !== next.showSelect) return false;
-  if (prev.isDeleteMode !== next.isDeleteMode) return false;
-  if (prev.isMixedDeleteMode !== next.isMixedDeleteMode) return false;
-  if (prev.compressing !== next.compressing) return false;
-  if (prev.showModelReasoning !== next.showModelReasoning) return false;
-  if (prev.canRegenerate !== next.canRegenerate) return false;
-  if (prev.isCurrentLatestAssistant !== next.isCurrentLatestAssistant) return false;
-  if (prev.canEdit !== next.canEdit) return false;
-  // [批次B] 新增 props 按现有模式补入比较器（swipes 数组引用由上游 messages state 稳定化）
-  if (prev.isHidden !== next.isHidden) return false;
-  if (prev.swipes !== next.swipes) return false;
-  if (prev.swipeId !== next.swipeId) return false;
-  if (prev.memoryMode !== next.memoryMode) return false;
-  if (prev.tokens !== next.tokens) return false;
-  if (prev.isCharacterChat !== next.isCharacterChat) return false;
-  if (prev.userAvatar !== next.userAvatar) return false;
-  if (prev.userName !== next.userName) return false;
-  if (prev.characterAvatar !== next.characterAvatar) return false;
-  if (prev.characterName !== next.characterName) return false;
-  if (prev.characterId !== next.characterId) return false;
-  if (prev.characterFirstMes !== next.characterFirstMes) return false;
-  if (prev.characterAlternateGreetings !== next.characterAlternateGreetings) return false;
-  if (prev.sessionId !== next.sessionId) return false;
-  if (prev.messageIndex !== next.messageIndex) return false;
-  if (prev.characterDisplayMode !== next.characterDisplayMode) return false;
-  if (prev.chatStyle !== next.chatStyle) return false;
-  if (prev.useNativeStRendering !== next.useNativeStRendering) return false;
-  if (prev.summary !== next.summary) return false;
-  if (prev.models !== next.models) return false;
-  if (prev.t !== next.t) return false;
-  if (prev.isGeneratingImage !== next.isGeneratingImage) return false;
-  // 回调函数引用比较
-  if (prev.onCompress !== next.onCompress) return false;
-  if (prev.onRegenerate !== next.onRegenerate) return false;
-  if (prev.onToggleSelect !== next.onToggleSelect) return false;
-  if (prev.onDelete !== next.onDelete) return false;
-  if (prev.onSetMultipleItemsSelect !== next.onSetMultipleItemsSelect) return false;
-  if (prev.onEdit !== next.onEdit) return false;
-  // [批次B] 新增回调引用比较
-  if (prev.onSwipe !== next.onSwipe) return false;
-  if (prev.onHide !== next.onHide) return false;
-  if (prev.onToggleWholeMessageSelect !== next.onToggleWholeMessageSelect) return false;
-  if (prev.onToggleMessagePartSelect !== next.onToggleMessagePartSelect) return false;
-  if (prev.onSelectAllPartsInMessage !== next.onSelectAllPartsInMessage) return false;
-  if (prev.onGenerateImage !== next.onGenerateImage) return false;
-  if (prev.onSmartCardAction !== next.onSmartCardAction) return false;
-  if (prev.onManualMvuSecondary !== next.onManualMvuSecondary) return false;
-  if (prev.mvuSecondaryRunning !== next.mvuSecondaryRunning) return false;
+// [P1-A] 手写 props 白名单比较器 → 「全 props 浅比较 + 三个集合型 prop 的成员派生」。
+// 原实现是 60+ 行逐项 if，漏补一个新 prop 的后果是该 prop 变化永不触发重渲染
+// （静默显示旧内容）；注释里「[批次B] 新增 props 按现有模式补入比较器」已说明这类
+// 漂移发生过两轮。改为遍历全部 props 做 Object.is。
+//
+// 注意：这里刻意不用 React.memo 的默认浅比较 —— selectedItems / selectedWholeMessages /
+// selectedMessageParts 是「同一个 Set/Map 引用、但本条消息的成员关系变了」的场景
+// （勾选态切换只改 Set 内容、不改引用），默认浅比较会漏掉，故必须保留成员派生。
+const MEMBER_DERIVED_PROPS = new Set<string>([
+  'selectedItems',
+  'selectedWholeMessages',
+  'selectedMessageParts',
+]);
+
+function areMessagePropsEqual(prev: MessageProps, next: MessageProps): boolean {
+  const a = prev as unknown as Record<string, unknown>;
+  const b = next as unknown as Record<string, unknown>;
+  const keysB = Object.keys(b);
+  for (let i = 0; i < keysB.length; i += 1) {
+    const key = keysB[i];
+    if (MEMBER_DERIVED_PROPS.has(key)) continue;
+    if (!Object.is(a[key], b[key])) return false;
+  }
+  const keysA = Object.keys(a);
+  for (let i = 0; i < keysA.length; i += 1) {
+    const key = keysA[i];
+    if (MEMBER_DERIVED_PROPS.has(key)) continue;
+    if (!Object.is(a[key], b[key])) return false;
+  }
+  // 成员派生：Set/Map 引用可能不变，但「本条消息是否被选中」可能已翻转
   const msgId = String(prev.message.id);
   if (prev.selectedItems?.has(msgId) !== next.selectedItems?.has(msgId)) return false;
   const idx = prev.messageIndex;
@@ -1891,12 +1864,7 @@ export const Message = React.memo(MessageInner, (prev, next) => {
     if (prev.selectedWholeMessages?.has(idx) !== next.selectedWholeMessages?.has(idx)) return false;
     if (prev.selectedMessageParts?.get(idx) !== next.selectedMessageParts?.get(idx)) return false;
   }
-  if (prev.memoryStats !== next.memoryStats) return false;
-  if (prev.globalRegexScripts !== next.globalRegexScripts) return false;
-  if (prev.characterExtensions !== next.characterExtensions) return false;
-  if (prev.characterPresetData !== next.characterPresetData) return false;
-  if (prev.sessionVariables !== next.sessionVariables) return false;
-  if (prev.totalMessages !== next.totalMessages) return false;
-  if (prev.chatMessages !== next.chatMessages) return false;
   return true;
-});
+}
+
+export const Message = React.memo(MessageInner, areMessagePropsEqual);
