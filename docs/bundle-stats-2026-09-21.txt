@@ -1,0 +1,611 @@
+### assets/message-square-plus-36NLSiD9.js  total=1KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  lucide-react
+
+### assets/menu-DR9o589U.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  lucide-react
+
+### assets/cloud-upload-P2Y6vWtG.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  lucide-react
+
+### assets/plus-C_6BfXhf.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  lucide-react
+
+### assets/c4Diagram-AAUBKEIU-CgwqeX0G.js  total=115KB
+    ---- APP(自有代码) 合计: 0KB
+       115KB  mermaid
+
+### assets/flowDiagram-I6XJVG4X-B5-W92Iu.js  total=99KB
+    ---- APP(自有代码) 合计: 0KB
+        99KB  mermaid
+
+### assets/erDiagram-TEJ5UH35-DYQNa6RC.js  total=47KB
+    ---- APP(自有代码) 合计: 0KB
+        47KB  mermaid
+
+### assets/gitGraphDiagram-PVQCEYII-AE1u7IM_.js  total=56KB
+    ---- APP(自有代码) 合计: 0KB
+        56KB  mermaid
+
+### assets/infoDiagram-5YYISTIA-O2c4eeiK.js  total=1KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  mermaid
+
+### assets/quadrantDiagram-W4KKPZXB-DqwZbmm2.js  total=60KB
+    ---- APP(自有代码) 合计: 0KB
+        60KB  mermaid
+
+### assets/xychartDiagram-2RQKCTM6-tj34ylLt.js  total=71KB
+    ---- APP(自有代码) 合计: 0KB
+        71KB  mermaid
+
+### assets/requirementDiagram-4Y6WPE33-Dp02Cao6.js  total=51KB
+    ---- APP(自有代码) 合计: 0KB
+        51KB  mermaid
+
+### assets/sequenceDiagram-3UESZ5HK-BIp3Zh5g.js  total=196KB
+    ---- APP(自有代码) 合计: 0KB
+       196KB  mermaid
+
+### assets/classDiagram-4FO5ZUOK-Cwplaktq.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/classDiagram-v2-Q7XG4LA2-Cwplaktq.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/chunk-727SXJPM-Dct-ViJT.js  total=82KB
+    ---- APP(自有代码) 合计: 0KB
+        82KB  mermaid
+
+### assets/stateDiagram-AJRCARHV-BL710MUC.js  total=18KB
+    ---- APP(自有代码) 合计: 0KB
+        18KB  mermaid
+
+### assets/stateDiagram-v2-BHNVJYJU-BUBX7LTH.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/chunk-AQP2D5EJ-AH8iZlH9.js  total=69KB
+    ---- APP(自有代码) 合计: 0KB
+        69KB  mermaid
+
+### assets/journeyDiagram-JHISSGLW-CvN2XSMq.js  total=44KB
+    ---- APP(自有代码) 合计: 0KB
+        44KB  mermaid
+
+### assets/chunk-ND2GUHAM-BUfpkJG_.js  total=3KB
+    ---- APP(自有代码) 合计: 0KB
+         3KB  mermaid
+
+### assets/timeline-definition-PNZ67QCA-BPq1fXss.js  total=59KB
+    ---- APP(自有代码) 合计: 0KB
+        59KB  mermaid
+
+### assets/arc-B6ouBKoC.js  total=8KB
+    ---- APP(自有代码) 合计: 0KB
+         8KB  d3-shape
+
+### assets/chunk-55IACEB6-CnLvRCo5.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/kanban-definition-UN3LZRKU-DUd_fkQw.js  total=37KB
+    ---- APP(自有代码) 合计: 0KB
+        37KB  mermaid
+
+### assets/diagram-LMA3HP47-DmtCqySQ.js  total=7KB
+    ---- APP(自有代码) 合计: 0KB
+         7KB  mermaid
+
+### assets/init-Dmth1JHB.js  total=1KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  d3-scale
+
+### assets/chunk-FMBD7UC4-B4o2jVqv.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/chunk-2J33WTMH-CLenasfl.js  total=1KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  mermaid
+
+### assets/channel-D-KAmPkX.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  khroma
+
+### assets/chunk-4BX2VUAB-B3oAXQ78.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/chunk-QZHKN3VN-C45S3QZj.js  total=0KB
+    ---- APP(自有代码) 合计: 0KB
+         0KB  mermaid
+
+### assets/diagram-2AECGRRQ-BcVlsT8S.js  total=10KB
+    ---- APP(自有代码) 合计: 0KB
+        10KB  mermaid
+
+### assets/diagram-5GNKFQAL-CKkyPhT7.js  total=5KB
+    ---- APP(自有代码) 合计: 0KB
+         5KB  mermaid
+
+### assets/cytoscape.esm-DkOyvmE4.js  total=1080KB
+    ---- APP(自有代码) 合计: 0KB
+      1080KB  cytoscape
+
+### assets/diagram-KO2AKTUF-Ds05QNwg.js  total=21KB
+    ---- APP(自有代码) 合计: 0KB
+        21KB  mermaid
+
+### assets/ishikawaDiagram-YF4QCWOH-BChsf3th.js  total=34KB
+    ---- APP(自有代码) 合计: 0KB
+        34KB  mermaid
+
+### assets/wardleyDiagram-YWT4CUSO-ravtq_f7.js  total=43KB
+    ---- APP(自有代码) 合计: 0KB
+        43KB  mermaid
+
+### assets/ProviderEditPage-Dl3Q5kyU.js  total=49KB
+    ---- APP(自有代码) 合计: 49KB
+        30KB  APP/src/components/views/ModelEditor.tsx
+        19KB  APP/src/components/views/ProviderEditPage.tsx
+
+### assets/scroll-area-7NzRhvQ2.js  total=30KB
+    ---- APP(自有代码) 合计: 1KB
+        29KB  @radix-ui/react-scroll-area
+         1KB  APP/src/components/ui/scroll-area.tsx
+
+### assets/useMobileBottomPadding-C_K5JzRi.js  total=2KB
+    ---- APP(自有代码) 合计: 2KB
+         2KB  APP/src/hooks/useMobileBottomPadding.ts
+         1KB  lucide-react
+
+### assets/band-CquvqAHh.js  total=3KB
+    ---- APP(自有代码) 合计: 0KB
+         2KB  d3-scale
+         0KB  d3-array
+
+### assets/ordinal-DILIJJjt.js  total=2KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  internmap
+         1KB  d3-scale
+
+### assets/ChatViewMobile-Bua2hYfx.js  total=55KB
+    ---- APP(自有代码) 合计: 55KB
+        38KB  APP/src/components/views/ChatViewMobile.tsx
+        12KB  APP/src/hooks/useMobileChatAnimations.ts
+         6KB  APP/src/hooks/useMobileKeyboardAdapter.ts
+
+### assets/settings-constants-DdiqVc6-.js  total=11KB
+    ---- APP(自有代码) 合计: 7KB
+         6KB  APP/src/components/views/settings-constants.ts
+         4KB  @radix-ui/react-switch
+         1KB  APP/src/components/ui/switch.tsx
+
+### assets/eye-Cmse_fVV.js  total=1KB
+    ---- APP(自有代码) 合计: 0KB
+         1KB  lucide-react
+
+### assets/blockDiagram-GPEHLZMM-D9NYCGfB.js  total=138KB
+    ---- APP(自有代码) 合计: 0KB
+       132KB  mermaid
+         5KB  es-toolkit
+
+### assets/vennDiagram-CIIHVFJN-Db0a3AUI.js  total=104KB
+    ---- APP(自有代码) 合计: 0KB
+        64KB  @upsetjs/venn.js
+        41KB  mermaid
+         0KB  khroma
+
+### assets/dagre-BM42HDAG-CPdpA5Dq.js  total=25KB
+    ---- APP(自有代码) 合计: 0KB
+        21KB  mermaid
+         3KB  dagre-d3-es
+         1KB  lodash-es
+
+### assets/ChatViewDesktop-DI95ZHay.js  total=20KB
+    ---- APP(自有代码) 合计: 20KB
+         9KB  APP/src/components/views/ChatViewDesktop.tsx
+         4KB  APP/src/components/views/chat/WelcomeContent.tsx
+         3KB  APP/src/components/views/chat/ChatHeader.tsx
+         3KB  APP/src/components/views/chat/ChatSidebar.tsx
+
+### assets/mod-CMmEREUY.js  total=52KB
+    ---- APP(自有代码) 合计: 52KB
+        28KB  APP/src/lib/slash-engine/extended-commands.ts
+        20KB  APP/src/lib/slash-engine/commands.ts
+         3KB  APP/src/lib/tokenizer/service.ts
+         0KB  APP/src/lib/slash-engine/mod.ts
+
+### assets/pieDiagram-4H26LBE5-BbPjU20e.js  total=9KB
+    ---- APP(自有代码) 合计: 0KB
+         7KB  mermaid
+         2KB  d3-shape
+
+### assets/mindmap-definition-RKZ34NQL-B8FRTQZw.js  total=42KB
+    ---- APP(自有代码) 合计: 0KB
+        41KB  mermaid
+         1KB  uuid
+
+### assets/value-D0d0dz72.js  total=2KB
+    ---- APP(自有代码) 合计: 0KB
+         2KB  d3-interpolate
+
+### assets/index-NN0A4huX.js  total=33KB
+    ---- APP(自有代码) 合计: 32KB
+        12KB  APP/src/hooks/useChatView/index.ts
+         6KB  APP/src/components/ui/custom/ChatSessionList.tsx
+         6KB  APP/src/hooks/useChatView/useChatMessages.ts
+         4KB  APP/src/hooks/useChatView/useSessionManager.ts
+         2KB  APP/src/hooks/useChatView/useAttachments.ts
+         2KB  APP/src/components/ui/custom/LoadingDots.tsx
+         0KB  lucide-react
+
+### assets/index-wA7iOPs4.js  total=4KB
+    ---- APP(自有代码) 合计: 0KB
+         2KB  lucide-react
+         1KB  @radix-ui/react-use-size
+         0KB  @radix-ui/react-use-previous
+
+### assets/string-DrVeOkaC.js  total=14KB
+    ---- APP(自有代码) 合计: 0KB
+        11KB  d3-color
+         3KB  d3-interpolate
+
+### assets/WorkspaceView-BH3jL0uM.js  total=57KB
+    ---- APP(自有代码) 合计: 54KB
+        51KB  APP/src/components/views/WorkspaceView.tsx
+         4KB  lucide-react
+         3KB  APP/src/components/ui/sheet.tsx
+
+### assets/ModelSelector-BeLgnuPc.js  total=18KB
+    ---- APP(自有代码) 合计: 14KB
+        14KB  APP/src/components/ui/custom/ModelSelector.tsx
+         4KB  lucide-react
+
+### assets/architectureDiagram-3BPJPVTR-Drfpv2u4.js  total=376KB
+    ---- APP(自有代码) 合计: 0KB
+       152KB  layout-base
+       121KB  cose-base
+        58KB  cytoscape-fcose
+        44KB  mermaid
+
+### assets/cose-bilkent-S5V4N54A-D-VAFJbo.js  total=194KB
+    ---- APP(自有代码) 合计: 0KB
+       121KB  layout-base
+        47KB  cose-base
+        17KB  cytoscape-cose-bilkent
+         9KB  mermaid
+
+### assets/index-C8Lkyhy1.js  total=16KB
+    ---- APP(自有代码) 合计: 0KB
+         5KB  @radix-ui/react-presence
+         3KB  @radix-ui/react-slot
+         3KB  @radix-ui/react-context
+         2KB  @radix-ui/react-use-controllable-state
+         1KB  @radix-ui/react-primitive
+         1KB  lucide-react
+         0KB  @radix-ui/primitive
+         0KB  @radix-ui/react-direction
+         0KB  @radix-ui/number
+
+### assets/defaultLocale-DX6XiGOO.js  total=11KB
+    ---- APP(自有代码) 合计: 0KB
+        11KB  d3-format
+
+### assets/linear-BYdSEvxV.js  total=10KB
+    ---- APP(自有代码) 合计: 0KB
+         6KB  d3-scale
+         4KB  d3-array
+         0KB  d3-format
+         0KB  d3-interpolate
+
+### assets/sankeyDiagram-5OEKKPKP-DvwcNcTY.js  total=46KB
+    ---- APP(自有代码) 合计: 0KB
+        28KB  mermaid
+        11KB  d3-sankey
+         4KB  d3-path
+         2KB  d3-shape
+         1KB  d3-array
+         0KB  d3-scale-chromatic
+
+### assets/step-CHhR1bF8.js  total=19KB
+    ---- APP(自有代码) 合计: 0KB
+        15KB  d3-shape
+         4KB  d3-path
+
+### assets/time-DLxIGzzG.js  total=32KB
+    ---- APP(自有代码) 合计: 0KB
+        19KB  d3-time-format
+        10KB  d3-time
+         2KB  d3-scale
+         1KB  d3-array
+
+### assets/RoleplayThemeContext-DbLoiDvz.js  total=51KB
+    ---- APP(自有代码) 合计: 30KB
+        16KB  APP/src/components/ui/custom/PresetManager.tsx
+        13KB  APP/src/contexts/RoleplayThemeContext.tsx
+         9KB  @radix-ui/react-roving-focus
+         6KB  lucide-react
+         3KB  @radix-ui/react-slot
+         3KB  @radix-ui/react-collection
+         1KB  APP/src/lib/plugin-system/compat-stub-registry.ts
+         1KB  APP/src/components/ui/textarea.tsx
+
+### assets/ganttDiagram-6RSMTGT7-Cful61yU.js  total=93KB
+    ---- APP(自有代码) 合计: 0KB
+        73KB  mermaid
+        12KB  dayjs
+         5KB  d3-axis
+         3KB  d3-color
+         0KB  d3-interpolate
+
+### assets/diagram-OG6HWLK6-CuKu39RV.js  total=31KB
+    ---- APP(自有代码) 合计: 0KB
+        21KB  mermaid
+        10KB  d3-hierarchy
+
+### assets/index-Cdl8w1Mt.js  total=155KB
+    ---- APP(自有代码) 合计: 151KB
+        63KB  APP/src/components/ui/custom/Message.tsx
+        15KB  APP/src/components/ui/custom/smart-card-runtime/inline/inline-st-globals.ts
+        13KB  APP/src/components/ui/custom/ChatInput.tsx
+         7KB  APP/src/components/ui/custom/ImageViewer.tsx
+         7KB  APP/src/utils/mvuSchemaParser.ts
+         7KB  APP/src/components/ui/custom/ThinkingProcess.tsx
+         6KB  APP/src/components/ui/custom/WebSearchResults.tsx
+         6KB  APP/src/lib/stream-engine/index.ts
+         5KB  APP/src/components/ui/custom/smart-card-runtime/inline/inline-sanitize.ts
+         5KB  APP/src/components/ui/custom/InlineCardRenderer.tsx
+         5KB  APP/src/components/ui/custom/TavernHelperPanel.tsx
+         3KB  lucide-react
+         3KB  APP/src/lib/error-handler/index.ts
+         2KB  APP/src/components/ui/custom/smart-card-runtime/inline/inline-script-replay.ts
+         2KB  APP/src/components/ui/custom/StatusBarPanel.tsx
+         1KB  APP/src/components/ui/custom/smart-card-runtime/inline/inline-flags.ts
+         1KB  APP/src/components/ui/custom/SmoothOutput.tsx
+         1KB  APP/src/components/ui/custom/smart-card-runtime/inline/inline-host-registry.ts
+         1KB  APP/src/lib/statusBar.ts
+         1KB  APP/src/lib/utils/messageUtils.ts
+         0KB  APP/src/components/ui/custom/TavernHelperPanel.css
+
+### assets/ConfirmDialog-CQi7ALoV.js  total=74KB
+    ---- APP(自有代码) 合计: 5KB
+        15KB  react-remove-scroll
+        12KB  @radix-ui/react-dialog
+         8KB  @radix-ui/react-dismissable-layer
+         8KB  @radix-ui/react-focus-scope
+         5KB  aria-hidden
+         4KB  react-remove-scroll-bar
+         3KB  @radix-ui/react-slot
+         3KB  use-callback-ref
+         3KB  APP/src/components/ui/dialog.tsx
+         3KB  use-sidecar
+         2KB  react-style-singleton
+         2KB  tslib
+         1KB  APP/src/components/ui/custom/ConfirmDialog.tsx
+         1KB  @radix-ui/react-focus-guards
+         1KB  lucide-react
+         1KB  @radix-ui/react-use-escape-keydown
+         1KB  @radix-ui/react-portal
+         0KB  @radix-ui/react-id
+         0KB  get-nonce
+
+### assets/MarkdownRenderer-DWCOFwGa.js  total=600KB
+    ---- APP(自有代码) 合计: 27KB
+       268KB  parse5
+       201KB  highlight.js
+        65KB  entities
+        18KB  hast-util-raw
+        15KB  APP/src/components/ui/custom/CodeBlock.tsx
+        10KB  APP/src/components/ui/custom/MarkdownRenderer.tsx
+         8KB  hast-util-from-parse5
+         7KB  hast-util-to-parse5
+         4KB  zwitch
+         2KB  vfile-location
+         2KB  APP/src/lib/uploadUrls.ts
+         1KB  rehype-raw
+         0KB  lucide-react
+         0KB  html-void-elements
+
+### assets/transform-BpQxuIUt.js  total=59KB
+    ---- APP(自有代码) 合计: 0KB
+        24KB  d3-selection
+        24KB  d3-transition
+         3KB  d3-interpolate
+         3KB  d3-timer
+         3KB  d3-dispatch
+         1KB  d3-zoom
+         0KB  d3-ease
+
+### assets/mermaid.core-CeEclU6S.js  total=865KB
+    ---- APP(自有代码) 合计: 0KB
+       698KB  mermaid
+        40KB  marked
+        31KB  es-toolkit
+        27KB  roughjs
+        21KB  khroma
+        13KB  stylis
+        11KB  d3-shape
+        11KB  @iconify/utils
+         7KB  dayjs
+         4KB  @braintree/sanitize-url
+         2KB  ts-dedent
+
+### assets/layout-SsrduOYp.js  total=133KB
+    ---- APP(自有代码) 合计: 0KB
+        73KB  dagre-d3-es
+        60KB  lodash-es
+
+### assets/StorylineMap-DlASO1nP.js  total=517KB
+    ---- APP(自有代码) 合计: 52KB
+       141KB  @xyflow/react
+       101KB  @xyflow/system
+        84KB  dagre
+        75KB  lodash
+        52KB  APP/src/components/ui/custom/StorylineMap.tsx
+        32KB  graphlib
+        15KB  d3-zoom
+         7KB  d3-drag
+         3KB  use-sync-external-store
+         3KB  zustand
+         2KB  d3-interpolate
+         1KB  lucide-react
+         1KB  d3-selection
+         0KB  classcat
+         0KB  APP commonjs-dynamic-modules
+
+### assets/graph--OzhPTMs.js  total=126KB
+    ---- APP(自有代码) 合计: 0KB
+        93KB  lodash-es
+        34KB  dagre-d3-es
+
+### assets/CharacterView-Cx8uEwGE.js  total=915KB
+    ---- APP(自有代码) 合计: 557KB
+       113KB  motion-dom
+        95KB  framer-motion
+        75KB  APP/src/components/views/character/CharacterChat.tsx
+        58KB  APP/src/components/views/character/CharacterList.tsx
+        58KB  APP/src/components/views/CharacterView.tsx
+        57KB  APP/src/hooks/useCharacterChat.ts
+        53KB  APP/src/utils/sillyTavernPluginRuntime.ts
+        36KB  APP/src/components/ui/custom/smart-card-runtime/SmartCardCompatController.ts
+        32KB  @radix-ui/react-menu
+        27KB  APP/src/components/ui/custom/PlotLineManager.tsx
+        27KB  @floating-ui/core
+        25KB  @floating-ui/dom
+        23KB  APP/src/components/ui/custom/WorldBookManager.tsx
+        21KB  APP/src/components/views/character/CharacterEditor.tsx
+        20KB  APP/src/components/roleplay/PluginManager.tsx
+        19KB  @radix-ui/react-slider
+        14KB  APP/src/components/ui/custom/GenerationParamsPanel.tsx
+        12KB  APP/src/hooks/useChatWebSocket.ts
+        11KB  APP/src/components/views/character/chat/ChatHeader.tsx
+        11KB  APP/src/components/st-plugin-ui-host/Live2DPoolPanel.tsx
+        11KB  @radix-ui/react-popper
+        10KB  @radix-ui/react-dropdown-menu
+         9KB  @floating-ui/utils
+         9KB  @floating-ui/react-dom
+         9KB  APP/src/components/views/character/chat/ChatMoreMenu.tsx
+         9KB  APP/src/hooks/useMessageSelection.ts
+         8KB  APP/src/components/st-plugin-ui-host/PluginSettingsPanel.tsx
+         7KB  APP/src/components/views/character/chat/ChatSidebar.tsx
+         7KB  APP/src/components/views/character/chat/ChatEmptyState.tsx
+         5KB  APP/src/hooks/usePlotLine.ts
+         4KB  lucide-react
+         4KB  APP/src/hooks/useSessionSwitchAnimation.ts
+         4KB  APP/src/hooks/useWorldBook.ts
+         4KB  APP/src/components/views/character/chat/ChatInputArea.tsx
+         4KB  APP/src/components/views/character/chat/ChatManagerDialogs.tsx
+         3KB  @radix-ui/react-slot
+         3KB  APP/src/components/ui/custom/ErrorToast.tsx
+         3KB  APP/src/components/ui/custom/WorldBookOverview.tsx
+         3KB  APP/src/components/ui/dropdown-menu.tsx
+         3KB  APP/src/lib/catchUpAnimator.ts
+         2KB  APP/src/hooks/useMobileLayout.ts
+         2KB  APP/src/components/ui/slider.tsx
+         2KB  APP/src/components/views/character/chat/ChatConfirmDialogs.tsx
+         1KB  APP/src/components/ui/alert.tsx
+         1KB  APP/src/hooks/useCharacterCompatData.ts
+
+### assets/find-IE9Rh3vt.js  total=157KB
+    ---- APP(自有代码) 合计: 0KB
+       156KB  lodash
+         0KB  lucide-react
+
+### assets/SettingsView-CxIDx_cr.js  total=1041KB
+    ---- APP(自有代码) 合计: 334KB
+       493KB  recharts
+       104KB  APP/src/components/views/settings-tabs/ModelManagementTab.tsx
+        48KB  decimal.js-light
+        38KB  react-smooth
+        33KB  APP/src/components/views/settings-tabs/RoleplayEngineTab.tsx
+        30KB  lodash
+        23KB  APP/src/components/views/settings-tabs/AuthSettingsTab.tsx
+        23KB  APP/src/components/views/SettingsView.tsx
+        23KB  fast-equals
+        21KB  APP/src/components/views/settings-tabs/MCPTab.tsx
+        21KB  APP/src/components/views/settings-tabs/AdminPluginsTab.tsx
+        16KB  recharts-scale
+        16KB  d3-scale
+        16KB  APP/src/components/ui/custom/TokenUsagePanel.tsx
+        16KB  APP/src/components/views/settings-tabs/GatewayLedgerPanel.tsx
+        14KB  APP/src/components/ui/custom/OCSettings.tsx
+        14KB  APP/src/components/views/settings-tabs/PromptSettings.tsx
+        10KB  APP/src/components/views/settings-tabs/AppearanceTab.tsx
+        10KB  APP/src/components/views/settings-tabs/AdminUsersTab.tsx
+        10KB  eventemitter3
+         9KB  d3-shape
+         9KB  lucide-react
+         8KB  APP/src/components/views/settings-tabs/AdminDefaultsTab.tsx
+         8KB  APP/src/components/views/settings-tabs/ProfileTab.tsx
+         6KB  @radix-ui/react-tabs
+         4KB  APP/src/lib/worldbook-global-settings.ts
+         3KB  react-is
+         3KB  APP/src/components/views/settings-tabs/settings-ui.tsx
+         3KB  prop-types
+         3KB  d3-array
+         3KB  APP/src/components/views/settings-tabs/AboutTab.tsx
+         2KB  APP/src/components/views/settings-tabs/CompatStubStatsCard.tsx
+         2KB  APP/src/components/ui/tabs.tsx
+         0KB  d3-interpolate
+         0KB  APP/src/components/ui/skeleton.tsx
+         0KB  tiny-invariant
+         0KB  victory-vendor
+
+### assets/index-Ba1gwDpp.js  total=4536KB
+    ---- APP(自有代码) 合计: 930KB
+       583KB  katex
+       548KB  react-dom
+       268KB  chevrotain
+       250KB  jquery
+       173KB  handlebars
+       166KB  select2
+       163KB  showdown
+       154KB  motion-dom
+       143KB  APP/src/lib/plugin-system/sandbox.ts
+       126KB  dompurify
+       107KB  micromark-core-commonmark
+       106KB  APP/src/components/ui/custom/smart-card-runtime/frame-shim/legacy-st-sim.ts
+       105KB  source-map
+        92KB  tailwind-merge
+        80KB  react-router
+        74KB  APP/src/lib/sillytavern/getContext.ts
+        63KB  sonner
+        61KB  APP/src/components/ui/custom/CharacterCardRenderer.tsx
+        41KB  marked
+        39KB  mdast-util-to-hast
+        38KB  micromark
+        36KB  mdast-util-to-markdown
+        35KB  APP/src/App.tsx
+        32KB  property-information
+        31KB  vfile
+        29KB  unified
+        29KB  APP/src/lib/sillytavern/formatting.ts
+        28KB  mdast-util-from-markdown
+        27KB  APP/src/lib/sillytavern/runtime.ts
+        26KB  @chevrotain/regexp-to-ast
+        26KB  micromark-extension-gfm-table
+        21KB  APP/src/components/ui/custom/smart-card-runtime/primitives.ts
+        20KB  react
+        20KB  micromark-extension-gfm-autolink-literal
+        19KB  APP/src/lib/macro-engine/definitions/extra-macros.ts
+        19KB  hast-util-to-jsx-runtime
+        19KB  APP/src/components/ui/custom/smart-card-runtime/frame-shim/frame-measure.ts
+        19KB  APP/src/components/ui/custom/Sidebar.tsx
+        18KB  toastr
+        18KB  framer-motion
+        18KB  hast-util-to-text
+        15KB  APP/src/components/ui/custom/smart-card-runtime/resource.ts
+        15KB  APP/src/utils/sillyTavernDisplayPipeline.ts
+        15KB  APP/src/lib/plugin-system/manager.ts
+        14KB  micromark-util-subtokenize
+
+### assets/wardley-L42UT6IY-CdV6vYD5.js  total=1227KB
+    ---- APP(自有代码) 合计: 0KB
+      1227KB  @mermaid-js/parser

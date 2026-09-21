@@ -13,6 +13,27 @@ export default defineConfig({
     },
   },
   publicDir: 'public',
+  // [性能 2026-09-21 B2] Worker 是独立的 Rollup 构建，build.rollupOptions.treeshake
+  // 对它不生效（实测：worker 仍 513KB、KaTeX 特征串 mord 仍 43 次），必须写在
+  // worker.rollupOptions 下。
+  //
+  // 作用：告诉打包器 katex 无副作用，从而把 worker 根本用不到的整份 KaTeX 摇掉。
+  // 背景：formatting-worker/worker.ts 只从 ../formatting 引入了 8 个纯函数，一个都不碰
+  // KaTeX；但 formatting.ts 顶层 import katex，而 katex 包未声明 sideEffects: false，
+  // 打包器不敢删，于是整份 KaTeX 在 worker 里被复制了一份（实测 513KB / gzip 142KB）。
+  //
+  // ⛔ 已实测无效的两条路，别再试：
+  //   1) worker: { format: 'es' }            → 517KB，mord 仍 43
+  //   2) 只写 build.rollupOptions.treeshake  → 517KB，mord 仍 43
+  //
+  // 验收硬指标：worker 产物 mord === 0 且 入口产物 mord >= 1，两者同时成立才算成功。
+  worker: {
+    rollupOptions: {
+      treeshake: {
+        moduleSideEffects: (id: string) => !/node_modules[\\/]katex[\\/]/.test(id),
+      },
+    },
+  },
   server: {
     port: 3000,
     headers: {
