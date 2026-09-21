@@ -16,7 +16,10 @@
 - **回归**：删除/编辑/勾选/发送均通过（含库内落库校验）。**修掉一处本次引入的回归**：`handleSelectClick` 非 isDeleteMode 分支原本无参调 `onToggleSelect`，改造前靠上游闭包自带 id，改稳定引用后退化为 `toggleMessageSelect(undefined)`（= 切模式而非勾选本条），已补 id 传参。
 - **两项不适用**（非本次引入）：重新生成按钮在通用聊天页恒不显示（`isCurrentLatestAssistant` 默认 false）；生成图片按钮零渲染（`onGenerateImage` 被解构为 `_onGenerateImage`）。
 - **验收**：tsc 0 错；`test:contract` **173 项全绿 / 0 失败**（记忆里的 162 已过时）；build ✓ 34.83s；主 chunk `index-CQ5VvH87.js` 200；产物探针零残留。
-- **未做（用户拍板暂缓）**：P1-A 手写比较器换浅比较（前置：须先确认 `CharacterChat` 的 N-3 切片与 `sessionVisualSnapshot` 不整体重建 `displayedMessages`）；P1-B 仓库卫生（已核实 `.gitignore` 条目已存在、9 个目标中 6 个被 git 跟踪须 `git rm`）；四项待议项评估文档（长会话虚拟化 / Service Worker / 首屏 CSS / 2 秒轮询）。
+- **P1-A 已完成（commit `c287077`）**：`Message.tsx` 的 60+ 行手写 props 白名单比较器 → 「全 props `Object.is`（正反两轮）+ 三集合成员派生」。**刻意不用 React.memo 默认浅比较** —— `selectedItems`/`selectedWholeMessages`/`selectedMessageParts` 存在「Set 引用不变但本条成员关系翻转」的场景（勾选切换只改内容不改引用），默认浅比较会整体漏掉。改动量 33 增 / 65 删（净减 32 行）。实测历史消息 render 次数与 P0 后**完全一致**（assistant 各 2 次 / user 0 次）→ 无倒退、也无性能增量，价值在消除「漏 prop 静默不刷新」的维护陷阱。回归：勾选 ✓（checked=1，证明派生在浅比较下仍工作）、删除 ✓、编辑 ✓、流式 ✓；未出现任务书预警的「暴露可见变化」。
+- **P1-B 已完成（commit `dabd4d9`）**：`git rm` 6 个被跟踪的一次性产物（全部来自 2026-08-17 基线恢复提交 `7d5dea1`，引用扫描仅命中 `.mimosa/hook-state` 会话记录，零代码引用）+ 删 3 个未跟踪产物；5 个历史 dist 目录（≈80M，未跟踪）`mv` 到 `D:/tmp/palink-dist-tmp/`（**未直删**：safe-delete 守卫拦单轮 ≥50 文件的递归删除，bash `rm -rf` 同样被拦）。保留 `dist_old_20260922/`（发版兜底）与 `dev-server.log`。`.gitignore` 补 `dist_*/` 与 `*.bak.*`（`:214/:215`，已用 `git check-ignore` 验证）。
+- **P2 已完成**：`docs/评估_前端渲染层待议项_2026-09-22.md`（四项各 ≤30 行，只写不改）。建议顺序 **4（2 秒轮询，性价比最高）→ 1（虚拟化，先测量）→ 3（首屏 CSS，只清未用规则）→ 2（Service Worker，保持不启用）**。
+- **遗留**：`D:/tmp/palink-dist-tmp/`（≈160M，含 P1-B 的 5 个 dist + P0/P1 的 4 个测产物）待手动清理；测试账号 `perfprobe / PerfProbe#2026` 保留。
 - **环境登记**：`agent-browser` 本机无 Chromium（`open` 会静默卡死），绕法=本机 Chrome `--headless=new --remote-debugging-port=9222` + `agent-browser connect 9222`；移动视口用 `set viewport 390 844`；`bash rm -rf dist_tmp_*` 同样受 safe-delete 守卫（阈值 50 文件/turn），改用 `mv` 到 `D:/tmp/`。
 - 测试账号 `perfprobe / PerfProbe#2026` 保留供后续复测；探针会话与 24 条消息已删除。
 
