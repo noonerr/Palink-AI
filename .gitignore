@@ -242,3 +242,29 @@ scripts/st_audit/sec_smoke_card.png
 dist_new_*/
 backup/
 .ui-backup-*/
+
+# 2026-09-22 仓库清场批次：孤儿目录与一次性调试产物已从仓库删除，此处防回流。
+# 已删项及判定依据（均为 0 代码引用，逐项核过）：
+#   tmp/            抓包 dump（chars_body.json 39MB / stbody.html 等）
+#   dev_archive/    早期解析器实验与旧组件快照
+#   icons/          根级图标，真实资源在 frontend/public/icons/（代码引用 /icons/*）
+#   backup/         旧源码快照（文档明确「不要从这些目录恢复」）
+#   community-st-forks/  第三方 ST 魔改 fork，ST 双轨 2026-09-03 已删
+/tmp/
+/dev_archive/
+/icons/
+/backup/
+/community-st-forks/
+# 根级一次性脚本与验证产物
+tmp-*.cjs
+/original_chat_view_mobile.tsx
+/goal-*.md
+/.goal-state.md
+/.dsh-*
+/test-small.txt
+/test-write.txt
+/test123.txt
+/security_fix_log.txt
+# 即时通讯图片与截图落进仓库根的常见误存（仅根级，避免误伤正常资源目录）
+/微信图片_*.png
+/屏幕录制*.mp4
