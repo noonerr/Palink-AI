@@ -5,7 +5,8 @@ world_book_entry_vectors 表，并提供 DB 内 cosine 相似度检索。
 """
 import hashlib
 import logging
-from typing import List, Tuple
+import re
+from typing import List, Optional, Tuple
 
 import numpy as np
 from sqlalchemy import text
@@ -50,10 +51,69 @@ class WorldBookVectorService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _current_embedding_dim(self) -> Optional[int]:
+        """读取表中 embedding 列当前声明的维度；表/列不存在返回 None。"""
+        try:
+            row = self.db.execute(text("""
+                SELECT format_type(a.atttypid, a.atttypmod) AS coltype
+                FROM pg_attribute a
+                WHERE a.attrelid = 'world_book_entry_vectors'::regclass
+                  AND a.attname = 'embedding'
+                  AND a.attnum > 0 AND NOT a.attisdropped
+            """)).first()
+        except Exception:
+            return None
+        if not row or not row.coltype:
+            return None
+        m = re.search(r"\((\d+)\)", str(row.coltype))
+        return int(m.group(1)) if m else None
+
+    def _reconcile_vector_dimension(self, dim: int) -> None:
+        """[DIM-CONTRACT] 表已存在但维度与配置不符时自愈。
+
+        ``CREATE TABLE IF NOT EXISTS`` 在维度变更后永不重建，2026-09-22 实测：
+        表停留在 ``vector(512)``、配置已 1024，任何写入都报
+        ``expected 512 dimensions, not 1024``，而表又永远建不起来。
+
+        本表是 ``world_book_stages`` 的派生缓存（可由条目内容重算），维度不一致
+        时存量行本来也无法参与检索（不同维度无法比较），重建是安全的。
+        """
+        existing = self._current_embedding_dim()
+        if existing is None or existing == dim:
+            return
+        try:
+            rows = self.db.execute(
+                text("SELECT count(*) FROM world_book_entry_vectors")).scalar() or 0
+        except Exception:
+            rows = -1
+        logger.warning(
+            "world_book_entry_vectors 维度 %s ≠ 配置 %s（现有 %s 行），自愈中",
+            existing, dim, rows,
+        )
+        # 索引依赖被改列，先删（后面统一重建）
+        self.db.execute(text("DROP INDEX IF EXISTS idx_wbev_embedding"))
+        sp = self.db.begin_nested()
+        try:
+            self.db.execute(text(
+                f"ALTER TABLE world_book_entry_vectors "
+                f"ALTER COLUMN embedding TYPE vector({dim})"
+            ))
+            sp.commit()
+            logger.warning("world_book_entry_vectors 维度已 ALTER 为 %s", dim)
+            return
+        except Exception as e:
+            sp.rollback()
+            logger.warning(
+                "ALTER 维度失败（%s），改为整表重建（条目向量可由 stages 重算）",
+                str(e).splitlines()[0],
+            )
+        self.db.execute(text("DROP TABLE IF EXISTS world_book_entry_vectors"))
+
     def ensure_table(self):
         """确保向量表和索引存在（幂等）。"""
         dim = memory_config.VECTOR_DIMENSION
         try:
+            self._reconcile_vector_dimension(dim)
             self.db.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS world_book_entry_vectors (
                     id SERIAL PRIMARY KEY,

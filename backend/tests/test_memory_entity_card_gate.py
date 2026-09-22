@@ -162,6 +162,24 @@ class TestMemoryGate:
         # 与 1 字≈1 token 的高估共同构成整体保守方向）
         assert rpa._memory_gate_should_skip(500, 300, 2000, 1024, 3824) is True
 
+    # ── 2026-09-22 修正：历史被窗口裁剪时必须检索 ──
+    # 原判据只比"历史字符数 vs 模型上下文预算"，对 context_length=1_000_000 的
+    # 模型预算高达 995392，实测全库最大会话仅 2321 字符 → 恒真跳过，
+    # 向量记忆从未注入（且 rule 模式的最近 N 条也被一并砍掉）。
+    def test_truncated_history_always_retrieves(self):
+        # 预算极其宽裕，但历史已被窗口裁剪 → 不能跳过
+        assert rpa._memory_gate_should_skip(
+            500, 300, 2000, 1024, 100000, history_truncated=True) is False
+
+    def test_untruncated_history_still_skips(self):
+        assert rpa._memory_gate_should_skip(
+            500, 300, 2000, 1024, 100000, history_truncated=False) is True
+
+    def test_truncated_beats_budget(self):
+        # 裁剪优先级高于预算比较：即便装得下也必须检索
+        assert rpa._memory_gate_should_skip(
+            0, 0, 0, 0, 10 ** 9, history_truncated=True) is False
+
     def test_migration_column_registered(self):
         cols = {(t, c) for t, c, _ in migrations_mod._RUNTIME_COMPAT_COLUMNS}
         assert ("user_settings", "memory_budget_level") in cols
@@ -233,6 +251,48 @@ class TestGateIntegration:
         parts, report = [], []
         _run_append(db, parts, report)  # token_budget=None → 不门控（兼容路径）
         assert len(_FakeMemoryService.calls) == 1
+
+    # ── 2026-09-22 修正：历史被窗口裁剪时必须检索 ──
+    def test_truncated_history_retrieves_despite_huge_budget(self, gate_env, monkeypatch):
+        """回归：1M 上下文模型下预算极高，旧判据恒真跳过，记忆从未注入。
+
+        窗口上限压到 2 条、实际 5 条历史 → 已裁剪 → 必须检索。
+        """
+        db = gate_env
+        _seed_session(db, msgs=[("user", f"第{i}轮") for i in range(5)])
+        monkeypatch.setattr(rpa, "_resolve_history_window_limit", lambda req: 2)
+        parts, report = [], []
+        _run_append(db, parts, report, token_budget=10**9, system_prompt="sys", history_reserve=1024)
+        assert len(_FakeMemoryService.calls) == 1, "历史被裁剪时必须检索"
+
+    def test_untruncated_history_still_skips(self, gate_env, monkeypatch):
+        """未裁剪且装得进预算 → 保留原有的省 token 行为。"""
+        db = gate_env
+        _seed_session(db, msgs=[("user", "短"), ("assistant", "短")])
+        monkeypatch.setattr(rpa, "_resolve_history_window_limit", lambda req: 10)
+        parts, report = [], []
+        _run_append(db, parts, report, token_budget=10**9, system_prompt="sys", history_reserve=1024)
+        assert len(_FakeMemoryService.calls) == 0
+        item = next(i for i in report if i.key == "memory")
+        assert "gate" in (item.detail or "")
+        assert "2/10" in (item.detail or ""), "report 应带上消息数/窗口上限"
+
+    def test_window_limit_prefers_group_budget(self, gate_env, monkeypatch):
+        """群聊取 GroupChat.recent_messages_budget，否则回退全局限制。"""
+        db = gate_env
+        fake_group = SimpleNamespace(recent_messages_budget=7)
+        monkeypatch.setattr(rpa, "_cached_request_group", lambda req, gid: fake_group)
+        assert rpa._resolve_history_window_limit(
+            SimpleNamespace(db=db, group_id="g-1")) == 7
+
+        monkeypatch.setattr(rpa, "_cached_request_group", lambda req, gid: None)
+        assert rpa._resolve_history_window_limit(
+            SimpleNamespace(db=db, group_id="g-1")) == int(
+                rpa._memory_settings().CHARACTER_CHAT_HISTORY_LIMIT)
+
+        assert rpa._resolve_history_window_limit(
+            SimpleNamespace(db=db, group_id=None)) == int(
+                rpa._memory_settings().CHARACTER_CHAT_HISTORY_LIMIT)
 
     def test_estimate_failure_retrieves(self, gate_env, monkeypatch):
         db = gate_env

@@ -2747,7 +2747,9 @@ async def _assemble_roleplay_prompt_impl(
     db = req.db
     user_nickname = req.user_nickname or req.user.username or "User"
     user_setting = db.query(UserSetting).filter(UserSetting.user_id == req.user.id).first()
-    memory_mode = "disabled"
+    # 无设置行时按默认档（vector）走，与 UserSetting.memory_mode 列默认值一致
+    # 2026-09-23：原为 "disabled"（等于新用户完全没有记忆）
+    memory_mode = "vector"
     if user_setting and user_setting.memory_mode:
         memory_mode = user_setting.memory_mode
 
@@ -4588,12 +4590,55 @@ def _memory_gate_should_skip(
     history_chars: int,
     history_reserve: int,
     token_budget: int,
+    history_truncated: bool = False,
 ) -> bool:
-    """[PHASE-1b] True = 历史 + 已注入块仍装得进预算 → 本会话记忆的原文都在
-    窗口内，向量检索召回=窗口重复，跳过检索（短会话省 ~1500 tok/轮）。
-    保守方向：历史按 1 字≈1 token 高估（中文 tokenizer 实际约 0.6-0.7），
-    宁可误开检索、不误关丢记忆。"""
+    """[PHASE-1b] True = 历史完整落在窗口内 且 装得进预算 → 跳过检索。
+
+    两个条件必须同时成立，缺一不可（2026-09-22 修正，原实现只有第二个条件）：
+
+    1. ``history_truncated``（历史已被窗口裁剪）为真时**一律不跳过**。
+       窗口只装 ``history_limit`` 条（`CHARACTER_CHAT_HISTORY_LIMIT`，群聊取
+       ``GroupChat.recent_messages_budget``），超出部分的原文不可能出现在
+       prompt 里，其记忆必须靠检索补回。
+    2. 预算比较：历史按 1 字≈1 token 高估（中文 tokenizer 实际约 0.6-0.7），
+       宁可误开检索、不误关丢记忆。
+
+    **修正动机**：原判据把「会话历史总字符数」与「模型上下文预算」直接相比。
+    对注册 ``context_length=1000000`` 的模型（如 deepseek-v4-flash），预算高达
+    995392，需历史 > 约 99 万字符才检索；而实测全库最大会话历史仅 2321 字符
+    → 恒真跳过，向量记忆**从未注入**。且此 return 位于 mode 分派之前，
+    rule 模式的最近 N 条也被一并砍掉。
+    """
+    if history_truncated:
+        return False
     return (system_prompt_tokens + injected_tokens + int(history_chars) + history_reserve) <= token_budget
+
+
+@lru_cache(maxsize=1)
+def _memory_settings() -> Any:
+    """延迟导入 settings（避免模块级导入环）。"""
+    from ..core.config import settings
+    return settings
+
+
+def _resolve_history_window_limit(req: Any) -> int:
+    """本轮实际注入的历史窗口上限（条）。
+
+    与 ``build_character_chat_messages`` 的取数口径保持一致：群聊取
+    ``GroupChat.recent_messages_budget``，未设置/<=0 时回退全局
+    ``CHARACTER_CHAT_HISTORY_LIMIT``；单聊直接用全局值。
+    """
+    base = int(getattr(_memory_settings(), "CHARACTER_CHAT_HISTORY_LIMIT", 24) or 24)
+    if not getattr(req, "group_id", None):
+        return base
+    try:
+        group = _cached_request_group(req, req.group_id)
+        budget_val = getattr(group, "recent_messages_budget", None)
+        if isinstance(budget_val, int) and budget_val > 0:
+            return budget_val
+    except Exception as exc:
+        logger.debug("history window limit lookup failed (group_id=%s): %s", req.group_id, exc)
+    return base
 
 
 async def _append_memory_context(
@@ -4694,6 +4739,7 @@ async def _append_memory_context(
         # 直调路径），行为与改造前一致。
         _gate_probe = None
         _hist_chars = -1  # -1 = 估算失败 → 不门控（照常检索）
+        _msg_count = -1   # -1 = 计数失败 → 按"已裁剪"处理（宁误开勿误关）
         try:
             _gate_probe = req.db.begin_nested()
             _hist_q = req.db.query(
@@ -4710,6 +4756,18 @@ async def _append_memory_context(
             _hist_chars = int(_hist_q.scalar() or 0) + len(str(req.message or ""))
             # 当前用户消息也在窗口内且不属"历史"，同系数并入估算，
             # 消除"历史偏小 → 误跳过"的系统性偏差
+
+            # [PHASE-1b 修正] 历史是否被窗口裁剪：窗口只装 _history_limit 条，
+            # 超出部分的原文不在 prompt 内，其记忆必须靠检索补回。
+            # 口径对齐 build_character_chat_messages 的取数（不排除隐藏消息）。
+            _cnt_q = req.db.query(func.count(CharacterChatMessage.id)).filter(
+                CharacterChatMessage.session_id == req.session_id
+            )
+            if req.branch_id:
+                _cnt_q = _cnt_q.filter(CharacterChatMessage.branch_id == req.branch_id)
+            else:
+                _cnt_q = _cnt_q.filter(CharacterChatMessage.branch_id == None)  # noqa: E711
+            _msg_count = int(_cnt_q.scalar() or 0)
             _gate_probe.commit()
         except Exception as _gate_err:
             if _gate_probe is not None:
@@ -4724,12 +4782,17 @@ async def _append_memory_context(
         if _hist_chars >= 0:
             _injected_tokens = sum(_estimate_tokens(_p) for _p in dynamic_context_parts)
             _reserve = history_reserve if history_reserve is not None else _DEFAULT_HISTORY_RESERVE
+            # 计数失败时按"已裁剪"处理（宁误开勿误关）
+            _history_limit = _resolve_history_window_limit(req)
+            _truncated = _msg_count < 0 or _msg_count > _history_limit
             if _memory_gate_should_skip(
-                _estimate_tokens(system_prompt), _injected_tokens, _hist_chars, _reserve, token_budget
+                _estimate_tokens(system_prompt), _injected_tokens, _hist_chars, _reserve, token_budget,
+                history_truncated=_truncated,
             ):
                 report.append(
                     PromptAssemblyReportItem(
-                        "memory", "skipped", "history within token budget (gate)"
+                        "memory", "skipped",
+                        f"history within window+budget (gate, msgs={_msg_count}/{_history_limit})"
                     )
                 )
                 return

@@ -15,7 +15,11 @@ class MemoryConfig:
     SEMANTIC_WEIGHT: float = float(os.getenv("MEMORY_SEMANTIC_WEIGHT", "0.7"))
     TIME_WEIGHT: float = float(os.getenv("MEMORY_TIME_WEIGHT", "0.2"))
     IMPORTANCE_WEIGHT: float = float(os.getenv("MEMORY_IMPORTANCE_WEIGHT", "0.1"))
-    MIN_SIMILARITY: float = float(os.getenv("MEMORY_MIN_SIMILARITY", "0.3"))
+    # 相似度下限（cosine）。0.3 对 bge-m3 中文语料基本失效——2026-09-22 实测：
+    # 无关查询（"今天上海天气怎么样"）top1=0.459 且 75/77 条过阈值，阈值形同虚设。
+    # 0.5 是经验分界：无关查询全部归零，相关查询（0.693/0.748）仍保留 7-34 条。
+    # 换嵌入模型（非 bge-m3）后必须重新实测校准，勿沿用此值。
+    MIN_SIMILARITY: float = float(os.getenv("MEMORY_MIN_SIMILARITY", "0.5"))
     MEMORY_TABLE_NAME: str = "conversation_memories"
     PROFILE_TABLE_NAME: str = "user_profiles"
     ENABLED: bool = os.getenv("MEMORY_ENABLED", "true").lower() == "true"
