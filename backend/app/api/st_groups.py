@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from ..core import get_db
@@ -412,6 +413,22 @@ async def st_groups_delete(
     # 缓存群组名用于后续 ST DATA_ROOT 文件清理
     group_name = group.name or "Group Chat"
 
+    # [ORPHAN-MEM-FIX] 删群会连带删掉该群的会话，conversation_memories
+    # 无外键不会级联 → 先按 session_id 清记忆，再删会话（顺序不可颠倒）。
+    try:
+        from ..memory_module.storage import delete_memories_by_session
+        _gs_ids = [
+            r[0] for r in db.execute(
+                sa_text("SELECT id FROM group_chat_sessions WHERE group_id = :gid"),
+                {"gid": group.id},
+            ).fetchall()
+        ]
+        delete_memories_by_session(db, _gs_ids)
+    except Exception as _mem_exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "groups/delete 记忆级联清理失败 (group=%s): %s", group.id, _mem_exc)
+
     # 级联清理 GroupChatSession 表中引用的 session
     db.query(GroupChatSession).filter(GroupChatSession.group_id == group.id).delete()
     db.delete(group)
@@ -683,6 +700,15 @@ async def st_group_chat_delete(
         .first()
     )
     if session:
+        # [ORPHAN-MEM-FIX] 级联清理向量记忆（conversation_memories.session_id
+        # 为裸 TEXT 无外键，群聊会话删除同样不级联，不删即成孤儿）。
+        try:
+            from ..memory_module.storage import delete_memories_by_session
+            delete_memories_by_session(db, [session_id])
+        except Exception as _mem_exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "group chats/delete 记忆级联清理失败 (session=%s): %s", session_id, _mem_exc)
         db.delete(session)
         db.commit()
 

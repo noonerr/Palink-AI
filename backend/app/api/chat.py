@@ -14,7 +14,7 @@ from ..core import get_db, settings
 from ..core.database import SessionLocal
 from ..core.rate_limit import enforce_rate_limit
 from ..core.exceptions import ServiceError
-from ..utils import apply_message_extra_patch
+from ..utils import apply_message_extra_patch, clean_memory_content
 from ..api.dependencies import get_current_user
 from ..models import User, ChatMessage, UserSetting, ChatSession
 from ..memory_module.service import MemoryService
@@ -72,7 +72,7 @@ async def chat_stream(
     chat_service = ChatService(db)
 
     context = await chat_service.prepare_chat_context(req, user.id)
-    memory_mode = context.get("memory_mode", "rule")
+    memory_mode = context.get("memory_mode", "vector")
 
     session_id, is_new_session = chat_service.ensure_session(
         req.session_id,
@@ -420,7 +420,15 @@ async def chat_stream(
                             mem_svc = MemoryService(save_db)
                             if mem_svc.is_available():
                                 mem_svc.store_memory(user.id, session_id, "user", req.message)
-                                mem_svc.store_memory(user.id, session_id, "assistant", result.full_content)
+                                # [MEM-CLEAN] assistant 入库前必须清洗：模型输出的
+                                # <thinking> 思维链 / <UpdateVariable> 功能块不能进记忆
+                                # （2026-09-23 发现普通聊天这条路径漏了清洗，与角色聊天
+                                # 的 websocket / character_ext 入口不一致；store_memory
+                                # 内部不做清洗，全靠调用点自觉）。
+                                mem_svc.store_memory(
+                                    user.id, session_id, "assistant",
+                                    clean_memory_content(result.full_content),
+                                )
                                 save_db.commit()
                                 memory_stored = True
                                 # [ST-ALIGN P0-1] 记忆封存：落库后按阈值自动压缩，

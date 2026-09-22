@@ -2666,6 +2666,40 @@ async def st_delete_character(
     if not character:
         return {"result": "ok"}
 
+    # [ORPHAN-FIX] 删角色前手工清理 ORM 级联覆盖不到的表。
+    # `db.delete(character)` 只能靠关系上的 cascade 带走 sessions/messages，
+    # 以下三张表都没有从 Character 出发的关系，不手工清就留孤儿：
+    #   - conversation_memories（session_id 裸 TEXT 无外键，永不召回 + 隐私残留）
+    #   - character_chat_session_branches（session 关系无 back_populates/cascade）
+    #   - chat_variables（无关系，2026-09-23 一并补齐）
+    # 顺序必须自底向上：messages 引用 branch_id，先删 messages；branches 有
+    # parent_branch_id 自引用，先解引用再删。与 character_service.delete_character
+    # 的清理面保持一致。
+    try:
+        from sqlalchemy import text as sa_text
+        from ..memory_module.storage import delete_memories_by_session
+        _cs_rows = db.execute(
+            sa_text("SELECT id FROM character_chat_sessions WHERE character_id = :cid"),
+            {"cid": character_id},
+        ).fetchall()
+        _cs_ids = [r[0] for r in _cs_rows]
+        if _cs_ids:
+            _ph = ", ".join(f":s{i}" for i in range(len(_cs_ids)))
+            _pp = {f"s{i}": sid for i, sid in enumerate(_cs_ids)}
+            db.execute(sa_text(
+                f"DELETE FROM character_chat_messages WHERE session_id IN ({_ph})"), _pp)
+            db.execute(sa_text(
+                f"UPDATE character_chat_session_branches SET parent_branch_id = NULL "
+                f"WHERE session_id IN ({_ph}) AND parent_branch_id IS NOT NULL"), _pp)
+            db.execute(sa_text(
+                f"DELETE FROM character_chat_session_branches WHERE session_id IN ({_ph})"), _pp)
+            db.execute(sa_text(
+                f"DELETE FROM chat_variables WHERE session_id IN ({_ph})"), _pp)
+            delete_memories_by_session(db, _cs_ids)
+    except Exception as _orphan_exc:
+        logging.getLogger(__name__).warning(
+            "characters/delete 孤儿清理失败 (character=%s): %s", character_id, _orphan_exc)
+
     db.delete(character)
     db.commit()
     return {"result": "ok"}
@@ -3005,12 +3039,25 @@ async def st_delete_chat(
     # 否则 db.delete(session) 触发 FOREIGN KEY constraint failed。
     # 删除顺序遵循 FK 依赖：messages(branch_id→branches) 先于 branches，
     # branches(parent_branch_id 自引用) 先解除自引用再批量删除，最后删 session。
+    # [ORPHAN-MEM-FIX] 级联清理向量记忆（conversation_memories.session_id 为
+    # 裸 TEXT 无外键，不删则成孤儿：永不召回、持续占存储、且是隐私残留）。
+    # 2026-09-22 定位：本端点是 93 条孤儿记忆的直接来源。08-24 的排查把本文件
+    # 的 DELETE 一律当成"ST vectors 插件手动 purge 端点非级联"而排除，漏掉了
+    # 这个以 `db.delete(session)` 删会话的路径（它清了 variables/messages/
+    # branches 三张表，唯独漏了 memories——与实测残留形态完全吻合）。
     db.query(ChatVariable).filter(
         ChatVariable.session_id == session_id
     ).delete(synchronize_session=False)
+    try:
+        from ..memory_module.storage import delete_memories_by_session
+        delete_memories_by_session(db, [session_id])
+    except Exception as _mem_exc:
+        logging.getLogger(__name__).warning(
+            "chats/delete 记忆级联清理失败 (session=%s): %s", session_id, _mem_exc)
     db.query(CharacterChatMessage).filter(
         CharacterChatMessage.session_id == session_id
     ).delete(synchronize_session=False)
+    # ↓ 此分支清理属于 ST 会话删除（非 st_delete_character）
     db.query(CharacterChatSessionBranch).filter(
         CharacterChatSessionBranch.session_id == session_id,
         CharacterChatSessionBranch.parent_branch_id.isnot(None),

@@ -683,6 +683,182 @@ class TestSTChatsContract:
         ).json()
         assert len(chats_after) == 0
 
+    def test_chats_delete_cascades_vector_memories(self, client, auth_headers, db_session, monkeypatch):
+        """[ORPHAN-MEM-FIX] POST /api/chats/delete 必须级联清向量记忆。
+
+        回归用例：本端点是 2026-09-22 实测 93 条孤儿记忆的直接来源。它清了
+        chat_variables / messages / branches 三张表，唯独漏了
+        conversation_memories（无外键不会级联）。08-24 的排查把本文件的
+        DELETE 一律当成"ST vectors 手动 purge 端点非级联"排除，因此漏修。
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.memory_module import storage as mem_storage_mod
+        from app.memory_module.storage import MemoryStorage
+        from app.models import Character, CharacterChatSession
+
+        # 测试库是 SQLite，conversation_memories 由 memory_module 惰性建表；
+        # 复位全局标志强制在本引擎建表（与 test_memory_message_link.mem_env 同法）。
+        monkeypatch.setattr(mem_storage_mod, "_tables_initialized", False)
+        monkeypatch.setattr(mem_storage_mod, "_is_postgres_cached", None)
+        monkeypatch.setattr(mem_storage_mod, "_migration_done", False)
+        MemoryStorage(db_session)
+
+        created = _create_character_via_api(client, auth_headers, name="MemCascade Char")
+        avatar = created["avatar"]
+        client.post(
+            "/api/chats/save",
+            headers=auth_headers,
+            json={"avatar_url": avatar, "ch_name": "MemCascade Char",
+                  "chat": [{"name": "User", "is_user": True, "is_system": False,
+                            "mes": "mem cascade", "send_date": "2024-01-01T00:00:00"}]},
+        )
+        _char = (
+            db_session.query(Character)
+            .filter(Character.name == "MemCascade Char")
+            .first()
+        )
+        sess = (
+            db_session.query(CharacterChatSession)
+            .filter(CharacterChatSession.character_id == _char.id)
+            .first()
+        )
+        assert sess is not None, "前置：应已创建会话"
+
+        db_session.execute(
+            sa_text(
+                "INSERT INTO conversation_memories "
+                "(user_id, session_id, role, content, embedding) "
+                "VALUES (:uid, :sid, 'user', 'orphan probe', NULL)"
+            ),
+            {"uid": 1, "sid": sess.id},
+        )
+        db_session.commit()
+        before = db_session.execute(
+            sa_text("SELECT count(*) FROM conversation_memories WHERE session_id = :sid"),
+            {"sid": sess.id},
+        ).scalar()
+        assert before == 1
+
+        chats = client.post(
+            "/api/characters/chats", headers=auth_headers, json={"avatar_url": avatar},
+        ).json()
+        del_resp = client.post(
+            "/api/chats/delete", headers=auth_headers,
+            json={"avatar_url": avatar, "chatfile": chats[0]["file_name"]},
+        )
+        assert del_resp.status_code == 200, del_resp.text
+
+        after = db_session.execute(
+            sa_text("SELECT count(*) FROM conversation_memories WHERE session_id = :sid"),
+            {"sid": sess.id},
+        ).scalar()
+        assert after == 0, "删会话后不得留下孤儿记忆"
+
+    def test_orm_cascade_does_not_remove_branches(self, db_session, test_user):
+        """根因证明：删角色时 ORM 级联带不走 branches，所以必须手工清理。
+
+        `CharacterChatSessionBranch.session` 既没有 back_populates 也没有
+        cascade，而 conversation_memories / chat_variables 更是完全无外键。
+        本例固化这个事实：若将来给关系补了 cascade，这里会失败，正好提示
+        st_delete_character 的手工清理可以简化。
+        """
+        from app.models import Character, CharacterChatSession, CharacterChatSessionBranch
+
+        _uid = int(getattr(test_user, "id") or 1)
+        db_session.add(Character(id="c-orm-probe", name="OrmProbe", user_id=_uid))
+        db_session.add(CharacterChatSession(id="s-orm-probe", character_id="c-orm-probe", user_id=_uid))
+        db_session.add(CharacterChatSessionBranch(id="b-orm-probe", session_id="s-orm-probe"))
+        db_session.commit()
+
+        _ch = db_session.query(Character).filter_by(id="c-orm-probe").first()
+        db_session.delete(_ch)
+        try:
+            db_session.commit()
+            _blocked = False
+        except Exception:
+            db_session.rollback()
+            _blocked = True
+
+        # 不是"留残留"这么温和——有分支的会话会让删角色直接失败：
+        # character_chat_session_branches / character_chat_messages 都有指向
+        # session 的外键，而 ORM 级联不会去清它们。生产（PostgreSQL 强制外键）
+        # 表现为删角色 500。这就是 st_delete_character 必须手工清理的原因。
+        assert _blocked or db_session.query(CharacterChatSessionBranch).filter_by(
+            id="b-orm-probe").count() == 1, (
+            "ORM 级联清不掉 branches —— 这正是需要手工清理的原因；"
+            "若关系补了 cascade，本例失败并可据此简化手工清理"
+        )
+
+    def test_characters_delete_clears_all_orphan_tables(self, client, auth_headers, db_session, monkeypatch):
+        """[ORPHAN-FIX] POST /api/characters/delete 不得留下任何孤儿行。
+
+        本端点原先只有一句 `db.delete(character)`，靠 ORM 关系级联带走
+        sessions/messages。以下三张表都没有从 Character 出发的关系，会残留：
+          - conversation_memories（session_id 裸 TEXT 无外键）
+          - character_chat_session_branches（session 关系无 cascade）
+          - chat_variables（无关系）
+        """
+        import uuid
+
+        from sqlalchemy import text as sa_text
+
+        from app.memory_module import storage as mem_storage_mod
+        from app.memory_module.storage import MemoryStorage
+        from app.models import Character, CharacterChatSession
+
+        monkeypatch.setattr(mem_storage_mod, "_tables_initialized", False)
+        monkeypatch.setattr(mem_storage_mod, "_is_postgres_cached", None)
+        monkeypatch.setattr(mem_storage_mod, "_migration_done", False)
+        MemoryStorage(db_session)
+
+        created = _create_character_via_api(client, auth_headers, name="CharOrphan Char")
+        avatar = created["avatar"]
+        client.post(
+            "/api/chats/save",
+            headers=auth_headers,
+            json={"avatar_url": avatar, "ch_name": "CharOrphan Char",
+                  "chat": [{"name": "User", "is_user": True, "is_system": False,
+                            "mes": "char orphan", "send_date": "2024-01-01T00:00:00"}]},
+        )
+        _char = db_session.query(Character).filter(
+            Character.name == "CharOrphan Char").first()
+        sess = db_session.query(CharacterChatSession).filter(
+            CharacterChatSession.character_id == _char.id).first()
+
+        _br = str(uuid.uuid4())
+        db_session.execute(sa_text(
+            "INSERT INTO character_chat_session_branches "
+            "(id, session_id, branch_name) VALUES (:bid, :sid, 'b1')"),
+            {"bid": _br, "sid": sess.id})
+        # 消息行已在 /api/chats/save 时建好，这里只需额外造出 ORM 级联
+        # 覆盖不到的三张表的行：branches / chat_variables / memories
+        db_session.execute(sa_text(
+            "INSERT INTO chat_variables (id, session_id, key, value) "
+            "VALUES (:vid, :sid, 'v1', 'x')"),
+            {"vid": str(uuid.uuid4()), "sid": sess.id})
+        db_session.execute(sa_text(
+            "INSERT INTO conversation_memories "
+            "(user_id, session_id, role, content, embedding) "
+            "VALUES (:uid, :sid, 'user', 'orphan mem', NULL)"),
+            {"uid": 1, "sid": sess.id})
+        db_session.commit()
+
+        del_resp = client.post(
+            "/api/characters/delete", headers=auth_headers, json={"avatar_url": avatar},
+        )
+        assert del_resp.status_code == 200, del_resp.text
+
+        for table, col, val in (
+            ("character_chat_session_branches", "session_id", sess.id),
+            ("character_chat_messages", "session_id", sess.id),
+            ("chat_variables", "session_id", sess.id),
+            ("conversation_memories", "session_id", sess.id),
+        ):
+            left = db_session.execute(
+                sa_text(f"SELECT count(*) FROM {table} WHERE {col} = :v"), {"v": val}).scalar()
+            assert left == 0, f"{table} 残留 {left} 行孤儿"
+
 
 # ---------------------------------------------------------------------------
 # 群聊端点契约

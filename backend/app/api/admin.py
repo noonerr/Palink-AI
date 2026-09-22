@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from ..services.llm_client import get_async_openai_client
@@ -238,8 +238,13 @@ async def delete_user(user_id: int, current_user: User = Depends(get_admin), db:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
+        # [ORPHAN-MEM-FIX] 删用户前先汇总该用户的全部会话 id，末尾统一清记忆
+        # （conversation_memories 无外键，删用户不会级联 → 否则留一整户孤儿）。
+        _victim_session_ids: list[str] = []
+
         user_sessions = db.query(ChatSession).filter(ChatSession.user_id == user_id).all()
         session_ids = [s.id for s in user_sessions]
+        _victim_session_ids.extend(session_ids)
         if session_ids:
             db.query(ChatMessage).filter(ChatMessage.session_id.in_(session_ids)).delete(synchronize_session=False)
         db.query(ChatSession).filter(ChatSession.user_id == user_id).delete()
@@ -251,6 +256,7 @@ async def delete_user(user_id: int, current_user: User = Depends(get_admin), db:
                 CharacterChatSession.character_id.in_(char_ids)
             ).all()
             cs_ids = [cs.id for cs in char_sessions]
+            _victim_session_ids.extend(cs_ids)
             if cs_ids:
                 db.query(CharacterChatSessionBranch).filter(
                     CharacterChatSessionBranch.session_id.in_(cs_ids)
@@ -262,6 +268,26 @@ async def delete_user(user_id: int, current_user: User = Depends(get_admin), db:
                 CharacterChatSession.character_id.in_(char_ids)
             ).delete(synchronize_session=False)
         db.query(Character).filter(Character.user_id == user_id).delete()
+
+        # 群聊会话（GroupChatSession.user_id），一并纳入记忆清理范围
+        try:
+            _gs_ids = [
+                r[0] for r in db.execute(
+                    text("SELECT id FROM group_chat_sessions WHERE user_id = :uid"),
+                    {"uid": user_id},
+                ).fetchall()
+            ]
+            _victim_session_ids.extend(_gs_ids)
+        except Exception as _gs_exc:
+            logger.warning("Failed to collect group sessions for user %s: %s", user_id, _gs_exc)
+
+        if _victim_session_ids:
+            try:
+                from ..memory_module.storage import delete_memories_by_session
+                _n = delete_memories_by_session(db, _victim_session_ids)
+                logger.info("删用户 %s 级联清理 %s 条向量记忆", user_id, _n)
+            except Exception as _mem_exc:
+                logger.warning("删用户记忆级联清理失败 (user=%s): %s", user_id, _mem_exc)
 
         user_files = db.query(UserFile).filter(UserFile.user_id == user_id).all()
         for uf in user_files:

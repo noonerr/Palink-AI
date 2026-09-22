@@ -317,8 +317,11 @@ def test_delete_by_message_id_scopes_to_session(mem_env):
 def test_store_chunks_batch_share_message_id(mem_env, monkeypatch):
     import numpy as np
 
+    # [DIM-CONTRACT] 假嵌入器必须遵守语料契约维度（memory_config.VECTOR_DIMENSION），
+    # 否则会被新增的维度守卫拦下——那正是"降级期写入坏向量"的既有缺陷。
     def _fake_embed(texts):
-        return np.array([[0.1, 0.2, 0.3] for _ in texts], dtype=np.float32)
+        dim = int(memory_config.VECTOR_DIMENSION)
+        return np.full((len(texts), dim), 0.1, dtype=np.float32)
 
     monkeypatch.setattr(mem_storage_mod, "embed_text", _fake_embed)
     db = mem_env
@@ -336,6 +339,35 @@ def test_store_chunks_batch_share_message_id(mem_env, monkeypatch):
     assert {r.content[:1] for r in rows} == {"甲", "乙", "丙"}
     assert all(r.branch_id == "br-x" for r in rows)
     assert all(r.embedding is not None for r in rows)
+
+
+def test_store_chunks_rejects_off_contract_dimension(mem_env, monkeypatch):
+    """[DIM-CONTRACT] 嵌入器产出维度不符语料契约 → 宁缺勿错。
+
+    回归用例：历史上 Ollama 降级 fastembed(512) 后仍把 512 维向量写进 1024 维
+    语料，写入不报错、检索时 np.dot 抛异常被逐行静默 continue，产出"存得进
+    召不回"的死向量。现在应跳过向量写入但保留正文行。
+    """
+    import numpy as np
+
+    def _fake_embed_off_contract(texts):
+        return np.full((len(texts), 3), 0.1, dtype=np.float32)
+
+    monkeypatch.setattr(mem_storage_mod, "embed_text", _fake_embed_off_contract)
+    db = mem_env
+    storage = MemoryStorage(db)
+
+    ids = storage.store_chunks(
+        user_id=1, session_id="s-dim", role="assistant",
+        chunks=["维度不符甲块" * 15, "维度不符乙块" * 15],
+        branch_id=None, message_id=99,
+    )
+
+    assert len(ids) == 2, "正文行必须保留（不丢内容）"
+    rows = _mem_rows(db, "s-dim", 99)
+    assert len(rows) == 2
+    assert all(r.embedding is None for r in rows), "不符契约的向量不得落库"
+    assert all(r.content.startswith("维度不符") for r in rows)
 
 
 def test_store_chunks_degraded_fallback_keeps_message_id(mem_env):

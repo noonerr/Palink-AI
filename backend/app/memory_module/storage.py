@@ -51,6 +51,57 @@ def _parse_chunk_meta(topics) -> Optional[Tuple[str, int, int]]:
     return turn_hash, idx, total
 
 
+def _dim_mismatch_reason(emb_list) -> Optional[str]:
+    """[DIM-CONTRACT] 校验向量维度是否符合语料契约。
+
+    契约维度取 ``memory_config.VECTOR_DIMENSION``（bge-m3 = 1024）。嵌入器降级到
+    fastembed(512) / SimpleHash(384) 时产出维度与存量语料不同空间，写入后
+    ``np.dot`` 必然抛 ValueError 并在检索时被逐行静默丢弃——历史上正是这样产出
+    "存得进召不回"的死向量。此处拦截，宁缺勿错。
+    """
+    try:
+        baseline = int(memory_config.VECTOR_DIMENSION)
+        actual = len(emb_list) if emb_list is not None else -1
+    except (TypeError, ValueError):
+        return None
+    if baseline <= 0 or actual < 0 or actual == baseline:
+        return None
+    return f"维度 {actual} ≠ 契约 {baseline}"
+
+
+def _delete_memories_in(db_session: Session, column: str, values) -> int:
+    """[ORPHAN-MEM-FIX] 按列批量删除向量记忆。
+
+    ``conversation_memories.session_id/branch_id`` 都是裸 TEXT 无外键，
+    会话/分支/角色被删时不会级联——不手动清就成为孤儿：永不召回、
+    持续占存储、且是隐私残留（2026-09-22 实测 102 条里 93 条是孤儿）。
+    """
+    ids = [str(v) for v in (values or []) if v]
+    if not ids:
+        return 0
+    placeholders = ", ".join(f":v{i}" for i in range(len(ids)))
+    params = {f"v{i}": v for i, v in enumerate(ids)}
+    try:
+        res = db_session.execute(
+            text(f"DELETE FROM conversation_memories WHERE {column} IN ({placeholders})"),
+            params,
+        )
+        return int(res.rowcount or 0)
+    except Exception as e:
+        logger.error("清理孤儿记忆失败 (%s): %s", column, e)
+        return 0
+
+
+def delete_memories_by_session(db_session: Session, session_ids) -> int:
+    """删除指定会话的全部向量记忆。返回删除行数。"""
+    return _delete_memories_in(db_session, "session_id", session_ids)
+
+
+def delete_memories_by_branch(db_session: Session, branch_ids) -> int:
+    """删除指定分支的全部向量记忆。返回删除行数。"""
+    return _delete_memories_in(db_session, "branch_id", branch_ids)
+
+
 def delete_by_message_id(db_session: Session, session_id: str, message_id: int) -> None:
     """[MEM-UPSERT] 删除指定消息的全部记忆行（记忆 = 消息当前内容的镜像）。
 
@@ -384,6 +435,15 @@ class MemoryStorage:
             ids: List[int] = []
             for i, chunk in enumerate(chunks):
                 emb_list = embeddings[i].tolist()
+                # [DIM-CONTRACT] 维度不符契约 → 宁缺勿错：embedding 留 NULL，
+                # 正文行照常入库（不丢内容），后续用
+                # scripts/reembed_all_to_bge_m3.py 回填。降级期不写坏向量。
+                _mm = _dim_mismatch_reason(emb_list)
+                if _mm:
+                    logger.warning("store_chunks 跳过向量写入（%s，%s）", _mm, session_id)
+                    emb_json = None
+                else:
+                    emb_json = json.dumps(emb_list)
                 topics_json = json.dumps(_chunk_topics(turn_hash, i, total))
                 sql = text("""
                     INSERT INTO conversation_memories
@@ -398,7 +458,7 @@ class MemoryStorage:
                     "branch_id": branch_id,
                     "role": role,
                     "content": chunk,
-                    "embedding": json.dumps(emb_list),
+                    "embedding": emb_json,
                     "importance_score": importance_score,
                     "topics": topics_json,
                     "tokens_count": len(chunk) // 2,
@@ -491,6 +551,11 @@ class MemoryStorage:
             try:
                 embedding = await asyncio.to_thread(embed_text, content)
                 embedding_list = embedding.tolist()[0] if len(embedding.shape) > 1 else embedding.tolist()
+                # [DIM-CONTRACT] 降级期维度不符 → 不写坏向量，保留 NULL 待回填
+                _mm = _dim_mismatch_reason(embedding_list)
+                if _mm:
+                    logger.warning("异步 embedding 跳过写入 id=%s（%s）", memory_id, _mm)
+                    return
                 embedding_json = json.dumps(embedding_list)
                 await asyncio.to_thread(self._update_embedding_in_db, memory_id, embedding_json)
                 return
@@ -505,6 +570,11 @@ class MemoryStorage:
         try:
             embedding = embed_text(content)
             embedding_list = embedding.tolist()[0] if len(embedding.shape) > 1 else embedding.tolist()
+            # [DIM-CONTRACT] 同上：降级期不写坏向量
+            _mm = _dim_mismatch_reason(embedding_list)
+            if _mm:
+                logger.warning("同步 embedding 跳过写入 id=%s（%s）", memory_id, _mm)
+                return
             embedding_json = json.dumps(embedding_list)
             self._update_embedding_in_db(memory_id, embedding_json)
         except Exception as e:
@@ -585,7 +655,11 @@ class MemoryStorage:
             
             memories_with_similarity = []
             query_vec = np.array(query_embedding, dtype=np.float32)
-            
+            # [DIM-CONTRACT] 维度不兼容的行：旧实现下 np.dot 抛 ValueError 后
+            # 走 except→continue 静默丢弃（日志还误报"解析嵌入向量失败"）。
+            # 这里显式识别并计数，避免"明明有记忆却召回 0"无从排查。
+            dim_skipped = 0
+
             for row in result:
                 try:
                     embedding_list = json.loads(row.embedding) if row.embedding else None
@@ -593,6 +667,10 @@ class MemoryStorage:
                         continue
                         
                     memory_vec = np.array(embedding_list, dtype=np.float32)
+
+                    if memory_vec.shape[0] != query_vec.shape[0]:
+                        dim_skipped += 1
+                        continue
                     
                     norm_query = np.linalg.norm(query_vec)
                     norm_memory = np.linalg.norm(memory_vec)
@@ -620,13 +698,25 @@ class MemoryStorage:
                         memories_with_similarity.append((memory, similarity))
                         
                 except Exception as e:
-                    logger.warning(f"解析嵌入向量失败: {e}")
+                    logger.warning(f"解析嵌入向量失败 (id={getattr(row, 'id', '?')}): {e}")
                     continue
             
             memories_with_similarity.sort(key=lambda x: x[1], reverse=True)
             memories_with_similarity = memories_with_similarity[:limit]
-            
-            logger.info(f"语义检索完成: 找到 {len(memories_with_similarity)} 条记忆，最低相似度: {memories_with_similarity[-1][1] if memories_with_similarity else 'N/A'}")
+
+            if dim_skipped:
+                # 明确告警而非静默：出现即说明存在与当前嵌入器不同维度的存量向量，
+                # 需用 scripts/reembed_all_to_bge_m3.py 统一回填。
+                logger.warning(
+                    "语义检索跳过 %d 条维度不兼容的记忆（查询 %d 维），请回填后重试",
+                    dim_skipped, int(query_vec.shape[0]),
+                )
+
+            logger.info(
+                "语义检索完成: 找到 %d 条记忆，最低相似度: %s",
+                len(memories_with_similarity),
+                f"{memories_with_similarity[-1][1]}" if memories_with_similarity else "N/A",
+            )
             return memories_with_similarity
             
         except Exception as e:

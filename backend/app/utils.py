@@ -145,14 +145,77 @@ def _is_public_http_url(url: str) -> bool:
     return True
 
 
+# ── [MEM-CLEAN] 记忆入库文本的 HTML / 表格骨架处理（2026-09-23）──────────────
+# 实测背景（102 条存量）：正文里 HTML 标签 0 条（状态栏 HTML 是前端渲染产物，
+# 不进记忆），但 markdown 表格 28 条（27%），且每条有 21%~31% 的字符是纯表格符号
+# （`|` `-` 空格），内容是「🧥 衣着 / 🍰 心情 / 🎬 动作」这类每轮重复的模板行。
+# 表格里的文字有剧情价值（"红色披风"）不能丢，只清空壳符号。
+#
+# HTML 处理策略（用户 2026-09-23 拍板）：带 class/style 的块级元素整块丢弃
+# （一看就是排版/状态栏），普通标签只拆不丢；并加"删太多就退回"的兜底，
+# 保证以 HTML 承载正文的角色卡不会整条失忆。
+
+# 纯表格符号行：`|---|---|`、`| | |`、`|:--:|`、只有空格的行
+_TABLE_SCAFFOLD_RE = re.compile(r"^\s*\|?[\s|:\-]+\|?\s*$")
+# 肯定属于噪声的块
+_NOISE_BLOCK_RE = re.compile(
+    r"<(style|script)\b[^>]*>[\s\S]*?</\1\s*>", re.IGNORECASE
+)
+# 带排版属性的块级元素（整块丢，含其内部文字）
+_STYLED_BLOCK_RE = re.compile(
+    r"<(div|span|table|thead|tbody|tfoot|tr|td|th|ul|ol|li|p|section|header|footer|aside|nav)"
+    r"\b[^>]*?(?:class|style)\s*=[^>]*>[\s\S]*?</\1\s*>",
+    re.IGNORECASE,
+)
+# 残余标签：只拆标签，保留文字
+_ANY_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+
+
+def _strip_noise_html(s: str) -> str:
+    """无条件删掉只可能是噪声的块（style/script）。这些不需要兜底。"""
+    return _NOISE_BLOCK_RE.sub("", s)
+
+
+def _unwrap_html_tags(s: str) -> str:
+    """把剩余 HTML 标签拆掉、保留其中的文字。"""
+    return _ANY_TAG_RE.sub("", s)
+
+
+def _strip_table_scaffold(s: str) -> str:
+    """清掉 markdown 表格的空壳符号，**不丢任何文字**。
+
+    - 纯符号行（`|---|---|` / `| | |`）整行删；
+    - 有内容的表格行去掉首尾竖线（保留内部 `|` 作分隔）；
+    - 非表格行原样保留。
+    """
+    out = []
+    for line in s.split("\n"):
+        if _TABLE_SCAFFOLD_RE.match(line):
+            continue
+        stripped = line.strip()
+        # 至少 3 个竖线才当作"多列表格行"，避免误伤正文里的 |x| 之类
+        if stripped.startswith("|") and stripped.count("|") >= 3:
+            core = stripped.strip("|").strip()
+            if not core:
+                continue
+            out.append(core)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def clean_memory_content(text: Optional[str]) -> str:
-    """清洗记忆入库文本：剥离功能标签与思维链块，只保留剧情正文。
+    """清洗记忆入库文本：剥离功能标签、思维链块、排版 HTML 与表格空壳。
 
     背景：此前 assistant 回复的 full_content 未经清洗直接写入向量记忆库，
     <UpdateVariable>（及其内嵌 <Analysis>/<JSONPatch>）大 XML 功能块、以及可能的
     <thinking> 思维链块会整块进入记忆；注入 prompt 时又被 content[:200] 硬截断，
     切出残缺的半截标签，推理模型在思维链中反复自我审查这些标签 → 第二轮死循环。
     因此入库前先剥离功能块/思维链块，只存剧情正文。
+
+    2026-09-23 追加：排版 HTML 与 markdown 表格空壳同样稀释语义（实测 27% 的记忆
+    含表格，其中 21%~31% 字符是纯符号）。HTML 整块丢弃带兜底——若删完几乎不剩
+    内容，说明该条正文靠 HTML 承载，退回"只拆标签保留文字"。
     """
     if not text:
         return ""
@@ -163,7 +226,26 @@ def clean_memory_content(text: Optional[str]) -> str:
     s = re.sub(r"<(?:think|thinking)(?:\s[^>]*)?[\s\S]*?</(?:think|thinking)\s*>", "", s, flags=re.IGNORECASE)
     # 3) 清扫因截断而残留的孤立功能标签（防止残缺标签进入记忆）
     s = re.sub(r"</?(?:UpdateVariable|Analysis|JSONPatch|Patch|think|thinking)\b[^>]*>", "", s, flags=re.IGNORECASE)
-    # 4) 折叠多余空行
+
+    # 4) HTML：style/script 无条件整块删；带 class|style 的块级元素整块删，
+    #    但若删完几乎不剩内容（说明该条正文靠 HTML 承载）则退回"只拆标签"，
+    #    保证 HTML 卡不失忆。仅在**确实删掉了东西**时才考虑退回——否则
+    #    "正文<无属性标签>"这类短文本会被误判。
+    if "<" in s:
+        _before = _strip_noise_html(s)
+        _blocked = _STYLED_BLOCK_RE.sub("", _before)
+        _removed = len(_before.strip()) - len(_blocked.strip())
+        if _removed > 0 and len(_blocked.strip()) < max(20, int(len(_before.strip()) * 0.15)):
+            _unwrapped = _unwrap_html_tags(_before)
+            s = _unwrapped if len(_unwrapped.strip()) > len(_blocked.strip()) else _blocked
+        else:
+            s = _blocked
+        s = _unwrap_html_tags(s)
+
+    # 5) markdown 表格空壳符号（不丢文字）
+    s = _strip_table_scaffold(s)
+
+    # 6) 折叠多余空行
     s = re.sub(r"[ \t]+\n", "\n", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()

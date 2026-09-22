@@ -5,7 +5,7 @@
 """
 
 import numpy as np
-from typing import Union, List
+from typing import Union, List, Optional
 from abc import ABC, abstractmethod
 import logging
 import os
@@ -233,6 +233,8 @@ class OllamaEmbedder(BaseEmbedder):
         self._model = memory_config.OLLAMA_MODEL
         self._dimension = 1024  # bge-m3 固定 1024 维
         self._fallback = None  # 惰性创建 fastembed 兜底
+        # 降级生效后实际产出的维度（与 self._dimension 不同），供写入侧校验
+        self._degraded_dim: Optional[int] = None
         logger.info(f"Ollama 嵌入器初始化: host={self._host} model={self._model} 维度: {self._dimension}")
 
     def _get_fallback(self) -> BaseEmbedder:
@@ -242,6 +244,15 @@ class OllamaEmbedder(BaseEmbedder):
             except Exception as e:
                 logger.warning(f"Ollama 降级 fastembed 创建失败: {e}")
                 self._fallback = SimpleHashEmbedder()
+            # [DIM-CONTRACT] 降级后真实维度与 bge-m3 的 1024 不同（fastembed=512 /
+            # SimpleHash=384）。必须同步暴露，否则调用方按 1024 校验会把坏向量
+            # 当正常数据写入；历史上因此产出"存得进召不回"的死向量。
+            self._degraded_dim = self._fallback.dimension
+            logger.warning(
+                "Ollama 嵌入已降级为 %s，实际维度 %d（bge-m3 为 %d）；"
+                "降级期写入的向量与 Ollama 期不兼容，按宁缺勿错原则不再写入。",
+                type(self._fallback).__name__, self._degraded_dim, self._dimension,
+            )
         return self._fallback
 
     def embed(self, text: Union[str, List[str]]) -> np.ndarray:
@@ -259,14 +270,20 @@ class OllamaEmbedder(BaseEmbedder):
             embeddings = data.get("embeddings") or []
             if not embeddings:
                 raise ValueError("Ollama 返回空 embeddings")
-            return np.array(embeddings, dtype=np.float32)
+            out = np.array(embeddings, dtype=np.float32)
+            # Ollama 恢复后抹掉降级标记，维度回归 bge-m3
+            if self._degraded_dim is not None:
+                self._degraded_dim = None
+                logger.info("Ollama 嵌入恢复，维度回到 %d", self._dimension)
+            self._dimension = int(out.shape[-1]) if out.ndim > 1 else self._dimension
+            return out
         except Exception as e:
             logger.warning(f"Ollama 嵌入失败，降级 fastembed: {e}")
             return self._get_fallback().embed(text)
 
     @property
     def dimension(self) -> int:
-        return self._dimension
+        return self._degraded_dim if self._degraded_dim is not None else self._dimension
 
 
 class EmbedderFactory:

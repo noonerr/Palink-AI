@@ -22,7 +22,7 @@ class ChatService:
         user_setting = self.db.query(UserSetting).filter(
             UserSetting.user_id == user_id
         ).first()
-        memory_mode = user_setting.memory_mode if user_setting else "rule"
+        memory_mode = user_setting.memory_mode if user_setting else "vector"
         
         context_text = ""
         if req.files:
@@ -111,12 +111,23 @@ class ChatService:
         )
 
     def clearMessages(self, session_id: str) -> int:
-        """删除指定会话的全部消息，返回删除的行数。"""
+        """删除指定会话的全部消息，返回删除的行数。
+
+        [ORPHAN-MEM-FIX] 2026-09-23：记忆是"消息当前内容的镜像"，消息被清空后
+        记忆必须一并清掉，否则模型会继续"记得"用户已经清空的内容。
+        注意：本方法当前**没有调用方**（前端 `/clear` 只清浏览器内存），
+        此处属预防性修复，若将来接上后端清空入口即生效。
+        """
         deleted = (
             self.db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
             .delete(synchronize_session=False)
         )
+        try:
+            from ..memory_module.storage import delete_memories_by_session
+            delete_memories_by_session(self.db, [session_id])
+        except Exception as exc:
+            logger.warning("clearMessages 记忆清理失败 (session=%s): %s", session_id, exc)
         self.db.commit()
         return int(deleted or 0)
 
