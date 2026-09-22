@@ -2456,9 +2456,15 @@ html.palink-resizing *::after {
    角色聊天里 AI 消息的左侧头像列（36px）把 mes_block 气泡列推向右侧，
    右侧只剩 ~4px 视觉贴边（390px 屏实测：气泡列 40..386，中心 213 vs 屏幕中心 195）。
    给 mes_block 补 36px 对称右边距 → 左右各留 40px，气泡列正对屏幕中央。
-   仅移动端断点（<768，与 useIsMobile 同口径）；桌面端不受影响。 */
+   仅移动端断点（<768，与 useIsMobile 同口径）；桌面端不受影响。
+
+   ⚠ 补偿必须与头像列同时成立：Message.tsx:1298 的 36px 头像列是
+   `!isUser && chatStyle!=='document' && showCharacterAvatar` 条件渲染的，
+   而 mes_block 是它唯一的后续兄弟。故用 :not(:first-child) 精确判定
+   「左侧确有头像列」；否则（角色 UI 配置关掉头像）这 36px 会退化成
+   纯单边内缩 → 实测 724px 视口下文字左缩进 123px / 右 77px，气泡整体偏左。 */
 @media (max-width: 767px) {
-  .rp-chat-area .mes .mes_block {
+  .rp-chat-area .mes .mes_block:not(:first-child) {
     padding-right: 36px;
   }
 }
