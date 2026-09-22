@@ -4433,7 +4433,9 @@ async def _character_chat_impl(
             raise HTTPException(status_code=404, detail="Branch not found")
 
     # ── Memory context ───────────────────────────────────────────────
-    memory_mode = "disabled"
+    # 无设置行时按默认档（vector）走，与 UserSetting.memory_mode 列默认值一致
+    # 2026-09-23：原为 "disabled"（等于新用户完全没有记忆）
+    memory_mode = "vector"
     user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
     if user_setting and user_setting.memory_mode:
         memory_mode = user_setting.memory_mode

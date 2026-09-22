@@ -1316,7 +1316,7 @@ async def ws_chat(websocket: WebSocket):
                             logger.warning("Compact title failed: %s", e)
 
                     user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
-                    memory_mode = user_setting.memory_mode if user_setting else "rule"
+                    memory_mode = user_setting.memory_mode if user_setting else "vector"
 
                     context_text = ""
                     if files:

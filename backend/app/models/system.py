@@ -17,7 +17,9 @@ class UserSetting(Base):
     user_id = Column(Integer, ForeignKey("users.id"), unique=True)
     show_model_reasoning = Column(Boolean, default=True)
     developer_mode = Column(Boolean, default=False)
-    memory_mode = Column(String, default="rule")
+    # 2026-09-23：默认由 "rule" 改为 "vector"（聪明档——语义检索历史记忆）。
+    # rule 档只注入最近几条记忆、不做语义检索，用户可在设置里改回。
+    memory_mode = Column(String, default="vector")
     memory_model = Column(String, nullable=True)
     prompt_language = Column(String, default="auto")
     character_display_mode = Column(String, default="framed")

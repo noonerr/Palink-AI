@@ -40,7 +40,7 @@ async def get_my_quota(user: User = Depends(get_current_user), db: Session = Dep
 async def get_user_settings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     setting = _get_or_create_settings(user, db)
     return {
-        "memory_mode": setting.memory_mode or "rule",
+        "memory_mode": setting.memory_mode or "vector",
         "memory_model": setting.memory_model,
         "show_model_reasoning": setting.show_model_reasoning if setting.show_model_reasoning is not None else True,
         "developer_mode": setting.developer_mode if setting.developer_mode is not None else False,

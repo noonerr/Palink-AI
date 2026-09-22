@@ -61,7 +61,7 @@ export function AppearanceTab({
     const fetchSettings = async () => {
       try {
         const settings = await api.get('/api/users/me/settings', { cacheTtlMs: 30_000 });
-        setMemoryMode(settings.memory_mode || 'rule');
+        setMemoryMode(settings.memory_mode || 'vector');
         setMemoryBudgetLevel(typeof settings.memory_budget_level === 'number' ? settings.memory_budget_level : 1);
         setShowModelReasoning(settings.show_model_reasoning !== false);
         setPromptLanguage(settings.prompt_language || 'auto');

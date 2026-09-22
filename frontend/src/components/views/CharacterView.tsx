@@ -463,7 +463,7 @@ export function CharacterView({
       const settings = await api.get('/api/users/me/settings', { cacheTtlMs: 30_000 });
       setDeveloperMode(settings.developer_mode === true);
       setShowModelReasoning(settings.show_model_reasoning || false);
-      setMemoryMode(settings.memory_mode || 'rule');
+      setMemoryMode(settings.memory_mode || 'vector');
       setCharacterDisplayMode(settings.character_display_mode || 'framed');
       setAutoGenerateChatImages(settings.auto_generate_chat_images || false);
     } catch (e) {
