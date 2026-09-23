@@ -15,87 +15,14 @@
  *   trimStrings: 先 substituteParams 宏替换再移除（engine.js:460，后端
  *   character_ext.py `_filter_trim_strings` 已对齐）。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/lib/sillytavern/__tests__/regex-pipeline-contract.test.ts
+ * 运行: npx vitest run
  */
 
-// ============================================================
-// 极简测试运行器（与 runtime-contract.test.ts 一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-  skip: boolean;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-    skip: false,
-  });
-}
-it.skip = (name: string, _fn?: TestFn): void => {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn: async () => {},
-    skip: true,
-  });
-};
-
-function expect<T>(actual: T) {
-  return {
-    toBe(expected: T): void {
-      if (actual !== expected) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const tc of _testCases) {
-    if (tc.skip) {
-      skipped++;
-      console.log(`  ⊘ SKIP  ${tc.name}`);
-      continue;
-    }
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (err) {
-      failed++;
-      console.error(`  ✗ FAIL  ${tc.name}`);
-      console.error(`          ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败, ${skipped} 跳过 (共 ${_testCases.length})`);
-  if (failed > 0) {
-    process.exitCode = 1;
-  }
-}
 
 // ============================================================
 // 导入待测模块
 // ============================================================
+import { describe, it, expect } from 'vitest';
 import {
   getRegexedString,
   regex_placement,
@@ -281,4 +208,3 @@ describe('Regex trimStrings Macro Substitution (direct engine path)', () => {
   });
 });
 
-_runTests();

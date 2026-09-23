@@ -7,83 +7,23 @@
  *   2. 桥接在 TS 侧注册到 prompt-injection 服务（与沙箱轨同源），注册项经
  *      getPromptsForGeneration() 供 chat 装配消费（useCharacterChat:1161）。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/utils/__tests__/plugin-runtime-extprompt-contract.test.ts
+ * 运行: npx vitest run
  */
-
-// ============================================================
-// 极简测试运行器（与既有契约测试一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-  skip: boolean;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({ name: `${_currentSuite} — ${name}`, fn, skip: false });
-}
-
-function expect<T>(actual: T) {
-  return {
-    toBe(expected: T): void {
-      if (actual !== expected) throw new Error(`Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`);
-    },
-    toBeTruthy(): void {
-      if (!actual) throw new Error(`Expected ${JSON.stringify(actual)} to be truthy`);
-    },
-    toContain(needle: string): void {
-      if (typeof actual !== 'string' || !actual.includes(needle)) {
-        throw new Error(`Expected string to contain ${JSON.stringify(needle)}`);
-      }
-    },
-    toBeDefined(): void {
-      if (actual === undefined) throw new Error('Expected value to be defined');
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  for (const tc of _testCases) {
-    if (tc.skip) {
-      console.log(`  ⊘ SKIP  ${tc.name}`);
-      continue;
-    }
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (e) {
-      failed++;
-      console.log(`  ✗ FAIL  ${tc.name}\n         ${(e as Error).message}`);
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
-  if (failed > 0 && typeof process !== 'undefined') process.exit(1);
-}
 
 // ============================================================
 // 导入待测模块
 // ============================================================
-import './../../lib/sillytavern/__tests__/_tsx-loader.mjs';
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promptInjection } from '@/services/prompt-injection';
+
+// getContext 的依赖图很大（.css 副作用导入 + showdown/dompurify/jquery/select2/toastr），
+// 冷启动转译在全量并行时能超过 vitest 默认的 5s 用例超时（实测该用例在满载下 flake）。
+// 把动态导入提到模块顶层（与 getcontext-parity.test.ts 同款写法），让这份成本落在收集阶段，
+// 而不是落在被计时的用例体内 —— 该用例断言的是 extensionPrompts 别名，不是导入耗时。
+const { getContext } = await import('@/lib/sillytavern/getContext');
 
 const _here = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_SOURCE = readFileSync(path.resolve(_here, '../sillyTavernPluginRuntime.ts'), 'utf-8');
@@ -132,8 +72,7 @@ describe('A-6 Registration & Chat-Assembly Visibility', () => {
     }
   });
 
-  it('registered prompt surfaces through getContext().extensionPrompts (value alias included)', async () => {
-    const { getContext } = await import('@/lib/sillytavern/getContext');
+  it('registered prompt surfaces through getContext().extensionPrompts (value alias included)', () => {
     promptInjection.setExtensionPrompt(ID, 'ctx-visible', 0, 0, false, 0, null);
     try {
       const ctx = getContext();
@@ -146,5 +85,3 @@ describe('A-6 Registration & Chat-Assembly Visibility', () => {
     }
   });
 });
-
-void _runTests();

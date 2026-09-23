@@ -4,167 +4,24 @@
  * 验证 Palink 的 getContext() 返回对象是否覆盖 SillyTavern 1.18.0
  * st-context.js 导出的全部 145 个公共 API。
  *
- * 注意：项目当前未配置 vitest/jest 测试框架。
- * 此文件使用内嵌的极简测试运行器，可通过 `npx tsx <file>` 运行。
- * 配套加载器：`npx tsx --import ./_tsx-loader.mjs <file>`
- *
  * 测试策略：
  *   - 枚举 ST 1.18.0 st-context.js 的全部 API 名称（ST_REQUIRED_APIS）
  *   - 运行时检查：调用 getContext() 收集实际暴露的 key，与清单对比
  *   - no-op 检测：对每个函数 API 检查是否为空实现
- *   - 允许最多 5 个明确不适用的 no-op（PALINK_ALLOWED_NO_OPS）
+ *   - 允许最多 20 个明确不适用的 no-op（PALINK_ALLOWED_NO_OPS，当前 19 个）
  *   - 输出契约结果：getContext Contract: N/M passed
  *   - 健壮性：验证无角色 / 无聊天状态下调用不抛异常
  */
 
-// ============================================================
-// 极简测试运行器（vitest 未配置时的 fallback）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-  skip: boolean;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-    skip: false,
-  });
-}
-it.skip = (name: string, _fn?: TestFn): void => {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn: async () => {},
-    skip: true,
-  });
-};
-
-function expect<T>(actual: T) {
-  return {
-    toBe(expected: T): void {
-      if (actual !== expected) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-    toEqual(expected: T): void {
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to equal ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-    toBeDefined(): void {
-      if (actual === undefined) {
-        throw new Error('Expected value to be defined');
-      }
-    },
-    toBeUndefined(): void {
-      if (actual !== undefined) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be undefined`);
-      }
-    },
-    toBeTruthy(): void {
-      if (!actual) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be truthy`);
-      }
-    },
-    toBeFalsy(): void {
-      if (actual) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be falsy`);
-      }
-    },
-    toContain(item: unknown): void {
-      if (typeof actual === 'string') {
-        if (!actual.includes(String(item))) {
-          throw new Error(`Expected string to contain "${item}"`);
-        }
-      } else if (Array.isArray(actual)) {
-        if (!actual.includes(item)) {
-          throw new Error(`Expected array to contain ${JSON.stringify(item)}`);
-        }
-      } else {
-        throw new Error('toContain expects string or array');
-      }
-    },
-    toHaveLength(n: number): void {
-      if (!actual || typeof (actual as any).length !== 'number' || (actual as any).length !== n) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to have length ${n}`);
-      }
-    },
-    toBeGreaterThan(n: number): void {
-      if (typeof actual !== 'number' || actual <= n) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be greater than ${n}`);
-      }
-    },
-    toBeLessThanOrEqual(n: number): void {
-      if (typeof actual !== 'number' || actual > n) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be less than or equal to ${n}`);
-      }
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const tc of _testCases) {
-    if (tc.skip) {
-      skipped++;
-      console.log(`  ⊘ SKIP  ${tc.name}`);
-      continue;
-    }
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (e) {
-      failed++;
-      console.log(
-        `  ✗ FAIL  ${tc.name}\n         ${(e as Error).message}`,
-      );
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败, ${skipped} 跳过`);
-  if (failed > 0 && typeof process !== 'undefined') {
-    process.exit(1);
-  }
-}
 
 // ============================================================
 // 导入待测模块
 //
-// 注意：必须先导入 _tsx-loader.mjs 以注册 ESM 加载器钩子和全局环境 mock。
-// 加载器会处理 .css 副作用导入、CJS 包 interop（showdown/dompurify/jquery/
-// select2/toastr）以及 Node.js 下缺失的浏览器全局对象（localStorage/window/document）。
-//
-// 关键点：ESM 静态 import 会在模块图解析阶段就确定依赖关系，register() 调用
-// 对已存在于模块图中的模块不生效。因此必须：
-//   1. 静态导入 _tsx-loader.mjs（触发 register() 注册加载器钩子）
-//   2. 使用 top-level await 动态导入 getContext（此时加载器钩子已生效，
-//      能正确处理 .css 副作用导入和 CJS 包 interop）
-//
-// 这样测试可不依赖 `--import` 标志直接运行：
-//   npx tsx src/lib/sillytavern/__tests__/getcontext-parity.test.ts
+// getContext 经 top-level await 动态导入：它拉起的 import 链含 .css 副作用导入
+// 与 showdown/dompurify/jquery/toastr 等浏览器包，需先由 vitest 环境（jsdom）
+// 与 vite 插件图就位后再解析。
 // ============================================================
-import './_tsx-loader.mjs';
+import { describe, it, expect } from 'vitest';
 import type { StGetContext } from '../getContext';
 const { getContext } = await import('../getContext');
 
@@ -256,14 +113,13 @@ const ST_REQUIRED_APIS = [
 ] as const;
 
 // ============================================================
-// Palink 明确不适用的 no-op API（Phase 5 扩展至 19 个，上限 20）
+// Palink 明确不适用的 no-op API（19 个，上限 20）
 //
 // 这些 API 因 Palink 架构差异，no-op 是正确行为而非缺口。
-// 分三类：
+// 分四类：
 //   1. Palink 自动持久化（无需手动调用）:
 //      - reloadCurrentChat: Palink 自动管理聊天加载
-//      - saveChat / saveMetadata / saveMetadataDebounced / saveReply:
-//        Palink 每条消息 PATCH 即时持久化
+//      - saveReply: Palink 每条消息 PATCH 即时持久化
 //      - activateSendButtons / deactivateSendButtons:
 //        React UI 自动管理按钮状态
 //   2. Palink 调试/UI 不适用:
@@ -272,18 +128,28 @@ const ST_REQUIRED_APIS = [
 //      - showLoader / hideLoader: Palink loader 由 React 组件管理
 //   3. Palink 架构差异:
 //      - unshallowCharacter / unshallowGroupMembers: Palink 无 shallow 状态
-//      - getThumbnailUrl / getCharacterSource: Palink 不区分缩略图/角色源
+//      - getCharacterSource: Palink 不区分角色源
 //      - extractMessageFromData: Palink 不支持从原始数据提取消息
 //      - reloadWorldInfoEditor / updateWorldInfoList:
 //        Palink 世界书编辑器/列表由 UI 层自动管理
 //      - selectCharacterById: Palink 使用路由层管理角色选择
+//   4. 有意降级的外部资源/扩展入口（Palink 不支持，源码里就是返回 null 的桩）:
+//      - importFromExternalUrl: 不从外部 URL 下载资源
+//      - getMediaDisplay: 无 ST 消息媒体显示对象
+//      - getReasoningTemplateByName: 不支持自定义推理模板
+//      - getExtensionManifest: 不支持第三方扩展 manifest
+//
+// 2026-09-23 等量替换（保持 19 个，不动 size ≤ 20 预算断言）：
+//   移出 saveChat / saveMetadata / saveMetadataDebounced / getThumbnailUrl
+//   —— 这 4 个早已是真实现（_persistChatMetadata / setTimeout 防抖 / 拼
+//   /api/st/thumbnail URL），不再命中 no-op 检测，留在清单里等于白占名额且
+//   掩盖回归：它们一旦退回空实现，本测试现在会立即红灯。
+//   移入上述第 4 类 4 个 —— getContext.ts 里函数体只有 `void _x; return null`，
+//   属设计如此，不是缺口。
 // ============================================================
 const PALINK_ALLOWED_NO_OPS = new Set<string>([
   // 类 1: Palink 自动持久化
   'reloadCurrentChat',
-  'saveChat',
-  'saveMetadata',
-  'saveMetadataDebounced',
   'saveReply',
   'activateSendButtons',
   'deactivateSendButtons',
@@ -295,12 +161,16 @@ const PALINK_ALLOWED_NO_OPS = new Set<string>([
   // 类 3: 架构差异
   'unshallowCharacter',
   'unshallowGroupMembers',
-  'getThumbnailUrl',
   'getCharacterSource',
   'extractMessageFromData',
   'reloadWorldInfoEditor',
   'updateWorldInfoList',
   'selectCharacterById',
+  // 类 4: 有意返回 null 的桩（Palink 不支持该能力）
+  'importFromExternalUrl',
+  'getMediaDisplay',
+  'getReasoningTemplateByName',
+  'getExtensionManifest',
 ]);
 
 // ============================================================
@@ -520,7 +390,7 @@ describe('getContext Contract', () => {
 
     // 断言：允许的 no-op 不超过 20 个
     // Phase 5 SubTask 5.2: 上限从 5 提高到 20，覆盖 Palink 架构差异
-    // 详见 PALINK_ALLOWED_NO_OPS 注释（3 类 19 个）
+    // 详见 PALINK_ALLOWED_NO_OPS 注释（4 类 19 个）
     expect(PALINK_ALLOWED_NO_OPS.size).toBeLessThanOrEqual(20);
 
     // 断言：无缺失 API
@@ -688,7 +558,3 @@ describe('getContext A-5 Half-Compat Fields', () => {
   });
 });
 
-// ============================================================
-// 自动运行测试（当未配置 vitest 时）
-// ============================================================
-void _runTests();

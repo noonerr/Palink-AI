@@ -5,151 +5,13 @@
  * SillyTavern 1.18.0 兼容契约一致：全局运行时入口、getContext、eventSource、
  * eventTypes 映射，以及正则执行顺序与斜杠命令执行。
  *
- * 注意：项目当前未配置 vitest/jest 测试框架。
- * 此文件使用内嵌的极简测试运行器，可通过 `npx tsx <file>` 运行。
- * 配置 vitest 后可将下方 harness 部分替换为 `import { describe, it, expect } from 'vitest'`。
  */
 
-// ============================================================
-// 极简测试运行器（vitest 未配置时的 fallback，与 event-contract.test.ts 一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-  skip: boolean;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-    skip: false,
-  });
-}
-it.skip = (name: string, _fn?: TestFn): void => {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn: async () => {},
-    skip: true,
-  });
-};
-
-function expect<T>(actual: T) {
-  return {
-    toBe(expected: T): void {
-      if (actual !== expected) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-    toEqual(expected: T): void {
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to equal ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-    toBeDefined(): void {
-      if (actual === undefined) {
-        throw new Error('Expected value to be defined');
-      }
-    },
-    toBeUndefined(): void {
-      if (actual !== undefined) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be undefined`);
-      }
-    },
-    toBeTruthy(): void {
-      if (!actual) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be truthy`);
-      }
-    },
-    toBeInstanceOf(cls: new (...args: any[]) => unknown): void {
-      if (!(actual instanceof cls)) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be instance of ${cls.name}`,
-        );
-      }
-    },
-    toHaveProperty(prop: string): void {
-      if (
-        typeof actual !== 'object' ||
-        actual === null ||
-        !(prop in actual)
-      ) {
-        throw new Error(`Expected object to have property "${prop}"`);
-      }
-    },
-    toContain(item: unknown): void {
-      if (typeof actual === 'string') {
-        if (!actual.includes(String(item))) {
-          throw new Error(`Expected string to contain "${item}"`);
-        }
-      } else if (Array.isArray(actual)) {
-        if (!actual.includes(item)) {
-          throw new Error(`Expected array to contain ${JSON.stringify(item)}`);
-        }
-      } else {
-        throw new Error('toContain expects string or array');
-      }
-    },
-    toBeGreaterThan(n: number): void {
-      if (typeof actual !== 'number' || actual <= n) {
-        throw new Error(`Expected ${actual} to be greater than ${n}`);
-      }
-    },
-    toBeGreaterThanOrEqual(n: number): void {
-      if (typeof actual !== 'number' || actual < n) {
-        throw new Error(`Expected ${actual} to be greater than or equal to ${n}`);
-      }
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const tc of _testCases) {
-    if (tc.skip) {
-      skipped++;
-      console.log(`  ⊘ SKIP  ${tc.name}`);
-      continue;
-    }
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (e) {
-      failed++;
-      console.log(
-        `  ✗ FAIL  ${tc.name}\n         ${(e as Error).message}`,
-      );
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败, ${skipped} 跳过`);
-  if (failed > 0 && typeof process !== 'undefined') {
-    process.exit(1);
-  }
-}
 
 // ============================================================
 // 导入待测模块
 // ============================================================
+import { describe, it, expect } from 'vitest';
 import {
   createSillyTavernRuntime,
   destroySillyTavernRuntime,
@@ -180,7 +42,8 @@ describe('SmartCard Runtime Core Globals', () => {
   });
 
   // window.SillyTavern 全局由浏览器兼容层挂载，Node 环境无 window，跳过实际全局检查。
-  it.skip('exposes SillyTavern global on window — requires browser iframe environment');
+  // 沿用转换前的 skip 状态（原因见用例名）：vitest 的 it.skip 仍需回调占位。
+  it.skip('exposes SillyTavern global on window — requires browser iframe environment', () => {});
 
   it('exposes getContext function returning a context object', () => {
     const runtime = createSillyTavernRuntime();
@@ -349,7 +212,3 @@ describe('Slash Command Execution', () => {
   });
 });
 
-// ============================================================
-// 自动运行测试（当未配置 vitest 时）
-// ============================================================
-void _runTests();

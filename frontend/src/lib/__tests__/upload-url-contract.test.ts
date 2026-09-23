@@ -12,84 +12,11 @@
  * 5. 源码契约：MarkdownRenderer.tsx 不再引用 appendUploadToken，
  *    锚点 href 取值走 bareUploadHref。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/lib/__tests__/upload-url-contract.test.ts
+ * 运行: npx vitest run
  */
 
-// ============================================================
-// 极简测试运行器（与既有契约测试一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
 
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-  });
-}
-
-function expect(actual: unknown) {
-  return {
-    toBe(expected: unknown): void {
-      if (actual !== expected) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`);
-      }
-    },
-    toBeTruthy(): void {
-      if (!actual) {
-        throw new Error(`Expected ${String(actual)} to be truthy`);
-      }
-    },
-    toMatch(pattern: RegExp): void {
-      if (!pattern.test(String(actual))) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to match ${pattern}`);
-      }
-    },
-    not(): { toMatch(pattern: RegExp): void } {
-      return {
-        toMatch(pattern: RegExp): void {
-          if (pattern.test(String(actual))) {
-            throw new Error(`Expected ${JSON.stringify(actual)} NOT to match ${pattern}`);
-          }
-        },
-      };
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  for (const tc of _testCases) {
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (err) {
-      failed++;
-      console.error(`  ✗ FAIL  ${tc.name}`);
-      console.error(`          ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败 (共 ${_testCases.length})`);
-  if (failed > 0) process.exitCode = 1;
-}
-
+import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,7 +60,7 @@ describe('N-7 <a href> 断言：上传路径产物永不携带 token=', () => {
   for (const input of TOKENED_UPLOAD_INPUTS) {
     it(`bareUploadHref(${JSON.stringify(input)}) 无 token=`, () => {
       const href = bareUploadHref(input);
-      expect(href).not().toMatch(/token=/);
+      expect(href).not.toMatch(/token=/);
     });
   }
   it('外部 URL 不被改写', () => {
@@ -157,7 +84,7 @@ describe('N-7 getUploadUrl 异步行为', () => {
     // tsx 环境下 api.post 必然失败 → .catch 回退裸路径
     const url = await getUploadUrl('/uploads/u1/img.png?token=OLD');
     expect(url).toBe('/uploads/u1/img.png');
-    expect(url).not().toMatch(/token=/);
+    expect(url).not.toMatch(/token=/);
   });
 });
 
@@ -180,4 +107,3 @@ describe('N-7 MarkdownRenderer 源码契约', () => {
   });
 });
 
-_runTests();

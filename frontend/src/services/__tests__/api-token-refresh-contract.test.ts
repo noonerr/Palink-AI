@@ -6,41 +6,14 @@
  * 直接 Set-Cookie 覆盖 palink_session（HttpOnly），前端无 JS 侧工作。
  * 任何整文件回退（同 formatting.ts 事故模式）立即红灯。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/services/__tests__/api-token-refresh-contract.test.ts
+ * 运行: npx vitest run
  */
 
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// ============================================================
-// 极简测试运行器（与既有契约测试一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-}
-const _testCases: TestCase[] = [];
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({ name, fn });
-}
-
-function expect(actual: unknown) {
-  return {
-    toBe(expected: unknown) {
-      if (actual !== expected) {
-        throw new Error(`expect ${String(expected)}, got ${String(actual)}`);
-      }
-    },
-    toBeGreaterThan(expected: number) {
-      if (!(Number(actual) > expected)) {
-        throw new Error(`expect > ${expected}, got ${String(actual)}`);
-      }
-    },
-  };
-}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE = readFileSync(
@@ -72,22 +45,3 @@ it('终态：服务端续期走 Cookie 通道，api.ts 无 JS 侧凭据读写', 
   expect(SOURCE.indexOf('palink_token')).toBe(-1);
 });
 
-// ============================================================
-// 运行
-// ============================================================
-let passed = 0;
-let failed = 0;
-for (const tc of _testCases) {
-  try {
-    tc.fn();
-    passed += 1;
-    console.log(`  ✓ PASS  ${tc.name}`);
-  } catch (e) {
-    failed += 1;
-    console.error(`  ✗ FAIL  ${tc.name}`);
-    console.error(String(e));
-  }
-}
-
-console.log(`\n结果: ${passed} 通过, ${failed} 失败 (共 ${_testCases.length})`);
-if (failed > 0) process.exit(1);

@@ -12,91 +12,14 @@
  * 本测试锁定生成产物契约，防止未来重构（如改用 String.raw 或外移出模板）
  * 时无声破坏该转义。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/components/ui/custom/smart-card-runtime/__tests__/regex-replace-contract.test.ts
+ * 运行: npx vitest run
  */
 
-// ============================================================
-// 极简测试运行器（与 event-contract.test.ts 一致）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-  skip: boolean;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-    skip: false,
-  });
-}
-it.skip = (name: string, _fn?: TestFn): void => {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn: async () => {},
-    skip: true,
-  });
-};
-
-function expect<T>(actual: T) {
-  return {
-    toBe(expected: T): void {
-      if (actual !== expected) {
-        throw new Error(
-          `Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`,
-        );
-      }
-    },
-    toBeTruthy(): void {
-      if (!actual) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be truthy`);
-      }
-    },
-    toBeFalsy(): void {
-      if (actual) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be falsy`);
-      }
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  for (const tc of _testCases) {
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (err) {
-      failed++;
-      console.error(`  ✗ FAIL  ${tc.name}`);
-      console.error(`          ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败 (共 ${_testCases.length})`);
-  if (failed > 0) {
-    process.exitCode = 1;
-  }
-}
 
 // ============================================================
 // 导入待测模块并构建 shim 产物
 // ============================================================
+import { describe, it, expect } from 'vitest';
 import { buildSillyTavernCompatRuntimeV2Shim } from '../SillyTavernCompatRuntime';
 
 const shim = buildSillyTavernCompatRuntimeV2Shim({
@@ -147,4 +70,3 @@ describe('SmartCard Runtime trimStrings Macro Contract (C-4b)', () => {
   });
 });
 
-void _runTests();

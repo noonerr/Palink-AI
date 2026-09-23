@@ -8,7 +8,8 @@
  * 3. 编辑目标文本取当前显示正文（displayContent）；
  * 4. swipe 箭头计数条仅在 swipes.length > 1 时渲染，onSwipe props 存在；
  * 5. 隐藏/取消隐藏按钮 aria-label 与 onHide props 存在，隐藏消息半透明 opacity-50；
- * 6. memo 比较器补齐新增 props（onSwipe/onHide/swipes/swipeId/isHidden）；
+ * 6. memo 比较器对新增 props（onSwipe/onHide/swipes/swipeId/isHidden）有效
+ *    —— 行为级：从 React.memo 句柄取真实 compare 函数逐 prop 验证，见下方说明；
  * 7. CharacterChat.tsx 的 handleSwipeAt / handleHideAt 存在并传给 Message，
  *    分别调用 PATCH swipe 端点与 PATCH 消息可见性端点。
  *
@@ -19,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
+import { Message } from '../../components/ui/custom/Message';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,6 +33,41 @@ const chatSrc = fs.readFileSync(
   path.resolve(__dirname, '../../components/views/character/CharacterChat.tsx'),
   'utf-8',
 );
+
+// ============================================================
+// memo 比较器：行为级守卫
+//
+// Message.tsx 的 areMessagePropsEqual 已从「60+ 行逐 prop if」重构为
+// 「遍历全部 props 做 Object.is + 三个成员派生 Set/Map 单独判」。
+// 原先本文件里 `prev.swipes !== next.swipes` 一类的死文本断言因此失效 ——
+// 被比较的 prop 覆盖面比那条正则更宽，代码是对的，断言在认死文本。
+//
+// 改为跑真实比较器：React.memo(Component, compare) 把 compare 挂在返回对象的
+// compare 字段上，取出来逐个 prop 验证「值变了必须判定为不相等（触发重渲染）、
+// 没变必须判定为相等（保住 memo 收益）」。这既覆盖了旧断言要守的东西，
+// 又额外守住了「漏补新 prop → 该 prop 变化永不触发重渲染」这个历史缺陷。
+// ============================================================
+type PropsCompare = (
+  prev: Record<string, unknown>,
+  next: Record<string, unknown>,
+) => boolean;
+
+/** 取出 Message 上真实挂载的 memo 比较器；顺带守卫「仍是 memo 且带自定义比较器」。 */
+function memoCompare(): PropsCompare {
+  const handle = Message as unknown as { $$typeof?: symbol; compare?: PropsCompare };
+  expect(handle.$$typeof).toBe(Symbol.for('react.memo'));
+  expect(typeof handle.compare).toBe('function');
+  return handle.compare as PropsCompare;
+}
+
+// 比较器只读 props、不渲染，故用最小可用集。message 必须是**共享引用**，
+// 否则两轮 spread 出来的 message 不同对象，会把「目标 prop 的差异」污染成
+// 「message 的差异」。
+const memoBaseProps = { message: { id: 'm-1' }, messageIndex: 0 };
+const memoPropsWith = (name: string, value: unknown): Record<string, unknown> => ({
+  ...memoBaseProps,
+  [name]: value,
+});
 
 describe('B1 消息编辑入口（Message.tsx）', () => {
   it('onEdit/canEdit 不再弃置为 _ 前缀 prop', () => {
@@ -82,10 +119,19 @@ describe('B2 swipe 候选切换箭头（Message.tsx）', () => {
     expect(messageSrc).toMatch(/onSwipe\?\.\(\s*message\.id,\s*'next'\s*\)/);
   });
 
-  it('memo 比较器补齐 swipes/swipeId/onSwipe', () => {
-    expect(messageSrc).toMatch(/prev\.swipes !== next\.swipes/);
-    expect(messageSrc).toMatch(/prev\.swipeId !== next\.swipeId/);
-    expect(messageSrc).toMatch(/prev\.onSwipe !== next\.onSwipe/);
+  it('memo 比较器对 swipes/swipeId/onSwipe 生效', () => {
+    const compare = memoCompare();
+    const swipes = ['a', 'b'];
+    const onSwipe = () => {};
+    // 未变 → 判定相等（memo 收益仍在）
+    expect(compare(memoPropsWith('swipes', swipes), memoPropsWith('swipes', swipes))).toBe(true);
+    expect(compare(memoPropsWith('swipeId', 1), memoPropsWith('swipeId', 1))).toBe(true);
+    expect(compare(memoPropsWith('onSwipe', onSwipe), memoPropsWith('onSwipe', onSwipe))).toBe(true);
+    // 变了 → 判定不相等（必须重渲染）。swipes 换的是「同内容的新数组」，
+    // 与 React 每轮重建 props 的真实场景一致。
+    expect(compare(memoPropsWith('swipes', swipes), memoPropsWith('swipes', ['a', 'b']))).toBe(false);
+    expect(compare(memoPropsWith('swipeId', 1), memoPropsWith('swipeId', 2))).toBe(false);
+    expect(compare(memoPropsWith('onSwipe', onSwipe), memoPropsWith('onSwipe', () => {}))).toBe(false);
   });
 });
 
@@ -104,9 +150,35 @@ describe('B3 隐藏/取消隐藏菜单项（Message.tsx）', () => {
     expect(messageSrc).toMatch(/isHidden && "opacity-50"/);
   });
 
-  it('memo 比较器补齐 isHidden/onHide', () => {
-    expect(messageSrc).toMatch(/prev\.isHidden !== next\.isHidden/);
-    expect(messageSrc).toMatch(/prev\.onHide !== next\.onHide/);
+  it('memo 比较器对 isHidden/onHide 生效', () => {
+    const compare = memoCompare();
+    const onHide = () => {};
+    // 未变 → 判定相等
+    expect(compare(memoPropsWith('isHidden', true), memoPropsWith('isHidden', true))).toBe(true);
+    expect(compare(memoPropsWith('onHide', onHide), memoPropsWith('onHide', onHide))).toBe(true);
+    // 变了 → 判定不相等
+    expect(compare(memoPropsWith('isHidden', true), memoPropsWith('isHidden', false))).toBe(false);
+    expect(compare(memoPropsWith('onHide', onHide), memoPropsWith('onHide', () => {}))).toBe(false);
+  });
+});
+
+describe('memo 比较器 通用遍历（Message.tsx）', () => {
+  it('不认 prop 名单：任意未点名 prop 变化也必须触发重渲染', () => {
+    const compare = memoCompare();
+    // 这条是重构的核心收益：新增 prop 无需「按现有模式补入比较器」也不会漏。
+    // 反向即旧缺陷 —— 逐 prop if 时代漏补一个新 prop，该 prop 变化永不重渲染。
+    expect(
+      compare(
+        { ...memoBaseProps, somePropNobodyDeclared: 1 },
+        { ...memoBaseProps, somePropNobodyDeclared: 2 },
+      ),
+    ).toBe(false);
+    expect(
+      compare(
+        { ...memoBaseProps, somePropNobodyDeclared: 'x' },
+        { ...memoBaseProps, somePropNobodyDeclared: 'x' },
+      ),
+    ).toBe(true);
   });
 });
 

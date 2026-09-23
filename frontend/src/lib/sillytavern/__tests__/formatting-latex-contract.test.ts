@@ -5,76 +5,11 @@
  * 可渲染公式；完成态 showdown 管线经 renderMathInHtml 预渲染后必须同样
  * 产出 KaTeX HTML，消除流式→完成态的"公式塌回原文"突变。
  *
- * 运行: npx tsx --import ./src/lib/sillytavern/__tests__/_tsx-loader.mjs src/lib/sillytavern/__tests__/formatting-latex-contract.test.ts
+ * 运行: npx vitest run
  */
 
-// ============================================================
-// 极简测试运行器
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase {
-  name: string;
-  fn: TestFn;
-}
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
 
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try {
-    fn();
-  } finally {
-    _currentSuite = prev;
-  }
-}
-
-function it(name: string, fn: TestFn): void {
-  _testCases.push({
-    name: _currentSuite ? `${_currentSuite} — ${name}` : name,
-    fn,
-  });
-}
-
-function expect(actual: unknown) {
-  return {
-    toContain(item: string): void {
-      if (!String(actual).includes(item)) {
-        throw new Error(`Expected ${JSON.stringify(String(actual).slice(0, 200))} to contain ${JSON.stringify(item)}`);
-      }
-    },
-    toBe(expected: unknown): void {
-      if (actual !== expected) {
-        throw new Error(`Expected ${JSON.stringify(actual)} to be ${JSON.stringify(expected)}`);
-      }
-    },
-    toBeTruthy(): void {
-      if (!actual) throw new Error(`Expected ${String(actual)} to be truthy`);
-    },
-    toBeFalsy(): void {
-      if (actual) throw new Error(`Expected ${String(actual).slice(0, 200)} to be falsy`);
-    },
-  };
-}
-
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  for (const tc of _testCases) {
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (err) {
-      failed++;
-      console.error(`  ✗ FAIL  ${tc.name}`);
-      console.error(`          ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  console.log(`\n结果: ${passed} 通过, ${failed} 失败 (共 ${_testCases.length})`);
-  if (failed > 0) process.exitCode = 1;
-}
-
+import { describe, it, expect } from 'vitest';
 import { renderMathInHtml } from '../formatting';
 
 describe('Completed-state LaTeX Rendering', () => {
@@ -118,4 +53,3 @@ describe('Completed-state LaTeX Rendering', () => {
   });
 });
 
-void _runTests();

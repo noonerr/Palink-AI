@@ -52,3 +52,7 @@
 
 - 前端：`cd frontend && npx tsc --noEmit`
 
+- 前端自动检查：`cd frontend && npx vitest run`（2026-09-23 起为唯一入口：18 文件 / 312 用例，其中 3 例是转换前既有的 `it.skip`）
+
+  > `npm run test:contract` 与 `frontend/src/lib/sillytavern/__tests__/_tsx-loader.mjs` **已删除**：契约测试全部转入 vitest，浏览器环境由 `vitest.config.ts` 的 `environment: 'jsdom'` + `frontend/src/test/setup-browser-globals.ts` 提供。docs/ 下 2026-09-22 及更早的 spec、报告仍把 `test:contract`（162/173 项）写成回归门禁口径，一律按本条作废并改跑 vitest。
+

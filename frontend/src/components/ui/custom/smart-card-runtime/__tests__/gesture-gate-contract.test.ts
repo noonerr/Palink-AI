@@ -15,28 +15,10 @@
  * 而误伤卡片正常流程。删改这些用例前请先读 SmartCardCompatController 里
  * SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE 上方的兼容性论证注释。
  *
- * 运行：项目未配置 vitest，使用内嵌极简运行器，`npx tsx <file>` 执行
- * （已接入 npm run test:contract）。
  */
 
+import { describe, it, expect } from 'vitest';
 import { handleSmartCardCompatRequest } from '../SmartCardCompatController';
-
-// ============================================================
-// 极简测试运行器（vitest 未配置时的 fallback，与同目录契约测试同款）
-// ============================================================
-type TestFn = () => void | Promise<void>;
-interface TestCase { name: string; fn: TestFn; }
-const _testCases: TestCase[] = [];
-let _currentSuite = '';
-
-function describe(name: string, fn: () => void): void {
-  const prev = _currentSuite;
-  _currentSuite = name;
-  try { fn(); } finally { _currentSuite = prev; }
-}
-function it(name: string, fn: TestFn): void {
-  _testCases.push({ name: _currentSuite ? `${_currentSuite} — ${name}` : name, fn });
-}
 
 function assert(cond: boolean, message: string): void {
   if (!cond) throw new Error(message);
@@ -173,24 +155,3 @@ describe('F-1 兼容性守卫 — 无手势也必须放行的动作', () => {
   });
 });
 
-// ============================================================
-// 运行器入口
-// ============================================================
-async function _runTests(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  for (const tc of _testCases) {
-    try {
-      await tc.fn();
-      passed++;
-      console.log(`  ✓ PASS  ${tc.name}`);
-    } catch (e) {
-      failed++;
-      console.log(`  ✗ FAIL  ${tc.name}\n         ${(e as Error).message}`);
-    }
-  }
-  console.log(`\n  手势闸门契约：${passed} passed / ${failed} failed\n`);
-  if (failed > 0) process.exitCode = 1;
-}
-
-void _runTests();

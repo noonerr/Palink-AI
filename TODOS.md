@@ -7,6 +7,22 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·已验证] 前端自动检查修复：契约测试全量转入 vitest，恢复可信绿灯基线（2026-09-23）
+
+- **起因**：`cd frontend && npx vitest run` 长期 `16 failed | 2 passed (18)` / exit 1，绿灯不可信。本轮**只修测试侧基建，零业务代码改动**。
+- **根因三层**：① 15 个契约测试是 `tsx` 自执行脚本（自带 mini 运行器 + `process.exit`），vitest 收集不到 → `No test suite found`；② `vitest.config.ts` 无 `test.environment` 且 jsdom/happy-dom 均未装 → `formatting.ts:17` 顶层 `DOMPurify.addHook` 在纯 Node 崩，连带整文件收集失败；③ 2 个断言过时（认死源码文本）+ 4 个有意 no-op API 未登记白名单。
+- **改法**：装 `jsdom`（devDependency）；`vitest.config.ts` 加 `environment: 'jsdom'` + `setupFiles`；新增 `frontend/src/test/setup-browser-globals.ts` 补 jsdom 缺口；15 个文件删自带运行器改 `import from 'vitest'`（断言体逐行未动）；`variables-compat.test.ts` 从 `node:test`/`assert.equal` 等价换为 `expect().toBe()`（两者同为 `Object.is` 语义）；删除 `package.json` 的 `test:contract` 与 `_tsx-loader.mjs`（含 2 处文件内 static import），改加 `"test": "vitest run"`。
+- **两处与任务书假设不符，已实测纠正**：
+  - 任务书列「11 个文件」，实为 **15 个**——`sillytavern/{event-contract,runtime-contract,regex-pipeline-contract,formatting-latex-contract}` 当时崩在 DOMPurify 上，故没暴露出「无 vitest suite」这一层；装完 jsdom 后它们转为 `No test suite found`，一并不转就红。旁证：`docs/REPORT_项目全面体检_2026-09-05.md` §4-8 已记「test:contract 链只串了 18 个中的 11 个」。
+  - 除白名单缺口外还有第 5 个缺口 `isMobile`：jsdom **不实现 `window.matchMedia`**，`getContext.ts:2520` 的 `typeof window!=='undefined' && window.matchMedia && ...` 短路成 `undefined`。真实浏览器恒有 matchMedia，故属测试环境缺口非代码缺陷；setup 里补 matchMedia 桩后回到任务书预期的 141/145。
+- **Node 25 陷阱（值得记住）**：Node 22.4+/25 在 `globalThis` 内置 `localStorage` 访问器，未配 `--localstorage-file` 时取到的对象**没有 `getItem`**，且优先级高于 jsdom（vitest 拷贝 window 属性时被挡）→ `i18n/index.ts:111` 模块顶层 `new I18nManager` 抛，整条 `getContext` import 链崩。旧 `_tsx-loader.mjs` 正是靠手工覆盖 globalThis 绕过，所以此坑此前不显。
+- **白名单预算冲突（用户拍板：等量替换）**：登记 4 个 no-op 桩会使 `PALINK_ALLOWED_NO_OPS` 19→23，撞破同文件 `size ≤ 20` 预算断言（放宽它即违反「禁止放宽断言」）。改为移出 4 个已失效条目 `saveChat`/`saveMetadata`/`saveMetadataDebounced`/`getThumbnailUrl`——这 4 个早已是真实现（`_persistChatMetadata` / `setTimeout` 防抖 / 拼 `/api/st/thumbnail` URL），不再命中 no-op 检测，留白名单里只掩盖回归。**净效果是收紧**：清单仍 19 个，那 4 个一旦退回空实现立即红灯。
+- **2 个过时断言改为行为级**：`Message.tsx` 的 `areMessagePropsEqual` 已是「遍历全部 props 做 `Object.is`」（P1-A, commit `c287077`），`prev.swipes !== next.swipes` 一类死文本断言必失效。改为从 `React.memo` 句柄的 `compare` 字段取出**真实比较器**逐 prop 验证 `swipes/swipeId/onSwipe/isHidden/onHide`（变→判不相等，未变→判相等），另加一条「任意未点名 prop 变化也必须触发重渲染」的通用性守卫。旧断言覆盖的 5 个 prop 一个没少，且不再能被改回逐 prop 写法蒙过。未新增成员派生 Set/Map 的行为断言——旧断言本就没覆盖，且其语义需先厘清 `prev/next` 同引用改成员时比较器的真实契约，不在本轮范围。
+- **顺手消除一处 flake**：`plugin-runtime-extprompt-contract.test.ts` 的用例体内 `await import('@/lib/sillytavern/getContext')`，满载并行时冷启动转译超默认 5s（全量跑反复命中，单跑该文件则恒绿）。把该动态导入提到模块顶层（与 `getcontext-parity.test.ts` 同款），成本落在收集阶段。该用例断的是 `extensionPrompts` 别名，不是导入耗时。改后连跑 4 次全量未再超时。
+- **验收**：`npx vitest run` → **`Test Files 18 passed (18)` / `Tests 309 passed | 3 skipped (312)` / 0 Errors / exit 0**，连续 3 次全量复跑结果一致；`npx tsc --noEmit` 实测 0 错（0 即下限，故必然无新增错误）；转换前 vitest 仅收集 40 → 转换后 312。反向验证：`variables-compat.ts` 优先级改 global 优先后确实变红（3 例，报 `expected 'GLOBAL' to be 'LOCAL'` / `expected 456 to be 123`），`git checkout --` 还原后回全绿。
+- **遗留（不影响绿灯）**：① `tsx` devDependency 随 `test:contract` 删除而**失去唯一消费者**，未删（删依赖超出本轮授权范围，且 tsx 仍是常用手动工具）；② `docs/`、`.trae/`、`.workbuddy/memory/MEMORY.md:70` 里大量历史条目仍以 `test:contract` 为验收口径，属时点记录未回改，作废声明已写在 AGENTS.md「验证」节；③ `DOMPurify.addHook` 仍在 `formatting.ts` 模块顶层——本轮靠 jsdom 环境绕过，挪进惰性 init 是另一议题；④ **本轮开工时工作树里已有 102 个业务源文件的未提交删除（非本 agent 所为，疑似并行 agent 的死代码清理）**，上述 vitest/tsc 绿灯是在**含这批删除的工作树**上量到的；那批删除若被回滚或继续改动，基线需复跑。
+- **物理备份**：`backup/2026-09-23_vitest-infra/`（`.gitignore:256` 已忽略 `/backup/`）—— `_tsx-loader.mjs` 全文 225 行 + MANIFEST（含 `test:contract` 原文的取回方式：`git show HEAD:frontend/package.json`）。
+
 ### [已完成·已实测] 前端渲染层 P0：通用聊天页 memo 修复（2026-09-22，commit 2275fbd）
 
 - **背景**：任务书 `P0 修掉两个通用聊天页里失效的 memo`。评估与施工记录：`docs/评估_P0前端memo修复任务适配性与执行计划_2026-09-22.md`（§8 施工结果）。前置 `docs/SPEC_前端缓存与加载优化_2026-09-21.md`（N1-N5/B1-B2 已完成）。
