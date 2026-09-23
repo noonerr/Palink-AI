@@ -2519,9 +2519,16 @@ export function getContext(): StGetContext {
     // i18n / 移动端 — 对接 Palink i18n 系统
     isMobile: (() => {
       try {
-        return typeof window !== 'undefined'
+        // Boolean() 包裹不可省：原写法 `typeof window !== 'undefined' && window.matchMedia
+        // && window.matchMedia(...).matches` 在无 matchMedia 的运行环境会短路成 **undefined**
+        // （jsdom 即不实现 matchMedia），而本字段声明为 `isMobile: boolean`（见本文件类型
+        // 定义处），插件按布尔直接用时 undefined 与 false 行为不同。真实浏览器恒有
+        // matchMedia 故线上不显，属类型契约与实现不符的潜在偏差。
+        return Boolean(
+          typeof window !== 'undefined'
           && window.matchMedia
-          && window.matchMedia('(max-width: 767px)').matches;
+          && window.matchMedia('(max-width: 767px)').matches,
+        );
       } catch {
         return false;
       }

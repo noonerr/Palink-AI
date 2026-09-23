@@ -4746,6 +4746,32 @@ export class PluginSandbox {
       'group-chats.js': {
         selected_group: stContext.groupId ?? null,
         is_group_generating: false,
+        // 补齐 ST group-chats.js 的两个导出（此前缺失 → 插件 import 拿到 undefined）：
+        //
+        // groups：gallery/index.js:10 顶层 import，787 行用 `groups.find(it => it.name
+        //   == args.group)?.id` 按群名反查群 id。此前拿到 undefined，走到该分支即
+        //   TypeError: Cannot read properties of undefined (reading 'find')。
+        //   数据源 = getContext().groups（getContext.ts:2154 的 groupChatManager
+        //   .getAllGroups()）。与 script.js 的 characters/chat/chat_metadata 同款
+        //   实时 getter：本文件 P-5/N7 已因「构建时快照」修过三轮同类缺陷（卡切换后
+        //   模块仍指向旧值），群列表同理，故不做 stContext.groups 一次性快照。
+        get groups(): any[] {
+          try {
+            const st = buildStContext() || {};
+            return Array.isArray(st.groups) ? st.groups : [];
+          } catch {
+            return [];
+          }
+        },
+        // hideMutedSprites：expressions/index.js:8 顶层 import，198 行
+        //   `if (isDisabled && hideMutedSprites) continue;` 决定是否跳过被静音的群成员。
+        //   此前拿到 undefined → 恒为假 → 被禁用成员永远照常渲染，是静默行为偏差
+        //   （不抛错，故比 groups 那处更难被发现）。
+        //   取 false 的依据：全仓 grep `hide_muted|hideMuted|muted_sprite` 零命中，
+        //   Palink 侧不存在该设置项；false 即 ST 中该开关关闭时的等效行为
+        //   （不隐藏），属"能力不存在时保持可见"的保守降级，而非伪造功能。
+        //   若将来 Palink 落地同名设置，把本行改为读该设置即可，插件侧无需改动。
+        hideMutedSprites: false,
       },
 
       // popup.js
