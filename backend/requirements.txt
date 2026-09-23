@@ -16,7 +16,6 @@ PyJWT[crypto]==2.13.0
 cryptography==50.0.0
 # ecdsa==0.19.2 已摘除（2026-09-03）：死依赖（全仓零 import，无包依赖它，JWT 走
 # PyJWT[crypto]→cryptography），且 CVE-2024-23342（Minerva 侧信道，High）上游无修复版。
-pyasn1==0.6.4
 bcrypt==5.0.0
 llama-cpp-python==0.3.34
 psutil==7.2.2
