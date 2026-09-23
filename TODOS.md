@@ -7,6 +7,18 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·已验证] 补齐插件沙箱 shim 缺口：group-chats.js 两导出 + isMobile 类型契约（2026-09-23，commit `8c1efd4`）
+
+- **来源**：为上一批死代码清理做收尾审计时顺带查出，属**他人既有遗漏**，非该批清理引入。
+- **修了什么**：`sandbox.ts` 的 `'group-chats.js'` moduleMap 补 `groups`（实时 getter，源 = `getContext().groups`）与 `hideMutedSprites`（取 `false`）；`getContext.ts` 的 `isMobile` 加 `Boolean()` 包裹（原写法在无 matchMedia 环境短路成 `undefined`，而字段声明为 `boolean`）。
+- **两种失效形态**（值得记住，因为第二类没人会报障）：`groups` 缺失 → gallery:787 `groups.find()` 直接 TypeError（会被发现）；`hideMutedSprites` 缺失 → expressions:198 `isDisabled && undefined` 恒假，被静音群成员永远照常渲染（**不抛错，静默走偏**）。
+- **为什么取 false 而不是实现该设置**：全仓 grep `hide_muted|hideMuted|muted_sprite` 零命中，Palink 无此设置项；false = ST 该开关关闭时的等效行为（保持可见），属"能力不存在则不隐藏"的保守降级，不是伪造功能。Palink 若将来落地同名设置，改这一行即可。
+- **`groups` 为什么必须用 getter**：`sandbox.ts` 内 P-5/N7 已因「`createMockRequire` 构建时快照 → 切换后插件读旧值」修过 `characters`/`chat`/`chat_metadata` 三轮，群列表同理。测试里加了「`groups` 必须是 `get` 形式」的源码契约防回退。
+- **新增守卫测试**（本轮真正的价值所在）：`frontend/src/lib/plugin-system/__tests__/st-module-shim-contract.test.ts` 6 例 —— 从 `st-plugins/` 源码扫出插件对某 ST 模块的具名 import，与 `sandbox.ts` 该模块块实际提供的顶层键求差集，非空即红。这类缺口此前是**逐个插件逐个符号手工补**的（文件里 `P-6：…覆盖插件实际 import 但 moduleMap 缺失的符号` 即该流程自述），人工审计不可持续。含一条「未扫到任何插件 import 即判失败」的元守卫，防扫描逻辑失效后测试假绿。
+- **验证**：vitest `19 passed (19)` / `315 passed | 3 skipped (318)`；tsc 0 错；build exit 0 且入口哈希 `index-BATcxovy.js → index-pMi5OxSN.js`、产物内可 grep 到 `hideMutedSprites`（证明修复进了交付物）。**反向验证**：`isMobile` 退回旧写法后该测试确实红（`expected undefined to be false`），还原回全绿。
+- **明确未做（不要照旧账盲补）**：插件对 `personas.js` / `tags.js` / `variables.js` / `authors-note.js` / `extensions/regex/engine.js` 等模块的 import 仍未映射。首轮我用临时脚本粗算得「271 项缺口」**不可信**——脚本把 `slash-commands/SlashCommandParser.js` 压成了 basename，而这类模块其实已在 `sandbox.ts:5296-5300` 映射。后续要按路径正确归一化重算，且逐个判断 Palink 有无真实数据源，不能照名单补。
+- **另记一处可疑未改**：`moduleMap['group-chats.js'].selected_group` 仍是 `stContext.groupId ?? null` **构建时快照**，与 P-5/N7 修过的那三轮同一缺陷类（切群后插件可能读旧值）。但无实测证据证明它今天真的坏了（沙箱是否随切群重建未查），故只登记不动。
+
 ### [已完成·已验证] 前端自动检查修复：契约测试全量转入 vitest，恢复可信绿灯基线（2026-09-23）
 
 - **起因**：`cd frontend && npx vitest run` 长期 `16 failed | 2 passed (18)` / exit 1，绿灯不可信。本轮**只修测试侧基建，零业务代码改动**。
