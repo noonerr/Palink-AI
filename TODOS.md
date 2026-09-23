@@ -7,6 +7,31 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·已复核] 代审 2026-09-23 死代码清理批次的收尾报告，并做完其剩余可安全完成项（本 agent，2026-09-23）
+
+- **背景**：该批清理由另一 agent 完成、我已分四笔落库（`617b456` / `3eb6b61` / `11c0682` / `447f267`）。它随后交出一份"做了什么 + 还剩什么"的报告，本条是对其报告的逐条复核结论，**它未写入本文件，故由我代登**。
+
+**报告判断力可信的部分（复核通过）**
+- `.tmp_card/` 两张 V3 卡不删、`backgrounds` 5 端点不删、`.codex/st-source/` 不 untrack —— 三项"看到零引用但不动"都对。**尤其 backgrounds 那条理由找得准**：`tests/test_router_registration.py:54` 的 `assert not unexpected` 专门守着这批受 CSRF 守卫的 router 保持注册（该守卫是 09-05 为"注册顺序重排会静默失守 CSRF"写的），删了就红；光看"无前端调用方"必误判。**同类前例见本文件 09-03 那条 `st_groups.py` 误判记录。**
+- 用 `.tmp_card` 那张卡当夹具的判断当场就兑现了：本 agent 今天正是拿《我被猫娘包围了！》在真实浏览器跑通了 导入→开场渲染→插件全局挂载 全链。
+
+**三处需校正（都已实测，勿再沿用原口径）**
+1. **备份结构描述与实际不符**：原文称仓库外有 `frontend/`+`backend/`+`repo/` 三子目录及 `_manifest.tsv`。实测仓库外**原本只有 `frontend/`(103) 与 `repo/`(18)，`backend/` 为 0、无清单**；后端 5 份在**仓库内**同名目录里。
+   → **本 agent 已补齐**：后端 5 份按文件 md5 校验复制到仓库外，并从磁盘实测生成顶层 `_manifest.tsv`（126 数据行 = 103+5+18，含 sha256/字节数/备份内路径/恢复目标，抽样反算一致）。**现两边一致**，仓库内那份已冗余；是否清掉由用户定（我没删——删备份不该由 agent 自主决定）。
+2. **"后端 pytest 1200 passed / 51 skipped" 是宿主机口径，静默少测 9 个 DB 用例**。容器内实测 **`1209 passed / 42 skipped / 0 failed`**（本 agent 在重建后的新镜像上跑的）。原结论侥幸未被推翻，但口径要按容器数记。**后端全量测试必须 `docker exec palink-ai-backend-1 sh -c "cd /app && python -m pytest tests/ -q"`**。
+3. **`.codex/st-source/` 该留，但给的理由不准**：两处引用（`regex-pipeline-contract.test.ts:4`、`regex-replace-contract.test.ts:6`）**都在测试文件头注释里当权威对照行号，没有任何测试运行时读该文件**（全仓 `readFileSync`+`st-source` 零命中）→ 删了不会红。该留的真实理由是"本分支即 st-plugin-compat，它是比对 ST 行为的参照物"。理由错会导致两种相反的误判：要么不敢动本该动的，要么以为测试会红而错误推断依赖关系。
+
+**剩余项的处理决定：两项我不动，且认为不该做**
+- **`.gitignore` "85 条死条目" 这个清理项不成立，做了有害**。实测 275 行中 80 条含通配符（防未来垃圾的护栏）；剩余字面条目里 `.env`、`backend/models`、`data`、`test_attack`、`.trae`、`.workbuddy`、`.claude/*`、`scripts/s1.js`…`s6.js`、`scripts/chara*.json`、`frontend/dev`、`frontend/dist` 等**此刻仍在且含文件**；"不存在"的那批（`node_modules`、`__pycache__`、`dist`、`.DS_Store`、`Thumbs.db`、`nul`、`tmp_*`、各类 dump/截图）**正是因为规则在生效才不存在**，删掉等于把这两周一直在清的垃圾放回可提交状态。真"曾跟踪+现已消失"的只有 4 条（`create_admin.py`、`update_env.sh`、`frontend/public/public`、`casdoor_app.conf`），其中两条仍是会复发的事故型文件名 → **保留全部**。另：逐行解析会吐出 `'`、`-`、`scriptName`、`副本` 等假 token，**任何脚本化批量改写 .gitignore 都不安全**。
+- **根目录 29 个 .md 归档进 `docs/archive/` 不做**。实测按名引用合计 **159 处**，且最高两个是 `TODOS.md`(47) 与 `AGENTS.md`(43) —— 这两个按项目约定必须留根目录（AGENTS.md 靠固定路径被各 agent 加载）。其余引用多为行文提及，移动后**没有任何测试会报错**，只会静默留断链；叠加并行 agent 正在改文档，纯增加冲突。
+- `backend/app/tokenizers/` 17MB 权重、三套 token 计数不一致 —— 它自己也标了"要改部署方式/要改行为，不在不影响功能范围内"，维持不动。
+
+**psutil / pgvector 那条待验证已做实（容器起着了）**：两个包都装着（psutil 7.2.2、pgvector 0.5.0），Python 代码**零 import**，compose / Dockerfile / backend/scripts 亦零命中，它的顾虑可以划掉。
+**但要挡一个措辞坑**：全仓 `pgvector` 命中**几乎全指 PostgreSQL 扩展**（`CREATE EXTENSION`、`<=>` 算子，由 `pgvector/pgvector:pg15` 镜像提供），与 `requirements.txt` 里那个**同名 Python 包是两回事**。**"pgvector 零 import 可删"只对 Python 包成立**，谁照字面动数据库侧，世界书向量与记忆检索当场废。两行依赖的收益远小于一次重装+八分钟全量测试的成本，**建议随下次必然的镜像重建再摘，不单独动**。
+
+
+
+
 ### [已完成·已验证] 补齐插件沙箱 shim 缺口：group-chats.js 两导出 + isMobile 类型契约（2026-09-23，commit `8c1efd4`）
 
 - **来源**：为上一批死代码清理做收尾审计时顺带查出，属**他人既有遗漏**，非该批清理引入。
