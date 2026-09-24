@@ -1,6 +1,7 @@
 """Image generation API routes."""
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, selectinload
@@ -10,6 +11,7 @@ from ..core import get_db
 from ..models import CharacterChatMessage, CharacterChatSession, ChatMessage, ChatSession, User
 from ..schemas.image_generation import (
     ImageGenerationConfigRequest,
+    ImageGenerationMediaRequest,
     ImageGenerationMessageResponse,
     ImageGenerationTestRequest,
 )
@@ -77,6 +79,7 @@ async def test_generation(req: ImageGenerationTestRequest, current_user: User = 
 async def generate_for_chat_message(
     session_id: str,
     message_id: int,
+    req: Optional[ImageGenerationMediaRequest] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -89,7 +92,13 @@ async def generate_for_chat_message(
         raise HTTPException(status_code=404, detail="Message not found")
 
     context_messages = _chat_message_context(db, session_id, message_id, limit=8)
-    result = await generate_image_for_message(db, current_user, message, context_messages)
+    result = await generate_image_for_message(
+        db,
+        current_user,
+        message,
+        context_messages,
+        media_id=req.media_id if req else None,
+    )
     return {"status": "ok", "image": image_result_to_dict(result), "updated_message": message_to_dict(message)}
 
 
@@ -97,6 +106,7 @@ async def generate_for_chat_message(
 async def generate_for_character_message(
     session_id: str,
     message_id: int,
+    req: Optional[ImageGenerationMediaRequest] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -118,5 +128,12 @@ async def generate_for_character_message(
         raise HTTPException(status_code=404, detail="Message not found")
 
     context_messages = _character_message_context(db, session_id, message.branch_id, message_id, limit=8)
-    result = await generate_image_for_message(db, current_user, message, context_messages, character=session.character)
+    result = await generate_image_for_message(
+        db,
+        current_user,
+        message,
+        context_messages,
+        character=session.character,
+        media_id=req.media_id if req else None,
+    )
     return {"status": "ok", "image": image_result_to_dict(result), "updated_message": message_to_dict(message)}

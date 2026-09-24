@@ -140,6 +140,17 @@ async def get_session_messages(
                 entry["webSearchResults"] = json.loads(m.web_search_results)
             except (json.JSONDecodeError, TypeError):
                 pass
+        # [P1.4] 带上 extra（目前只装 reasoning 与出图的 media 三键）。
+        # 不带的话「刷新后图还在」对普通聊天页不成立——图片全在 extra.media 里，
+        # 正文已不被出图改写（D1）。角色聊天页走 _serialize_character_message，
+        # 那里本来就带 extra，无需改动。
+        if m.extra:
+            try:
+                parsed_extra = json.loads(m.extra)
+            except (json.JSONDecodeError, TypeError):
+                parsed_extra = None
+            if isinstance(parsed_extra, dict) and parsed_extra:
+                entry["extra"] = parsed_extra
         result.append(entry)
     return result
 

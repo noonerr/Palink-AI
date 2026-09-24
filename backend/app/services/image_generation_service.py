@@ -19,6 +19,19 @@ from sqlalchemy.orm import Session
 from ..core import settings
 from ..models import Character, CharacterChatMessage, ChatMessage, User, UserSetting
 from .mcp_service import _is_safe_mcp_url
+from .message_media_service import (
+    DEFAULT_MEDIA_HEIGHT,
+    DEFAULT_MEDIA_WIDTH,
+    MEDIA_STATUS_FAILED,
+    MEDIA_STATUS_READY,
+    attach_message_media,
+    build_media_item,
+    media_for_api,
+    new_media_id,
+    normalize_media_id,
+    reset_media_for_retry,
+    update_media_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +59,29 @@ class GeneratedImage:
     model: Optional[str] = None
     revised_prompt: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+
+
+class MessageImageGenerationError(HTTPException):
+    """出图失败，且已把对应 media 项收敛成 `failed`。
+
+    附带 `media`（`media_for_api` 快照）与 `media_id`：事件层与前端据此把占位
+    收敛成失败态，**不必再查库**（此时调用方可能已经 rollback，ORM 对象不可用）。
+
+    继承 HTTPException 是为了让 API 端点保持原有状态码与 detail 语义——
+    对客户端而言这次改动完全透明。
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        media: Optional[dict[str, Any]] = None,
+        media_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.media = media
+        self.media_id = media_id
 
 
 def _config_path() -> str:
@@ -548,7 +584,59 @@ def message_to_dict(message: ChatMessage | CharacterChatMessage) -> dict[str, An
     if isinstance(message, CharacterChatMessage):
         payload["branch_id"] = message.branch_id
         payload["short_title"] = message.short_title
+    # [P1.3] 带上媒体快照：调用方（前端）据此把本地占位整组收敛成服务端真相，
+    # 而不是自己拼接 —— 服务端是 `extra.media` 的唯一权威。`content` 保持原值，
+    # 出图不再改写正文（D1）。
+    payload.update(media_for_api(message))
     return payload
+
+
+def build_image_generated_event(message: ChatMessage | CharacterChatMessage, image: GeneratedImage) -> dict[str, Any]:
+    """出图成功事件载荷（供 SSE / WS 六个发射点统一使用）。
+
+    `media` / `media_index` / `media_display` 是前端收敛 pending 的依据；
+    `content` 保留一个版本周期作为降级路径（旧前端仍按它替换正文）。
+    """
+    payload: dict[str, Any] = {
+        "type": "message_image_generated",
+        "message_id": message.id,
+        "image": image_result_to_dict(image),
+        "image_url": image.image_url,
+        "content": message.content,
+    }
+    payload.update(media_for_api(message))
+    return payload
+
+
+def build_image_generation_failed_event(
+    message_id: Any,
+    error: str,
+    *,
+    media: Optional[dict[str, Any]] = None,
+    media_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """出图失败事件载荷。
+
+    `media` 来自 `MessageImageGenerationError` 携带的快照——失败项此刻已经
+    以 `failed` 落库，前端拿到它就能把动画停掉并显示原因 + 重试。
+    """
+    payload: dict[str, Any] = {
+        "type": "message_image_generation_failed",
+        "message_id": message_id,
+        "error": error,
+    }
+    if isinstance(media, dict):
+        payload.update(media)
+    if media_id:
+        payload["media_id"] = media_id
+    return payload
+
+
+def _seed_from_result(result: GeneratedImage) -> Optional[int]:
+    """取上游真实 seed（SD WebUI 会把实际用的 seed 回在 metadata 里）。"""
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    seed = metadata.get("seed")
+    return seed if isinstance(seed, int) and not isinstance(seed, bool) else None
 
 
 async def generate_image_for_message(
@@ -557,13 +645,79 @@ async def generate_image_for_message(
     message: ChatMessage | CharacterChatMessage,
     context_messages: Sequence[ChatMessage | CharacterChatMessage],
     character: Optional[Character] = None,
+    *,
+    media_id: Optional[str] = None,
 ) -> GeneratedImage:
+    """为一条消息配图：结果进 `extra.media`，**正文一行都不改**（D1 / 原 B2）。
+
+    按 D3「乐观插入 + 事件收敛」分三段：
+
+    1. 先落一条 `pending` 项（含宽高，前端据此预留骨架比例，避免完成后 CLS）；
+    2. 成功 → 收敛为 `ready` + 本地 url + seed；
+    3. 失败 → 收敛为 `failed` + 原因，并抛出带快照的 `MessageImageGenerationError`。
+
+    `media_id` 是前端乐观占位时生成的 id（见 `normalize_media_id`）：给了就
+    **原位复位**同一项（重试不堆残骸），不给则新插一项。
+    """
     prompt = build_message_image_prompt(message, context_messages, character)
-    result = await generate_image(prompt=prompt, user_id=user.id)
-    message.content = append_generated_image_markdown(message.content, result.image_url)
-    db.add(message)
-    db.commit()
-    db.refresh(message)
+
+    # 未启用 / 服务商不可用必须挡在插 pending 之前：否则会留下一条永远
+    # 不会收敛的占位（用户盯着骨架转圈直到超时）。
+    config = _get_raw_config()
+    if not config.get("enabled", False):
+        raise HTTPException(status_code=400, detail="图片生成未启用")
+    provider = _get_active_provider(config)
+    width, height = _parse_size(provider.get("size"), DEFAULT_MEDIA_WIDTH, DEFAULT_MEDIA_HEIGHT)
+    provider_id = str(provider.get("id") or "")
+
+    adopted_id = normalize_media_id(media_id)
+    if adopted_id and reset_media_for_retry(
+        db,
+        message,
+        adopted_id,
+        prompt=prompt,
+        width=width,
+        height=height,
+        provider_id=provider_id,
+    ):
+        target_media_id = adopted_id
+    else:
+        target_media_id = adopted_id or new_media_id()
+        attach_message_media(
+            db,
+            message,
+            build_media_item(
+                media_id=target_media_id,
+                prompt=prompt,
+                width=width,
+                height=height,
+                provider_id=provider_id,
+            ),
+        )
+
+    try:
+        result = await generate_image(prompt=prompt, user_id=user.id)
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", "") or "图片生成失败")
+        status_code = int(getattr(exc, "status_code", 502) or 502)
+        update_media_status(db, message, target_media_id, MEDIA_STATUS_FAILED, error=detail)
+        raise MessageImageGenerationError(
+            status_code,
+            detail,
+            media=media_for_api(message),
+            media_id=target_media_id,
+        ) from exc
+
+    update_media_status(
+        db,
+        message,
+        target_media_id,
+        MEDIA_STATUS_READY,
+        url=result.image_url,
+        seed=_seed_from_result(result),
+        prompt=result.prompt,
+        provider_id=result.provider_id,
+    )
     return result
 
 

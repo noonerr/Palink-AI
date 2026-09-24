@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -41,10 +42,30 @@ PENDING_TIMEOUT_SECONDS = 120
 DEFAULT_MEDIA_WIDTH = 1024
 DEFAULT_MEDIA_HEIGHT = 1024
 
+#: 前端乐观占位生成的 id 形态（`new_media_id` 同款，12 位十六进制）。
+#: 采纳客户端 id 是为了「客户端与服务端认同一个 id」——见 normalize_media_id。
+_MEDIA_ID_PATTERN = re.compile(r"^m_[0-9a-fA-F]{6,32}$")
+
 
 def new_media_id() -> str:
     """生成我方自有的媒体 id（pending 期即可用于事件收敛定位）。"""
     return f"m_{uuid.uuid4().hex[:12]}"
+
+
+def normalize_media_id(raw: Any) -> Optional[str]:
+    """采纳调用方（前端）生成的 media id，不合法返回 None。
+
+    为什么允许外部 id：出图是「前端先插占位 → 后端收敛」的两段式，若两边各
+    生成一个 id，前端拿不到服务端 id 就只能靠位置/内容猜——失败重试会再插一项，
+    数组里堆出永久 failed 的残骸。采纳同一个 id 后，重试即**原位复位**，
+    本地占位与落库项天然同源，刷新前后也一致。
+
+    只接受严格形态（`m_` + 6~32 位十六进制），避免任意字符串进入 `extra`。
+    """
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    return candidate if _MEDIA_ID_PATTERN.match(candidate) else None
 
 
 def _load_extra(raw: Any) -> dict:
@@ -182,6 +203,64 @@ def update_media_status(
         if provider_id is not None:
             entry["provider_id"] = provider_id
         entry["updated_at"] = _utcnow_iso()
+        hit = True
+        break
+
+    if not hit:
+        return False
+
+    extra["media"] = media
+    message.extra = _dump_extra(extra)
+    db.add(message)
+    if commit:
+        db.commit()
+        db.refresh(message)
+    return True
+
+
+def reset_media_for_retry(
+    db: Session,
+    message: Any,
+    media_id: str,
+    *,
+    prompt: Optional[str] = None,
+    width: Any = None,
+    height: Any = None,
+    provider_id: Optional[str] = None,
+    commit: bool = True,
+) -> bool:
+    """把一条已存在的 media 复位为 `pending`，供**原位重试**。
+
+    与 `attach_message_media` 的区别：不新增数组项，只把旧项（通常是 `failed`）
+    翻回等待态。重试用它、首轮用 attach，数组里就不会堆永久失败的残骸。
+
+    必须刷新 `created_at`：D3 的超时收敛以它为基准，沿用旧值会让重试中的项被
+    立刻判成 `failed`（骨架一闪就变失败）。`url` / `error` 一并清空，
+    避免上一轮的结果跟到新一轮。返回是否命中。
+    """
+    extra = get_message_extra(message)
+    media = extra.get("media")
+    if not isinstance(media, list):
+        return False
+
+    hit = False
+    for entry in media:
+        if not isinstance(entry, dict) or entry.get("id") != media_id:
+            continue
+        entry["status"] = MEDIA_STATUS_PENDING
+        entry["url"] = None
+        entry["error"] = None
+        if prompt is not None:
+            entry["prompt"] = prompt
+        if _coerce_dimension(width):
+            entry["width"] = _coerce_dimension(width)
+        if _coerce_dimension(height):
+            entry["height"] = _coerce_dimension(height)
+        if provider_id is not None:
+            entry["provider_id"] = provider_id
+        now = _utcnow_iso()
+        entry["created_at"] = now
+        entry["updated_at"] = now
         hit = True
         break
 

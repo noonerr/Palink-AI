@@ -65,7 +65,11 @@ from ..services.slash_command_service import (
     is_slash_command,
 )
 from ..services.compact_title_service import generate_compact_title, rule_based_compact_title
-from ..services.image_generation_service import image_result_to_dict, maybe_generate_image_for_message
+from ..services.image_generation_service import (
+    build_image_generated_event,
+    build_image_generation_failed_event,
+    maybe_generate_image_for_message,
+)
 from ..services.plotline_service import check_plot_transition, advance_stage
 from ..models.plotline import SessionPlotLine, PlotStage
 
@@ -4824,21 +4828,18 @@ async def _character_chat_impl(
                 )
                 if not image:
                     return None
-                return {
-                    "type": "message_image_generated",
-                    "message_id": assistant_msg.id,
-                    "image": image_result_to_dict(image),
-                    "image_url": image.image_url,
-                    "content": assistant_msg.content,
-                }
+                # [P1.3] 载荷带 `extra.media` 快照：前端按它把 pending 占位收敛成
+                # ready，而不再靠 `content`（正文已不被出图改写）。
+                return build_image_generated_event(assistant_msg, image)
             except Exception as image_error:
                 save_db.rollback()
                 logger.warning(f"Auto character image generation failed: {image_error}")
-                return {
-                    "type": "message_image_generation_failed",
-                    "message_id": assistant_message_id,
-                    "error": "自动图片生成失败",
-                }
+                return build_image_generation_failed_event(
+                    assistant_message_id,
+                    str(getattr(image_error, "detail", "") or "自动图片生成失败"),
+                    media=getattr(image_error, "media", None),
+                    media_id=getattr(image_error, "media_id", None),
+                )
 
         try:
             initial_events = []

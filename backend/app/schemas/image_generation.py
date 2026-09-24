@@ -44,6 +44,17 @@ class ImageGenerationTestRequest(BaseModel):
         return value.strip()
 
 
+class ImageGenerationMediaRequest(BaseModel):
+    """为消息配图时的可选请求体。
+
+    `media_id` 由前端在插入乐观占位时生成，服务端**采纳**它（见
+    `message_media_service.normalize_media_id`）：两边认同一个 id，重试即原位
+    复位同一条 media，而不是每次失败都在数组里堆一项。不传则老行为（服务端生成）。
+    """
+
+    media_id: Optional[str] = Field(default=None, max_length=64)
+
+
 class ImageGenerationResult(BaseModel):
     image_url: str
     provider_id: str
