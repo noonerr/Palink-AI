@@ -265,7 +265,8 @@ Galgame 界面插件是为 SillyTavern 1.18 编写的完整 Galgame 化扩展（
 
 **方案**：
 - AutoCardUpdaterAPI：**默认不提供**（该插件未安装，行为与 ST 一致）。文档注明"剧情回顾需安装 AutoCardUpdater"。可选：提供 `exportTableAsJson()` 返回 `{}` 使插件走"无总结表"空态而非报错。
-- 小白盒 TTS：可选桩——`xiaobaixTts` 桥接到 Palink `tts` 服务（`frontend/src/lib/tts`），实现 `.speak()/.stop()/.player`。列为后续增强（P2-3b）。
+- 小白盒 TTS：可选桩——`xiaobaixTts` 桥接到 Palink `tts` 服务（`frontend/src/services/tts.ts`；2026-09-24 已把 `lib/tts` 重复实现并入此处，全项目仅此一份），实现 `.speak()/.stop()/.player`。列为后续增强（P2-3b）。
+  - ⚠ 施工提示（2026-09-24）：该文件现有 `speak()` / `stop()` / `preview()`，**尚无 `.player`**（`audioElement` 目前是私有字段），桥接前需先把它暴露出来。
 
 **验证**：剧情回顾显示"暂无历史记录"（与 ST 未装 AutoCardUpdater 行为一致，无报错）。
 
