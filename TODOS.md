@@ -7,6 +7,24 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·容器内端到端验收通过·已提交] P4 模型自主出图 S1~S4（2026-09-25）
+
+- **交付**：按 `docs/PLAN_模型自主出图_2026-09-24.md` 的 S1~S4 施工，并**先对该 PLAN 做了独立复核，三处设计缺陷已按更正施工**：
+  1. **S1 插入点更正**：PLAN 原文把内置工具分支插在 `tool_executor` 之后——但角色 WS 主路径（`run_character_chat_generation`，`websocket.py:1035` 附近）带前端 executor，`palink__*` 会被转发给前端而全路径失效。实际实现按**精确名**（非前缀通配，防误吞插件工具）在 `tool_executor` **之前**分派（`inference_dispatcher.py` 新增 `builtin_tool_handler` 参数 + `builtin_tools.py` 注册表）。
+  2. **S2 时序更正**：PLAN 的"调服务商出图→落 extra.media→推事件"在流中工具调用时无法成立（assistant 消息未落库、前端无消息 id）。实际实现：handler 只做**门控+暂存**（`ModelImageRequestGate`），真实生成延后到消息落库后由既有出图钩子（`maybe_broadcast_image_event` / SSE 同名钩子）执行，事件契约与前端收敛 100% 复用 P1；`generate_image_for_message` 新增 `prompt` 参数直接采用模型画面描述（不过启发式模板）。
+  3. **S3 触碰点更正**：PLAN 只写 character_ext.py（SSE 次要路径）。实际合并点两处即全覆盖：`run_character_chat_generation` 内（**自动覆盖 WS 主路径 + 群聊多发言者 + 续写**三个调用点）+ SSE（`character_ext.py`）。
+- **护栏（S4）**：用户级开关**复用 `auto_generate_chat_images`**（默认关，未加新列/迁移）+ 服务商就绪（新增 `is_image_generation_available()`）双门控，关闭时 tools **原对象透传**（逐字节一致）；每轮最多 1 张（第二次调用返回结构化拒绝）；上游失败走既有 failed 事件、生成不阻塞；**模型自主请求的图优先并替代本轮启发式自动图（防一消息双图）**；未放 `MCP_ALLOWED_ROLES`、未建 MCP 服务。
+- **验证口径（全部实测，非引用）**：容器内全量 `docker exec palink-ai-backend-1 sh -c "cd /app && python -m pytest tests/ -q"` **1299 passed / 42 skipped / 0 failed**（166s，镜像时效性已用 grep 标记核验）；宿主机同 1299/42；`npx tsc --noEmit` 0 错；`npx vitest run` 23 文件 / 365 passed | 3 skipped（前端零改动）。
+- **容器内端到端验收（0 付费，13/13，exit 0）**：跑的是生产代码本身——真实 dispatcher 工具循环 + 真实门控 + 真实 `generate_image_for_assistant_message` + 真实 PostgreSQL，只有 LLM 流与图片服务商是假的。覆盖：tools 送达上游含 `palink__generate_image` → 工具调用被服务端接住（未抛前端）→ 生成继续出正文 → gate 暂存模型描述 → 落库后 `extra.media` 1 项 ready、prompt 为模型原文、**正文零污染**；**反向验证**：关掉用户开关后门控 False、tools 原样透传（None）、上游收到的 tools 为空。现场（临时出图配置 / 用户开关 / 测试数据）已全部还原并复核。
+- **改坏证明 4 条（均改坏→红、还原→绿）**：① 内置分支挪到 `tool_executor` 之后 → `test_builtin_tool_wins_over_frontend_executor` 红；② `prompt or build_...` 改回只走模板 → `test_generate_image_for_message_uses_model_prompt` 红；③ executor 条件改回合并后 tools → 契约测试红；④ gate 消费挪回提前 return 之后 → 契约测试红。**教训**：改坏与跑测试写在同一条 Bash（`;` 串）会跑出假绿，必须分步、单独指定用例。
+- **本轮复核追加的四项更正（在 S1~S4 之上）**：
+  1. **`tool_executor` 不再被顺带点亮**：它的构造条件改为按**合并前**的 `_frontend_tools` 判定。否则前端未传插件工具时，内置工具的合并会把 tools 从 None 变非空、顺带点亮 executor——改前这条路径不存在，模型幻觉出的工具名会被 WS 转发给前端。
+  2. **gate 消费提到提前 return 之前**：无正文 / 生成报错时没有可挂载的 assistant 消息，请求只能作废；改为显式丢弃并留一条 info 日志（原实现静默丢弃，"模型答应了配图、用户看不到图"无从排查）。
+  3. **门控收敛为 `is_image_tool_enabled_for_user`**（出图服务内）：两处接线原本各有 8 行重复的「查 UserSetting + 判服务商就绪 + try/except」。
+  4. **落库后出图收敛为 `generate_image_for_assistant_message`**：两处接线原本各有 10 行 `if/else` 分支（模型 prompt 优先 vs 启发式），抽成一个生产函数后既消除重复、又可单测。
+- **遗留（需用户拍板，未擅自动）**：① S5 `<img_prompt>` 标记兜底路径（不支持工具调用的模型）未做，需跨 chunk 流式剥标记；② 出图成本记账未做（quota_service 纯 token 制，图片折算当量还是独立计数）；③ PLAN 与 SPEC P4 的方案偏离（工具调用为主 vs `generate_interceptor`+标记、"可按角色开"未采纳、开关粒度用户级）未回写文档；④ 浏览器 UI 级真机未做——前端本轮零改动、复用 P1 已真机验证过的同一事件契约，风险已由端到端脚本的服务端全链覆盖。
+- **改动文件**：`backend/app/services/builtin_tools.py`（新）、`inference_dispatcher.py`、`image_generation_service.py`、`api/websocket.py`、`api/character_ext.py`、`backend/tests/test_builtin_image_tool.py`（新，26 例）。前端零改动。
+
 ### [已完成·已真机验收] 接 `HANDOFF_语音复核与出图交接_2026-09-24.md`：TTS 独立复核 + 出图 P1.2~P1.6（本 agent，2026-09-24，5 笔 commit）
 
 - **交付**：`1112e48`（TTS 复核修复）→ `1196f26`（P1.2/P1.3 后端）→ `79ee887`（P1.3 前端收敛 + stream-engine 修复）→ `3360254`（P1.4/P1.5 渲染与按钮）→ `ca2c4c0`（P1.6 死代码 + 测试基建）。**未 push**（沿用红线口径）。
