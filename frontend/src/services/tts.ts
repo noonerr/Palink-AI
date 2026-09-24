@@ -17,14 +17,28 @@ interface SpeakOptions {
  */
 export type TtsMessageStatus = 'idle' | 'loading' | 'playing' | 'paused';
 
+/** 按消息点播的参数（音色绑定 / 角色）。 */
+export interface PlayMessageOptions {
+  voiceDescription?: string | null;
+  role?: 'character' | 'narrator';
+  characterId?: string;
+  bindingOverride?: Partial<TTSBindingPayload>;
+}
+
 /**
  * 缓存条目：一条消息只留一个条目，正文变了（编辑 / 换候选）就作废重取。
- * 合成结果分两类，都要缓存——否则「再点同一条无新请求」会被
+ * 合成结果分三类，都要缓存——否则「再点同一条无新请求」会被
  * api.tts.synthesize 那次元数据探测请求破坏（浏览器语音分支根本没有音频 blob）。
  */
+type TtsSegmentPart =
+  | { kind: 'browser'; text: string; gender: string }
+  | { kind: 'blob'; blob: Blob };
+
 type TtsCacheEntry =
   | { fingerprint: string; kind: 'blob'; blob: Blob }
-  | { fingerprint: string; kind: 'browser'; text: string; gender: string };
+  | { fingerprint: string; kind: 'browser'; text: string; gender: string }
+  /** 分段模式：一条消息的多段音频/浏览器语音，按顺序播完即整条结束。 */
+  | { fingerprint: string; kind: 'segments'; parts: TtsSegmentPart[] };
 
 /** 缓存条数上限：实测单条最长约 11 MB，不设上限长会话会失控。 */
 const TTS_CACHE_LIMIT = 20;
@@ -45,10 +59,18 @@ class TTSService {
   /** Map 的插入顺序即 LRU 顺序，最近使用过的会重新插入到末尾。 */
   private readonly blobCache = new Map<string, TtsCacheEntry>();
 
+  // [TTS 复核] 分段序列播放：序列期间音频元素的生命周期由 playSegmentParts 收尾，
+  // 全局 ended/error 监听必须让位，否则每段之间都会闪一次 idle（按钮图标抖动）。
+  private sequenceActive = false;
+  private sequenceFailed = false;
+  /** stop() 时释放 awaitPlaybackEnd，避免强停后序列仍挂在 await 上。 */
+  private pendingPlaybackEnd: (() => void) | null = null;
+
   constructor() {
     this.audioElement = new Audio();
     this.audioElement.addEventListener('ended', () => {
       this.isPlaying = false;
+      if (this.sequenceActive) return;
       this.abortController = null;
       this.revokeCurrentObjectUrl();
       this.setStatus(null, 'idle');
@@ -56,6 +78,11 @@ class TTSService {
     this.audioElement.addEventListener('error', (e) => {
       console.error('TTS audio error:', e);
       this.isPlaying = false;
+      if (this.sequenceActive) {
+        // 交给序列循环统一收敛：逐段弹窗会刷屏，且状态该由循环决定
+        this.sequenceFailed = true;
+        return;
+      }
       this.abortController = null;
       this.revokeCurrentObjectUrl();
       this.setStatus(null, 'idle');
@@ -504,13 +531,15 @@ class TTSService {
 
       utterance.onend = () => {
         this.isPlaying = false;
-        this.abortController = null;
+        // 序列播放期间不能清 abortController：它是「本次播放仍归我控制」的凭证，
+        // 清掉会让序列在下一段的 interrupted() 检查里误判成已被打断（表现为只播第一段）。
+        if (!this.sequenceActive) this.abortController = null;
         resolve();
       };
 
       utterance.onerror = (e) => {
         this.isPlaying = false;
-        this.abortController = null;
+        if (!this.sequenceActive) this.abortController = null;
         console.error('Speech synthesis error:', e);
         reject(e);
       };
@@ -524,6 +553,8 @@ class TTSService {
       this.abortController.abort();
       this.abortController = null;
     }
+    // 分段序列若正等在某段的 ended 上，先释放它——否则这个 await 永远不会回头
+    this.pendingPlaybackEnd?.();
     if (this.audioElement) {
       this.audioElement.pause();
       this.audioElement.currentTime = 0;
@@ -573,12 +604,7 @@ class TTSService {
   async playMessage(
     messageId: string | number,
     text: string,
-    options: {
-      voiceDescription?: string | null;
-      role?: 'character' | 'narrator';
-      characterId?: string;
-      bindingOverride?: Partial<TTSBindingPayload>;
-    } = {},
+    options: PlayMessageOptions = {},
   ): Promise<void> {
     const key = String(messageId);
 
@@ -613,40 +639,24 @@ class TTSService {
       let entry = this.cacheGet(key, cleanText);
 
       if (!entry) {
-        const meta = await api.tts.synthesize(
-          cleanText,
-          options.voiceDescription || undefined,
-          role === 'narrator',
-          role,
-          options.characterId,
-          options.bindingOverride,
-          { signal: controller.signal },
-        );
-        if (controller.signal.aborted || this.abortController !== controller) return;
-
-        this.currentProviderId = meta.provider_id || 'browser';
-
-        if ((meta.engine_type || meta.provider_id) === 'browser') {
-          entry = {
-            fingerprint: this.fingerprintOf(cleanText),
-            kind: 'browser',
-            text: meta.text || cleanText,
-            gender: meta.gender,
-          };
-        } else {
-          const blob = await this.requestAudioBlob(cleanText, {
-            voiceDescription: options.voiceDescription || undefined,
-            role,
-            characterId: options.characterId,
-            bindingOverride: options.bindingOverride,
-            signal: controller.signal,
-          });
-          entry = { fingerprint: this.fingerprintOf(cleanText), kind: 'blob', blob };
+        // [TTS 复核] 分段开关此前只作用于 legacy `speak()`，而点播路径完全不认它
+        // ——配置项形同虚设。这里接上：开启后按段落逐段合成播放（每段一次付费请求），
+        // 关闭时仍是「一次请求念全文」。默认关闭（backend/data/tts_config.json）。
+        if (this.segmentedPlayback) {
+          await this.playSegmentedMessage(key, cleanText, role, options, controller);
+          return;
         }
+        entry = await this.buildSingleEntry(cleanText, role, options, controller);
+        if (!entry) return;
         this.cacheSet(key, entry);
       }
 
       if (controller.signal.aborted || this.abortController !== controller) return;
+
+      if (entry.kind === 'segments') {
+        await this.playSegmentParts(key, entry.parts, controller);
+        return;
+      }
 
       if (entry.kind === 'browser') {
         this.setStatus(key, 'playing');
@@ -663,10 +673,226 @@ class TTSService {
       // 不是故障：浏览器语音被打断会以 onerror 形式 reject，不能弹错误。
       if (this.activeMessageId !== key) return;
       console.error('TTS playMessage error:', error);
-      toast.error(error instanceof Error ? error.message : '语音合成失败');
+      toast.error(this.friendlyErrorMessage(error));
       this.notifyIfActive(key, 'idle');
       this.revokeCurrentObjectUrl();
     }
+  }
+
+  /**
+   * 单段（默认）路径：一次元数据探测 + 一次音频请求念全文。
+   * 返回 null 表示中途被打断（调用方直接收工，不写缓存）。
+   */
+  private async buildSingleEntry(
+    cleanText: string,
+    role: 'character' | 'narrator',
+    options: PlayMessageOptions,
+    controller: AbortController,
+  ): Promise<TtsCacheEntry | null> {
+    const meta = await api.tts.synthesize(
+      cleanText,
+      options.voiceDescription || undefined,
+      role === 'narrator',
+      role,
+      options.characterId,
+      options.bindingOverride,
+      { signal: controller.signal },
+    );
+    if (controller.signal.aborted || this.abortController !== controller) return null;
+
+    this.currentProviderId = meta.provider_id || 'browser';
+    if ((meta.engine_type || meta.provider_id) === 'browser') {
+      return {
+        fingerprint: this.fingerprintOf(cleanText),
+        kind: 'browser',
+        text: meta.text || cleanText,
+        gender: meta.gender,
+      };
+    }
+
+    const blob = await this.requestAudioBlob(cleanText, {
+      voiceDescription: options.voiceDescription || undefined,
+      role,
+      characterId: options.characterId,
+      bindingOverride: options.bindingOverride,
+      signal: controller.signal,
+    });
+    return { fingerprint: this.fingerprintOf(cleanText), kind: 'blob', blob };
+  }
+
+  /**
+   * 分段路径：逐段「合成 → 播 → 等这一段播完」。
+   *
+   * 与单段路径的语义差别：单段时后端 `extract_dialogue_for_tts` 只念引号内对白、
+   * 旁白被丢弃；分段后旁白也会念出来（这就是这个开关存在的意义）。
+   * 代价是**请求数 = 段数**，故默认关闭（backend/data/tts_config.json）。
+   *
+   * 刻意**不预取全部段**：首段就绪即出声，不让用户等完整条合成。
+   * 也因此缓存要等整条播完才写——被打断的半成品不写，下次重点时重新合成。
+   */
+  private async playSegmentedMessage(
+    key: string,
+    cleanText: string,
+    role: 'character' | 'narrator',
+    options: PlayMessageOptions,
+    controller: AbortController,
+  ): Promise<void> {
+    const segments = this.parseSegments(cleanText);
+    const parts: TtsSegmentPart[] = [];
+
+    await this.runSequence(key, controller, async () => {
+      for (const segment of segments) {
+        if (this.interrupted(controller)) return false;
+        const segmentRole: 'character' | 'narrator' = segment.type === 'dialogue' ? role : 'narrator';
+        const characterId = segment.characterId ?? options.characterId;
+
+        const meta = await api.tts.synthesize(
+          segment.text,
+          options.voiceDescription || undefined,
+          segmentRole === 'narrator',
+          segmentRole,
+          characterId,
+          options.bindingOverride,
+          { signal: controller.signal },
+        );
+        if (this.interrupted(controller)) return false;
+
+        this.currentProviderId = meta.provider_id || 'browser';
+        let part: TtsSegmentPart;
+        if ((meta.engine_type || meta.provider_id) === 'browser') {
+          part = { kind: 'browser', text: meta.text || segment.text, gender: meta.gender };
+        } else {
+          const blob = await this.requestAudioBlob(segment.text, {
+            voiceDescription: options.voiceDescription || undefined,
+            role: segmentRole,
+            characterId,
+            bindingOverride: options.bindingOverride,
+            signal: controller.signal,
+          });
+          if (this.interrupted(controller)) return false;
+          part = { kind: 'blob', blob };
+        }
+
+        parts.push(part);
+        await this.playOnePart(key, part, controller);
+        if (this.interrupted(controller)) return false;
+        if (this.sequenceFailed) return 'failed';
+      }
+
+      this.cacheSet(key, {
+        fingerprint: this.fingerprintOf(cleanText),
+        kind: 'segments',
+        parts,
+      });
+      return true;
+    });
+  }
+
+  /** 播放已缓存的分段结果（命中缓存时走这条，零请求）。 */
+  private async playSegmentParts(
+    key: string,
+    parts: TtsSegmentPart[],
+    controller: AbortController,
+  ): Promise<void> {
+    await this.runSequence(key, controller, async () => {
+      for (const part of parts) {
+        await this.playOnePart(key, part, controller);
+        if (this.interrupted(controller)) return false;
+        if (this.sequenceFailed) return 'failed';
+      }
+      return true;
+    });
+  }
+
+  /**
+   * 序列外壳：状态收尾（idle / 清标志 / 回收 blob 地址）只在这里写一遍，
+   * 两条分段入口共用。**必须**保证无论正常播完、被 stop() 打断、还是某段解码
+   * 失败，都不会把按钮卡在 playing —— 「状态会不会卡住」是 P3 验收三问之一。
+   */
+  private async runSequence(
+    key: string,
+    controller: AbortController,
+    body: () => Promise<boolean | 'failed'>,
+  ): Promise<void> {
+    this.sequenceActive = true;
+    this.sequenceFailed = false;
+    try {
+      const result = await body();
+      if (result === 'failed') toast.error('语音播放失败');
+    } catch (error: unknown) {
+      if (!this.interrupted(controller)) {
+        console.error('TTS segmented playback error:', error);
+        toast.error(this.friendlyErrorMessage(error));
+      }
+    } finally {
+      // 只有仍持有控制权的序列才做收尾：被 stop()/换条打断时，新那条可能已经
+      // 接管了音频元素，这里再去 revoke / 清标志会把**新的**播放弄坏。
+      if (this.abortController === controller) {
+        this.sequenceActive = false;
+        this.sequenceFailed = false;
+        this.pendingPlaybackEnd = null;
+        this.revokeCurrentObjectUrl();
+        this.abortController = null;
+      }
+      this.notifyIfActive(key, 'idle');
+    }
+  }
+
+  /** 播一段并等它结束（音频等 ended；浏览器语音本身 await 到 onend）。 */
+  private async playOnePart(
+    key: string,
+    part: TtsSegmentPart,
+    controller: AbortController,
+  ): Promise<void> {
+    this.setStatus(key, 'playing');
+    if (part.kind === 'browser') {
+      await this.speakWithWebSpeechAPI(part.text, part.gender);
+      return;
+    }
+    await this.playBlob(part.blob, controller.signal);
+    // 被 stop() 打断时 playBlob 会直接返回（signal 已 abort），此时**没有**
+    // ended 事件会来——不等了，否则这个 await 永远不回头。
+    if (this.interrupted(controller)) return;
+    await this.awaitPlaybackEnd();
+  }
+
+  /** 本序列是否已失去控制权（被 stop() 或被别的消息接管）。 */
+  private interrupted(controller: AbortController): boolean {
+    return controller.signal.aborted || this.abortController !== controller;
+  }
+
+  /** 等当前音频自然播完（ended）或出错（error）；stop() 会主动释放。 */
+  private awaitPlaybackEnd(): Promise<void> {
+    const element = this.audioElement;
+    if (!element) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = () => {
+        element.removeEventListener('ended', finish);
+        element.removeEventListener('error', finish);
+        this.pendingPlaybackEnd = null;
+        resolve();
+      };
+      this.pendingPlaybackEnd = finish;
+      element.addEventListener('ended', finish);
+      element.addEventListener('error', finish);
+    });
+  }
+
+  /**
+   * [TTS 复核] 把底层异常翻成人话。
+   *
+   * `fetch` 在网络层失败时抛的是 `TypeError: Failed to fetch` / Safari 的
+   * `Load failed`——直接把 message 弹给用户等于没提示（用户看不懂，也不知道
+   * 该重试还是该改配置）。这里统一成中文，其余保持后端给的原文（后端文案
+   * 已经是人话，例如「语音合成太频繁，请稍后再试（约 30 秒后可重试）」）。
+   */
+  private friendlyErrorMessage(error: unknown): string {
+    const raw = error instanceof Error ? error.message : '';
+    if (!raw) return '语音合成失败';
+    if (/failed to fetch|load failed|networkerror|network request failed/i.test(raw)) {
+      return '网络异常，语音加载失败，请检查网络后重试';
+    }
+    return raw;
   }
 
   isPlayingState(): boolean {

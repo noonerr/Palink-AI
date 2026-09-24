@@ -30,7 +30,7 @@ vi.mock('sonner', () => ({
   toast: { error: h.toastError, warning: h.toastWarning, success: vi.fn(), info: vi.fn() },
 }));
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type TtsModule = typeof import('@/services/tts');
 let ttsService: TtsModule['ttsService'];
@@ -39,6 +39,8 @@ const playMock = vi.fn();
 const pauseMock = vi.fn();
 const mediaListeners = new Map<string, Set<(e: unknown) => void>>();
 let fetchMock: ReturnType<typeof vi.fn>;
+/** `URL.revokeObjectURL` 桩：用于断言「被打断的旧序列不回收新那条的 blob 地址」。 */
+let revokeObjectUrlMock: ReturnType<typeof vi.fn>;
 
 function installMediaStubs(): void {
   Object.defineProperty(HTMLMediaElement.prototype, 'play', {
@@ -137,7 +139,8 @@ beforeAll(async () => {
   (globalThis.URL as unknown as Record<string, unknown>).createObjectURL = vi.fn(
     () => 'blob:http://localhost/mock',
   );
-  (globalThis.URL as unknown as Record<string, unknown>).revokeObjectURL = vi.fn();
+  revokeObjectUrlMock = vi.fn();
+  (globalThis.URL as unknown as Record<string, unknown>).revokeObjectURL = revokeObjectUrlMock;
   const mod = await import('@/services/tts');
   ttsService = mod.ttsService;
 });
@@ -271,5 +274,126 @@ describe('TTS 点播播放器', () => {
     expect(ttsService.cleanTextForTTS('<b>你好</b>世界')).toBe('你好世界');
     expect(ttsService.cleanTextForTTS('她说：<br/>走吧')).toBe('她说：走吧');
     expect(ttsService.cleanTextForTTS('这里有 3 < 5 的写法')).toBe('这里有 3 < 5 的写法');
+  });
+
+  it('网络层异常翻成中文提示（不把 Failed to fetch 直接弹给用户）', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await ttsService.playMessage('m-a', 'A 的正文');
+
+    expect(h.toastError).toHaveBeenCalledTimes(1);
+    expect(String(h.toastError.mock.calls[0][0])).toContain('网络异常');
+    expect(ttsService.getStatus('m-a')).toBe('idle');
+  });
+});
+
+/**
+ * [TTS 复核] 分段播放（`segmented_playback`）在点播路径上的行为。
+ *
+ * 改之前这个开关**只作用于 legacy `speak()`**，而 `speak()` 已经没有生产调用方
+ * ——配置项形同虚设。这里锁定接通后的语义：
+ * 每段一次合成请求（成本 = 段数，故默认关闭）、逐段顺序播放、缓存命中不重发、
+ * 中途换条能立即打断且不把新那条的播放弄坏。
+ */
+describe('TTS 分段播放（segmented_playback）', () => {
+  beforeEach(() => {
+    ttsService.segmentedPlayback = false;
+  });
+
+  afterEach(() => {
+    ttsService.segmentedPlayback = false;
+  });
+
+  it('开启后按段请求并顺序播完（浏览器语音分支：可直接断言段数）', async () => {
+    installSpeechSynthesis();
+    useBrowserProvider();
+    ttsService.segmentedPlayback = true;
+
+    // 三段：旁白 / 对白 / 旁白
+    await ttsService.playMessage('m-a', '她笑了。“走吧。”他看着窗外。');
+
+    // 每段一次元数据探测；浏览器分支没有音频字节请求
+    expect(h.synthesize.mock.calls.length).toBe(3);
+    expect(fetchMock.mock.calls.length).toBe(0);
+    expect(ttsService.getStatus('m-a')).toBe('idle');
+  });
+
+  it('关闭时仍是一次请求念全文（默认行为不受影响）', async () => {
+    installSpeechSynthesis();
+    useBrowserProvider();
+
+    await ttsService.playMessage('m-a', '她笑了。“走吧。”他看着窗外。');
+
+    expect(h.synthesize.mock.calls.length).toBe(1);
+  });
+
+  it('分段结果同样进缓存：再点同一条零新请求', async () => {
+    installSpeechSynthesis();
+    useBrowserProvider();
+    ttsService.segmentedPlayback = true;
+
+    await ttsService.playMessage('m-a', '她笑了。“走吧。”');
+    const first = h.synthesize.mock.calls.length;
+    expect(first).toBe(2);
+
+    ttsService.stop();
+    await ttsService.playMessage('m-a', '她笑了。“走吧。”');
+
+    expect(h.synthesize.mock.calls.length).toBe(first);
+  });
+
+  it('后端音频分支：前一段播完才播下一段（不是叠播）', async () => {
+    ttsService.segmentedPlayback = true;
+
+    // 两段：对白 + 旁白
+    const done = ttsService.playMessage('m-a', '“A。”中间那句。');
+
+    // 首段就绪即出声（不预取全部段），此时第二段还没开始请求
+    await vi.waitFor(() => expect(playMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls.length).toBe(1);
+
+    fireMediaEvent('ended'); // 第一段播完
+    await vi.waitFor(() => expect(playMock).toHaveBeenCalledTimes(2));
+
+    fireMediaEvent('ended'); // 第二段播完
+    await done;
+
+    expect(fetchMock.mock.calls.length).toBe(2);
+    expect(ttsService.getStatus('m-a')).toBe('idle');
+  });
+
+  it('分段播放中切到别的消息：旧序列立即停，新那条照常播', async () => {
+    ttsService.segmentedPlayback = true;
+
+    const first = ttsService.playMessage('m-a', '“A。”中间那句。');
+    await vi.waitFor(() => expect(playMock).toHaveBeenCalledTimes(1));
+
+    // m-b 也开着分段：这里不 await 它的完整播完，只看它是否接管了播放
+    const second = ttsService.playMessage('m-b', 'B 的正文');
+    await vi.waitFor(() => expect(playMock).toHaveBeenCalledTimes(2));
+    await first;
+
+    expect(ttsService.getStatus('m-a')).toBe('idle');
+    expect(ttsService.getStatus('m-b')).toBe('playing');
+    // stop() 回收了 m-a 的 blob 地址（1 次）；被打断的旧序列**不得**再回收一次
+    // ——那会把 m-b 正在播的 blob 地址释放掉（真实浏览器里表现为新那条瞬间哑掉）。
+    expect(revokeObjectUrlMock.mock.calls.length).toBe(1);
+
+    // 收尾：让 m-b 播完，避免把播放态留给后面的用例
+    fireMediaEvent('ended');
+    await second;
+    expect(ttsService.getStatus('m-b')).toBe('idle');
+  });
+
+  it('分段播放中 stop() 不会挂在 await 上（状态能回到 idle）', async () => {
+    ttsService.segmentedPlayback = true;
+
+    const done = ttsService.playMessage('m-a', '“A。”中间那句。“B。”');
+    await vi.waitFor(() => expect(playMock).toHaveBeenCalledTimes(1));
+
+    ttsService.stop();
+    await done;
+
+    expect(ttsService.getStatus('m-a')).toBe('idle');
   });
 });
