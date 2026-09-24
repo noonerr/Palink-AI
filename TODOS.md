@@ -7,7 +7,7 @@
 
 ## 待办任务（进行中 / 未完成）
 
-### [已完成·容器内端到端验收通过·已提交] P4 模型自主出图 S1~S4（2026-09-25）
+### [已完成·真机验收通过（真实模型 + 本地虚拟服务商）·已提交] P4 模型自主出图 S1~S4（2026-09-25）
 
 - **交付**：按 `docs/PLAN_模型自主出图_2026-09-24.md` 的 S1~S4 施工，并**先对该 PLAN 做了独立复核，三处设计缺陷已按更正施工**：
   1. **S1 插入点更正**：PLAN 原文把内置工具分支插在 `tool_executor` 之后——但角色 WS 主路径（`run_character_chat_generation`，`websocket.py:1035` 附近）带前端 executor，`palink__*` 会被转发给前端而全路径失效。实际实现按**精确名**（非前缀通配，防误吞插件工具）在 `tool_executor` **之前**分派（`inference_dispatcher.py` 新增 `builtin_tool_handler` 参数 + `builtin_tools.py` 注册表）。
@@ -16,6 +16,12 @@
 - **护栏（S4）**：用户级开关**复用 `auto_generate_chat_images`**（默认关，未加新列/迁移）+ 服务商就绪（新增 `is_image_generation_available()`）双门控，关闭时 tools **原对象透传**（逐字节一致）；每轮最多 1 张（第二次调用返回结构化拒绝）；上游失败走既有 failed 事件、生成不阻塞；**模型自主请求的图优先并替代本轮启发式自动图（防一消息双图）**；未放 `MCP_ALLOWED_ROLES`、未建 MCP 服务。
 - **验证口径（全部实测，非引用）**：容器内全量 `docker exec palink-ai-backend-1 sh -c "cd /app && python -m pytest tests/ -q"` **1299 passed / 42 skipped / 0 failed**（166s，镜像时效性已用 grep 标记核验）；宿主机同 1299/42；`npx tsc --noEmit` 0 错；`npx vitest run` 23 文件 / 365 passed | 3 skipped（前端零改动）。
 - **容器内端到端验收（0 付费，13/13，exit 0）**：跑的是生产代码本身——真实 dispatcher 工具循环 + 真实门控 + 真实 `generate_image_for_assistant_message` + 真实 PostgreSQL，只有 LLM 流与图片服务商是假的。覆盖：tools 送达上游含 `palink__generate_image` → 工具调用被服务端接住（未抛前端）→ 生成继续出正文 → gate 暂存模型描述 → 落库后 `extra.media` 1 项 ready、prompt 为模型原文、**正文零污染**；**反向验证**：关掉用户开关后门控 False、tools 原样透传（None）、上游收到的 tools 为空。现场（临时出图配置 / 用户开关 / 测试数据）已全部还原并复核。
+- **真机验收（浏览器真实操作 + 真实模型 + 本地虚拟服务商，2026-09-25）**：真实模型走 `deepseek-v4-flash`（经 new-api 网关，实测**流式下也会主动发起 tool_call**）；出图与语音均指向本地起的虚拟服务（图片走 OpenAI 兼容 `/v1/images/generations` 返 PNG；语音走 **coqui 通道** `GET /api/tts`，因为 `custom_api` 通道有公网 URL 校验会挡内网，而 coqui 无校验且固定 `audio/wav`）。全流程用浏览器模拟真实用户：注册账号 → 建角色 → 开始对话 → 发消息 → 点朗读 → 点手动配图 → 关开关后再发一轮。硬证据：
+  - **模型自主出图成立**：虚拟服务收到的 prompt 是**模型自己写的中文画面描述**（"暴风雨之夜的古老灯塔内部，银灰色短发的年轻女守塔人…"），不是启发式模板 `Create an illustration for…`；图 768×1024 落库、原位显示、刷新后仍在。
+  - **朗读成立**：虚拟服务收到 931 字**对白**（`extract_dialogue_for_tts` 生效），返回 192KB WAV，页面按钮切到"暂停朗读"→ 真在播。
+  - **手动配图成立**：点击后虚拟服务收到请求，该消息 `extra.media` 由 1 项变 2 项（前端按设计只展示最新一条并自动聚焦）。
+  - **反向验证成立**：关掉 `auto_generate_chat_images` 后再发"再帮我画一张"，AI 正常回正文（消息 2290/2291），**虚拟服务零新请求**。
+  - 现场已全部还原：出图配置删除（原本不存在）、`tts_config.json` 与 global 音色绑定改回 `xiaomi_mimo`/`冰糖`、虚拟服务进程已停、临时脚本已删。
 - **改坏证明 4 条（均改坏→红、还原→绿）**：① 内置分支挪到 `tool_executor` 之后 → `test_builtin_tool_wins_over_frontend_executor` 红；② `prompt or build_...` 改回只走模板 → `test_generate_image_for_message_uses_model_prompt` 红；③ executor 条件改回合并后 tools → 契约测试红；④ gate 消费挪回提前 return 之后 → 契约测试红。**教训**：改坏与跑测试写在同一条 Bash（`;` 串）会跑出假绿，必须分步、单独指定用例。
 - **本轮复核追加的四项更正（在 S1~S4 之上）**：
   1. **`tool_executor` 不再被顺带点亮**：它的构造条件改为按**合并前**的 `_frontend_tools` 判定。否则前端未传插件工具时，内置工具的合并会把 tools 从 None 变非空、顺带点亮 executor——改前这条路径不存在，模型幻觉出的工具名会被 WS 转发给前端。
