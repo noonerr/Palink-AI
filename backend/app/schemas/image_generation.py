@@ -2,11 +2,16 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+# 服务层 `_validate_provider` / `image_generation_service.py` 本来就支持这三种类型
+# （见 _generate_sd_webui / _generate_comfyui），此前只有这里的 Literal 卡死了
+# 另外两种，导致自建 SD WebUI / ComfyUI 的配置根本存不进去。
+ImageGenerationProviderType = Literal["openai_compatible", "sd_webui", "comfyui"]
+
 
 class ImageGenerationProvider(BaseModel):
     id: str = "openai_compatible"
     name: str = "OpenAI Compatible"
-    type: Literal["openai_compatible"] = "openai_compatible"
+    type: ImageGenerationProviderType = "openai_compatible"
     enabled: bool = True
     base_url: str = ""
     api_key: str = ""

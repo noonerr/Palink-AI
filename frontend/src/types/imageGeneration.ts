@@ -1,7 +1,14 @@
+/**
+ * 与后端 schemas/image_generation.py 的 ImageGenerationProviderType 一一对应。
+ * 服务层支持三种，此前这里和后端 schema 都是窄字面量，导致自建 SD WebUI /
+ * ComfyUI 的配置存不进去。两处必须同步改，否则 tsc 直接挂。
+ */
+export type ImageGenerationProviderType = 'openai_compatible' | 'sd_webui' | 'comfyui';
+
 export interface ImageGenerationProvider {
   id: string;
   name: string;
-  type: 'openai_compatible';
+  type: ImageGenerationProviderType;
   enabled: boolean;
   base_url: string;
   api_key: string;

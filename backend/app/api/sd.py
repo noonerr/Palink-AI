@@ -146,7 +146,14 @@ async def sd_generate(
             raise HTTPException(status_code=500, detail=f"SD proxy generate failed: {exc}")
     provider = get_sd_webui_provider()
     if not provider or not provider.get("base_url"):
-        return {"base64": [], "seed": -1}
+        # [D6] 原来是 return {"base64": [], "seed": -1} —— 200 加一个空数组。
+        # 调用方（含 ST 出图插件）拿到的是一次"成功"但没有图的结果，用户看到
+        # 的就是"点了没反应"，无从判断是没配置、服务挂了还是提示词有问题。
+        # 未配置就明确报错。本仓库内无任何代码依赖此前的空数组行为。
+        raise HTTPException(
+            status_code=400,
+            detail="SD WebUI 未配置：请先添加并启用 type 为 sd_webui 的图片生成服务商",
+        )
     try:
         return await generate_sd_webui_image(
             prompt=request.prompt,
@@ -186,7 +193,14 @@ async def sd_img2img(
             raise HTTPException(status_code=500, detail=f"SD proxy img2img failed: {exc}")
     provider = get_sd_webui_provider()
     if not provider or not provider.get("base_url"):
-        return {"base64": [], "seed": -1}
+        # [D6] 原来是 return {"base64": [], "seed": -1} —— 200 加一个空数组。
+        # 调用方（含 ST 出图插件）拿到的是一次"成功"但没有图的结果，用户看到
+        # 的就是"点了没反应"，无从判断是没配置、服务挂了还是提示词有问题。
+        # 未配置就明确报错。本仓库内无任何代码依赖此前的空数组行为。
+        raise HTTPException(
+            status_code=400,
+            detail="SD WebUI 未配置：请先添加并启用 type 为 sd_webui 的图片生成服务商",
+        )
     if not request.init_images:
         raise HTTPException(status_code=400, detail="init_images is required")
     try:

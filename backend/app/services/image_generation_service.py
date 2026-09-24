@@ -242,7 +242,15 @@ def _get_active_provider(config: dict[str, Any], provider_id: Optional[str] = No
         raise HTTPException(status_code=400, detail="图片生成服务商不存在")
     if not provider.get("enabled", True):
         raise HTTPException(status_code=400, detail="图片生成服务商未启用")
-    if not provider.get("base_url") or not provider.get("api_key") or not provider.get("model"):
+    if not provider.get("base_url"):
+        raise HTTPException(status_code=400, detail="图片生成服务尚未配置完整")
+    # [P0] api_key / model 的强制只对 OpenAI 兼容端点成立。自建 SD WebUI 与
+    # ComfyUI 通常是本机无鉴权服务（没有 api_key），模型也是容器里已加载的
+    # checkpoint（没有 model 名）。此前要求三者齐全，等于把这两类配置直接
+    # 400 拦在门口——即使 schema 放开了也照样出不了图。
+    if str(provider.get("type") or "openai_compatible") == "openai_compatible" and (
+        not provider.get("api_key") or not provider.get("model")
+    ):
         raise HTTPException(status_code=400, detail="图片生成服务尚未配置完整")
     return provider
 
@@ -294,6 +302,101 @@ def _save_generated_image(user_id: int, image_bytes: bytes) -> str:
     return f"/api/uploads/generated-images/{filename}"
 
 
+def _parse_size(raw: Any, default_width: int, default_height: int) -> tuple[int, int]:
+    """把 provider.size（"1024x1024" / "1024*1024"）解析成宽高，失败退回默认值。"""
+    text = str(raw or "").strip().lower().replace("*", "x")
+    if "x" in text:
+        left, _, right = text.partition("x")
+        try:
+            width = int(left.strip())
+            height = int(right.strip())
+            if width > 0 and height > 0:
+                return width, height
+        except ValueError:
+            pass
+    return default_width, default_height
+
+
+def _decode_b64_image(item: Any) -> bytes:
+    """SD 系返回的图片是裸 base64（也容忍 data URL 形态与内部换行）。"""
+    text = str(item or "").strip()
+    if text.startswith("data:"):
+        return _decode_data_url(text)
+    try:
+        return base64.b64decode("".join(text.split()), validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="图片生成服务返回的 base64 无效") from exc
+
+
+def _result_from_base64(
+    provider: dict[str, Any],
+    prompt: str,
+    user_id: int,
+    images: Any,
+    seed: Any = None,
+) -> GeneratedImage:
+    """把「裸 base64 列表」统一落盘并组装成 GeneratedImage。"""
+    if not images or not isinstance(images, list):
+        raise HTTPException(status_code=502, detail="图片生成服务未返回图片数据")
+    image_bytes = _decode_b64_image(images[0])
+    local_url = _save_generated_image(user_id, image_bytes)
+    metadata: dict[str, Any] = {"size": provider.get("size")}
+    if seed is not None:
+        metadata["seed"] = seed
+    return GeneratedImage(
+        image_url=local_url,
+        prompt=prompt,
+        provider_id=provider["id"],
+        model=provider.get("model") or None,
+        metadata=metadata,
+    )
+
+
+async def _generate_image_via_sd_webui(
+    provider: dict[str, Any], prompt: str, user_id: int
+) -> GeneratedImage:
+    base_url = str(provider.get("base_url") or "")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="SD WebUI 未配置 Base URL")
+    width, height = _parse_size(provider.get("size"), 512, 512)
+    result = await _generate_sd_webui(
+        base_url=base_url,
+        prompt=prompt,
+        width=width,
+        height=height,
+        timeout_seconds=int(provider.get("timeout_seconds") or 120),
+        api_key=provider.get("api_key", ""),
+    )
+    return _result_from_base64(provider, prompt, user_id, result.get("base64"), result.get("seed"))
+
+
+async def _generate_image_via_comfyui(
+    provider: dict[str, Any], prompt: str, user_id: int
+) -> GeneratedImage:
+    base_url = str(provider.get("base_url") or "")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="ComfyUI 未配置 Base URL")
+    width, height = _parse_size(provider.get("size"), 512, 512)
+    result = await _generate_comfyui(
+        base_url=base_url,
+        prompt=prompt,
+        width=width,
+        height=height,
+        timeout_seconds=int(provider.get("timeout_seconds") or 120),
+    )
+    images = result.get("base64") or []
+    if not images:
+        # ⚠ _generate_comfyui 目前只把工作流提交给 /prompt（末端是 SaveImage 节点），
+        # **不取回图片**，base64 恒为空。这里显式报错而不是让它走到
+        # 「未返回图片数据」——后者会让用户以为是自己配错了。
+        # 要真正出图必须补 /history/{prompt_id} → /view 的取图流程，属独立议题。
+        raise HTTPException(
+            status_code=501,
+            detail="ComfyUI 出图尚未实现取图（当前仅提交工作流），请改用 OpenAI 兼容或 SD WebUI",
+        )
+    return _result_from_base64(provider, prompt, user_id, images, result.get("seed"))
+
+
 async def generate_image(prompt: str, user_id: int, provider_id: Optional[str] = None) -> GeneratedImage:
     config = _get_raw_config()
     if not config.get("enabled", False):
@@ -301,6 +404,17 @@ async def generate_image(prompt: str, user_id: int, provider_id: Optional[str] =
 
     provider = _get_active_provider(config, provider_id)
     timeout_seconds = int(provider.get("timeout_seconds") or 120)
+
+    # [P0] 按 provider.type 分发。此前这里**完全不看 type**，恒发 OpenAI 形状的
+    # POST <base>/v1/images/generations；而 _generate_sd_webui / _generate_comfyui
+    # 只被 sd.py 的代理端点调用，消息出图路径根本走不到它们——所以即使放开
+    # schema 让配置存得进去，自建 SD / ComfyUI 依然出不了图。这才是真堵点。
+    provider_type = str(provider.get("type") or "openai_compatible")
+    if provider_type == "sd_webui":
+        return await _generate_image_via_sd_webui(provider, prompt, user_id)
+    if provider_type == "comfyui":
+        return await _generate_image_via_comfyui(provider, prompt, user_id)
+
     payload: dict[str, Any] = {
         "model": provider["model"],
         "prompt": prompt,
