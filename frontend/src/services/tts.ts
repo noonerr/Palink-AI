@@ -11,6 +11,24 @@ interface SpeakOptions {
   segmentedPlayback?: boolean;
 }
 
+/**
+ * 单条消息的语音播放状态（供工具栏按钮渲染三态）。
+ * idle=未播、loading=合成中（可能几十秒）、playing=播放中、paused=已暂停。
+ */
+export type TtsMessageStatus = 'idle' | 'loading' | 'playing' | 'paused';
+
+/**
+ * 缓存条目：一条消息只留一个条目，正文变了（编辑 / 换候选）就作废重取。
+ * 合成结果分两类，都要缓存——否则「再点同一条无新请求」会被
+ * api.tts.synthesize 那次元数据探测请求破坏（浏览器语音分支根本没有音频 blob）。
+ */
+type TtsCacheEntry =
+  | { fingerprint: string; kind: 'blob'; blob: Blob }
+  | { fingerprint: string; kind: 'browser'; text: string; gender: string };
+
+/** 缓存条数上限：实测单条最长约 11 MB，不设上限长会话会失控。 */
+const TTS_CACHE_LIMIT = 20;
+
 class TTSService {
   private audioElement: HTMLAudioElement | null = null;
   private isPlaying = false;
@@ -19,20 +37,103 @@ class TTSService {
   private abortController: AbortController | null = null;
   private _segmentedPlayback: boolean | null = null;
 
+  // [TTS-P3] 按消息点播所需的状态与缓存。放在类内而非 React state，
+  // 避免把播放状态经 prop 下发（那会破坏 Message 的 memo 收益）。
+  private activeMessageId: string | null = null;
+  private activeStatus: TtsMessageStatus = 'idle';
+  private readonly statusListeners = new Set<() => void>();
+  /** Map 的插入顺序即 LRU 顺序，最近使用过的会重新插入到末尾。 */
+  private readonly blobCache = new Map<string, TtsCacheEntry>();
+
   constructor() {
     this.audioElement = new Audio();
     this.audioElement.addEventListener('ended', () => {
       this.isPlaying = false;
       this.abortController = null;
       this.revokeCurrentObjectUrl();
+      this.setStatus(null, 'idle');
     });
     this.audioElement.addEventListener('error', (e) => {
       console.error('TTS audio error:', e);
       this.isPlaying = false;
       this.abortController = null;
       this.revokeCurrentObjectUrl();
+      this.setStatus(null, 'idle');
       toast.error('语音播放失败');
     });
+  }
+
+  // ============================================================
+  // [TTS-P3] 播放状态（可订阅）+ 按消息音频缓存
+  // ============================================================
+
+  /** 当前正在加载/播放的那条消息的 id；未播任何东西时为 null。 */
+  getActiveMessageId(): string | null {
+    return this.activeMessageId;
+  }
+
+  getStatus(messageId: string | number): TtsMessageStatus {
+    const key = String(messageId);
+    return this.activeMessageId === key ? this.activeStatus : 'idle';
+  }
+
+  /** 供 useSyncExternalStore 订阅；返回值是取消订阅函数。 */
+  subscribe(listener: () => void): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  private setStatus(messageId: string | null, status: TtsMessageStatus): void {
+    this.activeStatus = status;
+    // idle 表示「没有任何东西在播/在等」，此时不该再持有归属消息
+    this.activeMessageId = status === 'idle' ? null : messageId;
+    this.statusListeners.forEach((listener) => listener());
+  }
+
+  private notifyIfActive(messageId: string, status: TtsMessageStatus): void {
+    if (this.activeMessageId === messageId) this.setStatus(messageId, status);
+  }
+
+  /**
+   * 正文指纹：编辑消息或切换候选后 content 会变，但 message.id 不变，
+   * 只按 messageId 缓存会播出旧音频。用长度 + 首尾片段判定足够便宜且够用。
+   */
+  private fingerprintOf(text: string): string {
+    return `${text.length}:${text.slice(0, 64)}:${text.slice(-64)}`;
+  }
+
+  private cacheGet(messageId: string, text: string): TtsCacheEntry | null {
+    const entry = this.blobCache.get(messageId);
+    if (!entry) return null;
+    if (entry.fingerprint !== this.fingerprintOf(text)) {
+      this.blobCache.delete(messageId);
+      return null;
+    }
+    // 命中即标记为最近使用：删掉再插回末尾
+    this.blobCache.delete(messageId);
+    this.blobCache.set(messageId, entry);
+    return entry;
+  }
+
+  private cacheSet(messageId: string, entry: TtsCacheEntry): void {
+    this.blobCache.delete(messageId);
+    this.blobCache.set(messageId, entry);
+    while (this.blobCache.size > TTS_CACHE_LIMIT) {
+      const oldest = this.blobCache.keys().next();
+      if (oldest.done) break;
+      this.blobCache.delete(oldest.value);
+    }
+  }
+
+  /** 清空缓存（退出会话 / 测试用）。 */
+  clearCache(): void {
+    this.blobCache.clear();
+  }
+
+  getCacheSize(): number {
+    return this.blobCache.size;
   }
 
   get segmentedPlayback(): boolean {
@@ -73,6 +174,10 @@ class TTSService {
     cleanText = cleanText.replace(/\[Voice[：:]\s*[^\]]+\]/gi, '');
     cleanText = cleanText.replace(/<state[\s\S]*?<\/state>/gi, '');
     cleanText = cleanText.replace(/\[state\][\s\S]*?\[\/state\]/gi, '');
+    // [TTS-P3] 正文可能仍带 HTML 标签（角色卡的富文本 / 内联样式），
+    // 直接送合成会把标签念出来。只剔「< 紧跟字母或 /」的成对标签形态，
+    // 避免误伤「3 < 5」这类正文里的裸小于号。
+    cleanText = cleanText.replace(/<\/?[A-Za-z][^<>]*>/g, '');
     cleanText = cleanText.replace(/---[\s\S]*$/g, '');
     return cleanText.trim();
   }
@@ -268,6 +373,74 @@ class TTSService {
     });
   }
 
+  /**
+   * [TTS-P3] 只负责「把音频字节拿到手」，不负责播放——拆开之后
+   * 点播路径可以先查缓存，429 也能被单独识别成人话。
+   */
+  private async requestAudioBlob(
+    text: string,
+    opts: {
+      voiceDescription?: string;
+      role: 'character' | 'narrator';
+      characterId?: string;
+      bindingOverride?: Partial<TTSBindingPayload>;
+      preview?: boolean;
+      signal?: AbortSignal;
+    },
+  ): Promise<Blob> {
+    const baseUrl = window.location.origin;
+    const response = await fetch(`${baseUrl}${opts.preview ? '/api/tts/preview/audio' : '/api/tts/audio'}`, {
+      method: 'POST',
+      credentials: 'include',
+      signal: opts.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        // [CSRF] N8-c 终态后手动 fetch 通道补 X-CSRF-Token 头
+        ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
+      },
+      body: JSON.stringify({
+        text,
+        voice_description: opts.voiceDescription,
+        is_narrator: opts.role === 'narrator',
+        role: opts.role,
+        character_id: opts.characterId,
+        binding_override: opts.bindingOverride,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      // [TTS-P3] 后端 /api/tts/audio 挂了 enforce_rate_limit（tts.py:401），
+      // 连点会吃 429。这里翻成人话，不让用户只看到「请求失败 (429)」。
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        throw new Error(
+          retryAfter
+            ? `语音合成太频繁，请稍后再试（约 ${retryAfter} 秒后可重试）`
+            : '语音合成太频繁，请稍后再试',
+        );
+      }
+      throw new Error(errorData.detail || `请求失败 (${response.status})`);
+    }
+
+    return await response.blob();
+  }
+
+  /** 播放一个已到手的 blob。播放「开始」即 resolve，结束由 ended 监听收尾。 */
+  private async playBlob(audioBlob: Blob, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
+    const audioUrl = URL.createObjectURL(audioBlob);
+    if (!this.audioElement) {
+      URL.revokeObjectURL(audioUrl);
+      throw new Error('音频元素未初始化');
+    }
+    this.revokeCurrentObjectUrl();
+    this.currentObjectUrl = audioUrl;
+    this.audioElement.src = audioUrl;
+    this.isPlaying = true;
+    await this.audioElement.play();
+  }
+
   private async speakWithBackendAudio({
     text,
     voiceDescription,
@@ -285,43 +458,18 @@ class TTSService {
     preview?: boolean;
     signal?: AbortSignal;
   }): Promise<void> {
+    const effectiveSignal = signal ?? this.abortController?.signal;
     try {
-      const baseUrl = window.location.origin;
-      const response = await fetch(`${baseUrl}${preview ? '/api/tts/preview/audio' : '/api/tts/audio'}`, {
-        method: 'POST',
-        credentials: 'include',
-        signal: signal ?? this.abortController?.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          // [CSRF] N8-c 终态后手动 fetch 通道补 X-CSRF-Token 头
-          ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
-        },
-        body: JSON.stringify({
-          text,
-          voice_description: voiceDescription,
-          is_narrator: role === 'narrator',
-          role,
-          character_id: characterId,
-          binding_override: bindingOverride,
-        }),
+      const audioBlob = await this.requestAudioBlob(text, {
+        voiceDescription,
+        role,
+        characterId,
+        bindingOverride,
+        preview,
+        signal: effectiveSignal,
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `请求失败 (${response.status})`);
-      }
-
-      const audioBlob = await response.blob();
-      if ((signal ?? this.abortController?.signal)?.aborted) return;
-      const audioUrl = URL.createObjectURL(audioBlob);
-
-      if (this.audioElement) {
-        this.revokeCurrentObjectUrl();
-        this.currentObjectUrl = audioUrl;
-        this.audioElement.src = audioUrl;
-        this.isPlaying = true;
-        await this.audioElement.play();
-      }
+      if (effectiveSignal?.aborted) return;
+      await this.playBlob(audioBlob, effectiveSignal);
     } catch (error: unknown) {
       this.isPlaying = false;
       this.revokeCurrentObjectUrl();
@@ -386,6 +534,139 @@ class TTSService {
     }
     this.isPlaying = false;
     this.revokeCurrentObjectUrl();
+    // [TTS-P3] stop 之后不该再有任何消息显示为加载中/播放中
+    this.setStatus(null, 'idle');
+  }
+
+  /** [TTS-P3] 暂停当前播放（工具栏按钮「播放中可暂停」）。 */
+  pause(): void {
+    if (this.audioElement && this.audioElement.src && !this.audioElement.paused) {
+      this.audioElement.pause();
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.pause();
+    }
+    this.isPlaying = false;
+    if (this.activeMessageId) this.setStatus(this.activeMessageId, 'paused');
+  }
+
+  /** [TTS-P3] 续播被暂停的那条。 */
+  resume(): void {
+    if (this.audioElement && this.audioElement.src && this.audioElement.paused) {
+      void this.audioElement.play();
+      this.isPlaying = true;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.resume();
+    }
+    if (this.activeMessageId) this.setStatus(this.activeMessageId, 'playing');
+  }
+
+  /**
+   * [TTS-P3] 按消息点播：同一条 → 播放/暂停切换；换一条 → 先停旧的再播。
+   *
+   * 这条路径必须做到两件事，缺一个验收就过：
+   * 1. 同一时刻只有一条在播——`stop()` 是显式调用的，不靠「都是单例所以天然互斥」；
+   * 2. 命中缓存就一个请求都不发——**包括 `api.tts.synthesize` 那次元数据探测**，
+   *    所以浏览器语音分支的结果也要进缓存（它压根没有音频 blob）。
+   */
+  async playMessage(
+    messageId: string | number,
+    text: string,
+    options: {
+      voiceDescription?: string | null;
+      role?: 'character' | 'narrator';
+      characterId?: string;
+      bindingOverride?: Partial<TTSBindingPayload>;
+    } = {},
+  ): Promise<void> {
+    const key = String(messageId);
+
+    if (this.activeMessageId === key) {
+      // 合成中重复点：忽略。否则会走下面的 stop() 再重新发起，用户连点就反复重来。
+      if (this.activeStatus === 'loading') return;
+      if (this.activeStatus === 'playing') {
+        this.pause();
+        return;
+      }
+      if (this.activeStatus === 'paused') {
+        this.resume();
+        return;
+      }
+    }
+
+    const cleanText = this.cleanTextForTTS(text);
+    if (!cleanText) {
+      toast.warning('没有可播放的内容');
+      return;
+    }
+
+    // 换一条：先停干净。两段叠播正是「两份单例」时代留下的坑，这里显式断掉。
+    this.stop();
+
+    const role = options.role ?? 'character';
+    const controller = new AbortController();
+    this.abortController = controller;
+    this.setStatus(key, 'loading');
+
+    try {
+      let entry = this.cacheGet(key, cleanText);
+
+      if (!entry) {
+        const meta = await api.tts.synthesize(
+          cleanText,
+          options.voiceDescription || undefined,
+          role === 'narrator',
+          role,
+          options.characterId,
+          options.bindingOverride,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted || this.abortController !== controller) return;
+
+        this.currentProviderId = meta.provider_id || 'browser';
+
+        if ((meta.engine_type || meta.provider_id) === 'browser') {
+          entry = {
+            fingerprint: this.fingerprintOf(cleanText),
+            kind: 'browser',
+            text: meta.text || cleanText,
+            gender: meta.gender,
+          };
+        } else {
+          const blob = await this.requestAudioBlob(cleanText, {
+            voiceDescription: options.voiceDescription || undefined,
+            role,
+            characterId: options.characterId,
+            bindingOverride: options.bindingOverride,
+            signal: controller.signal,
+          });
+          entry = { fingerprint: this.fingerprintOf(cleanText), kind: 'blob', blob };
+        }
+        this.cacheSet(key, entry);
+      }
+
+      if (controller.signal.aborted || this.abortController !== controller) return;
+
+      if (entry.kind === 'browser') {
+        this.setStatus(key, 'playing');
+        await this.speakWithWebSpeechAPI(entry.text, entry.gender);
+        this.notifyIfActive(key, 'idle');
+        return;
+      }
+
+      this.setStatus(key, 'playing');
+      await this.playBlob(entry.blob, controller.signal);
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      // 用户已经切到别的消息（stop 会清空 activeMessageId）→ 这是主动打断，
+      // 不是故障：浏览器语音被打断会以 onerror 形式 reject，不能弹错误。
+      if (this.activeMessageId !== key) return;
+      console.error('TTS playMessage error:', error);
+      toast.error(error instanceof Error ? error.message : '语音合成失败');
+      this.notifyIfActive(key, 'idle');
+      this.revokeCurrentObjectUrl();
+    }
   }
 
   isPlayingState(): boolean {
