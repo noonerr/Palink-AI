@@ -192,6 +192,42 @@ def get_image_generation_config(mask_secrets: bool = True) -> dict[str, Any]:
     return _mask_sensitive(config) if mask_secrets else json.loads(json.dumps(config))
 
 
+def is_image_generation_available() -> bool:
+    """工具暴露门控（P4 模型自主出图）：全局开关开且存在可用服务商。
+
+    只读判定、永不抛异常——调用方（角色生成路径）用它决定是否把内置出图
+    工具合并进 tools； False 时工具对模型不可见，行为与功能上线前一致。
+    """
+    try:
+        config = _get_raw_config()
+        if not config.get("enabled", False):
+            return False
+        _get_active_provider(config)
+        return True
+    except Exception as exc:
+        logger.debug("Image generation availability check failed: %s", exc)
+        return False
+
+
+def is_image_tool_enabled_for_user(db: Session, user_id: Any) -> bool:
+    """P4 模型自主出图的**暴露门控**：用户级开关 + 服务商就绪，两者缺一不可。
+
+    与 `maybe_generate_image_for_message` 的用户级判定同源（同一列 `auto_generate_chat_images`、
+    同一语义），只多一道服务商就绪检查——让模型看得见工具却画不出图，比干脆
+    看不见更糟（模型会以为自己配过图，正文里就不再描述画面）。
+
+    任何异常一律按**未启用**处理：宁可不暴露工具（退回纯文本），不可误暴露。
+    """
+    try:
+        user_setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+        if not user_setting or not getattr(user_setting, "auto_generate_chat_images", False):
+            return False
+    except Exception as exc:
+        logger.warning("Image tool gate check failed (user=%s): %s", user_id, exc)
+        return False
+    return is_image_generation_available()
+
+
 def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
     provider_type = provider.get("type") or "openai_compatible"
     if provider_type not in {"openai_compatible", "sd_webui", "comfyui"}:
@@ -647,6 +683,7 @@ async def generate_image_for_message(
     character: Optional[Character] = None,
     *,
     media_id: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> GeneratedImage:
     """为一条消息配图：结果进 `extra.media`，**正文一行都不改**（D1 / 原 B2）。
 
@@ -658,8 +695,12 @@ async def generate_image_for_message(
 
     `media_id` 是前端乐观占位时生成的 id（见 `normalize_media_id`）：给了就
     **原位复位**同一项（重试不堆残骸），不给则新插一项。
+
+    `prompt` 是 P4 模型自主出图的入口：模型在工具调用里给出的画面描述**直接
+    采用**，不再过 `build_message_image_prompt` 模板（模板面向"系统自动配图"
+    的启发式拼装，模型已经给了完整画面描述）。不给则维持原启发式行为。
     """
-    prompt = build_message_image_prompt(message, context_messages, character)
+    prompt = prompt or build_message_image_prompt(message, context_messages, character)
 
     # 未启用 / 服务商不可用必须挡在插 pending 之前：否则会留下一条永远
     # 不会收敛的占位（用户盯着骨架转圈直到超时）。
@@ -741,6 +782,31 @@ async def maybe_generate_image_for_message(
     except Exception as exc:
         logger.warning("Auto image generation failed for %s message %s: %s", target, message.id, exc)
         raise HTTPException(status_code=502, detail="自动图片生成失败") from exc
+
+
+async def generate_image_for_assistant_message(
+    db: Session,
+    user: User,
+    message: ChatMessage | CharacterChatMessage,
+    context_messages: Sequence[ChatMessage | CharacterChatMessage],
+    character: Optional[Character] = None,
+    *,
+    model_prompt: Optional[str] = None,
+) -> Optional[GeneratedImage]:
+    """角色助手消息落库后的**唯二**出图入口，两路接线（WS / SSE）共用。
+
+    `model_prompt` 非空表示模型在流中通过内置工具自主请求过配图：直接采用它
+    给画面描述，并**替代**本轮的启发式自动出图——两条路都走会出现"一消息双图"。
+    为空则维持 P1 原有的启发式自动配图（受用户级开关与全局开关双重约束，见
+    `maybe_generate_image_for_message`）。
+    """
+    if model_prompt is not None:
+        return await generate_image_for_message(
+            db, user, message, context_messages, character=character, prompt=model_prompt
+        )
+    return await maybe_generate_image_for_message(
+        db, user, message, context_messages, target="character", character=character
+    )
 
 
 # ============================================================

@@ -68,8 +68,10 @@ from ..services.compact_title_service import generate_compact_title, rule_based_
 from ..services.image_generation_service import (
     build_image_generated_event,
     build_image_generation_failed_event,
-    maybe_generate_image_for_message,
+    generate_image_for_assistant_message,
+    is_image_tool_enabled_for_user,
 )
+from ..services.builtin_tools import resolve_generation_tools
 from ..services.plotline_service import check_plot_transition, advance_stage
 from ..models.plotline import SessionPlotLine, PlotStage
 
@@ -4797,11 +4799,33 @@ async def _character_chat_impl(
                 save_db.rollback()
                 logger.warning(f"Failed to persist assistant snapshot: {persist_error}")
 
+        # [P4-模型自主出图] 与 WS 主路径同套门控：用户级开关（复用
+        # auto_generate_chat_images）+ 服务商就绪才合并内置出图工具；关闭时
+        # tools 原对象透传（与改前逐字节一致），gate/handler 为 None。
+        _img_enabled = is_image_tool_enabled_for_user(save_db, user.id)
+        _gen_tools, _img_gate, _img_handler = resolve_generation_tools(
+            req.tools, image_enabled=_img_enabled
+        )
+
         async def maybe_auto_generate_image_event():
+            # [P4-模型自主出图] 与 WS 主路径同序：先取模型请求，下面的提前 return
+            # 意味着没有可挂载的 assistant 消息，请求作废但留一条 info，避免
+            # "模型答应了配图、用户看不到图"无从排查。
+            pending_model_image_prompt = _img_gate.take() if _img_gate is not None else None
+
+            def _discard_pending(reason: str) -> None:
+                if pending_model_image_prompt:
+                    logger.info(
+                        f"Model image request dropped ({reason}), session={session_id}"
+                    )
+
             if not save_db or assistant_message_id is None or not result.has_content:
+                _discard_pending("no persisted assistant content")
                 return None
             if result.full_content.strip().startswith("Error:"):
+                _discard_pending("generation error")
                 return None
+            # 此刻消息已落库：模型给的描述直接采用，并**替代**本轮启发式自动出图。
             try:
                 assistant_msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == assistant_message_id).first()
                 current_user = save_db.query(User).filter(User.id == user.id).first()
@@ -4818,13 +4842,14 @@ async def _character_chat_impl(
                     .limit(8)
                     .all()
                 )
-                image = await maybe_generate_image_for_message(
+                # 模型给过画面描述就用它（并替代启发式自动图），否则维持 P1 行为。
+                image = await generate_image_for_assistant_message(
                     save_db,
                     current_user,
                     assistant_msg,
                     list(reversed(context_messages)),
-                    target="character",
                     character=char,
+                    model_prompt=pending_model_image_prompt,
                 )
                 if not image:
                     return None
@@ -4878,7 +4903,11 @@ async def _character_chat_impl(
                 # 接收前端 tool_call_response，因此不传 tool_executor；若模型
                 # 返回 tool_calls 将走 MCP 降级（前端工具会失败但不阻塞生成）。
                 # WebSocket 路径才是 function tool 的完整实现路径。
-                tools=req.tools,
+                # [P4-模型自主出图] _gen_tools = 前端插件工具 + 内置出图工具
+                # （仅开关+服务商就绪时）；内置工具由 builtin_tool_handler 在
+                # 服务端执行，不依赖 SSE 的单向流。
+                tools=_gen_tools,
+                builtin_tool_handler=_img_handler,
                 enable_thinking=enable_thinking,
                 logit_bias=logit_bias_dict,
             )

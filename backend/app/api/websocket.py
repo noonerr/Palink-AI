@@ -43,8 +43,11 @@ from ..services.status_bar_detector import (
 from ..services.image_generation_service import (
     build_image_generated_event,
     build_image_generation_failed_event,
+    generate_image_for_assistant_message,
+    is_image_tool_enabled_for_user,
     maybe_generate_image_for_message,
 )
+from ..services.builtin_tools import resolve_generation_tools
 from ..services.roleplay_prompt_assembly import (
     PromptAssemblyDeps,
     PromptAssemblyRequest,
@@ -609,6 +612,17 @@ async def run_character_chat_generation(
         await ws_manager.send_error(session_id, QUOTA_EXCEEDED_MESSAGE)
         save_db.close()
         return
+    # [P4-模型自主出图] 用户级开关 + 服务商就绪时才把内置出图工具合并进 tools。
+    # 关闭时 resolve_generation_tools 把 tools **原对象**透传、gate/handler 置空
+    # ——与功能上线前逐字节一致。门控判定失败按未启用处理（宁可不暴露工具）。
+    _img_enabled = is_image_tool_enabled_for_user(save_db, user_id)
+    # 合并前的引用：`tool_executor` 的构造条件必须按**它**判定。否则前端未传
+    # 插件工具时，内置工具的合并会把 tools 从 None 变成非空，顺带把 executor
+    # 也点亮——改前这条路径根本不存在，模型幻觉出的工具名会被 WS 转发给前端。
+    _frontend_tools = tools
+    tools, builtin_image_gate, builtin_image_handler = resolve_generation_tools(
+        tools, image_enabled=_img_enabled
+    )
     # [MVU-SECONDARY] 主事件循环引用：persist_snapshot 可能在 to_thread 线程运行，
     # 副 AI 协程需跨线程提交到主循环执行（asyncio.run_coroutine_threadsafe）。
     _main_loop = asyncio.get_running_loop()
@@ -905,10 +919,28 @@ async def run_character_chat_generation(
             logger.warning("Failed to persist character chat snapshot: %s", persist_error)
 
     async def maybe_broadcast_image_event():
+        # [P4-模型自主出图] 先把模型请求取出来：gate 归本次生成独占，下面的提前
+        # return（未落库 / 无正文 / 生成报错）都意味着**没有可挂载的 assistant
+        # 消息**，请求只能作废。留一条 info 而不是沉默，否则"模型明明答应了配图、
+        # 用户却看不到图"会变成无迹可查的谜。
+        pending_model_image_prompt = (
+            builtin_image_gate.take() if builtin_image_gate is not None else None
+        )
+
+        def _discard_pending(reason: str) -> None:
+            if pending_model_image_prompt:
+                logger.info(
+                    "Model image request dropped (%s), session=%s", reason, session_id
+                )
+
         if assistant_message_id is None or not result.has_content:
+            _discard_pending("no persisted assistant content")
             return
         if result.full_content.strip().startswith("Error:"):
+            _discard_pending("generation error")
             return
+        # 此刻消息已落库：用模型给的 prompt 直接生成，并**替代**本轮的启发式
+        # 自动出图（避免一消息双图）。失败走与既有自动出图相同的 failed 事件路径。
         try:
             assistant_msg = save_db.query(CharacterChatMessage).filter(
                 CharacterChatMessage.id == assistant_message_id
@@ -931,13 +963,14 @@ async def run_character_chat_generation(
                 .limit(8)
                 .all()
             )
-            image = await maybe_generate_image_for_message(
+            # 模型给过画面描述就用它（并替代启发式自动图），否则维持 P1 行为。
+            image = await generate_image_for_assistant_message(
                 save_db,
                 current_user,
                 assistant_msg,
                 list(reversed(context_messages)),
-                target="character",
                 character=character,
+                model_prompt=pending_model_image_prompt,
             )
             if image:
                 # [P1.3] 载荷带 `extra.media` 快照，供前端收敛 pending 占位。
@@ -1004,7 +1037,10 @@ async def run_character_chat_generation(
                     lambda tool_name, tool_call_id, tool_args: ws_manager.request_tool_call(
                         session_id, tool_call_id, tool_name, tool_args
                     )
-                ) if tools else None,
+                ) if _frontend_tools else None,
+                # [P4-模型自主出图] 内置工具（palink__*）服务端执行；未合并时为
+                # None，dispatcher 行为不变。关闭开关时此参数为 None。
+                builtin_tool_handler=builtin_image_handler,
             )
 
             async for delta in stream:
