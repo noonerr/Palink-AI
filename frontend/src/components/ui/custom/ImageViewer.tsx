@@ -14,8 +14,12 @@ interface ImageViewerProps {
   compact?: boolean;
 }
 
-/** N-7: 上传路径先异步换短时效令牌再渲染（主 JWT 不进入 URL）。 */
-function AsyncUploadImg({
+/** N-7: 上传路径先异步换短时效令牌再渲染（主 JWT 不进入 URL）。
+ *
+ * 导出给 `MessageMedia` 复用：生成图同样落在 `/api/uploads/...` 下，
+ * 必须走同一条令牌换取链路，否则 `<img>` 会直接 401。
+ */
+export function AsyncUploadImg({
   src,
   alt,
   className,

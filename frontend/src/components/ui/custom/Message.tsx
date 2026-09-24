@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye, Volume2, Pause, Play, Loader2 } from 'lucide-react';
+import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye, Volume2, Pause, Play, Loader2, ImagePlus } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
@@ -11,6 +11,9 @@ import { CodeBlock } from './CodeBlock';
 import { ThinkingProcess } from './ThinkingProcess';
 import { SmoothOutput } from './SmoothOutput';
 import { ImageThumbnails, FullscreenImageViewer, extractImagesFromContent } from './ImageViewer';
+import { MessageMedia } from './MessageMedia';
+import { getMediaSnapshot } from '@/lib/messageMedia';
+import { useImageGenerationAvailability } from '@/hooks/useImageGenerationAvailability';
 import { WebSearchResults } from './WebSearchResults';
 import type { Message as MessageType, Model } from '@/types';
 import DOMPurify from 'dompurify';
@@ -174,7 +177,7 @@ interface MessageProps {
   characterDisplayMode?: string;
   chatStyle?: 'flat' | 'bubbles' | 'document';
   useNativeStRendering?: boolean;
-  onGenerateImage?: (messageId: string | number) => void;
+  onGenerateImage?: (messageId: string | number, mediaId?: string) => void;
   isGeneratingImage?: boolean;
   globalRegexScripts?: RegexScript[];
   totalMessages?: number;
@@ -750,8 +753,8 @@ function MessageInner({
   characterDisplayMode = 'framed',
   chatStyle = 'flat',
   useNativeStRendering = false,
-  onGenerateImage: _onGenerateImage,
-  isGeneratingImage: _isGeneratingImage,
+  onGenerateImage,
+  isGeneratingImage = false,
   globalRegexScripts: _globalRegexScripts,
   totalMessages: _totalMessages,
   chatMessages: _chatMessages,
@@ -1114,6 +1117,20 @@ function MessageInner({
       characterId: _characterId ? String(_characterId) : undefined,
     });
   }, [message.id, message.content, displayContent, isUser, _characterId]);
+
+  // [P1.4/P1.5] 配图：媒体快照从 message.extra 读（服务端权威），
+  // 出图可用性走模块级订阅——两者都不新增可变 prop，Memo 比较器不受影响。
+  const mediaSnapshot = useMemo(() => getMediaSnapshot(message.extra), [message.extra]);
+  const imageGenAvailability = useImageGenerationAvailability();
+  const handleGenerateImageClick = useCallback(() => {
+    if (message.id == null || !onGenerateImage) return;
+    onGenerateImage(message.id);
+  }, [message.id, onGenerateImage]);
+  // 重试带上 media id：服务端原位复位同一条（不新增），本地占位与服务端同 id。
+  const handleRetryImage = useCallback((mediaId: string) => {
+    if (message.id == null || !onGenerateImage) return;
+    onGenerateImage(message.id, mediaId);
+  }, [message.id, onGenerateImage]);
 
   // [批次B] 编辑入口：预填当前显示正文——assistant 取 displayContent（剥离思考链/
   // 状态栏/UpdateVariable 后的正文，对齐用户所见；swipes 多候选时 content 已由
@@ -1559,6 +1576,16 @@ function MessageInner({
                   </ReactMarkdown>
                 </div>
               )}
+              {/* [P1.4] 配图：正文下方。只认 extra.media（服务端权威快照），
+                  因此第一方「为这条消息配图」与 ST 出图插件写的数据共用这一套渲染。 */}
+              {mediaSnapshot.media.length > 0 && (
+                <MessageMedia
+                  media={mediaSnapshot.media}
+                  mediaIndex={mediaSnapshot.media_index}
+                  onRetry={onGenerateImage ? handleRetryImage : undefined}
+                  isCharacterChat={isCharacterChat}
+                />
+              )}
               {statusBars && statusBars.length > 0 ? (
                 <div className="mt-1" data-palink-contrast-skip>
                   {statusBars.map((bar, i) => (
@@ -1732,6 +1759,38 @@ function MessageInner({
                     <Volume2 size={8} />
                   )}
                 </button>
+
+                {/* [P1.5] 配图按钮：未配置出图服务时置灰（不让用户点了才吃错误），
+                    生成中禁用 + 转圈。占位由上层乐观插入，按钮不等网络。 */}
+                {onGenerateImage && (
+                  <button
+                    onClick={handleGenerateImageClick}
+                    disabled={!hasDisplayContent || isGeneratingImage || !imageGenAvailability.enabled}
+                    className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={
+                      isGeneratingImage
+                        ? '正在生成配图…'
+                        : !imageGenAvailability.enabled
+                          ? imageGenAvailability.loading
+                            ? '正在读取出图配置…'
+                            : '出图服务未启用：请先在管理端配置图片生成服务商'
+                          : '为这条消息配图'
+                    }
+                    aria-label={
+                      isGeneratingImage
+                        ? '正在生成配图'
+                        : !imageGenAvailability.enabled
+                          ? '出图服务未启用'
+                          : '为这条消息配图'
+                    }
+                  >
+                    {isGeneratingImage ? (
+                      <Loader2 size={8} className="animate-spin" />
+                    ) : (
+                      <ImagePlus size={8} />
+                    )}
+                  </button>
+                )}
 
                 {/* [批次B] 编辑按钮：进入编辑态（正文区切换 textarea，保存走 onEdit 链路） */}
                 {canEdit && onEdit && (

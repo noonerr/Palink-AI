@@ -11,6 +11,19 @@ import { getGlobalSillyTavernRuntime, stWorldBookManagerSingleton } from '@/lib/
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { getCachedGlobalRegexScripts } from '@/utils/sillyTavernDisplayPipeline';
+import {
+  applyMediaEvent,
+  buildPendingMediaItem,
+  friendlyImageGenerationError,
+  newMediaId,
+  withFailedMedia,
+  withMediaSnapshot,
+  withPendingMedia,
+} from '@/lib/messageMedia';
+import {
+  getImageGenerationRequestTimeoutMs,
+  getMediaPlaceholderSize,
+} from '@/hooks/useImageGenerationAvailability';
 import { messageManager } from '@/services/message-manager';
 import { promptInjection } from '@/services/prompt-injection';
 import { functionToolRegistry } from '@/lib/plugin-system/sandbox';
@@ -502,12 +515,12 @@ export function useCharacterChat({
       }
     },
     onMessageImageGenerated: (data) => {
-      setMessages(prev => prev.map(msg => (
-        String(msg.id) === String(data.message_id) ? { ...msg, content: data.content } : msg
-      )));
+      // [P1.3] 按服务端媒体快照收敛占位（与 SSE 路径同一套收敛逻辑）
+      setMessages(prev => applyMediaEvent(prev, data as never));
       toast.success('图片已生成');
     },
     onMessageImageGenerationFailed: (data) => {
+      setMessages(prev => applyMediaEvent(prev, data as never));
       toast.error(data.error || '图片生成失败');
     },
     onPlotLineAdvanced: (data) => {
@@ -758,14 +771,15 @@ export function useCharacterChat({
           toast.error(typeof json.message === 'string' ? json.message : '生成失败，请重试');
           return;
         }
-        if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number') && typeof json.content === 'string') {
-          setMessages(prev => prev.map(msg => (
-            String(msg.id) === String(json.message_id) ? { ...msg, content: json.content as string } : msg
-          )));
+        if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number')) {
+          // [P1.3] 优先按服务端 `media` 快照收敛占位；`content` 分支保留一个版本
+          // 周期作降级（新流程出图不改写正文，纯 content 分支只在旧后端生效）。
+          setMessages(prev => applyMediaEvent(prev, json as never));
           toast.success('图片已生成');
           return;
         }
         if (json.type === 'message_image_generation_failed') {
+          setMessages(prev => applyMediaEvent(prev, json as never));
           toast.error(typeof json.error === 'string' ? json.error : '图片生成失败');
           return;
         }
@@ -1321,14 +1335,15 @@ export function useCharacterChat({
         }
 
         const sessionId = typeof json.session_id === 'string' ? json.session_id : null;
-        if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number') && typeof json.content === 'string') {
-          setMessages(prev => prev.map(msg => (
-            String(msg.id) === String(json.message_id) ? { ...msg, content: json.content as string } : msg
-          )));
+        if (json.type === 'message_image_generated' && (typeof json.message_id === 'string' || typeof json.message_id === 'number')) {
+          // [P1.3] 优先按服务端 `media` 快照收敛占位；`content` 分支保留一个版本
+          // 周期作降级（新流程出图不改写正文，纯 content 分支只在旧后端生效）。
+          setMessages(prev => applyMediaEvent(prev, json as never));
           toast.success('图片已生成');
           return;
         }
         if (json.type === 'message_image_generation_failed') {
+          setMessages(prev => applyMediaEvent(prev, json as never));
           toast.error(typeof json.error === 'string' ? json.error : '图片生成失败');
           return;
         }
@@ -1732,18 +1747,47 @@ export function useCharacterChat({
     }
   }, [messages, selectedSession, setMessages]);
 
-  const handleGenerateImage = useCallback(async (messageId: string | number) => {
+  const handleGenerateImage = useCallback(async (messageId: string | number, mediaId?: string) => {
     if (!selectedSession) return;
     const key = String(messageId);
+    // [P1.4] 前端先生成 media id 并乐观插入占位：点下去立刻有骨架，不等网络（D3）。
+    // 服务端**采纳**这个 id（normalize_media_id），所以：
+    //  - 重试传原 id → 原位复位同一条，不会堆失败残骸；
+    //  - 本地占位与落库项同 id，刷新前后一致。
+    const targetMediaId = mediaId || newMediaId();
+    const { width, height } = getMediaPlaceholderSize();
+    setMessages(prev => prev.map(msg => (
+      String(msg.id) === key
+        ? withPendingMedia(msg, buildPendingMediaItem({ id: targetMediaId, width, height }))
+        : msg
+    )));
     setGeneratingImageMessageIds(prev => new Set(prev).add(key));
     try {
-      const result = await api.imageGeneration.generateForCharacterMessage(selectedSession.id, messageId);
+      const result = await api.imageGeneration.generateForCharacterMessage(
+        selectedSession.id,
+        messageId,
+        targetMediaId,
+        // 出图是长任务（服务商超时按配置 120~600s），不能吃 api 默认的 15s 超时
+        { timeoutMs: getImageGenerationRequestTimeoutMs() },
+      );
+      const updated = result.updated_message;
+      // [P1.3] 服务端快照整组替换本地占位（唯一权威）；正文不再被出图改写。
       setMessages(prev => prev.map(msg => (
-        String(msg.id) === key ? { ...msg, content: result.updated_message.content } : msg
+        String(msg.id) === key
+          ? withMediaSnapshot(msg, {
+              media: updated.media,
+              media_index: updated.media_index,
+              media_display: updated.media_display,
+            })
+          : msg
       )));
       toast.success('图片已生成');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '图片生成失败';
+      const message = friendlyImageGenerationError(error);
+      // 失败：本地把占位收敛成 failed（服务端同一 id 的项也已落成 failed）
+      setMessages(prev => prev.map(msg => (
+        String(msg.id) === key ? withFailedMedia(msg, message, targetMediaId) : msg
+      )));
       toast.error(message);
     } finally {
       setGeneratingImageMessageIds(prev => {

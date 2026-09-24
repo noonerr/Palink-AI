@@ -8,6 +8,19 @@ import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { emitEvent } from '@/lib/event-bus';
 import { generateMessageId, buildDisplayContent, stripAttachmentMarkdown } from '@/lib/utils/messageUtils';
+import {
+  applyMediaEvent,
+  buildPendingMediaItem,
+  friendlyImageGenerationError,
+  newMediaId,
+  withFailedMedia,
+  withMediaSnapshot,
+  withPendingMedia,
+} from '@/lib/messageMedia';
+import {
+  getImageGenerationRequestTimeoutMs,
+  getMediaPlaceholderSize,
+} from '@/hooks/useImageGenerationAvailability';
 import { StreamEngine, type StreamStatus } from '@/lib/stream-engine';
 import { AppError } from '@/lib/error-handler';
 import { useSessionManager } from './useSessionManager';
@@ -180,6 +193,16 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       onStatusChange: (status) => {
         setStreamStatus(status);
       },
+      // [P1.3] 出图事件走专用回调（stream-engine 不再把它当正文增量，
+      // 否则开着自动出图的普通聊天页正文会翻倍）。
+      onMessageImageGenerated: (payload) => {
+        chatMessages.setMessages(prev => applyMediaEvent(prev, payload));
+        toast.success('图片已生成');
+      },
+      onMessageImageGenerationFailed: (payload) => {
+        chatMessages.setMessages(prev => applyMediaEvent(prev, payload));
+        toast.error(payload.error || '图片生成失败');
+      },
     });
 
     // 发送请求
@@ -290,6 +313,14 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
       onStatusChange: (status) => {
         setStreamStatus(status);
       },
+      onMessageImageGenerated: (payload) => {
+        chatMessages.setMessages(prev => applyMediaEvent(prev, payload));
+        toast.success('图片已生成');
+      },
+      onMessageImageGenerationFailed: (payload) => {
+        chatMessages.setMessages(prev => applyMediaEvent(prev, payload));
+        toast.error(payload.error || '图片生成失败');
+      },
     });
 
     // 发送请求
@@ -335,19 +366,42 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
     }
   }, [sessionManager.activeSessionId, setCompressing, t]);
 
-  // 向后兼容：图片生成
-  const handleGenerateImage = useCallback(async (messageId: string | number) => {
+  // 图片配图（P1.5）：与角色聊天页同一套流程 —— 乐观占位 → 服务端快照收敛 → 失败可重试
+  const handleGenerateImage = useCallback(async (messageId: string | number, mediaId?: string) => {
     if (!sessionManager.activeSessionId) return;
     const key = String(messageId);
+    const targetMediaId = mediaId || newMediaId();
+    const { width, height } = getMediaPlaceholderSize();
+    chatMessages.setMessages(prev => prev.map(msg =>
+      String(msg.id) === key
+        ? withPendingMedia(msg, buildPendingMediaItem({ id: targetMediaId, width, height }))
+        : msg
+    ));
     setGeneratingImageMessageIds(prev => new Set(prev).add(key));
     try {
-      const result = await api.imageGeneration.generateForChatMessage(sessionManager.activeSessionId, messageId);
+      const result = await api.imageGeneration.generateForChatMessage(
+        sessionManager.activeSessionId,
+        messageId,
+        targetMediaId,
+        // 出图是长任务（服务商超时按配置 120~600s），不能吃 api 默认的 15s 超时
+        { timeoutMs: getImageGenerationRequestTimeoutMs() },
+      );
+      const updated = result.updated_message;
       chatMessages.setMessages(prev => prev.map(msg =>
-        String(msg.id) === key ? { ...msg, content: result.updated_message.content } : msg
+        String(msg.id) === key
+          ? withMediaSnapshot(msg, {
+              media: updated.media,
+              media_index: updated.media_index,
+              media_display: updated.media_display,
+            })
+          : msg
       ));
       toast.success('图片已生成');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '图片生成失败';
+      const message = friendlyImageGenerationError(error);
+      chatMessages.setMessages(prev => prev.map(msg =>
+        String(msg.id) === key ? withFailedMedia(msg, message, targetMediaId) : msg
+      ));
       toast.error(message);
     } finally {
       setGeneratingImageMessageIds(prev => {

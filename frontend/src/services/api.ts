@@ -152,13 +152,22 @@ interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
   /** GET 请求缓存时长（毫秒），设置后启用缓存 */
   cacheTtlMs?: number;
+  /**
+   * 覆盖默认 15s 超时（毫秒）。
+   *
+   * 默认值是为普通 API 定的，而**出图这类长任务天生超过 15s**（SD WebUI 同步出图
+   * 实测几十秒，后端自己给服务商的超时是 120~600s）。不覆盖的话前端会在 15s 处
+   * 主动 abort，用户看到「生成失败」，而后端其实已经把图生成好并落库了——
+   * 表现为「刷新一下图又出现了」。故出图请求按服务商配置传更大的值。
+   */
+  timeoutMs?: number;
 }
 
 async function request<T = any>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', credentials, ...fetchOptions } = options;
+  const { cacheTtlMs: _cacheTtlMs, headers: rawHeaders, method = 'GET', credentials, timeoutMs, ...fetchOptions } = options;
 
   // 仅对幂等 GET（且调用方未提供 signal）启用超时 + 自动重试；
   // 其他方法一律不重试（避免重复写入），调用方 signal 的取消语义需被尊重。
@@ -183,9 +192,11 @@ async function request<T = any>(
       headers.set('Content-Type', 'application/json');
     }
 
-    // 超时保护：15s 未完成则 abort；若调用方提供了 signal，两者任一发生即中断。
+    // 超时保护：默认 15s 未完成则 abort（长任务经 options.timeoutMs 覆盖）；
+    // 若调用方提供了 signal，两者任一发生即中断。
+    const effectiveTimeoutMs = timeoutMs && timeoutMs > 0 ? timeoutMs : API_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeoutId = window.setTimeout(() => controller.abort(), effectiveTimeoutMs);
     const signal = combineAbort(fetchOptions.signal ?? undefined, controller);
 
     try {
@@ -443,10 +454,18 @@ export const api = {
       api.put<ImageGenerationConfig>('/api/image-generation/config', config),
     test: (prompt: string) =>
       api.post<ImageGenerationTestResponse>('/api/image-generation/test', { prompt }),
-    generateForChatMessage: (sessionId: string, messageId: string | number) =>
-      api.post<ImageGenerationMessageResponse>(`/api/image-generation/sessions/${sessionId}/messages/${messageId}`),
-    generateForCharacterMessage: (sessionId: string, messageId: string | number) =>
-      api.post<ImageGenerationMessageResponse>(`/api/image-generation/character-sessions/${sessionId}/messages/${messageId}`),
+    generateForChatMessage: (sessionId: string, messageId: string | number, mediaId?: string, options?: RequestOptions) =>
+      api.post<ImageGenerationMessageResponse>(
+        `/api/image-generation/sessions/${sessionId}/messages/${messageId}`,
+        mediaId ? { media_id: mediaId } : undefined,
+        options,
+      ),
+    generateForCharacterMessage: (sessionId: string, messageId: string | number, mediaId?: string, options?: RequestOptions) =>
+      api.post<ImageGenerationMessageResponse>(
+        `/api/image-generation/character-sessions/${sessionId}/messages/${messageId}`,
+        mediaId ? { media_id: mediaId } : undefined,
+        options,
+      ),
   },
 };
 
