@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye } from 'lucide-react';
+import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye, Volume2, Pause, Play, Loader2 } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
@@ -20,6 +20,8 @@ import { shouldUseInlineCardRendering } from './smart-card-runtime/inline/inline
 import { StatusBarPanel, type CharacterStatusBar } from './StatusBarPanel';
 import TavernHelperPanel from './TavernHelperPanel';
 import { extractCharacterStatusBars } from '@/lib/statusBar';
+import { ttsService } from '@/services/tts';
+import { useTtsMessageStatus } from '@/hooks/useTtsMessageStatus';
 import { messageFormatter, applySillyTavernDisplayPipeline } from '@/utils/sillyTavernDisplayPipeline';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { stripHtmlFenceLeftovers } from './smart-card-runtime/primitives';
@@ -1094,6 +1096,25 @@ function MessageInner({
     }, 2000);
   };
 
+  // [TTS-P3] 工具栏语音按钮。状态由服务内部订阅取得（不进 prop），
+  // 因此新增这个功能不会让 Message 的 memo 比较器多出可变 prop。
+  const ttsStatus = useTtsMessageStatus(message.id);
+  // 播报文本与「编辑消息」预填同源：assistant 取 displayContent（已剥思考链 /
+  // 状态栏 / UpdateVariable），user 取原始 content。
+  // 这里不需要用 ref 缓存文本——handleSpeak 只被本条消息自己的按钮消费、
+  // 不作为 prop 传出去，所以它每次重建都不影响 memo；为它做 ref 反而要在
+  // render 阶段写 ref（React 不鼓励）。
+  const handleSpeak = useCallback(() => {
+    if (message.id == null) return;
+    const text = isUser ? (message.content || '') : (displayContent || message.content || '');
+    void ttsService.playMessage(message.id, text, {
+      role: 'character',
+      // 与既有用法一致：仅角色扮演页会传下 characterId，普通聊天页为空，
+      // 此时后端按用户默认音色绑定合成（未配置会明确报错，不静默）。
+      characterId: _characterId ? String(_characterId) : undefined,
+    });
+  }, [message.id, message.content, displayContent, isUser, _characterId]);
+
   // [批次B] 编辑入口：预填当前显示正文——assistant 取 displayContent（剥离思考链/
   // 状态栏/UpdateVariable 后的正文，对齐用户所见；swipes 多候选时 content 已由
   // swipe 切换链路同步为当前候选），user 取原始 content（含图片 markdown，
@@ -1674,6 +1695,43 @@ function MessageInner({
                     )}
                   </button>
                 )}
+
+                {/* [TTS-P3] 语音按钮：三态——空闲（朗读）/ 合成中（转圈）/ 播放中（暂停）。
+                    点击才请求、不做自动播放；同一时刻只播一条由服务侧保证。
+                    合成中不禁用按钮，重复点击由 playMessage 内部忽略，避免连点反复重来。 */}
+                <button
+                  onClick={handleSpeak}
+                  disabled={!hasDisplayContent}
+                  className="palink-mes-action-btn p-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={
+                    ttsStatus === 'loading'
+                      ? '正在合成语音…'
+                      : ttsStatus === 'playing'
+                        ? '暂停朗读'
+                        : ttsStatus === 'paused'
+                          ? '继续朗读'
+                          : '朗读这条消息'
+                  }
+                  aria-label={
+                    ttsStatus === 'loading'
+                      ? '正在合成语音'
+                      : ttsStatus === 'playing'
+                        ? '暂停朗读'
+                        : ttsStatus === 'paused'
+                          ? '继续朗读'
+                          : '朗读这条消息'
+                  }
+                >
+                  {ttsStatus === 'loading' ? (
+                    <Loader2 size={8} className="animate-spin" />
+                  ) : ttsStatus === 'playing' ? (
+                    <Pause size={8} />
+                  ) : ttsStatus === 'paused' ? (
+                    <Play size={8} />
+                  ) : (
+                    <Volume2 size={8} />
+                  )}
+                </button>
 
                 {/* [批次B] 编辑按钮：进入编辑态（正文区切换 textarea，保存走 onEdit 链路） */}
                 {canEdit && onEdit && (
