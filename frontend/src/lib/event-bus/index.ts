@@ -174,23 +174,19 @@ export interface RegexEvents {
 }
 
 /**
- * 图像生成事件
+ * 图像生成事件 / TTS 扩展事件：**已删除**（P1.6，2026-09-24）。
+ *
+ * 原先声明了 `imageGeneration:started|completed|error` 与 `tts:started|ended|stopped|error`
+ * 共 7 个事件，但全仓只有 `lib/image-gen/service.ts` 一个 emit 方、**零订阅方**——
+ * 而那个 service 自己也是零 importer 的死代码（调用的 `/api/images/generate`、
+ * `/api/images/models`、`/api/images/samplers` 在后端根本没有对应端点，实测 404）。
+ * 悬空契约比没有契约更坏：读代码的人会以为这条链路是活的。
+ *
+ * 出图与语音的真实状态源已经是别的两处，不需要事件总线转一手：
+ * - 出图 → 消息 `extra.media` 快照 + `message_image_generated` 推送（D1/D3）；
+ * - 语音 → `services/tts.ts` 的模块级单例 + `useTtsMessageStatus` 订阅（P3）。
+ * 若将来确有跨模块订阅需求，按当时的数据源重新声明，不要复活上面那套没人发的事件名。
  */
-export interface ImageGenerationEvents {
-  'imageGeneration:started': { prompt: string };
-  'imageGeneration:completed': { url: string; seed: number };
-  'imageGeneration:error': { error: string };
-}
-
-/**
- * TTS事件（扩展）
- */
-export interface TTSExtendedEvents {
-  'tts:started': { text: string };
-  'tts:ended': { text?: string };
-  'tts:stopped': void;
-  'tts:error': { error: string };
-}
 
 /**
  * 预设变更事件
@@ -236,8 +232,6 @@ export type AllEventMap =
   & ExpressionEvents
   & ExtensionEvents
   & RegexEvents
-  & ImageGenerationEvents
-  & TTSExtendedEvents
   & PresetEvents
   & SwipeEvents
   & PopupEvents;

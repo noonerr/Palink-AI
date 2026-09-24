@@ -23,6 +23,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
+// getContext 是重模块（整条 i18n / 沙箱 / 正则链）。此前三条 isMobile 用例各自
+// 在用例体内 `await import(...)`，冷启动转译的成本落在**测试自身的 5s 超时**里，
+// 满载并行时反复假红（单跑该文件恒绿）。提到模块顶层后成本落到收集阶段，
+// 与 getcontext-parity / plugin-runtime-extprompt-contract 的既有修法一致。
+import { getContext } from '@/lib/sillytavern/getContext';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SANDBOX_SRC = fs.readFileSync(
@@ -120,13 +125,11 @@ describe('沙箱 group-chats.js shim 契约', () => {
 });
 
 describe('getContext().isMobile 类型契约', () => {
-  it('是 boolean 而非 undefined', async () => {
-    const { getContext } = await import('@/lib/sillytavern/getContext');
+  it('是 boolean 而非 undefined', () => {
     expect(typeof getContext().isMobile).toBe('boolean');
   });
 
-  it('运行环境缺 matchMedia 时仍返回 boolean（原实现会短路成 undefined）', async () => {
-    const { getContext } = await import('@/lib/sillytavern/getContext');
+  it('运行环境缺 matchMedia 时仍返回 boolean（原实现会短路成 undefined）', () => {
     const g = globalThis as { matchMedia?: unknown };
     const saved = g.matchMedia;
     try {
@@ -141,8 +144,7 @@ describe('getContext().isMobile 类型契约', () => {
 });
 
 describe('getContext().groups 数据源', () => {
-  it('groups 是数组（沙箱 groups getter 依赖此形状）', async () => {
-    const { getContext } = await import('@/lib/sillytavern/getContext');
+  it('groups 是数组（沙箱 groups getter 依赖此形状）', () => {
     expect(Array.isArray(getContext().groups)).toBe(true);
   });
 });
