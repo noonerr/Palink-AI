@@ -59,5 +59,12 @@ export interface ImageGenerationMessageResponse {
     tokens?: number;
     branch_id?: string | null;
     short_title?: string | null;
+    /**
+     * [P1.3] 服务端媒体快照（`extra.media` 三键）。
+     * 前端拿到后**整组替换**本地占位 —— 服务端是唯一权威，本地不做字段拼接。
+     */
+    media?: import('@/lib/messageMedia').MediaItem[];
+    media_index?: number;
+    media_display?: string;
   };
 }

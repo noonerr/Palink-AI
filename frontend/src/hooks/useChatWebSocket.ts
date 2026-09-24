@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { MediaEventPayload } from '@/lib/messageMedia';
 
 interface UseChatWebSocketOptions {
   onChunk: (data: { content?: string; reasoning?: string }) => void;
@@ -7,8 +8,10 @@ interface UseChatWebSocketOptions {
   onError: (data: { message: string }) => void;
   onSessionId?: (sessionId: string) => void;
   onQueueUpdate?: (data: { type: string; position: number }) => void;
-  onMessageImageGenerated?: (data: { message_id: string; content: string }) => void;
-  onMessageImageGenerationFailed?: (data: { error: string }) => void;
+  /** [P1.3] 出图成功：携带 `extra.media` 快照（media / media_index / media_display）。 */
+  onMessageImageGenerated?: (data: MediaEventPayload) => void;
+  /** [P1.3] 出图失败：同样携带快照（含 media_id），供占位收敛成 failed。 */
+  onMessageImageGenerationFailed?: (data: MediaEventPayload) => void;
   onUsage?: () => void;
   onFinalContent?: (data: { content: string; message_id: string | number; variables?: { stat_data?: Record<string, unknown> } & Record<string, unknown> }) => void;
   // PlotLine 阶段推进事件回调
@@ -194,10 +197,10 @@ export function useChatWebSocket(options: UseChatWebSocketOptions) {
         });
         break;
       case 'message_image_generated':
-        optionsRef.current.onMessageImageGenerated?.(data as { message_id: string; content: string });
+        optionsRef.current.onMessageImageGenerated?.(data as unknown as MediaEventPayload);
         break;
       case 'message_image_generation_failed':
-        optionsRef.current.onMessageImageGenerationFailed?.(data as { error: string });
+        optionsRef.current.onMessageImageGenerationFailed?.(data as unknown as MediaEventPayload);
         break;
       case 'final_content':
         if (typeof data.content === 'string') {

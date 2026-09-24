@@ -7,6 +7,7 @@ import { consumeSseStream } from '@/lib/sseStream';
 import { AppError } from '@/lib/error-handler';
 import { emitEvent } from '@/lib/event-bus';
 import { isAbortError, formatErrorMessage } from '@/lib/utils/messageUtils';
+import type { MediaEventPayload } from '@/lib/messageMedia';
 
 // ============================================================
 // 类型定义
@@ -34,6 +35,10 @@ export interface StreamCallbacks {
   onSessionCreated?: (sessionId: string) => void;
   onQueued?: (requestId: string, position: number, estimatedWait: number) => void;
   onStatusChange?: (status: StreamStatus) => void;
+  /** [P1.3] 出图成功（含 `extra.media` 快照）。 */
+  onMessageImageGenerated?: (payload: MediaEventPayload) => void;
+  /** [P1.3] 出图失败（含 `media_id` 与快照，供占位收敛）。 */
+  onMessageImageGenerationFailed?: (payload: MediaEventPayload) => void;
 }
 
 export interface StreamResult {
@@ -203,6 +208,20 @@ export class StreamEngine {
         if (sessionId && !this.sessionId) {
           this.sessionId = sessionId;
           this.callbacks.onSessionCreated?.(sessionId);
+        }
+
+        // [P1.3 BUGFIX] 出图事件必须在这里分流，**不能落到下面的「累加 content」**。
+        // 该事件的 `content` 是整条消息正文（不是增量 chunk），一旦被当 chunk 追加，
+        // 开着自动出图的普通聊天页会把正文再拼一遍（长度翻倍）。
+        // 这里改成按事件类型转发给专用回调，正文累加分支对它直接跳过。
+        const eventType = typeof json.type === 'string' ? json.type : '';
+        if (eventType === 'message_image_generated') {
+          this.callbacks.onMessageImageGenerated?.(json as unknown as MediaEventPayload);
+          return;
+        }
+        if (eventType === 'message_image_generation_failed') {
+          this.callbacks.onMessageImageGenerationFailed?.(json as unknown as MediaEventPayload);
+          return;
         }
 
         // 处理内容
