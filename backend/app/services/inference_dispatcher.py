@@ -6,6 +6,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optiona
 
 from .llama_runtime import local_llama_runtime
 from .llm_client import get_async_openai_client
+from .builtin_tools import is_builtin_tool
 from .llm import select_adapter
 from .local_model_registry import get_local_model_for_inference
 from .inference_queue import inference_queue, RequestPriority
@@ -476,6 +477,11 @@ async def stream_text_completion(
     # 请求前端执行插件 handler），而非调用后端 MCP。签名：(tool_name, tool_call_id,
     # arguments_dict) -> result_str
     tool_executor: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[str]]] = None,
+    # P4 模型自主出图：内置工具（进程内能力）执行回调，签名 (tool_name,
+    # tool_args_dict) -> result_str。必须**先于** tool_executor 匹配——角色 WS
+    # 主路径带着前端 executor，内置分支若放在其后，palink__* 调用会被转发给
+    # 前端 handler 而失败。精确名匹配见 builtin_tools.is_builtin_tool。
+    builtin_tool_handler: Optional[Callable[[str, Dict[str, Any]], Awaitable[str]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # 检查是否是测试模型
     if model_id == "local:test-model":
@@ -864,9 +870,17 @@ async def stream_text_completion(
 
             yield {"tool_call": {"id": tool_call_id, "name": tool_name, "arguments": tool_args}}
 
-            # Task 3.4.3/3.4.4: 当 tool_executor 提供时（前端 function tool 场景），
-            # 通过回调执行（WebSocket 请求前端 handler）；否则走 MCP 后端执行。
-            if tool_executor is not None:
+            # P4 内置工具（进程内能力）优先精确匹配；未授权/超额的拒绝话术由
+            # handler 以结构化短文本返回，模型据此回到纯文本，不阻塞生成。
+            if builtin_tool_handler is not None and is_builtin_tool(tool_name):
+                try:
+                    result_content = await builtin_tool_handler(tool_name, tool_args)
+                    if not isinstance(result_content, str):
+                        result_content = json.dumps(result_content, ensure_ascii=False)
+                except Exception as e:
+                    logger.warning("Builtin tool %s execution failed: %s", tool_name, e)
+                    result_content = "Tool error: execution failed"
+            elif tool_executor is not None:
                 try:
                     result_content = await tool_executor(tool_name, tool_call_id, tool_args)
                     if not isinstance(result_content, str):
