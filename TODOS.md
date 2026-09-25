@@ -7,6 +7,19 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [审计完成·未修] MCP / 文生图 / TTS 支持度实机审计（本 agent，2026-09-25）
+
+- **报告**：`docs/AUDIT_MCP与文生图TTS支持度_2026-09-25.md`（含全部实测原始输出与未验项标注）。
+- **性质**：只审计未改动任何业务代码。验证方式=静态审计 + 容器内实机（真实后端/PostgreSQL/自建假上游，0 付费）。
+- **必须知道的三条硬结论**：
+  1. **MCP 工具对模型是"无参数黑盒"且错误被当成功**。【实测】`Tool.input_schema`/`CallToolResult.is_error` 在 mcp 2.0.0 已改名，代码读旧名 + `hasattr` 兜底 → 所有 MCP 工具的 `parameters` 恒为 `{}`；服务端返回 `isError: true` 时客户端报 `False`。两个都是**无声失败**。
+  2. **MCP 在角色扮演主路径完全不生效**。`get_all_tools_openai_format()` 只在通用聊天路径被调用；`run_character_chat_generation` 零引用。即 palink-native 角色扮演下第三方 MCP 对模型不可见。
+  3. **streamable-http 传输配了就崩**。【实测】`from mcp.client.streamable_http import streamablehttp_client` → `ImportError`（2.0.0 已改名 `streamable_http_client`），而前端 UI 把它作为一等选项。
+- **本地文生图**：SD WebUI **可用**（实测出图成功、`info.seed` 正确解析），但 ① 参数全硬编码（上游实收 `steps=20 sampler='Euler a' cfg=7.0 neg=''`，`provider.model` 不被读取）；② 鉴权只发 Bearer 而 A1111 原生是 Basic；③ **生产模式（`APP_ENV != development`）会被自家 SSRF 校验拦死内网地址**，无白名单 → "开发能配、生产不能用"。ComfyUI **不可用**（实测恒 501，只提交工作流不取图）。
+- **TTS**：`custom_api` 把上游返回的 WAV 字节声明成 `audio/mpeg`（实测上游确实回 `RIFF/WAVE`），Safari/iOS 会失声；`coqui` 无 URL 校验且缺 `language_id`；`edge-tts 7.2.8` **容器内实测可导入**（此前"未安装"说法只对本机系统 Python 成立）。另：音色绑定会冻结 provider（`tts_service.py:761`），UI 显示与实际走的不一致。
+- **浏览器直连本地服务（用户问）**：**技术可行**，唯一硬门槛是跨域。实测：无 CORS 头的本地服务 → `BLOCKED: Failed to fetch`；**Ollama 11434 → `OK 200`**（默认可直连）；给本地服务加 CORS + 应答 OPTIONS 预检后 → **浏览器直接 POST 出图成功（200）**。注意 POST+JSON 必发预检，本地服务须应答 OPTIONS。云端带密钥的 API 建议仍走后端。
+- **测试覆盖缺口**：`backend/tests/` 下 **MCP 与 TTS 均为零覆盖**（无任何专用测试文件）。
+
 ### [已完成·真机验收通过（真实模型 + 本地虚拟服务商）·已提交] P4 模型自主出图 S1~S4（2026-09-25）
 
 - **交付**：按 `docs/PLAN_模型自主出图_2026-09-24.md` 的 S1~S4 施工，并**先对该 PLAN 做了独立复核，三处设计缺陷已按更正施工**：
