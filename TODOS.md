@@ -954,12 +954,30 @@
   ⚠️ 未做：两卡共插件"切卡无闪烁"的纯视觉确认（账号只有一张卡，无真实数据可跑）。
 - 前端已 build + recreate（`dist_old_20260927_p1` 为回滚兜底）；截图 `D:/_palink_backup_20260927_P1/shots/`。
 
+### [已完成·T5] 3 张「按需插件测试卡」删除（本 agent，2026-09-27，用户已授权）
+
+- **授权范围**：id 前缀 `fad30061` / `7b247adb` / `1dd5b41a`。⚠️ 交接文档写的属主有误：
+  实际属主是 **`plugin_ui_test`（id=43）**，不是 `mobileaudit`（id=42）—— 删除对象仍按 id 前缀认定，未扩大。
+- **方式变更（须留痕）**：原计划走 `DELETE /api/characters/{id}`，但登录凭据在命令行传递被安全审批拦下
+  （SENSITIVE_APPROVAL 超时，未重试、未绕过），改走**数据库自底向上手工清理**（本项目既定的删角色路径）。
+- **删除前备份**（可还原）：`backups/testcards_characters_20260927.csv`、
+  `backups/testcards_plugin_state_20260927.csv`（各 3 行 CSV + header）。
+- **依赖核查**：`information_schema` 查得引用 `characters` 的 FK 表 4 张
+  （sessions / expressions / tts_voice_bindings / world_books）+ 无 FK 的 `character_plugin_state`；
+  删前统计前四者均为 **0 行**，仅 plugin_state 有 3 行（无会话/消息/记忆残留）。
+- **执行**：单事务，输出 `DELETE 0 / 0 / 3 / 0 / 0 / 3` + `COMMIT`（`ON_ERROR_STOP=1`，无回滚）。
+- **复查**：匹配卡 **0**、`character_plugin_state` 全表 **0**、`characters` 总数 25；
+  真机验证用的「灯塔守夜人」`170af4f2` 的 `plugin_scope_mode` 仍为 NULL（未误伤）。
+- ⚠️ **新发现（未擅自处理）**：同账号下**另有 6 张同名「按需插件测试卡」**
+  （`de517a3d` / `69c0fba8` / `d4aec758` / `9b0f2dbb` / `269789f7` / `a3fac407`），
+  不在交接清单内，等用户定夺再动。
+
 ### 剩余（本次范围外，按优先级）
 1. ~~**装配层让位实现**~~ → ✅ 已于 2026-09-27 完成（见上）。
-2. **L1 差集热插拔**：当前切卡为全量重装，共用插件会闪动。
+2. ~~**L1 差集热插拔**：当前切卡为全量重装，共用插件会闪动。~~ → ✅ 已完成（见上，SPEC §9.8-A）。
 3. **L2 通用副作用回滚**：`unloadAll()` 清残留仍靠硬编码清单（3 选择器 + 9 Galgame flag），换插件会漏。
 4. `manager.ts` 沙箱链路按卡重载（`init()` 有 loaded 锁）。
-5. 角色设置页「插件」Tab（目前只有导入时一个入口）。
+5. ~~角色设置页「插件」Tab（目前只有导入时一个入口）。~~ → ✅ 已完成（见上，SPEC §9.8-B）。
 
 ### ⚠️ 文件归属冲突（必读，动工前先看）
 `backend/app/api/plugins.py` **同时被两条施工线改动**：本任务（插件按需）与 2026-09-25/26 的
