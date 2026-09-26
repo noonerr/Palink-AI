@@ -1531,9 +1531,16 @@ export function CharacterChat(props: CharacterChatProps) {
 
   useEffect(() => {
     // 插件 runtime 注入到容器（保留 ST 逆向接口）
+    // [PLUGIN-ON-DEMAND] 依赖角色 ID：切换角色卡时 cleanup 先 unloadAll()，
+    // 再按新角色重新拉取配置并注入 —— 后端按卡过滤的结果即时生效，无需刷新页面。
+    // injectIntoContainer 自带幂等（内部 if (this.injected) unloadAll()），
+    // 重复注入不会累积脚本与事件监听。
     const runtime = stRuntimeRef.current;
     if (!runtime) return;
-    runtime.loadRuntimeConfig().then(() => {
+    // 竞态保护：快速连续切卡时，丢弃已过期那次请求的结果。
+    let cancelled = false;
+    runtime.loadRuntimeConfig(selectedCharacter?.id).then(() => {
+      if (cancelled) return;
       // 注入到独立容器（body 下，不在 React 树中）：避免插件 <script>/<style>
       // 被附加到 React 管理的 .roleplay-container，导致 React 重新渲染时
       // DOM 不一致触发 NotFoundError: insertBefore/removeChild。
@@ -1550,9 +1557,10 @@ export function CharacterChat(props: CharacterChatProps) {
       console.error('Failed to load SillyTavern plugin runtime config:', err);
     });
     return () => {
+      cancelled = true;
       runtime.unloadAll();
     };
-  }, []);
+  }, [selectedCharacter?.id]);
 
   useEffect(() => {
     const handleSettingsUpdated = () => {

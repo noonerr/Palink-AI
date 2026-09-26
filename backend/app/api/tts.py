@@ -31,12 +31,15 @@ from ..schemas.tts import (
 from ..services.mcp_service import _is_safe_mcp_url
 from ..services.tts_service import (
     BUILTIN_PROVIDERS,
+    client_safe_tts_detail,
     DEFAULT_PREVIEW_TEXT,
     binding_to_public_dict,
     clean_text_for_tts,
     get_tts_config,
     save_tts_config,
+    sync_global_bindings_on_provider_switch,
     tts_service,
+    audio_mime_ext,
     _get_raw_config,
     _provider_config,
     _call_xiaomi_mimo_tts,
@@ -90,6 +93,9 @@ def _public_tts_config(config: dict) -> dict:
         "active_provider_id": config.get("active_provider_id", "browser"),
         "default_voice_gender": config.get("default_voice_gender", "female"),
         "default_voice_id": config.get("default_voice_id", ""),
+        # 此前该字段只在 admin 配置返回里有：普通用户的分段播放开关拿不到，
+        # loadSegmentedPlaybackConfig 拉到的是 undefined，只能手写 localStorage。
+        "segmented_playback": config.get("segmented_playback", False),
         "available_providers": all_providers,
     }
 
@@ -341,9 +347,10 @@ async def synthesize_tts(
         )
         return TTSResponse(success=True, **result)
     except ValueError as e:
+        # 服务层 ValueError 为静态人话提示，原文透出让用户能自助修复。
+        logger.warning("TTS synthesis validation failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("TTS synthesis validation failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
     except Exception:
         logger.exception("TTS synthesis failed")
         raise HTTPException(status_code=500, detail="TTS synthesis failed")
@@ -369,6 +376,8 @@ async def synthesize_tts_st_compat(
         if speed != 1.0:
             binding_override = binding_override or {}
             binding_override["speed"] = speed
+        # 此前无视服务层返回的真实类型、恒贴 audio/mpeg：上游给 WAV 时
+        # Safari/iOS 按声明解码直接失声。文件名扩展名一并跟随。
         content_type, audio_bytes = await tts_service.synthesize_audio(
             text=clean,
             db=db,
@@ -377,13 +386,15 @@ async def synthesize_tts_st_compat(
         )
         return Response(
             content=audio_bytes,
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": "inline; filename=tts.mp3", "Cache-Control": "no-cache"},
+            media_type=content_type,
+            headers={"Content-Disposition": f"inline; filename=tts{audio_mime_ext(content_type)}", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
+        # 服务层 ValueError 全是写给人看的静态提示（如"请先去模型管理→语音中设置"），
+        # 此前统一替换成 request_id 文案，用户无法自助修复——现在原文透出。
+        logger.warning("ST-compat TTS validation failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("ST-compat TTS validation failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")
     except Exception:
@@ -423,9 +434,9 @@ async def synthesize_audio(
             headers={"Content-Disposition": "inline; filename=tts_audio.wav", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
+        logger.warning("TTS audio validation failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("TTS audio validation failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"语音合成请求无法处理 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")
     except Exception:
@@ -443,7 +454,7 @@ async def get_config(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/config")
-async def save_config(req: TTSConfigRequest, http_request: Request, current_user: User = Depends(get_admin)):
+async def save_config(req: TTSConfigRequest, http_request: Request, current_user: User = Depends(get_admin), db: Session = Depends(get_db)):
     current = _get_raw_config()
     updates = {}
     if req.enabled is not None:
@@ -464,13 +475,25 @@ async def save_config(req: TTSConfigRequest, http_request: Request, current_user
     if req.provider_configs is not None:
         updates["provider_configs"] = req.provider_configs
 
+    previous_provider_id = current.get("active_provider_id")
     merged = {**current, **updates}
     try:
         saved = save_tts_config(merged)
     except ValueError as e:
+        logger.warning("TTS config save failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("TTS config save failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"TTS 配置无效 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
+
+    # [AUDIT-2026-09-25] 管理员切换服务商后，"跟随旧默认"的全局绑定要跟着刷，
+    # 否则 UI 显示已切到新服务商、实际合成仍走冻结在绑定里的旧服务商。
+    if "active_provider_id" in updates:
+        try:
+            sync_global_bindings_on_provider_switch(db, previous_provider_id, updates["active_provider_id"])
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to sync global TTS bindings after provider switch")
+
     all_providers = list(BUILTIN_PROVIDERS) + saved.get("providers", [])
     return {**saved, "available_providers": all_providers}
 
@@ -658,7 +681,7 @@ async def prefetch_provider_voices(
                     model=pconfig.get("model", "mimo-v2.5-tts"),
                 )
             elif engine_type == "custom_api":
-                audio_bytes = await _call_custom_api_tts(
+                audio_bytes, _ = await _call_custom_api_tts(
                     text=short_text,
                     voice_id=voice_id,
                     base_url=pconfig.get("base_url", ""),
@@ -979,9 +1002,9 @@ async def preview_metadata(
         )
         return {"success": True, **result}
     except ValueError as e:
+        logger.warning("TTS preview metadata validation failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("TTS preview metadata validation failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"语音试听请求无效 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
 
 
 @router.post("/preview/audio")
@@ -1018,8 +1041,8 @@ async def preview_audio(
             headers={"Content-Disposition": "inline; filename=tts_preview.wav", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
+        logger.warning("TTS preview audio validation failed: %s", e)
         _rid = getattr(http_request.state, "request_id", "unknown")
-        logger.warning("TTS preview audio validation failed: %s request_id=%s", e, _rid)
-        raise HTTPException(status_code=400, detail=f"语音试听请求无效 (request_id: {_rid})") from e
+        raise HTTPException(status_code=400, detail=client_safe_tts_detail(e, _rid)) from e
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {e.response.status_code}")

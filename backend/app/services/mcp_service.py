@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 import os
@@ -16,6 +17,10 @@ import httpx
 logger = logging.getLogger(__name__)
 
 MCP_CONFIG_FILE = "mcp_servers.json"
+# [AUDIT-2026-09-25] 连接/列工具/调用此前全无超时：一个挂死的 MCP server
+# 会无限期挂住整条生成流。对齐前端插件路径的 60s。
+MCP_OPERATION_TIMEOUT_SECONDS = 60.0
+SUPPORTED_TRANSPORT_TYPES = {"stdio", "sse", "streamable-http"}
 LOBE_MCP_API = "https://mcp.lobehub.com/api/mcp"
 MCP_REGISTRY_API = "https://registry.modelcontextprotocol.io"
 
@@ -42,6 +47,56 @@ _tool_name_registry: dict[str, tuple[str, str]] = {}
 _tool_name_reverse_registry: dict[tuple[str, str], str] = {}
 _OPENAI_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _OPENAI_TOOL_NAME_MAX_LENGTH = 64
+# [AUDIT-2026-09-25] _active_connections 此前无锁：两个并发 ensure 对同一 server
+# 都走 check-then-act，后连上者会覆盖前者的 session，前者的 exit_stack（stdio
+# 子进程）泄漏成孤儿。所有连接态变更都必须持锁。
+_connection_lock = asyncio.Lock()
+
+
+async def _await_with_timeout(awaitable, what: str):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=MCP_OPERATION_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"MCP {what} timed out after {int(MCP_OPERATION_TIMEOUT_SECONDS)}s") from exc
+
+
+def _tool_input_schema(tool) -> dict:
+    """mcp 2.x 把 ``Tool.inputSchema`` 改名为 ``input_schema``。
+
+    旧代码只读旧名 + ``hasattr`` 兜底，读不到就静默用空 dict——所有 MCP 工具
+    都以「无参数说明书」的形态暴露给模型（实测确证的无声失败）。两个名字都
+    按序探测，兼容 1.x / 2.x。
+    """
+    for attr in ("input_schema", "inputSchema"):
+        value = getattr(tool, attr, None)
+        if value:
+            return value
+    return {}
+
+
+def _tool_is_error(result) -> bool:
+    """mcp 2.x 把 ``CallToolResult.isError`` 改名为 ``is_error``。
+
+    同类无声失败：旧代码读不到一律当成功，工具真失败时模型会把错误文本
+    当事实继续编。返回 True 表示服务端明确报错。
+    """
+    for attr in ("is_error", "isError"):
+        value = getattr(result, attr, None)
+        if value is not None:
+            return bool(value)
+    return False
+
+
+def _normalize_transport_type(raw: str) -> str:
+    """传输类型归一化。此前任意未知值都会静默落到 SSE 分支。"""
+    value = (raw or "sse").strip().lower().replace("_", "-")
+    if value in {"streamable-http", "streamablehttp", "http", "streamable http"}:
+        return "streamable-http"
+    if value not in SUPPORTED_TRANSPORT_TYPES:
+        raise ValueError(
+            f"Unsupported MCP transport type: {raw!r} (supported: stdio / sse / streamable-http)"
+        )
+    return value
 
 
 def _safe_tool_name_fragment(value: str, fallback: str) -> str:
@@ -98,8 +153,8 @@ def _resolve_legacy_tool_name(tool_name: str) -> Optional[tuple[str, str]]:
 
 def _allow_private_urls_in_development() -> bool:
     try:
-        from ..core.config import settings
-        return settings.APP_ENV == "development"
+        from ..utils import allow_internal_service_urls
+        return allow_internal_service_urls()
     except Exception:
         return False
 
@@ -260,14 +315,43 @@ def remove_server(server_id: str) -> Optional[dict]:
     return None
 
 
+async def _enter_streamable_http_transport(exit_stack: AsyncExitStack, url: str, headers: dict):
+    """建立 streamable-http 传输并返回 (read_stream, write_stream)。
+
+    mcp 2.0.0 把 ``streamablehttp_client`` 改名为 ``streamable_http_client``
+    （旧名 ImportError，配了即崩），且 headers 不再作函数参数、改经
+    ``http_client`` 传入。两代签名在这里收敛，任一版本可用。
+    """
+    try:
+        from mcp.client.streamable_http import streamable_http_client as connect_v2
+    except ImportError:
+        from mcp.client.streamable_http import streamablehttp_client as connect_v1
+        transport = await exit_stack.enter_async_context(connect_v1(url, headers=headers))
+        return transport[0], transport[1]
+
+    if headers:
+        from mcp.client.streamable_http import create_mcp_http_client
+        http_client = create_mcp_http_client(headers=headers)
+        await exit_stack.enter_async_context(http_client)
+        transport = await exit_stack.enter_async_context(connect_v2(url, http_client=http_client))
+    else:
+        transport = await exit_stack.enter_async_context(connect_v2(url))
+    return transport[0], transport[1]
+
+
 async def connect_server(server: dict) -> dict:
+    async with _connection_lock:
+        return await _connect_server_locked(server)
+
+
+async def _connect_server_locked(server: dict) -> dict:
     server_id = server.get("id")
-    transport_type = server.get("type", "sse")
+    transport_type = _normalize_transport_type(server.get("type", "sse"))
     url = server.get("url", "")
     headers = server.get("headers", {}) or {}
 
     if server_id in _active_connections:
-        await disconnect_server(server_id)
+        await _disconnect_server_locked(server_id)
 
     if transport_type == "stdio":
         return await _connect_stdio(server)
@@ -279,11 +363,7 @@ async def connect_server(server: dict) -> dict:
     try:
         ClientSession = _import_mcp_client_session()
         if transport_type == "streamable-http":
-            from mcp.client.streamable_http import streamablehttp_client
-            transport = await exit_stack.enter_async_context(
-                streamablehttp_client(url, headers=headers)
-            )
-            read_stream, write_stream = transport[0], transport[1]
+            read_stream, write_stream = await _enter_streamable_http_transport(exit_stack, url, headers)
         else:
             from mcp.client.sse import sse_client
             transport = await exit_stack.enter_async_context(
@@ -294,7 +374,7 @@ async def connect_server(server: dict) -> dict:
         session = await exit_stack.enter_async_context(
             ClientSession(read_stream, write_stream)
         )
-        await session.initialize()
+        await _await_with_timeout(session.initialize(), "initialize")
 
         _active_connections[server_id] = {
             "session": session,
@@ -353,7 +433,7 @@ async def _connect_stdio(server: dict) -> dict:
         session = await exit_stack.enter_async_context(
             ClientSession(read_stream, write_stream)
         )
-        await session.initialize()
+        await _await_with_timeout(session.initialize(), "initialize")
 
         _active_connections[server_id] = {
             "session": session,
@@ -374,6 +454,11 @@ async def _connect_stdio(server: dict) -> dict:
 
 
 async def disconnect_server(server_id: str) -> dict:
+    async with _connection_lock:
+        return await _disconnect_server_locked(server_id)
+
+
+async def _disconnect_server_locked(server_id: str) -> dict:
     conn = _active_connections.pop(server_id, None)
     _connection_errors.pop(server_id, None)
     if conn:
@@ -386,6 +471,23 @@ async def disconnect_server(server_id: str) -> dict:
     return {"status": "not_found", "server_id": server_id}
 
 
+async def disconnect_all_servers() -> int:
+    """断开全部 MCP 连接（应用关闭时调用）。
+
+    此前无任何清理钩子：stdio 型 MCP server 的子进程会随连接常驻，
+    后端重启也不回收。
+    """
+    async with _connection_lock:
+        count = 0
+        for server_id in list(_active_connections.keys()):
+            try:
+                await _disconnect_server_locked(server_id)
+                count += 1
+            except Exception:
+                logger.exception("Failed to disconnect MCP server %s on shutdown", server_id)
+        return count
+
+
 async def list_server_tools(server_id: str) -> list:
     conn = _active_connections.get(server_id)
     if not conn:
@@ -393,7 +495,7 @@ async def list_server_tools(server_id: str) -> list:
     session = conn["session"]
     server_name = conn["config"].get("name", server_id)
 
-    result = await session.list_tools()
+    result = await _await_with_timeout(session.list_tools(), "list_tools")
     tools = []
     for tool in result.tools:
         openai_name = _register_openai_tool_name(server_id, tool.name)
@@ -404,8 +506,8 @@ async def list_server_tools(server_id: str) -> list:
             "serverName": server_name,
             "name": tool.name,
             "openaiName": openai_name,
-            "description": tool.description or "",
-            "inputSchema": tool.inputSchema if hasattr(tool, "inputSchema") else {},
+            "description": getattr(tool, "description", "") or "",
+            "inputSchema": _tool_input_schema(tool),
         })
     return tools
 
@@ -414,15 +516,16 @@ async def ensure_server_connected(server: dict) -> bool:
     server_id = server.get("id")
     if not server_id:
         return False
-    if server_id in _active_connections:
-        return True
-    try:
-        await connect_server(server)
-        return True
-    except Exception as e:
-        _connection_errors[server_id] = str(e)
-        logger.warning("MCP server %s is enabled but could not connect: %s", server_id, e)
-        return False
+    async with _connection_lock:
+        if server_id in _active_connections:
+            return True
+        try:
+            await _connect_server_locked(server)
+            return True
+        except Exception as e:
+            _connection_errors[server_id] = str(e)
+            logger.warning("MCP server %s is enabled but could not connect: %s", server_id, e)
+            return False
 
 
 async def call_server_tool(server_id: str, tool_name: str, args: dict = None) -> dict:
@@ -430,7 +533,7 @@ async def call_server_tool(server_id: str, tool_name: str, args: dict = None) ->
     if not conn:
         raise ValueError(f"MCP server not connected: {server_id}")
     session = conn["session"]
-    result = await session.call_tool(tool_name, arguments=args or {})
+    result = await _await_with_timeout(session.call_tool(tool_name, arguments=args or {}), "call_tool")
 
     content_parts = []
     for item in result.content:
@@ -443,7 +546,7 @@ async def call_server_tool(server_id: str, tool_name: str, args: dict = None) ->
 
     return {
         "content": "\n".join(content_parts),
-        "isError": result.isError if hasattr(result, "isError") else False,
+        "isError": _tool_is_error(result),
     }
 
 
@@ -488,10 +591,13 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> dict:
             if s.get("id") == server_id:
                 config = s
                 break
-        if config:
-            await connect_server(config)
-        else:
+        if not config:
             raise ValueError(f"MCP server not found: {server_id}")
+        if not await ensure_server_connected(config):
+            raise ValueError(
+                f"MCP server failed to connect: {server_id} "
+                f"({_connection_errors.get(server_id, 'unknown error')})"
+            )
 
     return await call_server_tool(server_id, actual_tool_name, arguments)
 

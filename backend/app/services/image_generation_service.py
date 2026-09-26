@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import random
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Sequence
@@ -248,6 +251,21 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
     if response_format not in {"auto", "b64_json", "url"}:
         response_format = "auto"
 
+    # [AUDIT-2026-09-25] SD/ComfyUI 出图参数收口（clamp 防呆，schema 层也有界）。
+    try:
+        steps = max(1, min(int(provider.get("steps") or 20), 150))
+    except (TypeError, ValueError):
+        steps = 20
+    try:
+        cfg_scale = max(0.0, min(float(provider.get("cfg_scale") or 7.0), 30.0))
+    except (TypeError, ValueError):
+        cfg_scale = 7.0
+    try:
+        seed = int(provider.get("seed", -1))
+    except (TypeError, ValueError):
+        seed = -1
+    seed = max(seed, -1)
+
     return {
         "id": str(provider.get("id") or DEFAULT_PROVIDER_ID).strip() or DEFAULT_PROVIDER_ID,
         "name": str(provider.get("name") or "OpenAI Compatible").strip() or "OpenAI Compatible",
@@ -261,6 +279,11 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
         "style": str(provider.get("style") or "").strip(),
         "response_format": response_format,
         "timeout_seconds": timeout_seconds,
+        "negative_prompt": str(provider.get("negative_prompt") or ""),
+        "steps": steps,
+        "cfg_scale": cfg_scale,
+        "sampler_name": str(provider.get("sampler_name") or "Euler a").strip() or "Euler a",
+        "seed": seed,
     }
 
 
@@ -424,6 +447,20 @@ def _result_from_base64(
     )
 
 
+def _sd_auth_header(api_key: str) -> Optional[str]:
+    """SD WebUI 鉴权头。A1111 原生 ``--api-auth`` 是 HTTP Basic（user:pass），
+    此前只发 Bearer——开了 --api-auth 的实例连不上（AUDIT-2026-09-25）。
+    约定：api_key 含 ":" 视为 user:pass 走 Basic，否则维持 Bearer（兼容
+    前置网关）。"""
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    if ":" in key:
+        encoded = base64.b64encode(key.encode("utf-8")).decode("ascii")
+        return f"Basic {encoded}"
+    return f"Bearer {key}"
+
+
 async def _generate_image_via_sd_webui(
     provider: dict[str, Any], prompt: str, user_id: int
 ) -> GeneratedImage:
@@ -431,13 +468,20 @@ async def _generate_image_via_sd_webui(
     if not base_url:
         raise HTTPException(status_code=400, detail="SD WebUI 未配置 Base URL")
     width, height = _parse_size(provider.get("size"), 512, 512)
+    # [AUDIT-2026-09-25] 出图参数从配置透传（此前全吃函数默认值的硬编码）。
     result = await _generate_sd_webui(
         base_url=base_url,
         prompt=prompt,
+        negative_prompt=str(provider.get("negative_prompt") or ""),
+        sampler=str(provider.get("sampler_name") or "Euler a"),
+        steps=int(provider.get("steps") or 20),
+        cfg_scale=float(provider.get("cfg_scale") or 7.0),
+        seed=int(provider.get("seed", -1)),
         width=width,
         height=height,
         timeout_seconds=int(provider.get("timeout_seconds") or 120),
         api_key=provider.get("api_key", ""),
+        model=str(provider.get("model") or ""),
     )
     return _result_from_base64(provider, prompt, user_id, result.get("base64"), result.get("seed"))
 
@@ -452,20 +496,17 @@ async def _generate_image_via_comfyui(
     result = await _generate_comfyui(
         base_url=base_url,
         prompt=prompt,
+        negative_prompt=str(provider.get("negative_prompt") or ""),
         width=width,
         height=height,
+        steps=int(provider.get("steps") or 20),
+        cfg_scale=float(provider.get("cfg_scale") or 7.0),
+        seed=int(provider.get("seed", -1)),
         timeout_seconds=int(provider.get("timeout_seconds") or 120),
     )
     images = result.get("base64") or []
     if not images:
-        # ⚠ _generate_comfyui 目前只把工作流提交给 /prompt（末端是 SaveImage 节点），
-        # **不取回图片**，base64 恒为空。这里显式报错而不是让它走到
-        # 「未返回图片数据」——后者会让用户以为是自己配错了。
-        # 要真正出图必须补 /history/{prompt_id} → /view 的取图流程，属独立议题。
-        raise HTTPException(
-            status_code=501,
-            detail="ComfyUI 出图尚未实现取图（当前仅提交工作流），请改用 OpenAI 兼容或 SD WebUI",
-        )
+        raise HTTPException(status_code=502, detail="ComfyUI 未返回图片数据")
     return _result_from_base64(provider, prompt, user_id, images, result.get("seed"))
 
 
@@ -845,12 +886,14 @@ async def _generate_sd_webui(
     seed: int = -1,
     timeout_seconds: int = 120,
     api_key: str = "",
+    model: str = "",
 ) -> dict[str, Any]:
     """通过 SD WebUI /sdapi/v1/txt2img 端点生成图片。"""
     url = f"{base_url.rstrip('/')}/sdapi/v1/txt2img"
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    auth_header = _sd_auth_header(api_key)
+    if auth_header:
+        headers["Authorization"] = auth_header
     payload = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -862,7 +905,12 @@ async def _generate_sd_webui(
         "seed": seed,
         "batch_size": 1,
     }
-    logger.info("SD WebUI txt2img: url=%s, steps=%d, cfg=%s, size=%dx%d", url, steps, cfg_scale, width, height)
+    # provider.model 此前完全不被读取；txt2img 支持按请求覆盖 checkpoint
+    # （restore_afterwards 请求结束后恢复原模型，不污染全局状态）。
+    if model:
+        payload["override_settings"] = {"sd_model_checkpoint": model}
+        payload["override_settings_restore_afterwards"] = True
+    logger.info("SD WebUI txt2img: url=%s, steps=%d, cfg=%s, size=%dx%d, model=%s", url, steps, cfg_scale, width, height, model or "<server default>")
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(url, json=payload, headers=headers)
@@ -909,8 +957,9 @@ async def _generate_sd_webui_img2img(
     """通过 SD WebUI /sdapi/v1/img2img 端点生成图片。"""
     url = f"{base_url.rstrip('/')}/sdapi/v1/img2img"
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    auth_header = _sd_auth_header(api_key)
+    if auth_header:
+        headers["Authorization"] = auth_header
     payload = {
         "init_images": init_images,
         "prompt": prompt,
@@ -953,6 +1002,41 @@ async def _generate_sd_webui_img2img(
     return {"base64": images, "seed": used_seed}
 
 
+# ComfyUI /history 轮询间隔（测试里 monkeypatch 缩短）
+COMFYUI_POLL_INTERVAL_SECONDS = 1.0
+# ComfyUI 返回的 seed 是 32 位无符号整数
+_COMFYUI_SEED_MAX = 2**32 - 1
+
+
+def _extract_comfyui_image_ref(history_entry: dict) -> Optional[dict[str, str]]:
+    """从 /history/{prompt_id} 条目里取第一张输出图的定位参数。
+
+    ComfyUI 的 outputs 形如 ``{node_id: {"images": [{filename, subfolder, type}]}}``；
+    优先取 ``type == "output"`` 的（临时预览是 "temp"）。取不到返回 None。
+    """
+    outputs = history_entry.get("outputs") if isinstance(history_entry, dict) else None
+    if not isinstance(outputs, dict):
+        return None
+    fallback: Optional[dict[str, str]] = None
+    for node_output in outputs.values():
+        images = node_output.get("images") if isinstance(node_output, dict) else None
+        if not isinstance(images, list):
+            continue
+        for image in images:
+            if not isinstance(image, dict) or not image.get("filename"):
+                continue
+            ref = {
+                "filename": str(image["filename"]),
+                "subfolder": str(image.get("subfolder", "")),
+                "type": str(image.get("type", "output")),
+            }
+            if ref["type"] == "output":
+                return ref
+            if fallback is None:
+                fallback = ref
+    return fallback
+
+
 async def _generate_comfyui(
     base_url: str,
     prompt: str,
@@ -964,13 +1048,19 @@ async def _generate_comfyui(
     seed: int = -1,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
-    """通过 ComfyUI HTTP API 提交工作流（最小实现）。"""
-    url = f"{base_url.rstrip('/')}/prompt"
+    """通过 ComfyUI HTTP API 出图：提交工作流 → 轮询 /history → /view 取图。
+
+    审计（2026-09-25）实锤旧实现"只下单不取货"：POST /prompt 后直接返回，
+    base64 恒为空，消息出图路径恒 501。这里补全取图闭环。
+    """
+    base = base_url.rstrip("/")
+    # ComfyUI 没有 seed=-1 的"随机"约定：不取随机值会恒用 0（每次同图）。
+    used_seed = seed if seed >= 0 else random.randint(0, _COMFYUI_SEED_MAX)
     workflow = {
         "3": {
             "class_type": "KSampler",
             "inputs": {
-                "seed": seed if seed >= 0 else 0,
+                "seed": used_seed,
                 "steps": steps,
                 "cfg": cfg_scale,
                 "sampler_name": "euler",
@@ -1008,21 +1098,57 @@ async def _generate_comfyui(
         },
     }
     payload = {"prompt": workflow}
-    logger.info("ComfyUI prompt submit: url=%s, size=%dx%d", url, width, height)
+    logger.info("ComfyUI prompt submit: url=%s, size=%dx%d, seed=%d", f"{base}/prompt", width, height, used_seed)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(url, json=payload)
+            response = await client.post(f"{base}/prompt", json=payload)
             response.raise_for_status()
             result = response.json()
+            prompt_id = result.get("prompt_id", "") if isinstance(result, dict) else ""
+            if not prompt_id:
+                raise HTTPException(status_code=502, detail="ComfyUI 未返回 prompt_id")
+
+            # 轮询 /history/{prompt_id}，outputs 就绪即取图
+            deadline = time.monotonic() + max(timeout_seconds, 5)
+            image_ref: Optional[dict[str, str]] = None
+            while time.monotonic() < deadline:
+                await asyncio.sleep(COMFYUI_POLL_INTERVAL_SECONDS)
+                history_resp = await client.get(f"{base}/history/{prompt_id}")
+                history_resp.raise_for_status()
+                history_data = history_resp.json() if history_resp.content else {}
+                entry = history_data.get(prompt_id) if isinstance(history_data, dict) else None
+                if not isinstance(entry, dict):
+                    continue
+                status = entry.get("status") or {}
+                if str(status.get("status_str", "")).lower() == "error":
+                    raise HTTPException(status_code=502, detail="ComfyUI 工作流执行失败（见 ComfyUI 服务端日志）")
+                image_ref = _extract_comfyui_image_ref(entry)
+                if image_ref:
+                    break
+            if image_ref is None:
+                raise HTTPException(status_code=504, detail="ComfyUI 出图超时（工作流未在时限内完成）")
+
+            view_resp = await client.get(f"{base}/view", params=image_ref)
+            view_resp.raise_for_status()
+            image_bytes = view_resp.content
+            if not image_bytes:
+                raise HTTPException(status_code=502, detail="ComfyUI 返回空图片")
+
+            return {
+                "base64": [base64.b64encode(image_bytes).decode("ascii")],
+                "seed": used_seed,
+                "prompt_id": prompt_id,
+            }
+    except HTTPException:
+        raise
     except httpx.ConnectError as exc:
         raise HTTPException(status_code=502, detail=f"无法连接 ComfyUI 服务: {exc}") from exc
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="ComfyUI 请求超时") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"ComfyUI 返回错误: {exc.response.status_code}") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"ComfyUI 请求失败: {exc}") from exc
-
-    prompt_id = result.get("prompt_id", "") if isinstance(result, dict) else ""
-    return {"base64": [], "seed": seed, "prompt_id": prompt_id, "message": "ComfyUI 工作流已提交"}
 
 
 async def generate_sd_webui_image(
@@ -1090,8 +1216,9 @@ async def list_sd_models() -> list[dict[str, str]]:
         return []
     url = f"{provider['base_url'].rstrip('/')}/sdapi/v1/sd-models"
     headers = {}
-    if provider.get("api_key"):
-        headers["Authorization"] = f"Bearer {provider['api_key']}"
+    auth_header = _sd_auth_header(provider.get("api_key", ""))
+    if auth_header:
+        headers["Authorization"] = auth_header
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, headers=headers)
@@ -1115,8 +1242,9 @@ async def list_sd_samplers() -> list[dict[str, str]]:
         return []
     url = f"{provider['base_url'].rstrip('/')}/sdapi/v1/samplers"
     headers = {}
-    if provider.get("api_key"):
-        headers["Authorization"] = f"Bearer {provider['api_key']}"
+    auth_header = _sd_auth_header(provider.get("api_key", ""))
+    if auth_header:
+        headers["Authorization"] = auth_header
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, headers=headers)
@@ -1141,8 +1269,9 @@ async def get_sd_status() -> dict[str, Any]:
     base_url = provider["base_url"]
     url = f"{base_url.rstrip('/')}/sdapi/v1/options"
     headers = {}
-    if provider.get("api_key"):
-        headers["Authorization"] = f"Bearer {provider['api_key']}"
+    auth_header = _sd_auth_header(provider.get("api_key", ""))
+    if auth_header:
+        headers["Authorization"] = auth_header
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, headers=headers)

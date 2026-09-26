@@ -64,7 +64,7 @@ from ..services.slash_command_service import (
     execute_slash_command,
     is_slash_command,
 )
-from ..services.compact_title_service import generate_compact_title, rule_based_compact_title
+from ..services.compact_title_service import extract_response_title, generate_compact_title, rule_based_compact_title
 from ..services.image_generation_service import (
     build_image_generated_event,
     build_image_generation_failed_event,
@@ -4960,10 +4960,10 @@ async def _character_chat_impl(
                     try:
                         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == assistant_message_id).first()
                         if msg and msg.short_title is None:
-                            title_match = re.search(r"\[标题[:：]\s*(.{1,15})\s*\]", result.full_content)
-                            if title_match:
-                                extracted_title = title_match.group(1).strip()
-                                clean_content = re.sub(r"\s*\[标题[:：]\s*.{1,15}\s*\]\s*$", "", result.full_content).strip()
+                            # [TITLE-MARKER-FIX] 正则收口到 compact_title_service.
+                            # extract_response_title（与 WS 主路径共用同一实现）。
+                            extracted_title, clean_content = extract_response_title(result.full_content)
+                            if extracted_title:
                                 msg.short_title = extracted_title
                                 _sync_message_content_to_active_swipe(msg, clean_content)
                                 result.full_content = clean_content

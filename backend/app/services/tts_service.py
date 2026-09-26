@@ -16,9 +16,58 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..models import Character, TTSCloneSample, TTSVoiceBinding, User
-from ..utils import _is_public_http_url
+from ..utils import _is_public_http_url, allow_internal_service_urls
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 音频格式识别（AUDIT-2026-09-25）
+# ============================================================
+
+def sniff_audio_mime(data: bytes, fallback: str = "audio/mpeg") -> str:
+    """按魔数（文件头字节）推断音频 MIME。
+
+    custom_api 分支此前把上游返回的字节硬编码声明成 audio/mpeg：Chrome
+    靠内容嗅探大概率能播，Safari / iOS 严格按声明类型解码会直接不出声。
+    """
+    if not data or len(data) < 12:
+        return fallback
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio/wav"
+    if data[:4] == b"OggS":
+        return "audio/ogg"
+    if data[:4] == b"fLaC":
+        return "audio/flac"
+    if data[4:8] == b"ftyp":
+        return "audio/mp4"
+    if data[:3] == b"ID3" or (data[0] == 0xFF and (data[1] & 0xE0) == 0xE0):
+        return "audio/mpeg"
+    return fallback
+
+
+def resolve_audio_mime(upstream_content_type: Optional[str], audio_bytes: bytes, fallback: str = "audio/mpeg") -> str:
+    """优先信上游声明的 Content-Type（audio/*），否则按魔数推断。"""
+    ct = (upstream_content_type or "").split(";")[0].strip().lower()
+    if ct.startswith("audio/"):
+        return ct
+    return sniff_audio_mime(audio_bytes, fallback)
+
+
+def audio_mime_ext(mime: str) -> str:
+    """Content-Disposition 文件名扩展名要跟真实格式一致（.wav 配 audio/wav）。"""
+    return {
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/wave": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/ogg": ".ogg",
+        "audio/flac": ".flac",
+        "audio/mp4": ".m4a",
+        "audio/x-m4a": ".m4a",
+        "audio/aac": ".aac",
+    }.get((mime or "").split(";")[0].strip().lower(), ".mp3")
 
 
 # ============================================================
@@ -120,6 +169,7 @@ BUILTIN_PROVIDERS = [
         "config_fields": [
             {"key": "base_url", "label": "服务器地址", "type": "text", "required": True, "placeholder": "http://localhost:5002"},
             {"key": "speaker_id", "label": "说话人 ID", "type": "text", "required": False, "placeholder": "可选"},
+            {"key": "language_id", "label": "语言 ID", "type": "text", "required": False, "placeholder": "XTTS 多语模型必填，如 zh-cn / en（默认 en）"},
         ],
         "voices": [
             {"voice_id": "default", "gender": "female", "description": "默认音色"},
@@ -162,6 +212,55 @@ DEFAULT_VOICE_GENDER = "female"
 DEFAULT_PREVIEW_TEXT = "这是一段语音试听。今晚的风很轻，我会用这个声音为你朗读角色对白。"
 VALID_ROLES = {"character", "narrator"}
 VALID_SCOPES = {"global", "user", "character"}
+
+
+# ============================================================
+# 400 文案白名单（N-13 契约兼容，AUDIT-2026-09-25）
+# ============================================================
+#
+# 审计实锤：api 层曾把写给人看的提示（"请先去模型管理→语音中设置"）统一
+# 压成 request_id 脱敏文案，用户无法自助修复。但 N-13 契约（4xx detail
+# 禁止直传 str(e)）仍然正确——异常原文可能带上游内容。折中：只有本服务
+# 手写的静态文案才原样透出，其余一律脱敏。
+
+_CLIENT_SAFE_EXACT = frozenset({
+    "TTS 已禁用",
+    "该语音绑定已禁用",
+    "Text cannot be empty",
+    "No text to synthesize",
+    "No text to synthesize after extraction",
+    "小米 MIMO TTS API Key 未配置，请在模型管理→语音中设置",
+    "自定义 TTS API 地址未配置",
+    "自定义 TTS API Key 未配置",
+    "ElevenLabs API Key 未配置，请在模型管理→语音中设置",
+    "Coqui TTS 服务器地址未配置",
+    "Coqui TTS 服务器地址必须是公网 http(s) 地址（本地服务请设 ALLOW_INTERNAL_SERVICE_URLS=true）",
+    "edge-tts 未安装，请运行 pip install edge-tts",
+    "edge-tts 未返回音频数据",
+    "MIMO TTS API returned no choices",
+    "MIMO TTS API returned no audio data",
+    "Only public http(s) TTS API URLs are allowed",
+    "声音克隆样本文件不存在",
+    "声音克隆需要登录用户上下文",
+    "当前服务商不支持声音克隆",
+    "声音克隆样本不存在或无权访问",
+    "声音克隆样本路径无效",
+})
+
+# 含用户可控但无害的插值（服务商 id / 角色 名）：按前缀放行。
+_CLIENT_SAFE_PREFIXES = ("服务商 '", "Invalid TTS role")
+
+
+def client_safe_tts_detail(exc: Exception, request_id: str = "unknown") -> str:
+    """TTS 400 文案策略：白名单内的静态提示透出，其余脱敏。
+
+    api 层不得直传 ``detail=str(e)``（N-13 静态守卫），经此函数中转：
+    白名单命中 → 原文；否则 → request_id 脱敏文案。
+    """
+    text = str(exc)
+    if text in _CLIENT_SAFE_EXACT or text.startswith(_CLIENT_SAFE_PREFIXES):
+        return text
+    return f"语音合成请求无法处理 (request_id: {request_id})"
 
 
 # ============================================================
@@ -278,9 +377,16 @@ def _is_masked(val: object) -> bool:
 
 def _validate_custom_tts_base_url(base_url: str) -> str:
     normalized = (base_url or "").strip()
-    if not normalized or not _is_public_http_url(normalized):
-        raise ValueError("Only public http(s) TTS API URLs are allowed")
-    return normalized
+    if not normalized:
+        return normalized
+    if _is_public_http_url(normalized):
+        return normalized
+    # 本地 TTS 服务（LM Studio / 自建网关等）此前在开发模式也被拦——
+    # 该校验无条件拒绝内网。现在统一走内网放行开关（dev 默认放行，
+    # 生产需 ALLOW_INTERNAL_SERVICE_URLS=true）。
+    if allow_internal_service_urls():
+        return normalized
+    raise ValueError("Only public http(s) TTS API URLs are allowed")
 
 
 _SENSITIVE_KEYS = {"api_key"}
@@ -435,6 +541,31 @@ def binding_to_public_dict(binding: Optional[TTSVoiceBinding], inherited: bool =
     return data
 
 
+def sync_global_bindings_on_provider_switch(db: Session, old_provider_id: str, new_provider_id: str) -> int:
+    """管理员切换 active_provider_id 后，把"跟随旧默认"的全局绑定刷到新服务商。
+
+    审计实锤（tts_service resolve 的 ``binding.provider_id or provider_id``）：
+    global 绑定首次由 ``ensure_global_defaults`` 落库时冻结当时的
+    active_provider_id，此后管理员切换服务商只改配置文件，实际合成仍走冻结
+    的旧服务商——UI 显示与真实行为不一致。这里只刷 provider_id 仍等于旧
+    激活服务商的绑定；管理员显式指定为其他服务商的绑定保持不动。
+    """
+    if not old_provider_id or not new_provider_id or new_provider_id == old_provider_id:
+        return 0
+    config = _get_raw_config()
+    bindings = db.query(TTSVoiceBinding).filter(
+        TTSVoiceBinding.scope == "global",
+        TTSVoiceBinding.provider_id == old_provider_id,
+    ).all()
+    for binding in bindings:
+        binding.provider_id = new_provider_id
+        gender = binding.gender or config.get("default_voice_gender", DEFAULT_VOICE_GENDER)
+        binding.voice_id = _resolve_voice_for_provider(new_provider_id, gender) or ""
+        logger.info("TTS global binding role=%s follows provider switch %s -> %s", binding.role, old_provider_id, new_provider_id)
+    db.flush()
+    return len(bindings)
+
+
 # ============================================================
 # 实际TTS API调用
 # ============================================================
@@ -539,7 +670,12 @@ async def _call_custom_api_tts(
     base_url: str,
     api_key: str,
     model: str = "tts-1",
-) -> bytes:
+) -> Tuple[bytes, Optional[str]]:
+    """调用自定义 TTS API，返回 (音频字节, 上游 Content-Type)。
+
+    此前丢弃上游 Content-Type 只回字节，调用方被迫硬编码声明类型——
+    上游给 WAV、声明 MP3，Safari/iOS 直接失声。
+    """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"model": model, "input": text, "voice": voice_id}
     safe_base_url = _validate_custom_tts_base_url(base_url)
@@ -547,7 +683,7 @@ async def _call_custom_api_tts(
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(safe_base_url, json=payload, headers=headers)
         response.raise_for_status()
-        return response.content
+        return response.content, response.headers.get("content-type")
 
 
 async def _synthesize_edge(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> bytes:
@@ -588,16 +724,26 @@ async def _synthesize_elevenlabs(text: str, voice: str, api_key: str, model: str
         return response.content
 
 
-async def _synthesize_coqui(text: str, voice: str, server_url: str) -> bytes:
-    """通过 Coqui TTS 服务器生成音频。"""
+async def _synthesize_coqui(text: str, voice: str, server_url: str, language_id: str = "") -> bytes:
+    """通过 Coqui TTS 服务器生成音频。
+
+    审计（2026-09-25）实锤两处必踩坑：① XTTS 多语模型缺 ``language_id``
+    直接报错（此前从不传）；② 内置音色 "default" 被原样当 ``speaker_id``
+    发送，而真实服务器没有叫 "default" 的说话人——空或 "default" 一律
+    不传，让服务器用自身默认说话人。
+    """
     if not server_url:
         raise ValueError("Coqui TTS 服务器地址未配置")
     normalized = server_url.rstrip("/")
+    if not _is_public_http_url(normalized) and not allow_internal_service_urls():
+        raise ValueError("Coqui TTS 服务器地址必须是公网 http(s) 地址（本地服务请设 ALLOW_INTERNAL_SERVICE_URLS=true）")
     url = f"{normalized}/api/tts"
     params = {"text": text}
-    if voice:
-        params["speaker_id"] = voice
-    logger.info("Coqui TTS API call: server=%s, voice=%s, text_len=%d", normalized, voice, len(text))
+    speaker = (voice or "").strip()
+    if speaker and speaker != "default":
+        params["speaker_id"] = speaker
+    params["language_id"] = (language_id or "").strip() or "en"
+    logger.info("Coqui TTS API call: server=%s, speaker=%s, language=%s, text_len=%d", normalized, speaker or "<server default>", params["language_id"], len(text))
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.get(url, params=params)
         if response.status_code != 200:
@@ -898,14 +1044,16 @@ class TTSService:
                 raise ValueError("自定义 TTS API 地址未配置")
             if not api_key:
                 raise ValueError("自定义 TTS API Key 未配置")
-            audio_bytes = await _call_custom_api_tts(
+            audio_bytes, upstream_type = await _call_custom_api_tts(
                 text=tts_text,
                 voice_id=params["voice_id"] or "alloy",
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
             )
-            return "audio/mpeg", audio_bytes
+            # 此前恒声明 audio/mpeg：上游回 WAV 时 Safari/iOS 解码失败失声。
+            # 现按上游 Content-Type / 魔数声明真实类型。
+            return resolve_audio_mime(upstream_type, audio_bytes), audio_bytes
 
         if engine_type == "edge":
             voice_id = params["voice_id"] or "zh-CN-XiaoxiaoNeural"
@@ -935,6 +1083,7 @@ class TTSService:
                 text=tts_text,
                 voice=voice_id,
                 server_url=server_url,
+                language_id=pconfig.get("language_id", ""),
             )
             return "audio/wav", audio_bytes
 

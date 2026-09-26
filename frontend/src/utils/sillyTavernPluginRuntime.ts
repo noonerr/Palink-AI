@@ -204,11 +204,21 @@ export class SillyTavernPluginRuntime {
   /** ST 事件值 → ST 常量名 反查表（eventAliases 懒初始化） */
   private reverseEventMap: Record<string, string> | null = null;
 
-  async loadRuntimeConfig(): Promise<RuntimeConfig> {
+  /**
+   * [PLUGIN-ON-DEMAND] 拉取插件运行时配置。
+   *
+   * ``characterId`` 传入时走后端按角色过滤：卡内扩展来源插件仅当该卡自带酒馆助手
+   * 生态声明才下发，裸卡不再被塞进无配套渲染的脚本（2026-08-21 实测泄漏源）。
+   * api.get 缓存按 URL 区分 → 不同角色各持一份（30s TTL），切卡不会互相污染。
+   */
+  async loadRuntimeConfig(characterId?: string): Promise<RuntimeConfig> {
     // 30s 前端内存缓存：与 preloadSmartCardRuntimeConfig 共用 api.get 缓存，
     // 同一会话内多次进入对话 / 多个智能卡 iframe 不重复下载 ~4.4MB 插件代码。
     // 插件 CRUD / 配置变更后 AdminPluginsTab 已调用 invalidateCache 清除。
-    const data: any = await api.get('/api/plugins/runtime/config', { cacheTtlMs: 30_000 });
+    const url = characterId
+      ? `/api/plugins/runtime/config?character_id=${encodeURIComponent(characterId)}`
+      : '/api/plugins/runtime/config';
+    const data: any = await api.get(url, { cacheTtlMs: 30_000 });
     this.config = data as RuntimeConfig;
     this.extensionSettings = data?.extension_settings || {};
     return this.config;

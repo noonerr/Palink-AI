@@ -16,6 +16,35 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "新对话"
 
+# [TITLE-MARKER-FIX] character_message_builder 的标题指令让模型在回复末尾输出
+# 「[标题: xxx]」。两条生成路径都要"提取为短标题 + 从正文剥离"：
+# SSE 路径（character_ext）此前有内联实现，WS 主路径（websocket）只起标题、
+# 不剥正文 → 标记原样显示在消息末尾（2026-09-25 实测）。正则对收口在这里。
+_RESPONSE_TITLE_RE = re.compile(r"\[标题[:：]\s*(.{1,15})\s*\]")
+_RESPONSE_TITLE_TAIL_RE = re.compile(r"\s*\[标题[:：]\s*.{1,15}\s*\]\s*$")
+# 整行只有标记的行（模型偶尔在标记后再写一行，如 [标题:..] 后跟【声音：..】，
+# 2026-09-25 实测消息 2304）
+_RESPONSE_TITLE_LINE_RE = re.compile(r"(?m)^[ \t]*\[标题[:：]\s*.{1,15}\s*\][ \t]*$\n?")
+
+
+def extract_response_title(content: str) -> tuple[Optional[str], str]:
+    """从模型回复中提取 [标题: xxx] 标记，并从正文剥离。
+
+    返回 (标题或 None, 处理后的正文)。匹配不到标记时原样返回 (None, content)。
+    剥离顺序：先剥末尾标记（含尾随空白）；不在末尾时剥「整行只有标记」的行；
+    行内嵌在散文里的标记保守保留，避免误伤正文。
+    """
+    if not content:
+        return None, content
+    match = _RESPONSE_TITLE_RE.search(content)
+    if not match:
+        return None, content
+    title = match.group(1).strip() or None
+    cleaned = _RESPONSE_TITLE_TAIL_RE.sub("", content, count=1)
+    cleaned = _RESPONSE_TITLE_LINE_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return title, cleaned
+
 
 def _strip_think_blocks(text: str) -> str:
     return re.sub(r"<think[\s\S]*?<\/think>", "", text or "", flags=re.IGNORECASE)

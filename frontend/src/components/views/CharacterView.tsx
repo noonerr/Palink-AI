@@ -14,6 +14,9 @@ import { Button } from '@/components/ui/button';
 import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { CharacterList } from './character/CharacterList';
 import type { CharacterListItem } from './character/CharacterList';
+// [PLUGIN-ON-DEMAND] 导入后的插件勾选步骤
+import { ImportPluginPicker } from './character/ImportPluginPicker';
+import type { PluginSuggestion } from './character/ImportPluginPicker';
 import { CharacterEditor } from './character/CharacterEditor';
 import { CharacterChat } from './character/CharacterChat';
 import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
@@ -232,6 +235,9 @@ export function CharacterView({
   const [pendingDeleteBranch, setPendingDeleteBranch] = useState<string | null>(null);
   const [initializingChat, setInitializingChat] = useState(false);
   const [showImportOptions, setShowImportOptions] = useState<string | null>(null);
+  // ── [PLUGIN-ON-DEMAND] 导入后的插件勾选步骤 ──
+  const [importPluginSuggestions, setImportPluginSuggestions] = useState<PluginSuggestion[]>([]);
+  const [showPluginPicker, setShowPluginPicker] = useState<string | null>(null);
   const [processingCharacter, setProcessingCharacter] = useState<string | null>(null);
   const [forceShowOverlay, setForceShowOverlay] = useState<string | null>(null);
   const [showProcessingMessage, setShowProcessingMessage] = useState<{ show: boolean; message: string }>({ show: false, message: '' });
@@ -947,12 +953,23 @@ export function CharacterView({
         _message: '上传完成，正在解析角色卡...',
       });
 
+      // [PLUGIN-ON-DEMAND] 后端识别出的插件建议（空数组 = 不插入勾选步骤）
+      const pluginSuggestions: PluginSuggestion[] = Array.isArray(result?.plugin_suggestions)
+        ? result.plugin_suggestions
+        : [];
+      setImportPluginSuggestions(pluginSuggestions);
+
       invalidateCache('/api/characters');
       if (result.auto_parsed) {
         toast.info('已自动从图片解析角色信息');
         await loadCharacters();
         if (result.character?.id) {
-          setShowImportOptions(result.character.id);
+          // [PLUGIN-ON-DEMAND] 有识别建议 → 先走插件勾选步骤；否则沿用原流程
+          if (pluginSuggestions.length > 0) {
+            setShowPluginPicker(result.character.id);
+          } else {
+            setShowImportOptions(result.character.id);
+          }
           await openImportedCharacter(result.character.id);
         }
       } else {
@@ -962,7 +979,12 @@ export function CharacterView({
           wb.loadWorldBooks(result.character.id);
         }
         if (result.character?.id) {
-          setShowImportOptions(result.character.id);
+          // [PLUGIN-ON-DEMAND] 有识别建议 → 先走插件勾选步骤；否则沿用原流程
+          if (pluginSuggestions.length > 0) {
+            setShowPluginPicker(result.character.id);
+          } else {
+            setShowImportOptions(result.character.id);
+          }
           await openImportedCharacter(result.character.id);
         }
       }
@@ -1742,6 +1764,25 @@ export function CharacterView({
           onStopProcessing={handleStopProcessing}
           onSetShowImportOptions={setShowImportOptions}
           onCloseImporting={handleCloseImporting}
+        />
+      )}
+
+      {/* [PLUGIN-ON-DEMAND] 导入成功后的插件勾选步骤。
+          刻意放在视图层而非 CharacterList 内：导入完成后会立刻打开该角色的聊天页
+          （openImportedCharacter → handleStartChat），CharacterList 随即被卸载，
+          挂在其中的弹窗会跟着消失。放这里则与视图切换无关，移动端/桌面端共用同一份。 */}
+      {showPluginPicker && (
+        <ImportPluginPicker
+          characterId={showPluginPicker}
+          suggestions={importPluginSuggestions}
+          onNext={() => {
+            setShowPluginPicker(null);
+            setShowImportOptions(showPluginPicker);
+          }}
+          onSkip={() => {
+            setShowPluginPicker(null);
+            setShowImportOptions(showPluginPicker);
+          }}
         />
       )}
 

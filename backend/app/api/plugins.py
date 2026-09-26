@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from ..models.plugin import Plugin, PluginScript
+from ..models.plugin import Plugin, PluginScript, CharacterPluginState
 from ..models.character import Character
 from ..models.user import User
 from ..api.dependencies import get_admin, get_current_user
@@ -1224,10 +1224,250 @@ def _build_sillytavern_runtime_config(
     }
 
 
+# ── [PLUGIN-ON-DEMAND] 卡内扩展插件按角色隔离（2026-09-25 用户拍板）──────
+#
+# 背景见 TODOS 2026-09-25 条目：卡内扩展来源插件（含 8-28 例外放行的
+# tavern_helper）此前对所有角色常驻下发——裸卡被要求输出无渲染的 @bubble
+# 标记（实测泄漏）。判定标准（用户拍板"自动识别"）：卡的 extensions 自带
+# 酒馆助手生态声明（tavern_helper.scripts 非空）→ 该卡下发；裸卡不下发。
+# 逃生门：plugin.config.global_runtime === true 视为管理员显式全局，任何卡都下发。
+
+# ── [PLUGIN-ON-DEMAND] 识别器：导入角色卡时判定"这张卡大概需要哪些插件" ──
+#
+# 判定优先级（三者命中任一即入选）：
+#   1. 卡显式声明 extensions.palink.required_plugins（本方案新立的约定字段，向后兼容）
+#   2. 插件自声明 config.detect.any_of 规则（声明式，管理员可配）
+#   3. 内置兜底规则（覆盖当前唯一的 tavern_helper 类型插件）
+#
+# 只读函数：不写库。识别结果交给前端展示，由用户勾选后才落库。
+
+_PLUGIN_DETECT_TEXT_FIELDS = (
+    "name", "description", "personality", "scenario", "mes_example",
+    "first_mes", "system_prompt", "post_history_instructions", "creator_notes",
+)
+
+
+def _character_extensions_dict(character) -> dict:
+    raw = getattr(character, "extensions", None)
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _resolve_json_path(obj, path):
+    cur = obj
+    for part in str(path or "").split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _detect_rule_match(rule, ext: dict, text_blob: str) -> bool:
+    """判定单条 detect 规则是否命中。支持 json_path（+non_empty/contains）与 text_pattern。"""
+    if not isinstance(rule, dict):
+        return False
+    json_path = rule.get("json_path")
+    if json_path:
+        value = _resolve_json_path(ext, json_path)
+        if rule.get("non_empty"):
+            if isinstance(value, list) and len(value) > 0:
+                return True
+            if isinstance(value, dict) and len(value) > 0:
+                return True
+            if isinstance(value, str) and value.strip():
+                return True
+        if "contains" in rule:
+            needle = str(rule.get("contains"))
+            if isinstance(value, list):
+                if any(str(item) == needle for item in value):
+                    return True
+            elif isinstance(value, str):
+                if needle in value:
+                    return True
+    text_pattern = rule.get("text_pattern")
+    if text_pattern and str(text_pattern) in text_blob:
+        return True
+    return False
+
+
+def _builtin_detect_reason(plugin, ext: dict, text_blob: str):
+    """内置兜底识别：无需配置即可覆盖 tavern_helper 生态。返回命中理由或 None。"""
+    if plugin.plugin_type != "tavern_helper":
+        return None
+    tavern_helper = ext.get("tavern_helper")
+    if isinstance(tavern_helper, dict):
+        scripts = tavern_helper.get("scripts")
+        if isinstance(scripts, list) and any(isinstance(s, dict) for s in scripts):
+            return "卡内自带酒馆助手脚本"
+    if "@bubble" in text_blob:
+        return "卡正文出现 @bubble 标记"
+    return None
+
+
+def _card_declared_plugin_names(ext: dict) -> list:
+    palink = ext.get("palink")
+    if not isinstance(palink, dict):
+        return []
+    declared = palink.get("required_plugins")
+    if not isinstance(declared, list):
+        return []
+    return [str(item) for item in declared if isinstance(item, (str, int))]
+
+
+def detect_required_plugins(db: Session, character) -> list:
+    """识别该角色卡可能需要哪些插件。只读，不写库。
+
+    返回 [{'plugin_id','plugin_name','plugin_type','reason','source'}]，
+    source ∈ {declared, detected}。未命中任何规则的插件不出现在结果里。
+    注意：卡内正则脚本不在此列（它们走 GLOBAL/SCOPED/PRESET 三层，天然按卡隔离）。
+    """
+    ext = _character_extensions_dict(character)
+    text_blob = " ".join(
+        str(getattr(character, field, "") or "") for field in _PLUGIN_DETECT_TEXT_FIELDS
+    )
+    declared = _card_declared_plugin_names(ext)
+
+    results = []
+    for plugin in db.query(Plugin).filter(Plugin.enabled == True).all():  # noqa: E712
+        reason = None
+        source = None
+        if plugin.id in declared or plugin.name in declared:
+            reason = "卡内显式声明"
+            source = "declared"
+        else:
+            config = _plugin_config(plugin)
+            detect = config.get("detect") if isinstance(config, dict) else None
+            if isinstance(detect, dict):
+                for rule in detect.get("any_of") or []:
+                    if _detect_rule_match(rule, ext, text_blob):
+                        reason = "命中插件识别规则"
+                        source = "detected"
+                        break
+            if reason is None:
+                builtin = _builtin_detect_reason(plugin, ext, text_blob)
+                if builtin:
+                    reason = builtin
+                    source = "detected"
+        if reason:
+            results.append({
+                "plugin_id": plugin.id,
+                "plugin_name": plugin.name,
+                "plugin_type": plugin.plugin_type,
+                "reason": reason,
+                "source": source,
+            })
+    return results
+
+
+def _character_card_entitles_card_extension_plugins(card_extensions_raw) -> bool:
+    """卡的 extensions 是否自带酒馆助手生态声明（tavern_helper.scripts 非空）。"""
+    try:
+        ext = json.loads(card_extensions_raw) if isinstance(card_extensions_raw, str) else card_extensions_raw
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(ext, dict):
+        return False
+    tavern_helper = ext.get("tavern_helper")
+    if not isinstance(tavern_helper, dict):
+        return False
+    scripts = tavern_helper.get("scripts")
+    return isinstance(scripts, list) and any(isinstance(s, dict) for s in scripts)
+
+
+def _filter_runtime_config_for_character(db: Session, payload: dict, character_id) -> dict:
+    """按角色过滤 runtime payload 中的卡内扩展来源插件。
+
+    - character_id 缺省 / 角色不存在 → 原样返回（管理面与旧调用方行为不变）；
+    - 卡自带生态声明 → 原样返回（全部照常下发）；
+    - 裸卡 → 剔除卡内扩展来源插件（global_runtime=true 的显式全局插件保留）。
+    用户显式安装的非卡内扩展插件永远不受影响。
+    """
+    if not character_id:
+        return payload
+    character = db.query(Character).filter(Character.id == character_id).first()
+    if character is None:
+        return payload
+
+    # [PLUGIN-ON-DEMAND] 白名单模式（用户已在导入时手工确认过名单）：
+    # 用户显式选择优先于后端自动判定。优先级约定见 spec §2.5.1 ——
+    # BUBBLE_DEBUG > 用户显式选择 > 装配层/后端自动门控。
+    # 装配层侧需同步：命中 allowlist 时跳过气泡协议自动检测（否则会出现
+    # "UI 勾了、装配层又判不需要"的决策打架）。
+    mode = (getattr(character, "plugin_scope_mode", None) or "inherit").strip().lower()
+    if mode == "allowlist":
+        allowed = {
+            row.plugin_id
+            for row in db.query(CharacterPluginState)
+            .filter(
+                CharacterPluginState.character_id == character.id,
+                CharacterPluginState.enabled == True,  # noqa: E712
+            )
+            .all()
+        }
+        # 逃生门：管理员标记 exclude_from_scope=true 的基础设施插件，任何卡都下发。
+        exempt: set[str] = set()
+        for row in db.query(Plugin).filter(Plugin.enabled == True).all():  # noqa: E712
+            config = _plugin_config(row)
+            if isinstance(config, dict) and config.get("exclude_from_scope") is True:
+                exempt.add(row.id)
+        plugins = payload.get("plugins")
+        if isinstance(plugins, list):
+            kept = [
+                item for item in plugins
+                if isinstance(item, dict)
+                and (item.get("id") in allowed or item.get("id") in exempt)
+            ]
+            payload = {**payload, "plugins": kept}
+            logger.info(
+                "[PLUGIN-ON-DEMAND] allowlist for character %s: kept %d/%d plugin(s)",
+                character_id, len(kept), len(plugins),
+            )
+        return payload
+
+    if _character_card_entitles_card_extension_plugins(character.extensions):
+        return payload
+
+    drop_ids: set[str] = set()
+    card_ext_rows = (
+        db.query(Plugin)
+        .filter(Plugin.enabled == True, Plugin.source_type == "character_card_extension")  # noqa: E712
+        .all()
+    )
+    for plugin_row in card_ext_rows:
+        cfg = {}
+        try:
+            cfg = json.loads(plugin_row.config) if isinstance(plugin_row.config, str) else (plugin_row.config or {})
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+        if isinstance(cfg, dict) and cfg.get("global_runtime") is True:
+            continue
+        drop_ids.add(plugin_row.id)
+    if not drop_ids:
+        return payload
+
+    plugins = payload.get("plugins")
+    if isinstance(plugins, list):
+        kept = [item for item in plugins if not (isinstance(item, dict) and item.get("id") in drop_ids)]
+        payload = {**payload, "plugins": kept}
+        logger.info(
+            "[PLUGIN-ON-DEMAND] runtime config for character %s: dropped %d card-extension plugin(s)",
+            character_id, len(drop_ids),
+        )
+    return payload
+
+
 @router.get("/runtime/config")
 async def get_sillytavern_runtime_config(
     request: Request,
     include_disabled: int = 0,
+    character_id: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1246,6 +1486,11 @@ async def get_sillytavern_runtime_config(
     ``include_disabled=1``：管理面模式，返回作用域内全部已安装插件（含禁用，
     每个 payload 带 enabled 标志），仅供插件管理器（admin UI）展示/启停/卸载
     使用；非管理员请求该模式返回 403。
+
+    ``character_id``：[PLUGIN-ON-DEMAND] 按角色隔离。传入时，卡内扩展来源
+    插件（含 tavern_helper 例外放行批）仅当该卡的 extensions 自带酒馆助手
+    生态声明才下发——裸卡不下发，避免"全局复印件"塞给所有角色。缺省时
+    行为与旧版完全一致（全量下发）。
     """
     include_disabled_flag = bool(include_disabled)
     if include_disabled_flag and user.role != "admin":
@@ -1253,6 +1498,7 @@ async def get_sillytavern_runtime_config(
     payload = _build_sillytavern_runtime_config(
         db, user.id, include_disabled=include_disabled_flag
     )
+    payload = _filter_runtime_config_for_character(db, payload, character_id)
     etag = _runtime_config_etag(payload)
     headers = {
         "Cache-Control": "private, max-age=300",

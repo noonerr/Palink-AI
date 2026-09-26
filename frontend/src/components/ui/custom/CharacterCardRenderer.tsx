@@ -291,7 +291,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
   );
   useEffect(() => {
     let cancelled = false;
-    preloadSmartCardRuntimeConfig().then((config) => {
+    // [PLUGIN-ON-DEMAND] 按卡取配置：后端据此过滤卡内扩展来源插件（裸卡不
+    // 下发酒馆助手等生态脚本）。effect 依赖 characterId——切卡即重取，晚到
+    // 经 postContextToFrame 热更新进 iframe，不重建 srcDoc。
+    preloadSmartCardRuntimeConfig(context.characterId).then((config) => {
       if (!cancelled) setStPluginRuntimeConfig(config);
     });
     return () => { cancelled = true; };

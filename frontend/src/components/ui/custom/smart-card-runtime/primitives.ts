@@ -167,10 +167,16 @@ export function hashSmartCardSource(value: string): string {
 }
 
 
-export async function preloadSmartCardRuntimeConfig(): Promise<SillyTavernPluginRuntimeConfig | null> {
+export async function preloadSmartCardRuntimeConfig(characterId?: string): Promise<SillyTavernPluginRuntimeConfig | null> {
   if (typeof window === 'undefined') return smartCardRuntimeConfigFallback;
   try {
-    const config = await api.get<SillyTavernPluginRuntimeConfig>('/api/plugins/runtime/config', { cacheTtlMs: 30_000 });
+    // [PLUGIN-ON-DEMAND] 带 character_id 时后端按卡过滤卡内扩展来源插件：
+    // 卡自带酒馆助手生态声明才下发（8-28 例外放行批的按需隔离）。api 缓存按
+    // URL 区分，不同角色各持一份（30s TTL）。
+    const url = characterId
+      ? `/api/plugins/runtime/config?character_id=${encodeURIComponent(characterId)}`
+      : '/api/plugins/runtime/config';
+    const config = await api.get<SillyTavernPluginRuntimeConfig>(url, { cacheTtlMs: 30_000 });
     if (config && typeof config === 'object') {
       const normalized: SillyTavernPluginRuntimeConfig = {
         plugins: Array.isArray(config.plugins) ? config.plugins : [],

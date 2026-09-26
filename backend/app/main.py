@@ -288,6 +288,16 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("应用关闭中...")
 
+    # [AUDIT-2026-09-25] stdio 型 MCP server 的子进程此前随连接常驻、重启
+    # 也不回收——关闭时统一断开（含 exit_stack 里的子进程收尾）。
+    try:
+        from .services.mcp_service import disconnect_all_servers
+        closed = await disconnect_all_servers()
+        if closed:
+            logger.info("已断开 %d 个 MCP 连接", closed)
+    except Exception:
+        logger.warning("MCP 连接清理失败（非致命）", exc_info=True)
+
 app = FastAPI(
     title="Palink AI Enterprise API v12.7",
     lifespan=lifespan,

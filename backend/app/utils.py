@@ -89,6 +89,19 @@ def normalize_image_url(img_url: str, check_size: bool = False, user_id: Optiona
     return img_url
 
 
+def allow_internal_service_urls() -> bool:
+    """生产/测试环境下放行内网服务地址的显式总开关（AUDIT-2026-09-25）。
+
+    本地 SD WebUI / ComfyUI / Coqui / MCP server 必然是内网地址，此前
+    "开发能配、生产被自家 SSRF 规则挡住" 且无白名单。development 环境保持
+    直接放行；其余环境默认拒绝，仅当 ALLOW_INTERNAL_SERVICE_URLS=true 放行。
+    """
+    from .core.config import settings
+    if settings.APP_ENV == "development":
+        return True
+    return bool(getattr(settings, "ALLOW_INTERNAL_SERVICE_URLS", False))
+
+
 def _is_public_http_url(url: str) -> bool:
     from urllib.parse import urlparse
     try:

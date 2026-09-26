@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -51,3 +51,29 @@ class PluginScript(Base):
     created_at = Column(DateTime, default=utc_now)
 
     plugin = relationship("Plugin", backref="scripts")
+
+
+class CharacterPluginState(Base):
+    """[PLUGIN-ON-DEMAND] 角色卡级插件开关覆盖（2026-09-26）。
+
+    语义由 ``characters.plugin_scope_mode`` 决定：
+    - ``inherit``（默认，也是所有存量角色的状态）：本表的行**不参与判定**，
+      沿用 ``plugins.enabled`` 全局开关 —— 保证老卡行为零变化；
+    - ``allowlist``：白名单模式，**只有**本表 ``enabled=True`` 的插件才下发。
+
+    之所以把"模式位"和"覆盖行"分开，是为了能表达「用户明确确认过一张卡什么都不装」
+    这种空白名单（只靠"有没有行"无法区分空名单与从未设置）。
+    """
+    __tablename__ = "character_plugin_state"
+    __table_args__ = (
+        UniqueConstraint("character_id", "plugin_id", name="uq_character_plugin"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    character_id = Column(String, ForeignKey("characters.id", ondelete="CASCADE"), nullable=False, index=True)
+    plugin_id = Column(String, ForeignKey("plugins.id", ondelete="CASCADE"), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    # 来源标记：declared=卡显式声明 / detected=识别器命中 / manual=用户手工勾选
+    source = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

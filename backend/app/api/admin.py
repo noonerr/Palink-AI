@@ -770,6 +770,44 @@ async def set_image_cleanup_config(
     db.commit()
     return {"status": "ok", "config": {"enabled": req.enabled, "max_age_days": req.max_age_days}}
 
+def _cleanup_stale_upload_files(upload_dir: str, cutoff: datetime) -> tuple[int, int]:
+    """递归删除 upload_dir 下修改时间早于 cutoff 的文件，返回 (数量, 字节数)。
+
+    旧实现只遍历一层：`generated-images/`、`tts_clones/` 等子目录走到
+    os.remove 抛 IsADirectoryError 被 except 吞掉——里面的文件实际**永不
+    清理**（AUDIT-2026-09-25 实锤）。改为 os.walk 递归；文件删完后自底向上
+    收掉空目录（uploads 根目录保留）。
+    """
+    deleted_count = 0
+    total_size = 0
+    real_upload_dir = os.path.realpath(upload_dir)
+
+    for root, _dirs, files in os.walk(upload_dir):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                mtime = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
+                if mtime < cutoff:
+                    fsize = os.path.getsize(fpath)
+                    os.remove(fpath)
+                    deleted_count += 1
+                    total_size += fsize
+            except Exception:
+                continue
+
+    for root, dirs, _files in os.walk(upload_dir, topdown=False):
+        for d in dirs:
+            dpath = os.path.realpath(os.path.join(root, d))
+            if dpath == real_upload_dir:
+                continue
+            try:
+                os.rmdir(dpath)  # 仅空目录会成功，非空原样保留
+            except Exception:
+                continue
+
+    return deleted_count, total_size
+
+
 @router.post("/image-cleanup/run")
 async def run_image_cleanup(
     user: User = Depends(get_admin),
@@ -786,25 +824,8 @@ async def run_image_cleanup(
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     upload_dir = settings.UPLOAD_DIR
-    deleted_count = 0
-    total_size = 0
 
-    if os.path.isdir(upload_dir):
-        for user_dir_name in os.listdir(upload_dir):
-            user_dir_path = os.path.join(upload_dir, user_dir_name)
-            if not os.path.isdir(user_dir_path):
-                continue
-            for fname in os.listdir(user_dir_path):
-                fpath = os.path.join(user_dir_path, fname)
-                try:
-                    mtime = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
-                    if mtime < cutoff:
-                        fsize = os.path.getsize(fpath)
-                        os.remove(fpath)
-                        deleted_count += 1
-                        total_size += fsize
-                except Exception:
-                    continue
+    deleted_count, total_size = _cleanup_stale_upload_files(upload_dir, cutoff)
 
     return {
         "status": "ok",

@@ -21,6 +21,14 @@ class ImageGenerationProvider(BaseModel):
     style: Optional[str] = None
     response_format: Optional[str] = "auto"
     timeout_seconds: int = Field(default=120, ge=5, le=600)
+    # [AUDIT-2026-09-25] SD/ComfyUI 出图参数此前全硬编码（steps=20 /
+    # Euler a / cfg=7.0 / neg=''），schema 也没有这些字段，填了不生效。
+    # 对 openai_compatible 无效（其本有 quality/style）。
+    negative_prompt: str = ""
+    steps: int = Field(default=20, ge=1, le=150)
+    cfg_scale: float = Field(default=7.0, ge=0.0, le=30.0)
+    sampler_name: str = "Euler a"
+    seed: int = Field(default=-1, ge=-1)  # -1 = 随机（ComfyUI 侧由服务层取随机值）
 
 
 class ImageGenerationDefaults(BaseModel):

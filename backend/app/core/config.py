@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     MIGRATIONS_FAIL_FAST: bool = True
     PROVIDER_SECRET_CHECK_STRICT: bool = False
     MCP_ALLOWED_ROLES: list = ["admin"]
+    # [AUDIT-2026-09-25] 生产/测试环境下放行内网服务地址的显式总开关。
+    # 背景：本地 SD WebUI / ComfyUI / Coqui / MCP server 必然是内网地址，
+    # 而 SSRF 校验在非 development 环境一律拒绝 → "开发能配、生产被自家
+    # 规则挡住"。默认 False（保持拦截）；部署本地 AI 服务时置 true 显式放行。
+    ALLOW_INTERNAL_SERVICE_URLS: bool = False
     API_THREADPOOL_TOKENS: int = 16
     STARTUP_INIT_LOCK_FILE: str = "/tmp/palink_startup.lock"
     STARTUP_INIT_DONE_FILE: str = "/tmp/palink_startup.done"

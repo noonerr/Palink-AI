@@ -18,11 +18,140 @@ from ..core import get_db
 from ..core.cache import cached, invalidate_cache, invalidate_user_cache
 from ..api.dependencies import get_current_user
 from ..models import User, Character
+from ..models.plugin import Plugin, CharacterPluginState
 from .smart_card_assets import schedule_smart_card_source_prefetch
+
+# ── [PLUGIN-ON-DEMAND] 角色卡级插件按需启用（2026-09-26）────────────────────
+# 权威 spec：docs/SPEC_插件按角色卡按需启用_2026-09-26.md
+# 识别器与运行时过滤实现在 api/plugins.py（该文件为并行施工共享文件，
+# 本任务的新增内容一律带 [PLUGIN-ON-DEMAND] 标记）。
+from pydantic import BaseModel as _PydanticBaseModel
+from sqlalchemy import or_ as _sql_or
+from ..api.plugins import detect_required_plugins, _invalidate_runtime_config_cache
+
+
+class CharacterPluginStateItem(_PydanticBaseModel):
+    plugin_id: str
+    enabled: bool
+
+
+class CharacterPluginStatePayload(_PydanticBaseModel):
+    """PUT /api/characters/{id}/plugin-state 请求体。"""
+    mode: str = "allowlist"
+    plugins: list[CharacterPluginStateItem] = []
+
+
+def _visible_plugins_for_user(db: Session, user_id: int):
+    """与 runtime config 相同的可见性口径：全局插件(user_id NULL) + 本人插件。"""
+    return (
+        db.query(Plugin)
+        .filter(
+            _sql_or(Plugin.user_id == user_id, Plugin.user_id.is_(None)),
+            Plugin.enabled == True,  # noqa: E712
+        )
+        .order_by(Plugin.name.asc())
+        .all()
+    )
+
+
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
+
+
+@router.get("/{character_id}/plugin-state")
+async def get_character_plugin_state(
+    character_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """返回该角色卡的插件名单状态 + 自动识别建议。
+
+    ``plugins[].enabled`` 为 ``null`` 表示该卡尚未覆盖（沿用全局开关）；
+    ``suggestions`` 是识别器给出的建议清单，仅供 UI 默认勾选，不写库。
+    """
+    char = db.query(Character).filter(
+        Character.id == character_id, Character.user_id == user.id
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    mode = (getattr(char, "plugin_scope_mode", None) or "inherit")
+    rows = {
+        r.plugin_id: r
+        for r in db.query(CharacterPluginState)
+        .filter(CharacterPluginState.character_id == char.id)
+        .all()
+    }
+
+    plugins = []
+    for plugin in _visible_plugins_for_user(db, user.id):
+        row = rows.get(plugin.id)
+        plugins.append({
+            "plugin_id": plugin.id,
+            "plugin_name": plugin.name,
+            "plugin_type": plugin.plugin_type,
+            "enabled": (bool(row.enabled) if row is not None else None),
+        })
+
+    return {
+        "mode": mode,
+        "plugins": plugins,
+        "suggestions": detect_required_plugins(db, char),
+    }
+
+
+@router.put("/{character_id}/plugin-state")
+async def put_character_plugin_state(
+    character_id: str,
+    payload: CharacterPluginStatePayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """写入该角色卡的插件名单，并切换卡级作用域模式。
+
+    mode=inherit  → 清空覆盖语义，沿用全局开关（老卡默认）；
+    mode=allowlist→ 只有 enabled=True 的插件下发给该卡。
+    """
+    char = db.query(Character).filter(
+        Character.id == character_id, Character.user_id == user.id
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    mode = (payload.mode or "allowlist").strip().lower()
+    if mode not in ("inherit", "allowlist"):
+        raise HTTPException(422, "mode must be 'inherit' or 'allowlist'")
+
+    existing = {
+        r.plugin_id: r
+        for r in db.query(CharacterPluginState)
+        .filter(CharacterPluginState.character_id == char.id)
+        .all()
+    }
+    touched: set[str] = set()
+    for item in payload.plugins or []:
+        row = existing.get(item.plugin_id)
+        if row is None:
+            row = CharacterPluginState(
+                character_id=char.id,
+                plugin_id=item.plugin_id,
+                enabled=bool(item.enabled),
+                source="manual",
+            )
+            db.add(row)
+        else:
+            row.enabled = bool(item.enabled)
+            row.source = "manual"
+        touched.add(item.plugin_id)
+
+    char.plugin_scope_mode = mode
+    db.commit()
+    # 该卡的插件清单变了 → 前端 30s api 缓存与后端拼装缓存都要失效
+    _invalidate_runtime_config_cache()
+    invalidate_user_cache("character_detail", user.id)
+    return {"status": "ok", "mode": mode, "count": len(touched)}
 _MAX_CHARACTER_IMPORT_UPLOAD_SIZE = 50 * 1024 * 1024
 _MAX_PRESET_UPLOAD_SIZE = 5 * 1024 * 1024
 _MAX_BATCH_IMPORT_UPLOAD_SIZE = 100 * 1024 * 1024
@@ -507,9 +636,26 @@ async def import_character(
         logger.exception("Character import failed")
         raise HTTPException(500, f"导入失败: {e}")
 
+    # [PLUGIN-ON-DEMAND] 识别这张卡可能需要哪些插件，供导入完成弹窗让用户勾选。
+    # 纯只读、不写库；识别失败绝不影响导入结果。
+    plugin_suggestions: list = []
+    try:
+        new_id = character.get("id") if isinstance(character, dict) else getattr(character, "id", None)
+        if new_id:
+            new_char = db.query(Character).filter(Character.id == new_id).first()
+            if new_char is not None:
+                plugin_suggestions = detect_required_plugins(db, new_char)
+    except Exception as exc:  # 识别是增值功能，失败静默降级
+        logger.warning("[PLUGIN-ON-DEMAND] 导入后识别插件失败（不影响导入）: %s", exc)
+
     invalidate_user_cache("character_list", user.id)
     invalidate_user_cache("character_detail", user.id)
-    return {"status": "ok", "character": character, "auto_parsed": False}
+    return {
+        "status": "ok",
+        "character": character,
+        "auto_parsed": False,
+        "plugin_suggestions": plugin_suggestions,
+    }
 
 @router.post("/{character_id}/import-preset")
 async def import_preset(

@@ -65,6 +65,16 @@ class TTSService {
   private sequenceFailed = false;
   /** stop() 时释放 awaitPlaybackEnd，避免强停后序列仍挂在 await 上。 */
   private pendingPlaybackEnd: (() => void) | null = null;
+  /** 分段开关的服务端配置整个生命周期只拉一次（localStorage 值作兜底）。 */
+  private segmentedConfigLoaded = false;
+
+  /** [AUDIT-2026-09-25] 服务端的 segmented_playback 配置此前没有任何调用方
+   * 去拉，普通用户只能手写 localStorage——首次点播时静默补拉一次。 */
+  private ensureSegmentedConfigLoaded(): void {
+    if (this.segmentedConfigLoaded) return;
+    this.segmentedConfigLoaded = true;
+    void this.loadSegmentedPlaybackConfig();
+  }
 
   constructor() {
     this.audioElement = new Audio();
@@ -264,6 +274,7 @@ class TTSService {
     let controller: AbortController | null = null;
     try {
       this.stop();
+      this.ensureSegmentedConfigLoaded();
 
       const cleanText = this.cleanTextForTTS(text);
       if (!cleanText) {
@@ -555,6 +566,14 @@ class TTSService {
     }
     // 分段序列若正等在某段的 ended 上，先释放它——否则这个 await 永远不会回头
     this.pendingPlaybackEnd?.();
+    // [AUDIT-2026-09-25] stop 把 abortController 置 null 后，被打断序列的
+    // runSequence finally 里「仍持有控制权」判等必然失败 → sequenceActive
+    // 永久为 true：之后普通播放结束会被构造器里的序列守卫拦住，按钮永不
+    // 回 idle、出错也不弹提示。被打断的序列已失去控制权，这里复位是安全的
+    // （新序列若已启动，会自己把标志重新置 true）。
+    this.sequenceActive = false;
+    this.sequenceFailed = false;
+    this.pendingPlaybackEnd = null;
     if (this.audioElement) {
       this.audioElement.pause();
       this.audioElement.currentTime = 0;
@@ -607,6 +626,16 @@ class TTSService {
     options: PlayMessageOptions = {},
   ): Promise<void> {
     const key = String(messageId);
+    this.ensureSegmentedConfigLoaded();
+
+    // [AUDIT-2026-09-25] 模型输出的【声音：温柔】此前在后端被静默剥掉、
+    // 前端 extractVoiceDescription 零调用方——声线信息从未真正参与合成。
+    // 这里从原始正文提取（cleanTextForTTS 之前），未显式指定时作为
+    // voice_description 传给后端（解析为音色性别 + MiMo 风格前缀）。
+    if (!options.voiceDescription) {
+      const extracted = this.extractVoiceDescription(text);
+      if (extracted) options = { ...options, voiceDescription: extracted };
+    }
 
     if (this.activeMessageId === key) {
       // 合成中重复点：忽略。否则会走下面的 stop() 再重新发起，用户连点就反复重来。

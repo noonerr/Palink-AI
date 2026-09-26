@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -1513,6 +1514,117 @@ def _strip_trailing_bare_close_tags(content: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+# ── [PLUGIN-ON-DEMAND] 对话渲染生态注入的按角色门控 ────────────────
+#
+# 「对话渲染系统」类 tavern_helper 脚本会全局注入 @bubble 格式规范
+# （要求模型每次说话都输出 @bubble:角色|情绪|[对白]）。该标记的渲染由
+# **卡内的配套渲染正则 JS** 完成（脚本自述），裸卡没有配套 → 标记裸奔
+# （2026-09-25 实测）。判定标准（用户拍板：自动识别配套正则）：
+# 角色的生效正则（卡内嵌 / 插件全局 / ST 扩展设置三源）中存在启用的、
+# 面向展示的脚本其内容命中 bubble/对话渲染/气泡 即视为有配套；
+# 无配套时丢弃 @bubble 类注入（其余注入不受影响）。
+
+_BUBBLE_MARKER_RE = re.compile(r"@bubble", re.IGNORECASE)
+_BUBBLE_RENDER_HINT_RE = re.compile(r"bubble|对话渲染|气泡", re.IGNORECASE)
+
+
+def _regex_script_is_display_side(script: dict) -> bool:
+    """展示侧脚本（promptOnly 的脚本只改提示词、不做渲染，不算配套）。"""
+    if not isinstance(script, dict):
+        return False
+    if script.get("promptOnly") or script.get("prompt_only"):
+        return False
+    return True
+
+
+def _regex_script_mentions_bubble(script: dict) -> bool:
+    blob = " ".join(
+        str(script.get(key) or "")
+        for key in ("scriptName", "script_name", "findRegex", "find", "replaceString", "replace")
+    )
+    return bool(_BUBBLE_RENDER_HINT_RE.search(blob))
+
+
+def _card_regex_scripts(extensions_raw) -> list[dict]:
+    try:
+        ext = json.loads(extensions_raw) if isinstance(extensions_raw, str) else extensions_raw
+    except (json.JSONDecodeError, TypeError):
+        return []
+    scripts = ext.get("regex_scripts") if isinstance(ext, dict) else None
+    return [s for s in scripts if isinstance(s, dict)] if isinstance(scripts, list) else []
+
+
+def _char_card_has_bubble_regex(extensions_raw) -> bool:
+    for script in _card_regex_scripts(extensions_raw):
+        if script.get("disabled") is True or script.get("enabled") is False:
+            continue
+        if not _regex_script_is_display_side(script):
+            continue
+        if _regex_script_mentions_bubble(script):
+            return True
+    return False
+
+
+def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
+    """当前角色是否有 @bubble 配套渲染正则（三源任一命中即为有）。"""
+    if _char_card_has_bubble_regex(char_extensions_raw):
+        return True
+    try:
+        # 函数级局部导入：character_ext 反向依赖本模块，模块级导入会成环。
+        from ..api.character_ext import (
+            _load_extension_settings_regex_scripts,
+            _load_plugin_regex_script_dicts,
+        )
+        scripts = list(_load_plugin_regex_script_dicts(db))
+        if user_id is not None:
+            scripts += list(_load_extension_settings_regex_scripts(db, user_id))
+        for script in scripts:
+            if not _regex_script_is_display_side(script):
+                continue
+            if _regex_script_mentions_bubble(script):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+# ── [PLUGIN-ON-DEMAND] 装配层让位（spec §2.5.1）────────────────────────────
+#
+# 上面这套 @bubble 自动门控是「装配层自动判定」。若用户在导入卡时手工确认过
+# 插件名单（plugin_scope_mode='allowlist'），两边可能打架：UI 勾了、装配层
+# 又判这张卡不需要。统一优先级（从高到低）：
+#   1. BUBBLE_DEBUG 环境变量   —— 调试逃生门，无条件保留
+#   2. 用户显式选择（allowlist）—— 用户勾选即权威，装配层让位、跳过自动检测
+#   3. 装配层自动门控          —— 仅在 inherit（含 NULL）时生效
+# 命中 1/2 时不再跑 _has_bubble_render_support，避免决策打架。
+
+
+def _bubble_debug_forced() -> bool:
+    """调试逃生门：BUBBLE_DEBUG=1/true/on/yes 时无条件保留 @bubble 类注入。"""
+    try:
+        raw = (os.environ.get("BUBBLE_DEBUG") or "").strip().lower()
+    except Exception:
+        return False
+    return raw in {"1", "true", "on", "yes"}
+
+
+def _character_plugin_scope_mode(character) -> str:
+    """读取角色的插件作用域模式：'allowlist'（用户显式名单）/ 'inherit'（默认）。
+
+    任何读取失败（属性不存在 / 列未迁移 / char 是单测替身对象）都退化为
+    'inherit'，即行为与改造前逐字一致——绝不因读取失败翻转既有门控结论。
+    """
+    try:
+        raw = getattr(character, "plugin_scope_mode", None)
+    except Exception:
+        return "inherit"
+    if raw is None:
+        return "inherit"
+    mode = raw if isinstance(raw, str) else str(raw)
+    mode = (mode or "").strip().lower()
+    return mode or "inherit"
+
+
 def _collect_extension_prompts(
     req: "PromptAssemblyRequest",
 ) -> list[dict[str, Any]]:
@@ -1614,7 +1726,43 @@ def _collect_extension_prompts(
             "filter": _normalize_ext_filter(entry.get("filter")),
         }
 
-    # 3. 按 filter 过滤
+    # 3. [PLUGIN-ON-DEMAND] @bubble 类注入按角色生效：内容带 @bubble 的注入
+    # （对话渲染生态的格式规范）仅当角色存在配套渲染正则时注入；无配套
+    # （裸卡）时模型只会输出无人渲染的原始标记 → 丢弃。其余注入零影响。
+    bubble_entries = [
+        entry for entry in merged.values()
+        if _BUBBLE_MARKER_RE.search(entry.get("content") or "")
+    ]
+    if bubble_entries:
+        # [PLUGIN-ON-DEMAND] 优先级：BUBBLE_DEBUG > 用户显式选择 > 装配层自动门控
+        char_obj = getattr(req, "char", None)
+        if _bubble_debug_forced():
+            logger.info(
+                "[PLUGIN-ON-DEMAND] BUBBLE_DEBUG set: keeping %d bubble-format injection(s) "
+                "without gate (escape hatch)",
+                len(bubble_entries),
+            )
+        elif _character_plugin_scope_mode(char_obj) == "allowlist":
+            # 用户已手工确认该卡插件名单 → 装配层让位，不再跑自动检测
+            logger.info(
+                "[PLUGIN-ON-DEMAND] character %s is allowlist: auto bubble gate deferred to user choice "
+                "(%d injection(s) kept)",
+                getattr(char_obj, "id", None), len(bubble_entries),
+            )
+        else:
+            has_support = _has_bubble_render_support(
+                req.db, getattr(getattr(req, "user", None), "id", None),
+                getattr(char_obj, "extensions", None),
+            )
+            if not has_support:
+                for entry in bubble_entries:
+                    merged.pop(entry["identifier"], None)
+                logger.info(
+                    "[PLUGIN-ON-DEMAND] dropped %d bubble-format injection(s): character has no companion render regex",
+                    len(bubble_entries),
+                )
+
+    # 4. 按 filter 过滤
     char_id = str(req.char.id) if req.char is not None and req.char.id is not None else ""
     sess_id = str(req.session_id) if req.session_id else ""
     result: list[dict[str, Any]] = []

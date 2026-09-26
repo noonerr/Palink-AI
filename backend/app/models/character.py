@@ -47,6 +47,11 @@ class Character(Base):
     # ST 1.18.0 V3 chara card fields
     # talkativeness: ST 1.18.0 uses string for this; controls group chat speaker weight
     talkativeness = Column(String, nullable=True, default="0.5")
+    # [PLUGIN-ON-DEMAND] 角色卡插件作用域模式（2026-09-26）。
+    # 'inherit'  = 默认。无卡级覆盖，沿用 plugins.enabled 全局开关（存量角色零变化）。
+    # 'allowlist'= 白名单模式，只有 character_plugin_state 中 enabled=True 的插件才下发。
+    # 可空 + 无 server_default：未跑迁移的库查询本列会报错，故迁移 0064 必须执行。
+    plugin_scope_mode = Column(String, nullable=True)
     # nickname: character display nickname (V3 chara card field)
     nickname = Column(String, nullable=True)
     # group_only_greetings: JSON array of greetings used only in group chats (V3)

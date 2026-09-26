@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
 from ..core.cache import invalidate_user_cache
+# [PLUGIN-ON-DEMAND] 角色卡导入后的插件识别（实现在 api/plugins.py）
+from .plugins import detect_required_plugins
 from ..core.security import sign_service_user_id
 from ..core.token_blacklist import is_blacklisted
 from ..character_card import (
@@ -57,7 +59,7 @@ from ..services.worldbook_import_utils import (
     entry_keys,
     entry_secondary_keys,
 )
-from ..services.tts_service import clean_text_for_tts, tts_service
+from ..services.tts_service import clean_text_for_tts, tts_service, audio_mime_ext
 from ..services.websocket_manager import ws_manager
 
 router = APIRouter(tags=["silly-tavern"])
@@ -3692,6 +3694,19 @@ async def st_import_character(
     # 对齐 character.py 全部写路径惯例（创建/批量导入均失效 list+detail）。
     invalidate_user_cache("character_list", user.id)
     invalidate_user_cache("character_detail", user.id)
+
+    # [PLUGIN-ON-DEMAND] 识别这张卡可能需要哪些插件，供导入完成弹窗让用户勾选。
+    # 本端点是实际生效的导入路由（返回 character.py 老端点的超集），故必须在此也返回，
+    # 否则前端读不到建议、勾选步骤不会插入。识别失败静默降级，绝不影响导入结果。
+    plugin_suggestions: list = []
+    try:
+        if character_id:
+            new_char = db.query(Character).filter(Character.id == character_id).first()
+            if new_char is not None:
+                plugin_suggestions = detect_required_plugins(db, new_char)
+    except Exception as exc:
+        logger.warning("[PLUGIN-ON-DEMAND] 导入后识别插件失败（不影响导入）: %s", exc)
+
     # 返回形状对齐 character.py:512 老导入端点（前端 handleImportCharacter 读
     # result.character.id / has_character_book / worldbook_entry_count 触发
     # 自动打开对话与世界书提示；name/filename 保留为 ST 形状超集）。
@@ -3701,6 +3716,7 @@ async def st_import_character(
         "filename": filename,
         "character": result,
         "auto_parsed": False,
+        "plugin_suggestions": plugin_suggestions,
     }
 
 
@@ -4834,7 +4850,7 @@ async def st_speech_generate(
     """ST 1.18.0 兼容的语音生成端点。
 
     接受 form-encoded `text`/`voice`，委托给 Palink 原生 TTS 服务层合成，
-    返回二进制音频流 (audio/mpeg)。合成失败时返回 503。
+    返回二进制音频流。合成失败时返回 503。
     """
     try:
         clean = clean_text_for_tts(text)
@@ -4843,7 +4859,9 @@ async def st_speech_generate(
         binding_override: Optional[dict] = None
         if voice:
             binding_override = {"voice_id": voice}
-        _content_type, audio_bytes = await tts_service.synthesize_audio(
+        # 此前恒贴 audio/mpeg（上游回 WAV 时 Safari/iOS 失声），按服务层
+        # 推断的真实类型声明，文件名扩展名一并跟随。
+        content_type, audio_bytes = await tts_service.synthesize_audio(
             text=clean,
             db=db,
             user=user,
@@ -4851,8 +4869,8 @@ async def st_speech_generate(
         )
         return Response(
             content=audio_bytes,
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": "inline; filename=tts.mp3", "Cache-Control": "no-cache"},
+            media_type=content_type,
+            headers={"Content-Disposition": f"inline; filename=tts{audio_mime_ext(content_type)}", "Cache-Control": "no-cache"},
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

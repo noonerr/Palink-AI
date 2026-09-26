@@ -34,7 +34,7 @@ from ..services.inference_queue import inference_queue
 from ..services.stream_builder import StreamResult
 from ..services.web_search import search_web, format_search_results, get_web_search_config
 from ..services.mcp_service import get_all_tools_openai_format
-from ..services.compact_title_service import generate_compact_title
+from ..services.compact_title_service import extract_response_title, generate_compact_title
 from ..services.character_message_builder import build_character_chat_messages, clean_smart_card_trigger_context
 from ..services.status_bar_detector import (
     StreamingStatusStripper,
@@ -650,9 +650,11 @@ async def run_character_chat_generation(
     status_stripper = StreamingStatusStripper()
     mvu_variables_saved = False
     mvu_latest_variables: dict | None = None
+    # [TITLE-MARKER-FIX] persist 阶段从回复末尾剥出的 [标题: xxx]（None=模型没给）
+    marker_title: str | None = None
 
     def persist_snapshot(force: bool = False):
-        nonlocal assistant_message_id, last_saved_content_len, last_saved_reasoning_len, last_flush_ts, mvu_variables_saved, mvu_latest_variables
+        nonlocal assistant_message_id, last_saved_content_len, last_saved_reasoning_len, last_flush_ts, mvu_variables_saved, mvu_latest_variables, marker_title
 
         # [EMPTY-RESP-FIX] 空响应/仅思考无正文时不入库：模型偶发返回空（200 OK 但无
         # content/reasoning）或只有 <think> 无正文，若把 "Error: ..." 或 think 残渣存成
@@ -816,6 +818,15 @@ async def run_character_chat_generation(
         # 流式结束后的 final_content 推送亦取自剥离后的 msg.content，前端显示干净。
         from app.services.mvu_engine import strip_update_variable_blocks
         final = strip_update_variable_blocks(final)
+
+        # [TITLE-MARKER-FIX] 剥离回复末尾的 [标题: xxx] 标记。标题指令由
+        # character_message_builder 注入、模型必然输出；此前 WS 主路径只起标题、
+        # 不剥正文 → 标记原样显示在消息末尾（SSE 路径有剥离，两路不一致）。
+        # 与上面 MVU 剥离同理：只作用于落库正文（含 swipe），final_content
+        # 推送取自剥离后的 msg.content，前端即时收敛干净正文。
+        marker_title, final = extract_response_title(final)
+        if marker_title:
+            result.full_content = final
 
         try:
             if assistant_message_id is None:
@@ -1194,14 +1205,20 @@ async def run_character_chat_generation(
                         CharacterChatMessage.id == assistant_message_id
                     ).first()
                     if msg and msg.short_title is None:
-                        short_title = await generate_compact_title(
-                            save_db,
-                            f"{user_message}\n{result.full_content}",
-                            fallback_model_id=model,
-                            max_len=10,
-                        )
-                        msg.short_title = short_title
-                        save_db.commit()
+                        if marker_title:
+                            # 模型已按指令在正文给出标题（persist 阶段已剥离），直接
+                            # 采用，省一次 compact-title AI 调用；与 SSE 路径语义一致。
+                            msg.short_title = marker_title
+                            save_db.commit()
+                        else:
+                            short_title = await generate_compact_title(
+                                save_db,
+                                f"{user_message}\n{result.full_content}",
+                                fallback_model_id=model,
+                                max_len=10,
+                            )
+                            msg.short_title = short_title
+                            save_db.commit()
                 except Exception as e:
                     save_db.rollback()
                     logger.warning("Failed to generate short title: %s", e)

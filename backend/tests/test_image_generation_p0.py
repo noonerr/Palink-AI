@@ -49,10 +49,12 @@ def _run(coro):
 
 
 class _FakeResponse:
-    def __init__(self, payload=None, status_code: int = 200):
+    def __init__(self, payload=None, status_code: int = 200, content: bytes | None = None):
         self.status_code = status_code
         self._payload = payload if payload is not None else {}
         self.text = json.dumps(self._payload)
+        # ComfyUI /view 返回的是裸字节（AUDIT-2026-09-25 取图闭环后需要）
+        self.content = content if content is not None else self.text.encode()
 
     def json(self):
         return self._payload
@@ -78,12 +80,19 @@ def http_calls(monkeypatch):
         async def __aexit__(self, *exc_info):
             return False
 
-        async def post(self, url, json=None, headers=None, **kwargs):
-            calls.append({"url": str(url), "json": json or {}, "headers": headers or {}})
+        def _match(self, url):
             for suffix, response in responders.items():
                 if str(url).endswith(suffix):
                     return response
             return _FakeResponse({"data": []})
+
+        async def post(self, url, json=None, headers=None, **kwargs):
+            calls.append({"url": str(url), "json": json or {}, "headers": headers or {}})
+            return self._match(url)
+
+        async def get(self, url, params=None, **kwargs):
+            calls.append({"url": str(url), "json": {}, "headers": {}, "params": dict(params or {})})
+            return self._match(url)
 
     monkeypatch.setattr(igs.httpx, "AsyncClient", _FakeAsyncClient)
     return calls, responders
@@ -256,11 +265,54 @@ class TestGenerateImageDispatch:
 
         assert calls[0]["headers"]["Authorization"] == f"Bearer {FAKE_API_KEY}"
 
-    def test_comfyui_hits_prompt_endpoint_and_reports_not_implemented(
-        self, write_config, saved_images, http_calls
+    def test_comfyui_completes_submit_poll_and_download(
+        self, write_config, saved_images, http_calls, monkeypatch
+    ) -> None:
+        """AUDIT-2026-09-25 取图闭环：提交 → 轮询 /history → /view 取回字节落盘。
+
+        旧实现只提交工作流、base64 恒空、消息出图路径恒 501——本用例锁定
+        修复后的完整链路。
+        """
+        calls, responders = http_calls
+        responders["/prompt"] = _FakeResponse({"prompt_id": "abc123"})
+        responders["/history/abc123"] = _FakeResponse({
+            "abc123": {
+                "status": {"status_str": "success"},
+                "outputs": {"9": {"images": [
+                    {"filename": "c.png", "subfolder": "", "type": "output"},
+                ]}},
+            }
+        })
+        responders["/view"] = _FakeResponse(content=PNG_BYTES)
+        monkeypatch.setattr(igs, "COMFYUI_POLL_INTERVAL_SECONDS", 0)
+        write_config({
+            "id": "local_comfy",
+            "type": "comfyui",
+            "base_url": "https://comfy.example.com",
+        })
+
+        result = _run(igs.generate_image("a cat", user_id=1))
+
+        urls = [c["url"] for c in calls]
+        # 仍分发到 ComfyUI 端点（而不是 OpenAI 形状）
+        assert urls[0] == "https://comfy.example.com/prompt"
+        assert any(u.endswith("/history/abc123") for u in urls)
+        assert any(u.endswith("/view") for u in urls)
+        # /view 拿到的字节就是落盘的字节
+        assert saved_images == [PNG_BYTES]
+        assert result.provider_id == "local_comfy"
+        # seed=-1 时取随机值（旧实现恒 0 → 每次同图）
+        assert result.metadata["seed"] >= 0
+
+    def test_comfyui_workflow_error_reports_502(
+        self, write_config, saved_images, http_calls, monkeypatch
     ) -> None:
         calls, responders = http_calls
         responders["/prompt"] = _FakeResponse({"prompt_id": "abc123"})
+        responders["/history/abc123"] = _FakeResponse({
+            "abc123": {"status": {"status_str": "error", "completed": False}},
+        })
+        monkeypatch.setattr(igs, "COMFYUI_POLL_INTERVAL_SECONDS", 0)
         write_config({
             "id": "local_comfy",
             "type": "comfyui",
@@ -270,10 +322,7 @@ class TestGenerateImageDispatch:
         with pytest.raises(HTTPException) as excinfo:
             _run(igs.generate_image("a cat", user_id=1))
 
-        # 确实分发到了 ComfyUI 端点（而不是 OpenAI 形状），
-        # 且因为 _generate_comfyui 只提交工作流、不取图，显式报 501 而不是静默失败
-        assert calls[0]["url"] == "https://comfy.example.com/prompt"
-        assert excinfo.value.status_code == 501
+        assert excinfo.value.status_code == 502
         assert saved_images == []
 
     def test_openai_compatible_still_hits_images_generations(

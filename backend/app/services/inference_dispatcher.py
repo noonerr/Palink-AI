@@ -897,7 +897,10 @@ async def stream_text_completion(
                     result_content = result.get("content", "") if isinstance(result, dict) else str(result)
                 except Exception as e:
                     logger.warning("MCP tool %s execution failed: %s", tool_name, e)
-                    result_content = "Tool error: execution failed"
+                    # 与前端工具分支一致把原始错误带给模型：MCP 服务端的参数校验
+                    # 报错（如缺字段）只有回传，模型才知道怎么改参数重试。此前
+                    # 压成固定文案 "Tool error: execution failed"，模型无从自救。
+                    result_content = f"Tool error: {e}"
 
             yield {"tool_result": {"id": tool_call_id, "name": tool_name, "content": result_content}}
 
