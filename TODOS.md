@@ -929,6 +929,31 @@
   ③ 新增 **§9.7 勘误：被撤回的"7 个用例本来就坏"**（写明批次假象真相 + 数字自证 1430+7=1437 + 方法论教训）。
 - **零代码改动**：本项只动 markdown，未碰任何 `.py` / `.ts` / `.tsx`。
 
+### [已完成·P1] depth_prompt 导入丢失修复 + L1 差集热插拔 + 角色设置页「插件」Tab（本 agent，2026-09-27）
+
+**T3 depth_prompt 修复**（真 BUG，用户报）：V2 卡 `data.depth_prompt`（data 顶层，多数导出器的写法）
+导入后丢失、`data.extensions.depth_prompt` 反而保留 —— 因为装配层
+`_insert_depth_prompt`（roleplay_prompt_assembly.py:5046）只读 extensions **顶层**，
+而导入只把它收进 `palink_sillytavern.card_fields` 深水区。修复：
+`character_import_service._preserve_sillytavern_fields` 把 dict 形态的 `depth_prompt`
+抬到 extensions 顶层（`extensions` 里已有值时以它为准；非 dict 脏数据不抬）。
+测试 `tests/test_depth_prompt_import.py` 7 例：修前 2 例红（bug 实锤）、修后全绿；
+相关回归（roundtrip/depth_order/isolation/gate）152 passed。**容器全量 1444 passed / 42 skipped / 0 failed**。
+
+**T4 P1**：详见 SPEC §9.8（含完整证据）。要点：
+- L1 差集热插拔：`computePluginDiff` 纯函数 + `injectIntoContainer(..., {diffOnly})` +
+  `unloadPlugin(pluginId)`（按锚点摘除）；`CharacterChat` cleanup 不再 unloadAll（否则差集白做），
+  卸载移到 `[]` 依赖的卸载专属 effect。已知边界：单个插件卸载不清外部残留（无归属信息，属 L2）。
+- 插件 Tab：`CharacterPluginsTab.tsx` + `CharacterEditor` 双 Tab（新建角色无 Tab，面板常驻防丢改动）；
+  保存顺序 = **先 PUT plugin-state 再角色卡保存**；未改动时 save() no-op。
+- 单测 +21（diff-hotswap 11 / plugins-tab 6 / editor-wiring 4）；三处变异验证精准变红后还原。
+- 门禁：`tsc` 0 错；vitest **26 文件 / 386 passed | 3 skipped**；后端容器 **1444/42/0**。
+- 真机（mobileaudit）：插件 Tab 渲染/切换/保存落库全通（`plugin-state` PUT 200 先于角色卡 PUT 200，
+  库里 allowlist+manual 行落地，**验证后已还原**该卡为 mode=NULL+无行）；
+  移动端 393 视口无溢出；L1 真机探针：共用插件节点身份保持（标记 `KEEP` 存活）、差异装卸正确。
+  ⚠️ 未做：两卡共插件"切卡无闪烁"的纯视觉确认（账号只有一张卡，无真实数据可跑）。
+- 前端已 build + recreate（`dist_old_20260927_p1` 为回滚兜底）；截图 `D:/_palink_backup_20260927_P1/shots/`。
+
 ### 剩余（本次范围外，按优先级）
 1. ~~**装配层让位实现**~~ → ✅ 已于 2026-09-27 完成（见上）。
 2. **L1 差集热插拔**：当前切卡为全量重装，共用插件会闪动。

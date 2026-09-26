@@ -1531,10 +1531,12 @@ export function CharacterChat(props: CharacterChatProps) {
 
   useEffect(() => {
     // 插件 runtime 注入到容器（保留 ST 逆向接口）
-    // [PLUGIN-ON-DEMAND] 依赖角色 ID：切换角色卡时 cleanup 先 unloadAll()，
-    // 再按新角色重新拉取配置并注入 —— 后端按卡过滤的结果即时生效，无需刷新页面。
-    // injectIntoContainer 自带幂等（内部 if (this.injected) unloadAll()），
-    // 重复注入不会累积脚本与事件监听。
+    // [PLUGIN-ON-DEMAND] 依赖角色 ID：切换角色卡时按新角色重新拉取配置并注入 ——
+    // 后端按卡过滤的结果即时生效，无需刷新页面。
+    // [PLUGIN-ON-DEMAND L1] 传 diffOnly：容器还是同一个 palink-st-plugin-host，
+    // 于是 runtime 内部走**差集装卸** —— 只卸掉这张卡不用的插件、只注入新出现的插件，
+    // 两张卡共用的插件 DOM 节点原样保留（无闪烁、面板状态不丢）。
+    // 幂等由 runtime 保证：非差集场景（容器变了/首次注入）内部仍走 unloadAll 全量重装。
     const runtime = stRuntimeRef.current;
     if (!runtime) return;
     // 竞态保护：快速连续切卡时，丢弃已过期那次请求的结果。
@@ -1552,15 +1554,23 @@ export function CharacterChat(props: CharacterChatProps) {
         pluginHost.style.display = 'none';
         document.body.appendChild(pluginHost);
       }
-      runtime.injectIntoContainer(pluginHost);
+      runtime.injectIntoContainer(pluginHost, { diffOnly: true });
     }).catch((err) => {
       console.error('Failed to load SillyTavern plugin runtime config:', err);
     });
+    // cleanup 只负责作废过期的拉取结果，**不卸载插件** —— 见上方注释。
     return () => {
       cancelled = true;
-      runtime.unloadAll();
     };
   }, [selectedCharacter?.id]);
+
+  useEffect(() => {
+    // 离开聊天页才真正清空插件 [PLUGIN-ON-DEMAND L1]
+    const runtime = stRuntimeRef.current;
+    return () => {
+      runtime?.unloadAll();
+    };
+  }, []);
 
   useEffect(() => {
     const handleSettingsUpdated = () => {

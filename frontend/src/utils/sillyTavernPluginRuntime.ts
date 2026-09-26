@@ -188,11 +188,48 @@ function restoreGlobalFetchGuard(): void {
   nativeFetchForGuard = null;
 }
 
+/** setup 脚本的锚点 ID（差集计算时排除它） */
+const SETUP_PLUGIN_ID = '__palink_runtime_setup__';
+
+/** ``injectIntoContainer`` 的可选项 */
+export interface InjectIntoContainerOptions {
+  /**
+   * [PLUGIN-ON-DEMAND L1] 差集模式：容器未变且已注入过时，只装卸差异插件，
+   * 共用插件的 DOM 节点保持原样（无闪烁、面板状态不丢）。
+   */
+  diffOnly?: boolean;
+}
+
+/**
+ * [PLUGIN-ON-DEMAND L1] 差集计算：给定「当前已注入」与「目标」插件 ID，
+ * 返回需要卸载 / 需要注入的两个列表。
+ *
+ * 纯函数（不碰 DOM），单独导出是为了能被单测直接覆盖 —— 25 行字符串集合运算
+ * 的边界（含 id 重复、空集、顺序无关）用肉眼审不可靠。
+ */
+export function computePluginDiff(
+  currentIds: Iterable<string>,
+  desiredIds: Iterable<string>,
+): { toUnload: string[]; toInject: string[] } {
+  const current = new Set(currentIds);
+  const desired = new Set(desiredIds);
+  return {
+    toUnload: Array.from(current).filter((id) => id !== SETUP_PLUGIN_ID && !desired.has(id)),
+    toInject: Array.from(desired).filter((id) => id !== SETUP_PLUGIN_ID && !current.has(id)),
+  };
+}
+
 export class SillyTavernPluginRuntime {
   private config: RuntimeConfig | null = null;
   private container: HTMLElement | null = null;
   private listeners = new Map<string, Set<Function>>();
   private extensionSettings: Record<string, any> = {};
+  /**
+   * [PLUGIN-ON-DEMAND L1] 实际注入到容器里的插件 ID（不含 setup 脚本）。
+   * 差集热插拔的基准：切卡时据此只卸载消失的、只注入新增的，共用插件的节点
+   * 保持不动（面板状态与已绑事件不丢、肉眼无闪烁）。
+   */
+  private injectedPluginIds = new Set<string>();
   context: SillyTavernContext = {
     name: '',
     character: { name: '', description: '' },
@@ -327,14 +364,22 @@ export class SillyTavernPluginRuntime {
     );
   }
 
-  injectIntoContainer(container: HTMLElement) {
-    // 每次注入前清理 Galgame 插件残留状态：
+  injectIntoContainer(container: HTMLElement, options: InjectIntoContainerOptions = {}) {
+    // canDiff：容器没换、之前注入过 → 走差集热插拔，不清全局状态（保插件面板状态）。
+    // 其余情况沿用老的全量重装语义（unloadAll），行为与 L0 完全一致。
+    const canDiff = Boolean(options.diffOnly) && this.injected && this.container === container;
+
+    // 每次全量注入前清理 Galgame 插件残留状态：
     // 首次加载时 this.injected 为 false，不会调用 unloadAll()，
     // 导致 localStorage 中残留的 galgame-ui-plugin_char_enabled 被插件读取，
     // 若 default=true 则自动启用 overlay。在注入前无条件清理，确保干净启动。
-    this.cleanupGalgameState();
+    // ⚠️ 差集模式下跳过：这会连带清掉仍在运行的插件自己的标志，等于把"不重装"
+    //   的好处又丢掉了（那些全局标志没有归属信息，属 L2 议题，见 §2.7.3）。
+    if (!canDiff) {
+      this.cleanupGalgameState();
+    }
 
-    if (this.injected) {
+    if (this.injected && !canDiff) {
       this.unloadAll();
     }
     this.container = container;
@@ -1319,7 +1364,14 @@ export class SillyTavernPluginRuntime {
         })();
       })();
     `;
-    container.appendChild(setupScript);
+    // [PLUGIN-ON-DEMAND L1] setup 脚本幂等：差集模式下容器里已有一份就不重复 append
+    // （重复注入会重复注册 setExtensionPrompt 等全局桥，属 harmless 但无意义）。
+    const existingSetup = Array.from(
+      container.querySelectorAll('script[data-palink-st-plugin-id]'),
+    ).filter((el) => el.getAttribute('data-palink-st-plugin-id') === SETUP_PLUGIN_ID);
+    if (existingSetup.length === 0) {
+      container.appendChild(setupScript);
+    }
 
     if (!this.config) return;
 
@@ -1337,7 +1389,19 @@ export class SillyTavernPluginRuntime {
         && (p.source_type !== 'character_card_extension' || p.plugin_type === 'tavern_helper')
     );
 
+    // [PLUGIN-ON-DEMAND L1] 差集卸载：先把"这次不再需要"的插件摘掉，再补新的。
+    // 顺序很重要 —— 先卸后装，避免同一插件 id 短暂出现两份节点。
+    if (canDiff) {
+      const { toUnload } = computePluginDiff(this.injectedPluginIds, extensions.map((p) => p.id));
+      for (const pluginId of toUnload) {
+        this.unloadPlugin(pluginId);
+      }
+    }
+
     for (const plugin of extensions) {
+      // 差集模式下共用插件一律跳过：它们的 script/style 节点保持原样，
+      // 节点身份不变 → 已绑事件、面板 DOM、插件内部状态都不丢（用户侧表现为无闪烁）。
+      if (canDiff && this.injectedPluginIds.has(plugin.id)) continue;
       const resources = plugin.resources || {};
       const cssList = resources.css || [];
       for (const cssItem of cssList) {
@@ -1348,10 +1412,12 @@ export class SillyTavernPluginRuntime {
         // 移除 @import/javascript:url/expression 等危险构造）
         styleEl.textContent = sanitizePluginCss(cssItem.content);
         container.appendChild(styleEl);
+        this.injectedPluginIds.add(plugin.id);
       }
     }
 
     for (const plugin of extensions) {
+      if (canDiff && this.injectedPluginIds.has(plugin.id)) continue;
       const resources = plugin.resources || {};
       const jsList = resources.js || [];
       for (const jsItem of jsList) {
@@ -1373,6 +1439,7 @@ export class SillyTavernPluginRuntime {
         scriptEl.textContent = jsItem.content;
         try {
           container.appendChild(scriptEl);
+          this.injectedPluginIds.add(plugin.id);
         } catch (e) {
           console.error(
             `[SillyTavernPluginRuntime] 注入插件脚本失败 (${plugin.name || plugin.id}):`,
@@ -1417,12 +1484,14 @@ export class SillyTavernPluginRuntime {
     }
   }
 
-  unloadAll() {
-    if (!this.container) return;
-    const elements = this.container.querySelectorAll(
-      'script[data-palink-st-plugin-id], style[data-palink-st-plugin-id]'
-    );
-    elements.forEach((el) => el.remove());
+  /**
+   * 清理插件挂在容器之外的 DOM 残留 + Galgame 运行时状态。
+   *
+   * 这些方法**没有归属信息**（无法知道某个 body 里的按钮是哪个插件建的，也无法知道
+   * 某个 galgame 标志属于谁），所以只能在"确定插件全走了"时整体执行 —— 这也是
+   * L2 通用副作用回滚要解决的根因（spec §2.7.3）。
+   */
+  private cleanupExternalPluginUi() {
     // 清理插件创建的外部 UI 元素：插件常把按钮/overlay append 到 document.body 或 #chat，
     // 不在 pluginHost 容器内，unloadAll 默认清不到，导致 reload 时按钮重复累积。
     const externalPluginUiSelectors = [
@@ -1434,7 +1503,51 @@ export class SillyTavernPluginRuntime {
       document.querySelectorAll(selector).forEach((el) => el.remove());
     }
     this.cleanupGalgameState();
+  }
+
+  /**
+   * [PLUGIN-ON-DEMAND L1] 卸载单个插件：按 ``data-palink-st-plugin-id`` 锚点移除
+   * 该插件注入的 script / style 节点。
+   *
+   * ⚠️ 边界（已知，留待 L2）：容器外残留（body 上的按钮/overlay、全局标志）只有当
+   * **最后一个插件也被卸掉**时才清 —— 因为那些残留没有归属标记，提前清会误伤仍在
+   * 运行的插件。共用插件差集装卸不受此限制（它们根本不会被卸掉）。
+   */
+  unloadPlugin(pluginId: string): boolean {
+    if (!this.container || !pluginId) return false;
+    const nodes = Array.from(
+      this.container.querySelectorAll('script[data-palink-st-plugin-id], style[data-palink-st-plugin-id]'),
+    ).filter((el) => el.getAttribute('data-palink-st-plugin-id') === pluginId);
+    for (const el of nodes) el.remove();
+    this.injectedPluginIds.delete(pluginId);
+
+    if (nodes.length > 0) {
+      const remaining = Array.from(
+        this.container.querySelectorAll('script[data-palink-st-plugin-id], style[data-palink-st-plugin-id]'),
+      ).filter((el) => el.getAttribute('data-palink-st-plugin-id') !== SETUP_PLUGIN_ID);
+      if (remaining.length === 0) {
+        // 一个都不剩了 → 可以安全地做全量外部清理
+        this.cleanupExternalPluginUi();
+        restoreGlobalFetchGuard();
+      }
+    }
+    return nodes.length > 0;
+  }
+
+  /** 当前已注入的插件 ID 快照（调试/测试用） */
+  getInjectedPluginIds(): string[] {
+    return Array.from(this.injectedPluginIds);
+  }
+
+  unloadAll() {
+    if (!this.container) return;
+    const elements = this.container.querySelectorAll(
+      'script[data-palink-st-plugin-id], style[data-palink-st-plugin-id]'
+    );
+    elements.forEach((el) => el.remove());
+    this.cleanupExternalPluginUi();
     restoreGlobalFetchGuard();
+    this.injectedPluginIds.clear();
     this.injected = false;
     this.container = null;
     delete (window as any).__palinkStRuntime;

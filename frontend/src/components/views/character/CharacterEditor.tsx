@@ -2,13 +2,14 @@
  * CharacterEditor — 角色编辑/创建表单
  * 从 CharacterView 提取的子组件
  */
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { X, Save, Image, Plus, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import type { Character } from '@/types';
+import { CharacterPluginsTab, type CharacterPluginsTabHandle } from './CharacterPluginsTab';
 
 // 弹簧效果参数（与 ChatViewMobile 保持一致）
 const OVERSCROLL_RESISTANCE = 0.18;
@@ -34,6 +35,13 @@ export function CharacterEditor({
 }: CharacterEditorProps) {
   const headerClass = "min-h-[64px] flex items-center justify-between px-6 border-b border-border/50 glass z-10 flex-shrink-0 py-2";
   const bottomPadding = useMobileBottomPadding();
+  /**
+   * [PLUGIN-ON-DEMAND P1] 编辑页 Tab：基础信息 / 插件。
+   * 新建角色（selectedCharacter 为空）时没有卡级插件状态可言，隐藏 Tab 栏。
+   * 两个面板都**常驻挂载**（用 hidden 类切换显示），切 Tab 不会丢掉未保存修改。
+   */
+  const [tab, setTab] = useState<'basic' | 'plugins'>('basic');
+  const pluginsTabRef = useRef<CharacterPluginsTabHandle>(null);
   
   // 弹簧效果状态
   const scrollWrapRef = useRef<HTMLDivElement>(null);
@@ -44,6 +52,24 @@ export function CharacterEditor({
   const isTouchingRef = useRef(false);
   const isBouncing = useRef(false);
   const overscrollYRef = useRef(0);
+
+  /**
+   * [PLUGIN-ON-DEMAND P1] 保存顺序：先把「插件」Tab 里未提交的名单写库，再走角色卡本身的保存。
+   * 插件名单是独立端点（/plugin-state），不随 api.put('/api/characters/{id}') 一起提交，
+   * 所以必须由这里显式补一次 —— 用户在插件 Tab 勾了却没生效的坑就在这儿。
+   * 写失败不阻断角色卡保存（名单是增强项，卡本身的内容更重要）。
+   */
+  const handleSaveClick = useCallback(async () => {
+    const dirty = pluginsTabRef.current?.isDirty();
+    if (dirty) {
+      try {
+        await pluginsTabRef.current?.save();
+      } catch (err) {
+        console.error('[CharacterEditor] 插件名单保存失败（角色卡信息仍会保存）:', err);
+      }
+    }
+    onSave();
+  }, [onSave]);
 
   // 直接操作 DOM 更新弹簧偏移
   const updateOverscrollDOM = useCallback((y: number, hasTransition: boolean, durationMs?: number) => {
@@ -188,6 +214,38 @@ export function CharacterEditor({
           onTouchCancel={handleTouchCancel}
         >
           <div className={`max-w-4xl mx-auto w-full ${bottomPadding}`}>
+            {selectedCharacter && (
+              <div
+                className="flex items-center gap-2 mb-4 md:mb-5"
+                role="tablist"
+                aria-label="角色编辑分区"
+              >
+                {(
+                  [
+                    { id: 'basic', label: '基础信息' },
+                    { id: 'plugins', label: '插件' },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === t.id}
+                    data-testid={`character-editor-tab-${t.id}`}
+                    onClick={() => setTab(t.id)}
+                    className={`min-h-[40px] px-3.5 md:px-4 rounded-xl text-xs md:text-sm transition-colors border ${
+                      tab === t.id
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'border-border hover:bg-accent/60'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className={tab === 'basic' ? '' : 'hidden'}>
             <div className="p-4 md:p-8 glass-strong rounded-2xl space-y-6 md:space-y-8">
               <div className="flex flex-col md:flex-row items-center md:items-start gap-4 md:gap-8">
                 <div className="relative shrink-0">
@@ -409,16 +467,28 @@ export function CharacterEditor({
                   className="h-32"
                 />
               </div>
+            </div>
+            </div>
 
-              <div className="flex flex-col sm:flex-row justify-end gap-3 pt-6 border-t border-border/50">
-                <Button variant="secondary" onClick={onCancel} className="min-h-[44px] order-2 sm:order-1">
-                  取消
-                </Button>
-                <Button onClick={onSave} className="min-h-[44px] order-1 sm:order-2">
-                  <Save size={18} className="mr-2" />
-                  保存
-                </Button>
+            {/* [PLUGIN-ON-DEMAND P1] 插件 Tab（常驻挂载，切 Tab 不丢改动） */}
+            {selectedCharacter && (
+              <div className={tab === 'plugins' ? '' : 'hidden'}>
+                <CharacterPluginsTab
+                  ref={pluginsTabRef}
+                  characterId={String(selectedCharacter.id)}
+                />
               </div>
+            )}
+
+            {/* 操作区外提到面板之外：切到「插件」Tab 时依然可见可用 */}
+            <div className="flex flex-col sm:flex-row justify-end gap-3 pt-6 mt-6">
+              <Button variant="secondary" onClick={onCancel} className="min-h-[44px] order-2 sm:order-1">
+                取消
+              </Button>
+              <Button onClick={handleSaveClick} className="min-h-[44px] order-1 sm:order-2">
+                <Save size={18} className="mr-2" />
+                保存
+              </Button>
             </div>
           </div>
         </div>

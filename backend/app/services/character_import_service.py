@@ -301,6 +301,17 @@ def _preserve_sillytavern_fields(extensions: dict, char_data: Dict, raw_card_dat
     if not preserved_fields:
         return extensions
 
+    # [DEPTH-PROMPT-FIX 2026-09-27] V2 卡的 depth_prompt 常被导出器写在 data 顶层
+    # （spec 允许的位置之一）。此前它只被收进 palink_sillytavern.card_fields 深水区，
+    # 而唯一消费它的装配层 roleplay_prompt_assembly._insert_depth_prompt 只读
+    # extensions **顶层**的 depth_prompt → 表现为"导入后深度提示词丢失"。
+    # 这里把它抬到 extensions 顶层。
+    # 取值优先级：data.extensions.depth_prompt（ST 标准位置）> data.depth_prompt。
+    # 只抬 dict 形态（装配层按 dict 读取），非 dict 的脏数据不污染 extensions。
+    lifted_depth_prompt = preserved_fields.get("depth_prompt")
+    if isinstance(lifted_depth_prompt, dict) and not isinstance(extensions.get("depth_prompt"), dict):
+        extensions["depth_prompt"] = lifted_depth_prompt
+
     palink_st = extensions.get("palink_sillytavern")
     if not isinstance(palink_st, dict):
         palink_st = {}
