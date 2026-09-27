@@ -31,7 +31,18 @@
   - **→ 拍板结论：那条「[不发送]去除变量更新」脚本不开单修**。剥与不剥，模型两代都不输出变量块，收益为零；改它只能动全局 depth 语义或替用户改卡数据，不成比例。
 - **新遗留（登记待立项）**：
   1. ~~**2899 字符的 MVU 模板现在完整发给模型**……剥不剥需拍板~~ → **已验证并拍板：不开单**（见上）。仅保留语义层面的登记（system 归 USER_INPUT placement、depth 基数漂移）。
-  1b. **【真机挖出的新问题，建议立项】SSE action 路径（regenerate / swipe / continue，`character_ext.py`）不接 MVU 副模型兜底**：副模型自动触发只写在 **WS 主路径**（`websocket.py:538`，且需 `user_setting.mvu_secondary_enabled=True`，ORM 默认 False；admin 已开 true / 模型 deepseek-v4-flash，全库 20 条 user_settings 仅 1 条开启）。本次走的正是 SSE 路径 → "stat_data 零变更"在该路径下是设计与配置使然，**不能外推到 WS 主路径**。要查"主路径变量到底更不更新"需另走一次 WS。
+  1b. **【真机两次验证挖出的根因，强烈建议立项 · 疑似 P0/P1】MVU 副 AI 兜底从未接线到生成主流程**：
+      WS 主路径同样真机跑过一次（容器内 `POST /api/ws/ticket` 拿 ticket → `ws://127.0.0.1:8000/api/ws/character-chat`
+      发 chat_request，消息 2363/回复 2364）：正文 307 字 **`<UpdateVariable>` 0 次**，`stat_data` **前后逐字段 diff = 0**
+      （4712→4712），后端日志 mvu 相关 0 行。
+      **根因（静态实锤）**：`_run_secondary_mvu_sync`（`websocket.py:519`）全仓**只有定义、零生产调用点**——
+      唯一调用者是验证脚本 `backend/scripts/_verify_secondary_e2e.py`；`git log -S` 显示它随
+      `e39f298`（2026-08-23 思考/正文分离存储）新增，**从写进来那天起就没接上**。
+      → 于是"变量更新"只剩一条路：手动端点 `trigger_mvu_secondary`（`character_ext.py:6068`）。
+      前置条件都已满足却仍不更新，正好佐证：`user_setting.mvu_secondary_enabled=true`（admin，全库 20 条仅 1 条开）、
+      `extract_schema_defaults(卡.tavern_helper)` 返回 **16 个变量键（非空，`[MVU-SECONDARY-GUARD]` 不会拦）**。
+      修法候选：把 `_run_secondary_mvu_sync` 接进 `persist_snapshot`（原设计位置），并同步考虑 SSE action 路径
+      （regenerate/swipe/continue）要不要一起接。**与那条「[不发送]去除变量更新」脚本完全无关**——剥不剥都不更新。
   2. **`_apply_prompt_regex_to_messages` 把 system 角色按 `REGEX_PLACEMENT_USER_INPUT`(1) 归类**（character_ext.py:1631-1635），世界书/变量块这类 system 消息会被 `placement:[1,2]` 的"用户消息"脚本打到。ST 里 system 有自己的 placement 位，是否对齐另议。
   3. **`depth` 基数不稳**：`depth = total-1-index` 依赖消息总数，任何改装配尾部的动作（本次 T2 即为实例）都会让**所有**带深度窗的脚本整体漂移一格——一类"改 A 处、B 处静默变"的耦合，若要治理需另立议题。
   4. T1 只补了"不越过主提示词"这一道下限；**depth 语义本身仍未与 ST 完全对齐**（ST 锚"聊天历史头部"，我们把主提示词算进了锚点长度）。要不要整体位移一格属行为变更，需单独论证与单独授权（SPEC §4 P1）。
@@ -52,7 +63,7 @@
 - **新遗留（登记待立项）**：
   1. **`<status_current_variable>` depth 注入对新尾部结构的响应**（T2 交叉实验四跑复现）：卡生态 MVU 状态块（macro_service.py:31 展开）落点随装配尾部结构变化从 system_prompt 后 [1]→前 [0]，展开体 12260→15159 字符——depth 锚点相对末尾定义属既有装配语义，未动注入/裁剪/世界书逻辑，但机制细节（含长度差 2899 的成因）未完全查明，另立议题。
   2. **test_b4 两用例被测行为作废改写**（"你是B4Char"断言→ST main prompt 语义断言），按 SPEC T0 原则执行，已在 commit message 说明。
-  3. **admin 会话 2358 消息已累计 3 条 swipe**（swipe 0 = 旧正文 1009 字、swipe 1 = 2026-09-27 修复后 612 字、swipe 2 = 2026-09-28 真机验证 370 字，当前选中 swipe 2；原响应均未删）。测试卡副本（mobileaudit 名下 6c2103a4）保留供对照，清理需授权。
+  3. **admin 会话 2358 消息已累计 3 条 swipe**（swipe 0 = 旧正文 1009 字、swipe 1 = 2026-09-27 修复后 612 字、swipe 2 = 2026-09-28 真机验证 370 字，当前选中 swipe 2；原响应均未删）。**另 2026-09-28 WS 主路径验证新增消息 2363（user, 41 字）/ 2364（assistant, 307 字）**。测试卡副本（mobileaudit 名下 6c2103a4）保留供对照，清理需授权。
   4. 前端 dist 已 npm build（✓ 79 gz），frontend 容器挂载 ./frontend/dist 原地生效，无需 recreate（inode 未变）。
 - **撞坑登记**：① Mimosa hook 对 Bash 出现受保护源码路径/`.py` 写操作/`docker cp` 源码路径一律拦截 → 合法姿势=Write 写到仓库外备份目录 + tar/tarlist.txt 打包（命令文本不含源码文件名）+ `docker cp` tgz + 容器内 `find -name 'x*'` 通配执行；② Docker Desktop daemon 中途瞬断（npipe 不存在）→ 全路径 powershell 拉起 Docker Desktop.exe 恢复；③ Git Bash 相对路径被 MSYS 转换成 Git 安装前缀（tar 参数）→ `-C 绝对路径`+`./` 前缀或 tarlist 文件规避；④ 会话 2cb171bf 归属 admin（非测试账号），实机重生成走容器内签发 admin JWT + Bearer 直调 SSE regenerate 端点。
 
