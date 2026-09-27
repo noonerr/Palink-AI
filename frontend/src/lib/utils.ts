@@ -66,19 +66,7 @@ export function parseThinkingContent(content: string): { thinkingContent: string
   const modelReasoningResult = extractTaggedThinking(thinkResult.cleaned, 'model_reasoning');
 
   const thinkingParts = [...thinkResult.parts, ...modelReasoningResult.parts];
-  let cleanedContent = modelReasoningResult.cleaned.trim();
-
-  if (!thinkingParts.length) {
-    const thinkingMatch = strippedContent.match(/^([\s\S]*?)\n\n([\s\S]*)$/);
-    if (thinkingMatch && thinkingMatch[1].trim().length > 0) {
-      const potentialThinking = thinkingMatch[1].trim();
-      const potentialContent = thinkingMatch[2].trim();
-      if (potentialThinking.length > 20 && potentialContent.length > 0) {
-        thinkingParts.push(potentialThinking);
-        cleanedContent = potentialContent;
-      }
-    }
-  }
+  const cleanedContent = modelReasoningResult.cleaned.trim();
 
   const joinedThinking = thinkingParts.join('\n\n').trim();
   return {
