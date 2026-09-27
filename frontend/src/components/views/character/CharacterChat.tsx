@@ -287,8 +287,6 @@ export interface CharacterChatProps {
   compressing: boolean;
   manualCompressMemory: () => Promise<void>;
   // dialogue
-  dialogueMode: 'first_person' | 'third_person';
-  setDialogueMode: (m: 'first_person' | 'third_person') => void;
   autoGenerateChatImages: boolean;
   setAutoGenerateChatImages: (v: boolean) => void;
   responseLength: string;
@@ -431,7 +429,6 @@ export function CharacterChat(props: CharacterChatProps) {
     toggleWholeMessageSelect, toggleMessagePartSelect, selectAllPartsInMessage,
     handleMixedDelete, showDeleteMixedConfirm, setShowDeleteMixedConfirm, confirmDeleteMixed, clearSelection,
     memoryMode, memoryStats, compressing, manualCompressMemory,
-    dialogueMode, setDialogueMode,
     autoGenerateChatImages, setAutoGenerateChatImages,
     responseLength, setResponseLength,
     sidebarCollapsed, setSidebarCollapsed: _setSidebarCollapsed,
@@ -620,10 +617,6 @@ export function CharacterChat(props: CharacterChatProps) {
       fetchBranchTree();
     }
   }, [isNavigating, mobileSidebarOpen, setSidebarCollapsed, fetchBranchTree]);
-
-  const handleToggleDialogueMode = useCallback(() => {
-    setDialogueMode(dialogueMode === 'first_person' ? 'third_person' : 'first_person');
-  }, [dialogueMode, setDialogueMode]);
 
   const handleToggleAutoGenerateImages = useCallback(async (value: boolean) => {
     setAutoGenerateChatImages(value);
@@ -1830,7 +1823,6 @@ export function CharacterChat(props: CharacterChatProps) {
             currentPreset,
             isNavigating,
             mobileSidebarOpen,
-            dialogueMode,
             autoGenerateChatImages,
             responseLength,
             plotLineSessionStatus: pl.sessionStatus,
@@ -1840,7 +1832,6 @@ export function CharacterChat(props: CharacterChatProps) {
             onShowPresetManager: () => setShowPresetManager(true),
             onShowWorldBookManager: () => setShowWorldBookManager(true),
             onToggleStoryline: handleToggleStoryline,
-            onToggleDialogueMode: handleToggleDialogueMode,
             onToggleAutoGenerateImages: handleToggleAutoGenerateImages,
             onResponseLengthChange: handleResponseLengthChange,
             onShowPluginManager: () => setPluginManagerOpen(true),

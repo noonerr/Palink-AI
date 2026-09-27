@@ -67,7 +67,6 @@ class CharacterChatSession(Base):
     character_id = Column(String, ForeignKey("characters.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
     title = Column(String, nullable=True)
-    dialogue_mode = Column(String, default="first_person")
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now)
     # ST 1.18.0 chat_metadata persistence (note_prompt/variables/hidden_bots/etc.)

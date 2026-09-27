@@ -3151,7 +3151,8 @@ function _buildGenerationRequestBody(
     max_tokens: a.max_tokens ?? a.max_tokens_openai ?? 2048,
     frequency_penalty: a.frequency_penalty ?? a.freq_pen_openai ?? 0,
     presence_penalty: a.presence_penalty ?? a.pres_pen_openai ?? 0,
-    dialogue_mode: a.dialogue_mode ?? 'first_person',
+    // 2026-09-27 身份层 ST 化：dialogue_mode 整链删除。第三方插件若仍传该键，
+    // 后端请求体已无此字段 → Pydantic 默认静默丢弃（不 422），属预期行为。
     response_length: a.response_length ?? a.length ?? undefined,
   };
 }

@@ -151,7 +151,6 @@ export function CharacterView({
   const [selectedModel, setSelectedModel] = useState<string>(systemDefaults?.default_character_chat_model || models[0]?.id || '');
   const [developerMode, setDeveloperMode] = useState(false);
   const prevModelBeforeDeveloperRef = useRef<string | null>(null);
-  const [dialogueMode, setDialogueMode] = useState<'first_person' | 'third_person'>('first_person');
   const [autoGenerateChatImages, setAutoGenerateChatImages] = useState(false);
   const [responseLength, setResponseLength] = useState<string>('medium');
   const [loading, setLoading] = useState(true);
@@ -403,7 +402,6 @@ export function CharacterView({
     selectedCharacter,
     selectedSession,
     selectedModel,
-    dialogueMode,
     selectedBranch,
     currentPreset,
     getDisplayName,
@@ -1348,7 +1346,6 @@ export function CharacterView({
           max_tokens: currentPreset?.max_tokens ?? 2048,
           frequency_penalty: currentPreset?.frequency_penalty ?? 0,
           presence_penalty: currentPreset?.presence_penalty ?? 0,
-          dialogue_mode: dialogueMode,
           user_nickname: getDisplayName(selectedCharacter)
         }, { signal: controller.signal });
 
@@ -1417,7 +1414,6 @@ export function CharacterView({
           user_id: typeof user.id === 'number' ? user.id : Number(user.id),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          dialogue_mode: dialogueMode
         };
         setSelectedSession(newSession);
         // K-6 修复: 对齐 ST script.js:7672 —— 新聊天创建成功后触发 chat_created（无参），
@@ -1460,7 +1456,6 @@ export function CharacterView({
         const pendingSession: CharacterChatSession = {
           id: '__pending__',
           character_id: selectedCharacter.id,
-          dialogue_mode: dialogueMode,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
@@ -1907,8 +1902,6 @@ export function CharacterView({
           memoryStats={memoryStats}
           compressing={compressing}
           manualCompressMemory={manualCompressMemory}
-          dialogueMode={dialogueMode}
-          setDialogueMode={setDialogueMode}
           autoGenerateChatImages={autoGenerateChatImages}
           setAutoGenerateChatImages={setAutoGenerateChatImages}
           responseLength={responseLength}

@@ -325,7 +325,6 @@ def subtask_6_1_2(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
         "message": "__INIT__",
         "model": model,
         "session_id": None,
-        "dialogue_mode": "first_person",
     }
     status, full_text, events = stream_request(
         "POST", "/api/character-chat", token=token, body=init_body, timeout=60
@@ -366,7 +365,6 @@ def subtask_6_1_2(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     debug_body = {
         "message": "篝火生好了，你来烤干衣服。",
         "model": model,
-        "dialogue_mode": "first_person",
         "max_tokens": 1024,
     }
     status, resp = http_request(
@@ -831,7 +829,6 @@ def subtask_6_3_1(token: str, ctx: dict[str, Any]) -> dict[str, Any]:
     debug_body = {
         "message": "keyword_042 词汇_042 篝火",
         "model": "deepseek-v4-flash",
-        "dialogue_mode": "first_person",
         "max_tokens": 1024,
     }
     timings_ms: list[float] = []

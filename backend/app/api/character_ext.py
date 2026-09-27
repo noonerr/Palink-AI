@@ -792,6 +792,10 @@ def _replace_placeholders(text: str, user_nickname: str = "用户", char_name: s
     result = re.sub(r'\{\{//.*?\}\}', '', result)  # 注释
     result = re.sub(r'\{\{getvar::[^}]*\}\}', '', result)
     result = re.sub(r'\{\{if::[^}]*\}\}[^{]*\{\{endif\}\}', '', result)
+    # 2026-09-27 身份层 ST 化：dialogue_mode 整链删除（含 values 键），
+    # 老用户自定义提示词里残留的 {dialogue_mode} / {{dialogue_mode}}
+    # 一并替换为空串，防字面量泄漏进线上提示词（实测存量 0 行，防御性）。
+    result = re.sub(r'\{\{dialogue_mode\}\}|\{dialogue_mode\}', '', result, flags=re.IGNORECASE)
     result = re.sub(r'\n{3,}', '\n\n', result)  # 清理多余空行
     return result
 
@@ -1763,7 +1767,7 @@ def _build_character_card_attributes(char: Character, prompt_lang: str) -> str:
     return "\n".join(f"{label}: {value.strip()}" for label, value in fields if value and value.strip())
 
 
-def _replace_character_card_placeholders(text: str, char: Character, prompt_lang: str, dialogue_mode: str) -> str:
+def _replace_character_card_placeholders(text: str, char: Character, prompt_lang: str) -> str:
     char_name = char.name or "Character"
     values = {
         "system_prompt": char.system_prompt or "",
@@ -1773,9 +1777,6 @@ def _replace_character_card_placeholders(text: str, char: Character, prompt_lang
         "description": char.description or "",
         "creator_notes": char.creator_notes or "",
         "attributes": _build_character_card_attributes(char, prompt_lang),
-        # T1（2026-09-27 身份层 ST 化）：DIALOGUE_MODE_* 字典已随第一/第三人称
-        # 切换删除，该宏暂展开为空串；形参与宏键待 T3 整链删除时移除。
-        "dialogue_mode": "",
     }
     result = text
     for key, value in values.items():
@@ -2017,13 +2018,12 @@ def _extract_preset_prompts(preset_data: dict, user_nickname: str = "用户", ch
     return result
 
 
-def _build_char_system_prompt(char: Character, user_nickname: str = "用户", dialogue_mode: str = "first_person", prompt_lang: str = "auto", user_setting: Optional[UserSetting] = None) -> str:
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户", prompt_lang: str = "auto", user_setting: Optional[UserSetting] = None) -> str:
     """Build character system prompt using config file.
 
     Args:
         char: Character object
         user_nickname: User's nickname
-        dialogue_mode: 'first_person' or 'third_person'
         prompt_lang: 'auto', 'zh', or 'en'
         user_setting: User's settings (for custom prompts)
     """
@@ -2047,7 +2047,9 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
         if custom_prompt:
             has_character_card_variable = _custom_prompt_contains_character_card_variable(custom_prompt)
             custom_prompt = _replace_placeholders(custom_prompt, user_nickname, char.name or "Character")
-            custom_prompt = _replace_character_card_placeholders(custom_prompt, char, prompt_lang, dialogue_mode)
+            custom_prompt = _replace_character_card_placeholders(
+                custom_prompt, char, prompt_lang=prompt_lang
+            )
             if not has_character_card_variable:
                 character_card_block = _build_character_card_block(char, prompt_lang)
                 if character_card_block:
@@ -2076,7 +2078,6 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", di
     system_prompt = build_default_character_prompt(
         char_name=char.name or "Character",
         user_nickname=user_nickname,
-        dialogue_mode=dialogue_mode,
         lang=prompt_lang,
         personality=char.personality,
         background=char.background,
@@ -2670,7 +2671,6 @@ async def list_character_sessions(
             "title": s.title,
             "created_at": s.created_at,
             "updated_at": s.updated_at,
-            "dialogue_mode": s.dialogue_mode,
             "user_id": s.user_id,
         }
         for s in sessions
@@ -4111,7 +4111,6 @@ class CharacterChatRequest(BaseModel):
     min_p: float = 0.05
     top_k: int = 40
     repetition_penalty: float = 1.1
-    dialogue_mode: str = "first_person"
     preset_id: Optional[int] = None
     branch_id: Optional[str] = None
     user_nickname: Optional[str] = None
@@ -4148,7 +4147,6 @@ class SmartCardGenerateRequest(BaseModel):
     max_tokens: int = 1024
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
-    dialogue_mode: str = "first_person"
     user_nickname: Optional[str] = None
     include_history: bool = True
     # P0-1 修复: ST generateQuietPrompt 路径透传 extension_prompts。
@@ -4231,7 +4229,6 @@ async def smart_card_generate(
                 images=[],
                 model=req.model,
                 user_nickname=user_nickname,
-                dialogue_mode=req.dialogue_mode or "first_person",
                 max_tokens=req.max_tokens,
                 smart_card_trigger=True,
                 smart_card_context=prompt.strip() if prompt.strip() else None,
@@ -4354,7 +4351,6 @@ async def _character_chat_impl(
             character_id=char.id,
             user_id=user.id,
             title=initial_title,
-            dialogue_mode=req.dialogue_mode,
         )
         # MVU 变量引擎：从角色卡 extensions 初始化会话变量
         try:
@@ -4553,7 +4549,6 @@ async def _character_chat_impl(
             images=req.images or [],
             model=req.model,
             user_nickname=user_nickname,
-            dialogue_mode=req.dialogue_mode or "first_person",
             response_length=req.response_length,
             max_tokens=req.max_tokens,
             smart_card_trigger=smart_card_trigger,
@@ -5112,7 +5107,6 @@ class PromptAssemblyDebugRequest(BaseModel):
     images: list[str] = []
     model: Optional[str] = None
     user_nickname: Optional[str] = None
-    dialogue_mode: str = "first_person"
     response_length: Optional[str] = None
     max_tokens: int = 2048
     smart_card_trigger: bool = False
@@ -5159,7 +5153,6 @@ async def debug_prompt_assembly(
             images=req.images,
             model=req.model,
             user_nickname=user_nickname,
-            dialogue_mode=req.dialogue_mode,
             response_length=req.response_length,
             max_tokens=req.max_tokens,
             smart_card_trigger=req.smart_card_trigger,
@@ -5877,7 +5870,6 @@ async def continue_session(
             images=[],
             model=model,
             user_nickname=user_nickname,
-            dialogue_mode=session.dialogue_mode or "first_person",
             response_length=req.response_length,
             max_tokens=req.max_tokens,
             is_continue=True,
@@ -5993,7 +5985,6 @@ async def regenerate_message(
             images=[],
             model=model,
             user_nickname=user_nickname,
-            dialogue_mode=session.dialogue_mode or "first_person",
             response_length=req.response_length,
             max_tokens=req.max_tokens,
             is_continue=False,
@@ -6248,7 +6239,6 @@ async def swipe_message(
             images=[],
             model=model,
             user_nickname=user_nickname,
-            dialogue_mode=session.dialogue_mode or "first_person",
             response_length=req.response_length,
             max_tokens=req.max_tokens,
             is_continue=False,

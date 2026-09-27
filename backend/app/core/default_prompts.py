@@ -192,7 +192,6 @@ def build_default_chat_prompt(lang: str = "zh") -> str:
 def build_default_character_prompt(
     char_name: str,
     user_nickname: str,
-    dialogue_mode: str = "first_person",
     lang: str = "zh",
     personality: str = "",
     background: str = "",
@@ -207,10 +206,7 @@ def build_default_character_prompt(
     构建默认的角色扮演提示词（ST 1.18.0 对齐结构）
 
     组装顺序：角色卡 system_prompt override（若 prefer_character_prompt 且非空）
-    → main 槽（ST 默认任务指令）→ story_string（卡字段，空则整段缺席）→ 输出格式层。
-
-    dialogue_mode 形参已无消费方（2026-09-27 删除第一/第三人称切换），
-    仅保留签名待 T3 整链移除。
+    → main 槽（ST 默认任务指令）→ story_string（卡字段，空则整段缺席）→ auxiliary 层。
     """
     # 选择语言
     if lang == "zh":

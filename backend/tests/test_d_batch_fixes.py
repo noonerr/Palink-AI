@@ -125,7 +125,7 @@ class TestCreatorNotesExclusion:
         """显式 {{creator_notes}} 宏仍然生效（ST: 显式引用除外）。"""
         char = self._char(db_session, test_user.id)
         result = _replace_character_card_placeholders(
-            "前 {{creator_notes}} 后", char, "zh", "first_person"
+            "前 {{creator_notes}} 后", char, prompt_lang="zh"
         )
         assert self.CREATOR_NOTE in result
 
@@ -133,7 +133,7 @@ class TestCreatorNotesExclusion:
         """{{attributes}} 展开产物同样不含创作者备注。"""
         char = self._char(db_session, test_user.id)
         result = _replace_character_card_placeholders(
-            "{{attributes}}", char, "zh", "first_person"
+            "{{attributes}}", char, prompt_lang="zh"
         )
         assert self.CREATOR_NOTE not in result
 

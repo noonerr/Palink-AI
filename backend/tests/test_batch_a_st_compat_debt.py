@@ -571,7 +571,6 @@ class TestA7CreatorNotes:
         prompt = build_default_character_prompt(
             char_name="A7Char",
             user_nickname="Tester",
-            dialogue_mode="first_person",
             lang="zh",
             personality="活泼",
             description="描述内容XYZ",
@@ -585,7 +584,6 @@ class TestA7CreatorNotes:
         prompt = build_default_character_prompt(
             char_name="A7Char",
             user_nickname="Tester",
-            dialogue_mode="first_person",
             lang="en",
             description="plain description",
             creator_notes="CREATOR_SECRET_EN_XYZ",

@@ -23,7 +23,6 @@ def _base(**kw):
     params = dict(
         char_name="B4Char",
         user_nickname="Tester",
-        dialogue_mode="first_person",
         lang="zh",
         personality="活泼",
         background="海边",

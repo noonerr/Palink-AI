@@ -177,7 +177,6 @@ class CharacterChatRequest(BaseModel):
     max_tokens: int = 2048
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
-    dialogue_mode: str = "first_person"
     branch_id: Optional[str] = None
     user_nickname: Optional[str] = None
     images: List[str] = []

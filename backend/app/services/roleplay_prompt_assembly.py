@@ -415,7 +415,6 @@ class PromptAssemblyRequest:
     images: list[str] = field(default_factory=list)
     model: Optional[str] = None
     user_nickname: Optional[str] = None
-    dialogue_mode: str = "first_person"
     response_length: Optional[str] = None
     max_tokens: int = 2048
     is_init: bool = False
@@ -2902,12 +2901,12 @@ async def _assemble_roleplay_prompt_impl(
         memory_mode = user_setting.memory_mode
 
     prompt_lang = user_setting.prompt_language if user_setting else "auto"
+    # T3（2026-09-27 身份层 ST 化）：dialogue_mode 整链删除，全关键字传参防位置错位。
     system_prompt = deps.build_system_prompt(
-        req.char,
-        user_nickname,
-        req.dialogue_mode or "first_person",
-        prompt_lang,
-        user_setting,
+        char=req.char,
+        user_nickname=user_nickname,
+        prompt_lang=prompt_lang,
+        user_setting=user_setting,
     )
     report: list[PromptAssemblyReportItem] = [
         PromptAssemblyReportItem("base_system_prompt", "included", tokens_estimate=_estimate_tokens(system_prompt)),

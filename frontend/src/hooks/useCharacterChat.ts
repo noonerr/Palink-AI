@@ -34,7 +34,6 @@ interface UseCharacterChatOptions {
   selectedCharacter: Character | null;
   selectedSession: CharacterChatSession | null;
   selectedModel: string;
-  dialogueMode: 'first_person' | 'third_person';
   selectedBranch: CharacterChatSessionBranch | null;
   currentPreset: GenerationPreset | null;
   getDisplayName: (character?: Character | Partial<Character> | null) => string;
@@ -205,7 +204,6 @@ export function useCharacterChat({
   selectedCharacter,
   selectedSession,
   selectedModel,
-  dialogueMode,
   selectedBranch,
   currentPreset,
   getDisplayName,
@@ -618,7 +616,6 @@ export function useCharacterChat({
         const now = new Date().toISOString();
         setSelectedSession({
           id: sessionId,
-          dialogue_mode: dialogueMode,
           created_at: now,
           updated_at: now,
         });
@@ -1253,7 +1250,6 @@ export function useCharacterChat({
         max_tokens: currentPreset?.max_tokens ?? 2048,
         frequency_penalty: currentPreset?.frequency_penalty ?? 0,
         presence_penalty: currentPreset?.presence_penalty ?? 0,
-        dialogue_mode: dialogueMode,
         branch_id: effectiveBranchId,
         user_nickname: getDisplayName(selectedCharacter),
         images: outgoingImages,
@@ -1301,7 +1297,6 @@ export function useCharacterChat({
         max_tokens: currentPreset?.max_tokens ?? 2048,
         frequency_penalty: currentPreset?.frequency_penalty ?? 0,
         presence_penalty: currentPreset?.presence_penalty ?? 0,
-        dialogue_mode: dialogueMode,
         branch_id: effectiveBranchId,
         user_nickname: getDisplayName(selectedCharacter),
         images: outgoingImages,
@@ -1398,7 +1393,6 @@ export function useCharacterChat({
             const now = new Date().toISOString();
             setSelectedSession({
               id: sessionId,
-              dialogue_mode: dialogueMode,
               created_at: now,
               updated_at: now,
             });
@@ -1499,7 +1493,7 @@ export function useCharacterChat({
         window.clearTimeout(timeoutRef.current);
       }
     }
-  }, [selectedCharacter, selectedSession, selectedModel, dialogueMode, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated, useWebSocket, wsConnected, wsSendCharacterChatRequest, responseLength, scheduleStreamUpdate]);
+  }, [selectedCharacter, selectedSession, selectedModel, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated, useWebSocket, wsConnected, wsSendCharacterChatRequest, responseLength, scheduleStreamUpdate]);
 
   const handleStopGeneration = useCallback(() => {
     if (useWebSocket && wsConnected && wsAssistantMessageIdRef.current) {

@@ -1582,7 +1582,6 @@ async def ws_character_chat(websocket: WebSocket):
                 message = raw.get("message", "").strip()
                 model = raw.get("model", "")
                 session_id = raw.get("session_id") or ""
-                dialogue_mode = raw.get("dialogue_mode", "first_person")
                 branch_id = raw.get("branch_id") or ""
                 user_nickname = raw.get("user_nickname") or user.username or "用户"
                 images = raw.get("images", [])
@@ -1688,7 +1687,6 @@ async def ws_character_chat(websocket: WebSocket):
                             character_id=char.id,
                             user_id=user.id,
                             title=initial_title,
-                            dialogue_mode=dialogue_mode,
                         )
                         db.add(new_session)
                         db.commit()
@@ -2072,7 +2070,6 @@ async def ws_character_chat(websocket: WebSocket):
                                 images=images,
                                 model=model,
                                 user_nickname=user_nickname,
-                                dialogue_mode=dialogue_mode or "first_person",
                                 response_length=response_length,
                                 max_tokens=max_tokens,
                                 smart_card_trigger=smart_card_trigger,
@@ -2243,7 +2240,6 @@ async def ws_character_chat(websocket: WebSocket):
                                 images=[],
                                 model=model,
                                 user_nickname=user_nickname,
-                                dialogue_mode=dialogue_mode or "first_person",
                                 response_length=response_length,
                                 max_tokens=max_tokens,
                                 is_continue=True,

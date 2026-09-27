@@ -1051,7 +1051,6 @@ def _ensure_session(
         character_id=character.id,
         user_id=user.id,
         title=f"{character.name} - SillyTavern",
-        dialogue_mode="first_person",
         created_at=now,
         updated_at=now,
     )
@@ -3933,7 +3932,6 @@ def _persist_imported_messages(
         character_id=character.id,
         user_id=user.id,
         title=chat_name,
-        dialogue_mode="first_person",
         created_at=now,
         updated_at=now,
     )

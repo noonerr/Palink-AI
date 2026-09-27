@@ -97,7 +97,6 @@ export interface Session {
   type: 'chat' | 'workspace' | 'character';
   character_id?: string;
   character?: Character;
-  dialogue_mode?: 'first_person' | 'third_person';
   updated_at: string;
 }
 
@@ -446,7 +445,6 @@ export interface CharacterChatSession {
   title?: string;
   character_id?: string;
   user_id?: number;
-  dialogue_mode: string;
   created_at: string;
   updated_at: string;
 }
