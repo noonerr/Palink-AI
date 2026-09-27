@@ -19,13 +19,12 @@ VALUES (
 );
 
 -- 会话B
-INSERT INTO character_chat_sessions (id, character_id, user_id, title, dialogue_mode, created_at, updated_at, chat_metadata)
+INSERT INTO character_chat_sessions (id, character_id, user_id, title, created_at, updated_at, chat_metadata)
 VALUES (
   'cc-inline-test-0002-0000-0000-000000000001',
   'cc-inline-char-b-0000-0000-0000000000b1',
   19,
   '角色B测试会话',
-  NULL,
   now(),
   now(),
   NULL

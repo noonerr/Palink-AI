@@ -115,7 +115,6 @@ async function createFreshInitSession(page, characterId) {
         max_tokens: 2048,
         frequency_penalty: 0,
         presence_penalty: 0,
-        dialogue_mode: 'normal',
         user_nickname: 'smoke-player',
         response_length: 'medium',
       }),

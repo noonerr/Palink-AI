@@ -5,13 +5,12 @@ DELETE FROM character_chat_session_branches WHERE session_id = 'cc-inline-test-0
 DELETE FROM character_chat_sessions WHERE id = 'cc-inline-test-0001-0000-0000-000000000001';
 
 -- 会话
-INSERT INTO character_chat_sessions (id, character_id, user_id, title, dialogue_mode, created_at, updated_at, chat_metadata)
+INSERT INTO character_chat_sessions (id, character_id, user_id, title, created_at, updated_at, chat_metadata)
 VALUES (
   'cc-inline-test-0001-0000-0000-000000000001',
   'f03aa553-3c28-46b6-a693-fc44aed47544',
   19,
   '智能卡内联渲染测试',
-  NULL,
   now(),
   now(),
   NULL
