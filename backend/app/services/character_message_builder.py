@@ -5,6 +5,7 @@
 `build_st_compat_messages`（st-compat 模式）已于 2026-09 删除。详见根目录 AGENTS.md。
 """
 import json
+import logging
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 from ..models import Character, CharacterChatMessage, UserSetting
 from ..core import settings
 from ..utils import strip_inline_think
+
+logger = logging.getLogger(__name__)
 
 
 def parse_system_commands(text: str) -> Tuple[str, List[str]]:
@@ -113,7 +116,8 @@ def build_character_chat_messages(
     """
     构建角色聊天消息列表。
 
-    顺序：稳定角色提示词 -> 示例 -> 历史 -> 历史后指令 -> 动态上下文 -> 用户系统指令 -> 当前用户消息 -> 最终提醒。
+    顺序：稳定角色提示词 -> 示例 -> 历史 -> 历史后指令 -> 动态上下文 -> 用户系统指令 -> 当前用户消息。
+    尾部不再追加 system（2026-09-27 身份层 ST 化：final_reminder 已删，末条必为 user 轮）。
 
     当传入 context_template（ST 1.18.0 上下文模板）且模板名称不为 "Default" 时，
     会用模板字段包装现有输出，但不会改变核心消息组装顺序：
@@ -275,24 +279,25 @@ def build_character_chat_messages(
         messages.append(user_msg)
 
     if include_title_instruction:
+        # T2（2026-09-27 身份层 ST 化）：标题指令并入 auxiliary（system_prompt
+        # 尾部），不再单独 append 到 user 之后——保证 messages[-1] 是 user 轮
+        # （对齐 ST：default_jailbreak_prompt 为空故默认不追加尾部 system）。
         if is_zh:
-            messages.append({"role": "system", "content": "请在回复末尾用 [标题: 11个字概括本次对话] 的格式输出一个简短的标题。"})
+            title_instruction = "请在回复末尾用 [标题: 11个字概括本次对话] 的格式输出一个简短的标题。"
         else:
-            messages.append({"role": "system", "content": "Please include a brief title at the end of your response in the format [Title: 11-character summary of this conversation]."})
-
-    if is_zh:
-        final_reminder = f"""【最后提醒】
-1. 只以{char.name or '角色'}的身份回复，不要自称AI或助手
-2. 不要复述角色卡；用措辞、动作、情绪和选择体现角色"""
-    else:
-        final_reminder = f"""[Final Reminder]
-1. Respond only as {char.name or 'the character'}, never as an AI or assistant
-2. Do not recite the character card; embody it through wording, actions, emotions, and choices"""
+            title_instruction = "Please include a brief title at the end of your response in the format [Title: 11-character summary of this conversation]."
+        if messages and messages[0].get("role") == "system":
+            messages[0]["content"] = (messages[0]["content"] or "") + "\n\n" + title_instruction
+        else:
+            # 极端兜底：首条不是 system（正常装配不会发生）时退回独立 system 追加
+            messages.append({"role": "system", "content": title_instruction})
 
     # 状态栏探测 / 提醒分支已整体移除（2026-08-18）：Palink 原生 <status> 状态栏
     # 系统删除，不再注入探测指令与状态栏提醒（与 MVU 卡 <UpdateVariable> 冲突）。
 
-    messages.append({"role": "system", "content": final_reminder})
+    # T2（2026-09-27 身份层 ST 化）：尾部 final_reminder 整块删除——
+    # "只以{char.name}的身份回复"是一次身份断言且落在 prompt 最末；
+    # "不要复述角色卡"与已删的【角色卡遵循】小节同源（ST 无对应）。
 
     # ST 1.18.0 context template wrapping — applied after the existing
     # message assembly so the original Palink prompt structure is preserved.
@@ -311,6 +316,17 @@ def build_character_chat_messages(
         replace_placeholders=_replace_placeholders,
         card_jailbreak=_card_jailbreak,
     )
+
+    # T2 守卫（2026-09-27 身份层 ST 化）：prompt 不以 system 结尾（对齐 ST
+    # openai.js:920-923 "末条是 assistant 时补一条 user"的语义方向）。
+    # 正常装配末条必为 user；若将来有路径在尾部追加 system（回归），在此报警。
+    if messages and messages[-1].get("role") == "system":
+        logger.warning(
+            "[PROMPT-TAIL-GUARD] assembled prompt ends with a system message "
+            "(session=%s, tail=%.80r) — post-history class instructions should "
+            "go into postHistoryInstructions slots, not the tail",
+            session_id, messages[-1].get("content", ""),
+        )
 
     return messages
 

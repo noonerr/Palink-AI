@@ -3,7 +3,7 @@
 
 main 槽：ST 默认任务指令（第三人称视角，不做"你是谁"身份断言）
 story_string 槽：角色卡字段（逐项守卫，空则整段缺席）
-auxiliary 层：输出格式约定（T2：仅保留 Palink 产品必需项）
+auxiliary 层：输出格式约定（仅 Palink 产品必需项与渲染扩展）
 """
 
 # 普通对话默认提示词
@@ -38,15 +38,18 @@ CHARACTER_ATTRIBUTES_TEMPLATE_EN = """[Character Card]
 {attributes}"""
 
 # ═══════════════════════════════════════════
-# 第三层：输出格式模板（最后强调，确保遵守）
+# auxiliary 层：输出格式约定（最后强调，位于 system_prompt 尾部）
+# 引号包对话/括号包内心/禁 XML 标签是 Palink 渲染约定（ST 无对应），
+# 明确标注为 Palink 扩展；【声音】与 [标题] 有真实消费方，必须存活
+# （tts.ts 的声音提取、compact_title_service 的标题提取）。
+# 不得含任何身份或视角措辞（2026-09-27 身份层 ST 化）。
 # ════════════════════════════════════════
 
-OUTPUT_FORMAT_TEMPLATE_ZH = """【回复格式规则 - 严格遵守】
+AUXILIARY_TEMPLATE_ZH = """【输出格式约定 - Palink 扩展，非 ST 规范】
 - 口语对话：用双引号包裹 "你好！"
 - 内心想法：用括号包裹 （我该怎么办...）
 - 动作叙述：用普通文本，不加特殊标记
 - 禁止使用：<action>、<thinking>等XML标签
-- 保持沉浸感：像{name}那样回应，带有情感、手势和感官细节
 - 根据情境调整回复长度：快速交流时简短，情感或戏剧性时刻可以更长
 
 【声音描述要求】
@@ -55,12 +58,11 @@ OUTPUT_FORMAT_TEMPLATE_ZH = """【回复格式规则 - 严格遵守】
 - 描述应包括：语气（如温柔/活泼/成熟/稳重等）、情绪（如开心/害羞/兴奋/愤怒等）
 - 示例：【声音：温柔开心的女声】或【声音：稳重低沉的男声】"""
 
-OUTPUT_FORMAT_TEMPLATE_EN = """[Response Format Rules - Strictly Follow]
+AUXILIARY_TEMPLATE_EN = """[Output Format Conventions - Palink Extension, not part of ST]
 - Spoken Dialogue: Wrap in double quotes "Hello!"
 - Inner Thoughts: Wrap in parentheses (What should I do...)
 - Actions/Narration: Use plain text without special markers
 - Prohibited: XML tags like <action> or <thinking>
-- Stay Immersive: Respond as {name} would, with emotions, gestures, and sensory details
 - Vary Response Length: Short for quick exchanges, longer for emotional or dramatic moments
 
 [Voice Description Requirement]
@@ -213,11 +215,11 @@ def build_default_character_prompt(
     # 选择语言
     if lang == "zh":
         attr_template = CHARACTER_ATTRIBUTES_TEMPLATE_ZH
-        format_template = OUTPUT_FORMAT_TEMPLATE_ZH
+        aux_template = AUXILIARY_TEMPLATE_ZH
         labels = ATTRIBUTE_LABELS_ZH
     else:
         attr_template = CHARACTER_ATTRIBUTES_TEMPLATE_EN
-        format_template = OUTPUT_FORMAT_TEMPLATE_EN
+        aux_template = AUXILIARY_TEMPLATE_EN
         labels = ATTRIBUTE_LABELS_EN
 
     # main 槽：ST 默认任务指令。{{char}}/{{user}} 在此替换——本函数返回值
@@ -259,11 +261,11 @@ def build_default_character_prompt(
     else:
         character_override = ""
 
-    # 第三层：输出格式
-    output_format = format_template.format(name=char_name)
+    # auxiliary 层：输出格式约定（不含 {name} 占位——无身份措辞）
+    output_format = aux_template
 
     # [MVU-EXEMPT] MVU 卡系统级豁免（2026-08-18）
-    # OUTPUT_FORMAT 的「禁止 XML 标签」与 MVU 卡的 <UpdateVariable> 变量体系冲突：
+    # auxiliary 的「禁止 XML 标签」与 MVU 卡的 <UpdateVariable> 变量体系冲突：
     # user-tail 注入的用户级申明（"此标签不受禁止 XML 规则限制"）不足以覆盖系统级
     # 禁令（实测 deepseek-v4-flash 3/3 条回复均不输出 <UpdateVariable> → mvu_engine
     # 解析不到 → stat_data 恒初始值）。以同等权威（系统提示词）显式放行，仅 MVU
