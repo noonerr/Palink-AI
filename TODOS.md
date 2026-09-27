@@ -7,6 +7,30 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·三笔 commit] 注入落点对齐 ST（depth 下限）+ dialogue_mode 漏删清理 + 2899 字符差查明（本 agent，2026-09-28）
+
+- **承接**：`docs/SPEC_注入落点对齐ST_depth下限与漏删清理_2026-09-28.md`（Qoder 审查方交接单）+ 复核报告附录 A（ST 源码依据）。三 Task 三 commit：**T1=`2204691`**（注入下限）、**T2=`6cb2f8a`**（清漏删）、**T3=`4634bd3`**（2899 查明，只读）。备份：tag `pre-depth-floor-20260928` + 物理备份 `D:\_palink_backup_20260928_depthfloor\`（含 `repo.bundle` 全历史 136MB + 5 个待改文件原件）。
+- **T1（本单主件）**：`roleplay_prompt_assembly.py` 的锚点加下限，只钳下限、**depth 算术一个字符未动**（SPEC §4 P1）：
+  `_floor = 1 if next_messages and next_messages[0].get("role") == "system" else 0` → `insert_index = max(_floor, len(next_messages) - head.depth)`。
+  修的是：主提示词被算进锚点长度、下限只挡到 0，`depth ≥ len(messages)` 时 15000 字变量块跑到主提示词前面。
+  ST 依据：in-chat 注入只操作倒序聊天历史数组（openai.js:800-866），主提示词在 `chatCompletion` 容器里到 :1331 才合流，结构上不可能越过。
+  探针（同卡 7b064410/会话 2cb171bf）：**改前 [0]15159 变量块/[1]510 主提示词 → 改后 [0]510 主提示词/[1]15159 变量块**，末条仍 user，四条长度逐条一致。
+- **T1 测试**：`test_depth_injection_order.py` 加 3 例（depth=6/99 落点必须为 1 且 `out[0]` 仍是原主提示词内容；depth=1 正常路径未动；首条非 system 退化 0）。**变异验证**：`max(_floor,…)` 改回 `max(0,…)` → 1 failed/9 passed，还原 → 10 passed。**无既有断言被放宽**（既有 7 例落点本就 ≥1）。
+- **T2**：`scripts/seed-inline-card-test.sql:8`、`seed-inline-charb.sql:22` 删 `dialogue_mode` 列名 + VALUES 里对应那个 NULL（位置对应 INSERT，两边同步删，防串列）；`smart-card-compat-smoke.cjs:118` 删 `dialogue_mode: 'normal'`。
+  真跑（容器内 psql `ON_ERROR_STOP=1`）：两脚本 exit 0，`SELECT` 逐列回查正确；**反证**：带 `dialogue_mode` 列的旧语句执行即 `ERROR: column "dialogue_mode" ... does not exist`。自查 grep 仅剩 SPEC 允许的 3 处（character_ext.py:795-798 宏兜底 + 两处说明注释）。
+- **T3（只读，零生产代码改动）**：**2899 字符差已查明并结案**——是世界书条目「[mvu_update]变量输出格式」里 `format: |-` 之后的 `<UpdateVariable>…</UpdateVariable>` 模板原文（`${new_value}`×28 / `positive_or_negative_delta`×8）。
+  **凶手 = 角色卡自带正则「[不发送]去除变量更新」的 `minDepth=4` 深度窗**：`_apply_prompt_regex_to_messages` 的 `depth = total-1-index` 是"距末尾距离"，旧布局 total=6 → depth=4 → 命中删空（12260）；T2 砍尾部后 total=4 → depth=3（T1 后 depth=2）→ 跌出窗口（15159）。
+  **T1 的下限不参与这笔账**（depth 3→2 两侧都 <4，块长实测皆 15159）。
+  反证：B 态关掉 `include_prompt_regex` → 12260 立刻回到 15159。产物：`docs/调查_MVU变量块2899字符差成因_2026-09-28.md` + 只读探针 `backend/scripts/probe_mvu_block_origin.py`。
+  **复核漏判原因（记一笔）**：该脚本不在 `regex_scripts` **表**里而在 `characters.extensions` 的 JSON，且字段是 ST camelCase（`minDepth` 不是 `min_depth`），用表 + snake_case 查必然 0 行。
+- **门禁（每 Task 各跑一遍）**：容器全量 `docker exec -w /app palink-ai-backend-1 python -m pytest tests/ -q` **1460 passed / 42 skipped / 0 failed**（基线 1457 + T1 新增 3）；`npx tsc --noEmit` 0 错。
+- **新遗留（登记待立项）**：
+  1. **2899 字符的 MVU 模板现在完整发给模型**（卡作者写「[不发送]去除变量更新」的原意是剥掉它，但只在中古历史 depth≥4 剥）。剥不剥属产品/兼容决策，需拍板；改它 = 动正则深度窗或 system 消息的 placement 归类。
+  2. **`_apply_prompt_regex_to_messages` 把 system 角色按 `REGEX_PLACEMENT_USER_INPUT`(1) 归类**（character_ext.py:1631-1635），世界书/变量块这类 system 消息会被 `placement:[1,2]` 的"用户消息"脚本打到。ST 里 system 有自己的 placement 位，是否对齐另议。
+  3. **`depth` 基数不稳**：`depth = total-1-index` 依赖消息总数，任何改装配尾部的动作（本次 T2 即为实例）都会让**所有**带深度窗的脚本整体漂移一格——一类"改 A 处、B 处静默变"的耦合，若要治理需另立议题。
+  4. T1 只补了"不越过主提示词"这一道下限；**depth 语义本身仍未与 ST 完全对齐**（ST 锚"聊天历史头部"，我们把主提示词算进了锚点长度）。要不要整体位移一格属行为变更，需单独论证与单独授权（SPEC §4 P1）。
+- **撞坑登记**：① 容器 `/app/app/services` 属 root 且 r-x，`docker exec` 默认 appuser 写不进去 → `sed -i`/`rm` 要加 `-u root`，`docker cp` 不受影响；② 复现旧布局必须换 **`character_message_builder.py`**（尾部 2 条 system 由它产出），只换 `roleplay_prompt_assembly.py` 复现不出来（后者在 T2 里压根没改）；③ 旧版 assembly 调 `build_system_prompt` 是 5 参（含已删的 dialogue_mode），跑历史版本要在探针里做参数适配。
+
 ### [已完成·实机闭环] 提示词身份层 ST 化：删第一/第三人称切换 + 删身份断言 + 思考框错位修复（本 agent，2026-09-27）
 
 - **承接**：`docs/SPEC_提示词身份层ST化_删除第一第三人称切换_2026-09-27.md` 全量施工（Qoder 审查方交接单）。四 Task 四 commit：T0=`47cc649`（T2 后修思考框显示错位）、T1=`1126b88`（main 槽换 ST 原文）、T2=`61a153b`（输出格式层降 auxiliary）、T3=`814e562`（dialogue_mode 整链删除）。备份：tag `pre-prompt-st-align-20260927` + 物理备份 `D:\_palink_backup_20260927_promptST\`。
