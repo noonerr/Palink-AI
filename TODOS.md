@@ -968,9 +968,15 @@
 - **执行**：单事务，输出 `DELETE 0 / 0 / 3 / 0 / 0 / 3` + `COMMIT`（`ON_ERROR_STOP=1`，无回滚）。
 - **复查**：匹配卡 **0**、`character_plugin_state` 全表 **0**、`characters` 总数 25；
   真机验证用的「灯塔守夜人」`170af4f2` 的 `plugin_scope_mode` 仍为 NULL（未误伤）。
-- ⚠️ **新发现（未擅自处理）**：同账号下**另有 6 张同名「按需插件测试卡」**
-  （`de517a3d` / `69c0fba8` / `d4aec758` / `9b0f2dbb` / `269789f7` / `a3fac407`），
-  不在交接清单内，等用户定夺再动。
+- ⚠️ 同账号下**另有 6 张同名「按需插件测试卡」**（`de517a3d` / `69c0fba8` / `d4aec758` / `9b0f2dbb` /
+  `269789f7` / `a3fac407`）不在交接清单内，**已另行征求用户同意后删除**（同流程：核查 → dump → 单事务 → 复查）。
+  这 6 张创建于 09-25/26，全部 `plugin_scope_mode=NULL`、零依赖行。
+  备份 `backups/testcards2_characters_20260927.csv`（6 行）；事务输出 `DELETE 0/0/0/0/0/6` + COMMIT。
+- **最终复查**：`plugin_ui_test` 名下卡片 **0**、`character_plugin_state` 全表 **0**、
+  `characters` 总数 **19**、灯塔守夜人 `170af4f2` 仍在且 mode=NULL。
+- **工作树产物清理**（用户授权）：删 `frontend/dist_old_*` 共 10 个（每个 12M，合计约 120M）
+  与 `.tmp_mobile_audit/`、`.tmp_shot_mobile.png`、`.zcodeignore`。删后 `git status --porcelain` **全空**；
+  冒烟 `GET / -> HTTP 200`，容器内 `/usr/share/nginx/html` 仍 267 文件，服务未受影响。
 
 ### 剩余（本次范围外，按优先级）
 1. ~~**装配层让位实现**~~ → ✅ 已于 2026-09-27 完成（见上）。
