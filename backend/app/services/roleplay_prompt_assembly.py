@@ -5093,7 +5093,16 @@ def _insert_depth_prompt(
                     )
                 j += 1
             merged_content = "\n".join(p for p in merged_parts if p)
-            insert_index = max(0, len(next_messages) - head.depth)
+            # ST 对齐下限：in-chat 注入只锚在「聊天历史」上，永不越过主提示词块。
+            # ST 里 in-chat 注入操作的是倒序聊天历史数组（openai.js:800-866
+            # populationInjectionPrompts），主提示词/世界书/卡字段在另一个容器
+            # chatCompletion 里，直到 populateChatHistory（:1331-1336）才合流，
+            # 所以 ST 结构上不可能越过主提示词；历史比 depth 短时倒序 splice
+            # 只会在末尾追加，转回正序 = 落到聊天历史第一条之前，仍在主提示词之后。
+            # 此处 next_messages 首条即主提示词，故锚点下限为 1（首条非 system 时
+            # 退化为 0，保住兜底分支）。只钳下限，不动 depth 算术。
+            _floor = 1 if next_messages and next_messages[0].get("role") == "system" else 0
+            insert_index = max(_floor, len(next_messages) - head.depth)
             next_messages.insert(insert_index, {"role": _ROLE_INT_TO_NAME.get(head.role, "system"), "content": merged_content})
             inserted_any = True
             i = j

@@ -189,6 +189,43 @@ def test_empty_queue_noop_and_report_skipped():
     assert any(item.key == "depth_prompt" and item.status == "skipped" for item in report)
 
 
+def test_depth_beyond_message_count_floors_at_main_prompt():
+    """depth ≥ 消息总数时，注入不得越过主提示词（ST: 锚点是聊天历史头部）。
+
+    ST 的 in-chat 注入只操作聊天历史数组（openai.js:800-866），主提示词在
+    ``chatCompletion`` 容器里、到 :1331 才合流，因此 ST 结构上不可能让注入块
+    排到主提示词之前。此处 next_messages 首条是主提示词，故落点下限为 1。
+    """
+    for depth in (6, 99):
+        entries = [DepthInjection(depth=depth, content="DEEP", role=0, source="t", sort_key="a")]
+        out = _insert_depth_prompt(list(BASE_MESSAGES), _make_req(), _make_deps(), entries, [])
+        # 断言内容而不只是下标：首条必须仍是原主提示词
+        assert out[0] == {"role": "system", "content": "sys"}
+        assert out[1] == {"role": "system", "content": "DEEP"}
+        assert _contents(out)[2:] == ["u1", "a1", "u2", "a2", "u3"]
+
+
+def test_depth_one_still_lands_before_last_message():
+    """正常路径未被下限改动：depth=1 仍落在最后一条之前。"""
+    entries = [DepthInjection(depth=1, content="D1", role=0, source="t", sort_key="a")]
+    out = _insert_depth_prompt(list(BASE_MESSAGES), _make_req(), _make_deps(), entries, [])
+    contents = _contents(out)
+    assert contents.index("D1") == 5
+    assert contents[-1] == "u3"
+
+
+def test_no_leading_system_allows_index_zero():
+    """首条不是 system（无主提示词块）时，下限退化为 0，保住兜底分支。"""
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    entries = [DepthInjection(depth=99, content="DEEP", role=0, source="t", sort_key="a")]
+    out = _insert_depth_prompt(list(messages), _make_req(), _make_deps(), entries, [])
+    assert out[0] == {"role": "system", "content": "DEEP"}
+    assert _contents(out)[1:] == ["u1", "a1"]
+
+
 def test_merge_joins_multiline_and_skips_empty_parts():
     """同组多条以 \\n 连接；空内容不产生孤立分隔符。"""
     entries = [
