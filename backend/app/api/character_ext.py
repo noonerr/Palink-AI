@@ -1764,11 +1764,7 @@ def _build_character_card_attributes(char: Character, prompt_lang: str) -> str:
 
 
 def _replace_character_card_placeholders(text: str, char: Character, prompt_lang: str, dialogue_mode: str) -> str:
-    from ..core.default_prompts import DIALOGUE_MODE_ZH, DIALOGUE_MODE_EN
-
     char_name = char.name or "Character"
-    dialogue_templates = DIALOGUE_MODE_ZH if prompt_lang == "zh" else DIALOGUE_MODE_EN
-    default_mode = dialogue_templates["first_person"]
     values = {
         "system_prompt": char.system_prompt or "",
         "personality": char.personality or "",
@@ -1777,7 +1773,9 @@ def _replace_character_card_placeholders(text: str, char: Character, prompt_lang
         "description": char.description or "",
         "creator_notes": char.creator_notes or "",
         "attributes": _build_character_card_attributes(char, prompt_lang),
-        "dialogue_mode": dialogue_templates.get(dialogue_mode, default_mode).format(name=char_name),
+        # T1（2026-09-27 身份层 ST 化）：DIALOGUE_MODE_* 字典已随第一/第三人称
+        # 切换删除，该宏暂展开为空串；形参与宏键待 T3 整链删除时移除。
+        "dialogue_mode": "",
     }
     result = text
     for key, value in values.items():

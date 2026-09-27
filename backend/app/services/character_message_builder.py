@@ -391,11 +391,9 @@ def _apply_context_template(
 # ST 1.18.0 兼容消息构建器
 # ---------------------------------------------------------------------------
 
-# ST 1.18.0 默认 main prompt（openai.js:101 / PromptManager.js:2007）
-_ST_DEFAULT_MAIN_PROMPT = (
-    "Write {{char}}'s next reply in a fictional chat between "
-    "{{charIfNotGroup}} and {{user}}."
-)
+# ST 1.18.0 默认 main prompt 统一由 core.default_prompts.ST_DEFAULT_MAIN_PROMPT
+# 提供（2026-09-27 身份层 ST 化：此处旧 _ST_DEFAULT_MAIN_PROMPT 为零引用死常量，
+# 且含宏列表不支持的 {{charIfNotGroup}}，已删除，勿再留两份）。
 
 # ST 1.18.0 默认标记（openai.js:107-109）
 _ST_DEFAULT_NEW_CHAT_PROMPT = "[Start a new Chat]"

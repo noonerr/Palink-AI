@@ -1,9 +1,11 @@
 """B-4 A 方案回归：角色卡 system_prompt 作为 main 槽头部 override（对齐 ST charPrompt 语义）。
 
 spec: docs/SILLYTAVERN_COMPAT_SPEC_2026-08-23.md §3 B-4
+2026-09-27 身份层 ST 化（docs/SPEC_提示词身份层ST化_删除第一第三人称切换_2026-09-27.md）：
+"你是{name}"核心规则层已删，main 槽改为 ST 默认任务指令（ST_DEFAULT_MAIN_PROMPT）。
 锁定：
-1. custom_prompt（角色 system_prompt）存在时置于 main 槽最前（先于核心规则层）；
-2. custom_prompt 空时不影响三层结构（无 character_override 参与）；
+1. custom_prompt（角色 system_prompt）存在时置于 main 槽最前（先于 ST main prompt）；
+2. custom_prompt 空时不影响新结构（无 character_override 参与）；
 3. 既有 personality/background/scenario/description 属性装配顺序不变。
 """
 
@@ -35,13 +37,15 @@ def _base(**kw):
 def test_custom_prompt_placed_first_in_main_slot():
     prompt = build_default_character_prompt(**_base(custom_prompt="CHAR_TOTAL_OVERRIDE"))
     assert prompt.startswith("核心设定：CHAR_TOTAL_OVERRIDE")
-    assert prompt.index("CHAR_TOTAL_OVERRIDE") < prompt.index("你是B4Char")
+    assert prompt.index("CHAR_TOTAL_OVERRIDE") < prompt.index(
+        "Write B4Char's next reply in a fictional chat between B4Char and Tester."
+    )
 
 
 def test_custom_prompt_absent_keeps_default_structure():
     prompt = build_default_character_prompt(**_base(custom_prompt=""))
     assert not prompt.startswith("核心设定：")
-    assert "你是B4Char" in prompt
+    assert "Write B4Char's next reply in a fictional chat between B4Char and Tester." in prompt
     assert "描述XYZ" in prompt
 
 

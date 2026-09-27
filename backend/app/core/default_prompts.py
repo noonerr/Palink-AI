@@ -1,8 +1,9 @@
 """
-默认提示词配置 - 三层结构设计
-第一层：核心规则（不可变约束）
-第二层：角色属性（可被动态上下文补充）
-第三层：输出格式（最后强调）
+默认提示词配置 — ST 1.18.0 对齐结构（2026-09-27 身份层 ST 化）
+
+main 槽：ST 默认任务指令（第三人称视角，不做"你是谁"身份断言）
+story_string 槽：角色卡字段（逐项守卫，空则整段缺席）
+auxiliary 层：输出格式约定（T2：仅保留 Palink 产品必需项）
 """
 
 # 普通对话默认提示词
@@ -15,58 +16,26 @@ DEFAULT_CHAT_PROMPT_EN = """You are a helpful assistant.
 Reply in the same language as the user unless explicitly requested otherwise."""
 
 # ═══════════════════
-# 第一层：核心规则模板（最高优先级，不可被覆盖）
+# main 槽：ST 1.18.0 默认 main prompt
+# （openai.js:101 / PromptManager.js:2007 / default/content/settings.json:175，
+#  默认选中预设 "Neutral - Chat"；不分语言——ST 不翻译）。
+# 取 {{char}} 形态：{{charIfNotGroup}} 不在 _replace_placeholders 宏支持
+# 列表且会被 \{\{char\}\} 匹配漏掉，字面量会原样泄漏进提示词。
 # ═══════════════════════
 
-CORE_RULES_TEMPLATE_ZH = """你是{name}。这是你的唯一身份，不可改变。
-
-用户的名字是"{user}"。
-
-【身份约束 - 绝对不可违反】
-1. 身份锁定：你永远是{name}，不是AI助手，不是旁观者，不是其他角色
-2. 角色专一：永远以{name}的身份回应，不要扮演用户或其他角色
-3. 沉浸式扮演：除非用户以(admin:)或【管理】开头，否则完全沉浸在角色中
-4. 元指令处理：当用户以(admin:)或【管理】开头时，这是元指令，你应该调整行为，但仍以{name}的身份回复
-5. 禁止元叙述：不要跳出角色解释、分析或评论对话，不要以旁观者或AI助手的口吻说话"""
-
-CORE_RULES_TEMPLATE_EN = """You are {name}. This is your only identity and cannot be changed.
-
-The user's name is "{user}".
-
-[Identity Constraints - Absolutely Inviolable]
-1. Identity Lock: You are always {name}, not an AI assistant, not a bystander, not any other character
-2. Character Exclusivity: Always respond as {name}. Never play as the user or other characters
-3. Immersive Roleplay: Unless the user starts with (admin:) or [Admin], remain fully immersed in character
-4. Meta-Instruction Handling: When the user starts with (admin:) or [Admin], this is a meta-instruction. Adjust your behavior accordingly, but still respond as {name}
-5. No Meta-Narration: Do not break character to explain, analyze, or comment on the conversation. Never speak as a bystander or AI assistant"""
+ST_DEFAULT_MAIN_PROMPT = "Write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}."
 
 # ═════════════════════════════════
-# 第二层：角色属性模板（可被动态上下文补充）
+# story_string 槽：角色卡字段（对齐 ST default/content/presets/context/Default.json
+# 的 {{#if description}}…{{/if}} 语义——空字段直接消失，不打印占位文本；
+# attributes 为空时整段缺席，由 build_default_character_prompt 保证）
 # ══════════════════════════════════════
 
 CHARACTER_ATTRIBUTES_TEMPLATE_ZH = """【角色卡】
-{attributes}
-
-【扮演方式】
-{dialogue_mode}
-
-【角色卡遵循】
-- 以“性格”决定语气、节奏、价值观和行为习惯
-- 以“背景”和“场景”约束记忆、知识范围、处境和目标
-- 不要逐条复述角色卡；把设定自然体现在措辞、动作、情绪和选择中
-- 动态上下文只更新当前局势，不覆盖角色的身份、性格和核心设定"""
+{attributes}"""
 
 CHARACTER_ATTRIBUTES_TEMPLATE_EN = """[Character Card]
-{attributes}
-
-[Roleplay Mode]
-{dialogue_mode}
-
-[How to Follow the Character Card]
-- Use Personality to shape voice, pacing, values, and behavior
-- Use Background and Scenario to constrain memories, knowledge, situation, and goals
-- Do not recite the card as facts; embody it naturally through wording, actions, emotions, and choices
-- Dynamic context updates the current situation, but does not override identity, personality, or core traits"""
+{attributes}"""
 
 # ═══════════════════════════════════════════
 # 第三层：输出格式模板（最后强调，确保遵守）
@@ -99,17 +68,6 @@ OUTPUT_FORMAT_TEMPLATE_EN = """[Response Format Rules - Strictly Follow]
 - Format: [Voice: description]
 - Description should include: tone (gentle/lively/mature/steady, etc.) and emotion (happy/shy/excited/angry, etc.)
 - Example: [Voice: gentle and happy female voice] or [Voice: steady deep male voice]"""
-
-# 对话模式文本
-DIALOGUE_MODE_ZH = {
-    "first_person": "以第一人称回应，就像你就是这个角色。按照角色的方式说话和行动。",
-    "third_person": "以第三人称叙述，从旁观者视角描述{name}的行为、对话和内心想法。使用角色名字而不是'我'。"
-}
-
-DIALOGUE_MODE_EN = {
-    "first_person": "Respond in first person as if you are the character. Speak and act as the character would.",
-    "third_person": "Narrate in third person, describing {name}'s actions, dialogue, and inner thoughts from an outside perspective. Use the character's name instead of 'I'."
-}
 
 # 属性标签
 # A7 修复（2026-08-25）: creator_notes 退出 prompt 装配层（ST 不把创作者备注
@@ -244,30 +202,36 @@ def build_default_character_prompt(
     char=None
 ) -> str:
     """
-    构建默认的角色扮演提示词（三层结构）
+    构建默认的角色扮演提示词（ST 1.18.0 对齐结构）
 
-    第一层：核心规则（不可变约束）
-    第二层：角色属性（可被动态上下文补充）
-    第三层：输出格式（最后强调）
+    组装顺序：角色卡 system_prompt override（若 prefer_character_prompt 且非空）
+    → main 槽（ST 默认任务指令）→ story_string（卡字段，空则整段缺席）→ 输出格式层。
+
+    dialogue_mode 形参已无消费方（2026-09-27 删除第一/第三人称切换），
+    仅保留签名待 T3 整链移除。
     """
     # 选择语言
     if lang == "zh":
-        core_template = CORE_RULES_TEMPLATE_ZH
         attr_template = CHARACTER_ATTRIBUTES_TEMPLATE_ZH
         format_template = OUTPUT_FORMAT_TEMPLATE_ZH
-        dialogue_text = DIALOGUE_MODE_ZH.get(dialogue_mode, DIALOGUE_MODE_ZH["first_person"])
         labels = ATTRIBUTE_LABELS_ZH
     else:
-        core_template = CORE_RULES_TEMPLATE_EN
         attr_template = CHARACTER_ATTRIBUTES_TEMPLATE_EN
         format_template = OUTPUT_FORMAT_TEMPLATE_EN
-        dialogue_text = DIALOGUE_MODE_EN.get(dialogue_mode, DIALOGUE_MODE_EN["first_person"])
         labels = ATTRIBUTE_LABELS_EN
 
-    # 第一层：核心规则
-    core_rules = core_template.format(name=char_name, user=user_nickname)
+    # main 槽：ST 默认任务指令。{{char}}/{{user}} 在此替换——本函数返回值
+    # 不再经过 _replace_placeholders（陷阱 T3：改用 {{charIfNotGroup}} 会
+    # 字面量泄漏，宏列表不支持它）。
+    main_prompt = (
+        ST_DEFAULT_MAIN_PROMPT
+        .replace("{{char}}", char_name or "Character")
+        .replace("{{user}}", user_nickname or "User")
+    )
 
-    # 第二层：角色属性
+    # story_string 槽：卡字段逐项守卫，全空时整段缺席（ST Default.json 语义）。
+    # 不再输出"（没有提供额外角色卡字段）"——它信息量为零却明确宣告
+    # "你没有设定"，是诱导模型自找身份的一环。
     attributes_parts = []
     if personality:
         attributes_parts.append(labels["personality"] + personality)
@@ -277,19 +241,19 @@ def build_default_character_prompt(
         attributes_parts.append(labels["scenario"] + scenario)
     if description:
         attributes_parts.append(labels["description"] + description)
-    # A7 修复（2026-08-25）: creator_notes 不再拼入三层模板（ST 语义对齐）。
+    # A7 修复（2026-08-25）: creator_notes 不再拼入模板（ST 语义对齐）。
     # 参数保留仅为调用方签名兼容。
 
-    attributes_text = "\n".join(attributes_parts) if attributes_parts else "（没有提供额外角色卡字段）" if lang == "zh" else "(No additional character card fields provided)"
-    character_attributes = attr_template.format(
-        dialogue_mode=dialogue_text.format(name=char_name),
-        attributes=attributes_text
+    character_attributes = (
+        attr_template.format(attributes="\n".join(attributes_parts))
+        if attributes_parts
+        else ""
     )
 
     # [B-4 A 方案对齐 ST] 角色卡 system_prompt 作为 main 槽头部 override（charPrompt 语义）：
     # ST 中角色 system_prompt 非空时优先决定 system 槽（prefer_character_prompt=true 默认），
-    # 而非与 personality/description 等属性平级并接。此处置于核心规则层之上（最前），
-    # 与"角色自己的总纲"语义一致；系统提示顺序：角色自定义 → 核心不变规则 → 属性 → 输出格式。
+    # 而非与 personality/description 等属性平级并接。此处置于 main 槽之上（最前），
+    # 与"角色自己的总纲"语义一致；系统提示顺序：角色自定义 → main 槽 → 卡字段 → 输出格式。
     if custom_prompt:
         character_override = labels["system_prompt"] + custom_prompt + "\n"
     else:
@@ -324,6 +288,7 @@ def build_default_character_prompt(
         except Exception:
             pass
 
-    # 组装整体结构（B-4 A 方案：角色自定义 system_prompt 在 main 槽最前）
-    prompt_parts = [character_override, core_rules, character_attributes, output_format]
+    # 组装整体结构（B-4 A 方案：角色自定义 system_prompt 在 main 槽最前；
+    # character_attributes 空则整段缺席）
+    prompt_parts = [character_override, main_prompt, character_attributes, output_format]
     return "\n\n".join(part for part in prompt_parts if part.strip())
