@@ -215,7 +215,6 @@ def main():
     debug_body = {
         "message": "篝火生好了。",
         "model": "deepseek-v4-flash",
-        "dialogue_mode": "first_person",
         "max_tokens": 1024,
     }
     status, resp = http_request(
