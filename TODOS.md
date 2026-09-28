@@ -7,6 +7,17 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·待实机验收] 文生图「浏览器桥接执行」——托管部署下出图任务下发用户本机 ComfyUI（本 agent，2026-09-28）
+
+- **承接**：`docs/REPORT_浏览器桥接本地算力可行性调研_2026-09-28.md`（先调研后拍板：暂时只做文生图，LLM 文本回答不立项）+ `docs/SPEC_文生图浏览器桥接执行_本机ComfyUI_2026-09-28.md`。**commit `ce64607`（18 文件，只含本单清单，未碰其他 agent 脏文件）**。备份：`git stash@{0}` 快照 `11d9e264` + `D:\_palink_backup_20260928_localimg\`（patch + pathspec）。
+- **核心设计（等待式委派）**：`generate_image_for_message` 检到 `provider.execution=="browser"` → 后端组装 ComfyUI 工作流（抽 `_build_comfyui_workflow` 两条执行面共用）→ 进程内任务桥 `local_image_bridge.py` 创建任务 → **原地 await** 浏览器回传 → 之后完全复用既有 pending→ready/failed 收敛与六处事件发射。**chat.py / websocket.py / character_ext.py 四触发点 + message_media 契约零改动**（并行避让 + 事务安全依据：媒体服务内部 commit，等待期不占 SQLite 写锁）。
+- **任务桥**：claim（45s 认领回收，刷新/关页重派）/ complete / fail + 每用户 8 任务积压上限 + 惰性清扫；不持久化（后端重启=任务亡，渲染期 120s 兜底，与云模式现状同级）。**SSRF 语义分层**：browser 模式跳过 `_is_safe_mcp_url`（后端对该 base_url 零出站，127.0.0.1 是合法值）；server 路径守卫逐字节不变；image_proxy 的无条件拒内网不受影响。
+- **新 API**：`GET /local-tasks/pending`（认领即 dispatched）、`POST /local-tasks/{id}/result`（裸 b64/dataURL + 魔数 PNG/JPEG/WEBP + 30MB 双闸 + 双标签幂等）、`POST /local-tasks/{id}/fail`；`POST /test` 对 browser 模式 400（服务端无法代执行）。
+- **前端**：`lib/image-gen/` 三件——`comfyui-client.ts`（两段式探测：no-cors 存活→CORS 可读，把"没启动"与"CORS 拦截"分开报；执行闭环 /prompt→/history 轮询→/view→blob→base64）、`executor.ts`（轮询单例 2.5s、页面可见才拉、in-flight 去重）、`use-image-task-executor.ts`（App 根挂一次，未启用零开销；刻意轮询送达，不动 useChatWebSocket/stream-engine）。`ImageGenerationTab` 设置页（**updateConfig 首个消费方**）+ 连接向导：精确 origin 的 `--enable-cors-header '<站点origin>'` 复制即用命令（明示勿用 `*`）+ LNA 弹窗提示 + 「检测本机 ComfyUI」按钮。
+- **门禁**：`pytest tests/` **1485 passed / 51 skipped / 0 failed**（含新增 `test_local_image_bridge.py` 22 例：配置面/端到端/失败链/超时链/归属隔离/魔数/积压/回收）；`npx tsc --noEmit` 0 错；vitest 29 文件 **408 passed | 3 skipped**（含 `lib/image-gen/__tests__` 15 例；6 unhandled errors 属 plugin-runtime-diff-hotswap 既有噪声，非本批引入）。
+- **已知限制（SPEC §10）**：骨架 120s 渲染期收敛 → browser 建议超时 ≤110s；Safari 不可用（回环按混合内容拦）；双标签竞速先回传者胜。
+- **待实机验收（需真浏览器 + 本机 ComfyUI）**：① `--enable-cors-header '<origin>'` 启动后设置页检测三态；② Chrome 托管域名下首次 LNA 弹窗放行后三路触发（自动/工具/手动）闭环；③ CORS 未配置时失败文案指引导向。
+
 ### [已完成·实机取证闭环] MVU 变量不更新——SSE 侧补齐解析 + 一次真机取证（本 agent，2026-09-28）
 
 - **承接**：`docs/SPEC_MVU变量更新SSE侧补齐与取证_2026-09-28.md`（Qoder 审查方交接单）。T1=`a1e31e8`、T2=`32a3359`、T3=TODOS 本条。备份：tag `pre-mvu-sse-20260928` + `D:\_palink_backup_20260928_mvusse\repo.bundle`（136MB 全历史）。
@@ -190,7 +201,7 @@
 - **C 难批**：MCP 连接治理：`_connection_lock` 串行化连接态变更（修 check-then-act 竞态：后连者覆盖前者 session → stdio 子进程泄漏）；`disconnect_all_servers()` + `main.py` lifespan 关闭钩子（stdio 子进程不再常驻）；`execute_tool_call` 重连改走持锁检查。
 - **测试**：新增 4 文件 47 例（`test_mcp_service_compat.py` / `test_tts_audio_mime.py` / `test_comfyui_fetch.py` / `test_admin_image_cleanup.py`）；更新 `test_image_generation_p0.py` ComfyUI 用例（501 旧契约 → 完整取图契约，其假 httpx 补 `get`+`content`）。MCP 与 TTS 后端零覆盖的缺口就此补上（建议 #8）。
 - **验证（宿主 venv `E:/palink-testenv` 实测）**：后端全量 **1360 passed / 42 skipped / 0 failed**（4m07s）；`npx tsc --noEmit` **0 错**；`npx vitest run` **23 文件 / 365 passed | 3 skipped**（与基线一致，前端仅动 tts.ts）。冒烟：审计中的真实 WAV 魔数字节（`b'RIFF$\x96\x00\x00WAVE'`）正确判为 audio/wav。Docker 未运行，容器口径未跑（改动均源码级，重建镜像后生效）。
-- **明确未做（需拍板/超范围，均登记）**：① ~~MCP 进角色扮演主路径~~ → **用户已拍板（2026-09-25）：不进**，维持"MCP 仅通用聊天 admin 可用"现状（装配链红线继续有效，见下方实弹测试条目）；② 前端图片生成设置页（`api.imageGeneration.updateConfig` 仍零调用方）；③ 图片配额（quota_service 仍纯 token）；④ `_download_image` 重定向 SSRF 残留（代码注释自认，09-20 报告 C 类刻意不动）；⑤ coqui 真服务器、A1111 Basic、streamable-http 真连接——均未实机验（同审计【未验】口径）；⑥ 浏览器直连本地服务（审计 §5）未立项。
+- **明确未做（需拍板/超范围，均登记）**：① ~~MCP 进角色扮演主路径~~ → **用户已拍板（2026-09-25）：不进**，维持"MCP 仅通用聊天 admin 可用"现状（装配链红线继续有效，见下方实弹测试条目）；② ~~前端图片生成设置页（`api.imageGeneration.updateConfig` 仍零调用方）~~ → **已于 2026-09-28 落地**（`ImageGenerationTab`，见顶部浏览器桥接条目）；③ 图片配额（quota_service 仍纯 token）；④ `_download_image` 重定向 SSRF 残留（代码注释自认，09-20 报告 C 类刻意不动）；⑤ coqui 真服务器、A1111 Basic、streamable-http 真连接——均未实机验（同审计【未验】口径）；⑥ 浏览器直连本地服务（审计 §5）→ **文生图部分已于 2026-09-28 立项落地**（ComfyUI 浏览器桥接，见顶部条目；LLM 文本回答经调研后暂不立项）。
 - **改动文件**：backend `services/{mcp_service,tts_service,image_generation_service,inference_dispatcher}.py`、`api/{tts,silly_tavern,admin}.py`、`core/config.py`、`utils.py`、`main.py`、`schemas/image_generation.py`、`tests/`（4 新+1 改）；frontend `src/services/tts.ts`。
 
 ### [审计完成·未修→已修] MCP / 文生图 / TTS 支持度实机审计（本 agent，2026-09-25）
