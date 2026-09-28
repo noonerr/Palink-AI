@@ -35,7 +35,11 @@ from ..services.stream_builder import StreamResult
 from ..services.web_search import search_web, format_search_results, get_web_search_config
 from ..services.mcp_service import get_all_tools_openai_format
 from ..services.compact_title_service import extract_response_title, generate_compact_title
-from ..services.character_message_builder import build_character_chat_messages, clean_smart_card_trigger_context
+from ..services.character_message_builder import (
+    apply_mvu_reply_to_session,
+    build_character_chat_messages,
+    clean_smart_card_trigger_context,
+)
 from ..services.status_bar_detector import (
     StreamingStatusStripper,
     strip_and_parse_status_marker,
@@ -738,75 +742,25 @@ async def run_character_chat_generation(
         # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data（仅 force 时）
         if force and not mvu_variables_saved:
             try:
-                from app.services.mvu_engine import (
-                    MvuEngine,
-                    merge_character_book_entries,
+                # [MVU-DETACHED-FIX] 角色卡 extensions 重查/eager load 与会话变量
+                # 读写已抽到共用函数 apply_mvu_reply_to_session
+                # （character_message_builder.py），SSE 四入口与 WS 同调，勿在此
+                # 处再展开一份实现。
+                new_vars, mvu_logs = apply_mvu_reply_to_session(
+                    save_db,
+                    char.id if char is not None else None,
+                    session_id,
+                    final_raw,
                 )
-                # [MVU-DETACHED-FIX] char 参数来自 ws 调用方会话（gen_db 已 close，实例
-                # detached），直接访问 char.world_books 触发 lazy load 必抛
-                # "Parent instance is not bound to a Session" → 整个 MVU 更新失败、
-                # variables 永不下发（2026-08-17 实测 26 次失败 / 0 成功）。
-                # 用 save_db 重新加载并 eager load world_books.entries，读到的仍是同一角色。
-                from sqlalchemy.orm import selectinload
-                _mvu_char = None
-                if char is not None and getattr(char, "id", None):
-                    try:
-                        _mvu_char = (
-                            save_db.query(Character)
-                            .options(
-                                selectinload(Character.world_books).selectinload(WorldBook.entries)
-                            )
-                            .filter(Character.id == char.id)
-                            .first()
-                        )
-                    except Exception:
-                        _mvu_char = None
-                char_ext_raw: dict = {}
-                if _mvu_char is not None and getattr(_mvu_char, "extensions", None):
-                    try:
-                        raw_ext = _mvu_char.extensions
-                        char_ext_raw = json.loads(raw_ext) if isinstance(raw_ext, str) else (raw_ext if isinstance(raw_ext, dict) else {})
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                # character_book 存在 world_books 表而非 extensions，需合并其 entry content
-                # 供 build_initial_stat_data 提取 <initvar>（头像 URL/服饰/内心想法等初始值）。
-                wb_entries = [
-                    str(stage.content or "")
-                    for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
-                    if getattr(wb, "type", "") == "character_book"
-                    for stage in (wb.entries or [])
-                ]
-                char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
-                sess = save_db.query(CharacterChatSession).filter(
-                    CharacterChatSession.id == session_id
-                ).first()
-                if sess is not None:
-                    cur_meta: dict = {}
-                    if sess.chat_metadata:
-                        try:
-                            cur_meta = json.loads(sess.chat_metadata)
-                            if not isinstance(cur_meta, dict):
-                                cur_meta = {}
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    cur_vars = cur_meta.get("variables")
-                    if not isinstance(cur_vars, dict) or not cur_vars.get("stat_data"):
-                        cur_vars = MvuEngine.init_session_variables(char_ext_raw)
-                    new_vars, mvu_logs = MvuEngine.update_from_reply(
-                        cur_vars, final_raw, char_ext_raw
-                    )
-                    # [MVU-SECONDARY-MANUAL] 副 AI 已改为全手动模式：
-                    # 不再在 persist 阶段自动调用副模型解析剧情（此前 90s 同步阻塞
-                    # 会导致主流程收尾停滞、界面"生成完但一直转圈"）。
-                    # 需要变量更新时由用户在前端消息按钮手动触发
-                    # POST /api/character-sessions/{session_id}/mvu-secondary。
-                    cur_meta["variables"] = new_vars
-                    sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
+                # [MVU-SECONDARY-MANUAL] 副 AI 已改为全手动模式：
+                # 不再在 persist 阶段自动调用副模型解析剧情（此前 90s 同步阻塞
+                # 会导致主流程收尾停滞、界面"生成完但一直转圈"）。
+                # 需要变量更新时由用户在前端消息按钮手动触发
+                # POST /api/character-sessions/{session_id}/mvu-secondary。
+                if new_vars is not None:
                     msg_extra["variables"] = new_vars
                     mvu_latest_variables = new_vars
                     mvu_variables_saved = True
-                    if mvu_logs:
-                        logger.info("MVU variables updated: %s", "; ".join(mvu_logs[:8]))
             except Exception as mvu_err:
                 logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
         elif mvu_latest_variables is not None:

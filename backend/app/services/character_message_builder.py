@@ -507,3 +507,85 @@ def _parse_example_chat(
         add_msg(bot_name, "example_assistant")
 
     return result
+
+
+def apply_mvu_reply_to_session(
+    db: Session,
+    character_id: Optional[str],
+    session_id: str,
+    reply_text: str,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """MVU 变量引擎共用入口：解析 reply_text 中的 <UpdateVariable> JSON Patch
+    并落库到会话 chat_metadata.variables。
+
+    WS 主路径（websocket.py persist_snapshot）与 SSE 生成收尾（普通对话/
+    regenerate/swipe/continue 四入口）同调本函数，调用契约（对齐 WS 既有行为）：
+    - 先解析落库（本函数），调用方随后 strip_update_variable_blocks 剥正文——
+      顺序必须是"先解析、后剥离"，stat_data 基于剥离前原文；
+    - 本函数不 commit，由调用方随消息落库同事务提交；
+    - 会话不存在时返回 (None, [])，调用方据此跳过 extra.variables 回写；
+    - 变更日志非空时打 "MVU variables updated" info（与 WS 原实现一致）。
+
+    角色卡 extensions + character_book 合并逻辑与原 WS persist_snapshot 一致：
+    char 可能来自已 close 的调用方会话（WS 场景实例 detached），直接访问
+    world_books 会触发 lazy load 异常，故统一按 id 重查并 eager load。
+    """
+    from sqlalchemy.orm import selectinload
+
+    from ..models import CharacterChatSession, WorldBook
+    from .mvu_engine import MvuEngine, merge_character_book_entries
+
+    _mvu_char = None
+    if character_id:
+        try:
+            _mvu_char = (
+                db.query(Character)
+                .options(
+                    selectinload(Character.world_books).selectinload(WorldBook.entries)
+                )
+                .filter(Character.id == character_id)
+                .first()
+            )
+        except Exception:
+            _mvu_char = None
+    char_ext_raw: Dict[str, Any] = {}
+    if _mvu_char is not None and getattr(_mvu_char, "extensions", None):
+        try:
+            raw_ext = _mvu_char.extensions
+            char_ext_raw = json.loads(raw_ext) if isinstance(raw_ext, str) else (raw_ext if isinstance(raw_ext, dict) else {})
+        except (json.JSONDecodeError, TypeError):
+            pass
+    # character_book 存在 world_books 表而非 extensions，需合并其 entry content
+    # 供 build_initial_stat_data 提取 <initvar>（头像 URL/服饰/内心想法等初始值）。
+    wb_entries = [
+        str(stage.content or "")
+        for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
+        if getattr(wb, "type", "") == "character_book"
+        for stage in (wb.entries or [])
+    ]
+    char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
+
+    sess = (
+        db.query(CharacterChatSession)
+        .filter(CharacterChatSession.id == session_id)
+        .first()
+    )
+    if sess is None:
+        return None, []
+    cur_meta: Dict[str, Any] = {}
+    if sess.chat_metadata:
+        try:
+            cur_meta = json.loads(sess.chat_metadata)
+            if not isinstance(cur_meta, dict):
+                cur_meta = {}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    cur_vars = cur_meta.get("variables")
+    if not isinstance(cur_vars, dict) or not cur_vars.get("stat_data"):
+        cur_vars = MvuEngine.init_session_variables(char_ext_raw)
+    new_vars, logs = MvuEngine.update_from_reply(cur_vars, reply_text, char_ext_raw)
+    cur_meta["variables"] = new_vars
+    sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
+    if logs:
+        logger.info("MVU variables updated: %s", "; ".join(logs[:8]))
+    return new_vars, logs

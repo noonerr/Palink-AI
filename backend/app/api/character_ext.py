@@ -49,6 +49,7 @@ from ..services.generation_service import _build_logit_bias
 from ..core.default_prompts import build_default_character_prompt
 from ..services.character_message_builder import (
     _ST_DEFAULT_NEW_CHAT_PROMPT,
+    apply_mvu_reply_to_session,
     build_character_chat_messages,
     clean_smart_card_trigger_context,
     is_smart_card_trigger_message,
@@ -4622,6 +4623,10 @@ async def _character_chat_impl(
         last_saved_content_len = 0
         last_saved_reasoning_len = 0
         last_flush_ts = 0.0
+        # MVU 变量状态（与 WS 主路径 persist_snapshot 同构）：仅在最终 force 快照
+        # 解析一次，后续快照经 mvu_latest_variables 回填 msg_extra.variables
+        mvu_variables_saved = False
+        mvu_latest_variables: dict | None = None
         # Phase 3 extra 字段: gen_id 自动生成 + reasoning_duration 计时
         # ST 1.18.0 对齐: bookmarks.js:419 在生成时自动分配 gen_id 用于 swipe 分组
         # reasoning_duration 记录 LLM 思考链耗时（秒），供 ST 前端 reasoning 面板显示
@@ -4640,6 +4645,7 @@ async def _character_chat_impl(
             nonlocal last_saved_content_len
             nonlocal last_saved_reasoning_len
             nonlocal last_flush_ts
+            nonlocal mvu_variables_saved, mvu_latest_variables
 
             has_content = result.has_content
             if not has_content:
@@ -4723,6 +4729,30 @@ async def _character_chat_impl(
             # per-swipe 元数据: 捕获生成时的 model/token_count (ST 1.18.0 swipe_info[].extra)
             msg_extra["model"] = req.model
             msg_extra["token_count"] = token_count
+
+            # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
+            # （仅 force 时；与 WS 主路径 persist_snapshot 共用同一实现）。
+            # 顺序必须是"先解析落库、再剥正文"——stat_data 基于剥离前 final_raw，
+            # 剥离仅作用于落库正文。此前 SSE 四入口均未接 MVU 解析（F4），且
+            # 不剥离导致模型输出 <UpdateVariable> 时整段泄漏进正文。
+            if force and not mvu_variables_saved:
+                try:
+                    new_vars, mvu_logs = apply_mvu_reply_to_session(
+                        save_db, char.id, session_id, final_raw
+                    )
+                    if new_vars is not None:
+                        msg_extra["variables"] = new_vars
+                        mvu_latest_variables = new_vars
+                        mvu_variables_saved = True
+                except Exception as mvu_err:
+                    logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
+            elif mvu_latest_variables is not None:
+                msg_extra["variables"] = mvu_latest_variables
+
+            # 解析后剥离 <UpdateVariable> 指令块，避免正文泄漏 stat_data 更新指令
+            # （Time passed / Variable updates / JSON patch 数组等；对齐 WS 主路径）
+            from app.services.mvu_engine import strip_update_variable_blocks
+            final = strip_update_variable_blocks(final)
 
             try:
                 if assistant_message_id is None:
@@ -5890,6 +5920,15 @@ async def continue_session(
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == last_assistant_id).first()
         if msg is None:
             return None, None
+        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
+        # （SSE 动作流与 WS 主路径共用同一实现；先解析，追加正文前剥离标签）
+        _mvu_new_vars: Optional[dict] = None
+        try:
+            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+                save_db, char.id, session_id, result.full_content
+            )
+        except Exception as mvu_err:
+            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
         # 续写：将新生成的正文追加到原消息内容末尾
         new_part = _apply_persist_regex_to_display_text(
             result.full_content,
@@ -5899,13 +5938,18 @@ async def continue_session(
             placement=REGEX_PLACEMENT_AI_OUTPUT,
             depth=0,
         )
+        from app.services.mvu_engine import strip_update_variable_blocks
+        new_part = strip_update_variable_blocks(new_part)
         combined = (msg.content or "") + new_part
         _sync_message_content_to_active_swipe(msg, combined)
+        patched_extra = _message_extra(msg)
         if regexed_reasoning:
-            patched_extra = _message_extra(msg)
             prev_reasoning = patched_extra.get("reasoning")
             patched_extra["reasoning"] = ((prev_reasoning + "\n") if prev_reasoning else "") + regexed_reasoning
             patched_extra.setdefault("reasoning_type", "thinking")
+        if _mvu_new_vars is not None:
+            patched_extra["variables"] = _mvu_new_vars
+        if regexed_reasoning or _mvu_new_vars is not None:
             msg.extra = _json_dump_or_none(patched_extra)
         msg.model = model
         msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
@@ -6015,6 +6059,17 @@ async def regenerate_message(
     def persist_fn(save_db, result):
         # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
         final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
+        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
+        # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
+        _mvu_new_vars: Optional[dict] = None
+        try:
+            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+                save_db, char.id, session_id, result.full_content
+            )
+        except Exception as mvu_err:
+            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
+        from app.services.mvu_engine import strip_update_variable_blocks
+        final = strip_update_variable_blocks(final)
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None
@@ -6031,6 +6086,8 @@ async def regenerate_message(
         if regexed_reasoning:
             current_extra["reasoning"] = regexed_reasoning
             current_extra["reasoning_type"] = "thinking"
+        if _mvu_new_vars is not None:
+            current_extra["variables"] = _mvu_new_vars
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,
@@ -6267,6 +6324,17 @@ async def swipe_message(
     def persist_fn(save_db, result):
         # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
         final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
+        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
+        # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
+        _mvu_new_vars: Optional[dict] = None
+        try:
+            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+                save_db, char.id, session_id, result.full_content
+            )
+        except Exception as mvu_err:
+            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
+        from app.services.mvu_engine import strip_update_variable_blocks
+        final = strip_update_variable_blocks(final)
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None
@@ -6282,6 +6350,8 @@ async def swipe_message(
         if regexed_reasoning:
             current_extra["reasoning"] = regexed_reasoning
             current_extra["reasoning_type"] = "thinking"
+        if _mvu_new_vars is not None:
+            current_extra["variables"] = _mvu_new_vars
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,
