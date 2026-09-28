@@ -7,6 +7,10 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [待施工·SPEC 已写] 出图提示词智能化（副 AI 场景画像 + 家族适配）与多设备算力路由（本 agent，2026-09-29）
+
+- **承接**：用户拍板（B1 完整版含副 AI + B2 全量），SPEC = `docs/SPEC_出图提示词智能化与多设备算力路由_2026-09-29.md`。三 Task 可独立施工：**T1** 家族识别+渲染器+工作流模板库（sdxl/flux/qwen_image）+checkpoint 选择器与自定义 workflow JSON（消灭 `model.safetensors` 硬编码）→ **T2** 副 AI 场景画像（一次调用双出 tag 串+NL 段；配置放 `image_generation_config.json` defaults 免迁移；四级降级=永不比现状差）→ **T3** 多设备算力路由（设备登记/心跳，派单只给在线 provider 设备，手机降级遥控器，修"手机抢任务必死"竞态）。零 DB 迁移、零接触触发点。估 2~3 天，顺序 T1→T2→T3 每步独立提交。
+
 ### [已完成·待实机验收] 文生图「浏览器桥接执行」——托管部署下出图任务下发用户本机 ComfyUI（本 agent，2026-09-28）
 
 - **承接**：`docs/REPORT_浏览器桥接本地算力可行性调研_2026-09-28.md`（先调研后拍板：暂时只做文生图，LLM 文本回答不立项）+ `docs/SPEC_文生图浏览器桥接执行_本机ComfyUI_2026-09-28.md`。**commit `ce64607`（18 文件，只含本单清单，未碰其他 agent 脏文件）**。备份：`git stash@{0}` 快照 `11d9e264` + `D:\_palink_backup_20260928_localimg\`（patch + pathspec）。
