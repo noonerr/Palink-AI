@@ -57,6 +57,11 @@ class ImageGenerationProvider(BaseModel):
 class ImageGenerationDefaults(BaseModel):
     prompt_template: str
     include_recent_context_count: int = Field(default=4, ge=0, le=20)
+    # 副 AI 场景画像（B1-T2）。**与 provider 三件套同理**：新增字段必须同步落到
+    # image_generation_service.save_image_generation_config 的 defaults 重建清单，
+    # 否则 PUT /config 保存后会被静默丢掉。默认关 = 不产生额外模型调用。
+    secondary_prompt_enabled: bool = False
+    secondary_prompt_model: str = ""
 
 
 class ImageGenerationConfigRequest(BaseModel):

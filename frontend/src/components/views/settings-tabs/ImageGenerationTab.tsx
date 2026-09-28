@@ -21,6 +21,7 @@ import { invalidateImageGenerationConfig } from '@/hooks/useImageGenerationAvail
 import { probeComfyUI, listComfyUICheckpoints, type ComfyUIProbeResult } from '@/lib/image-gen/comfyui-client';
 import type {
   ImageGenerationConfig,
+  ImageGenerationDefaults,
   ImageGenerationExecutionMode,
   ImageGenerationFamily,
   ImageGenerationProvider,
@@ -95,6 +96,10 @@ export function ImageGenerationTab() {
       };
     });
     setProbe(null);
+  };
+
+  const patchDefaults = (patch: Partial<ImageGenerationDefaults>) => {
+    setConfig((prev) => (prev ? { ...prev, defaults: { ...prev.defaults, ...patch } } : prev));
   };
 
   const handleLoadModels = async () => {
@@ -207,6 +212,32 @@ export function ImageGenerationTab() {
           </select>
         </SettingsRowWide>
 
+        {/* 副 AI 场景画像（B1-T2）。默认关：开启后每次配图多一次网关调用；
+            没填模型名或调用失败都会自动降级回原来的长句，不会「点了出图没反应」。 */}
+        <SettingsRowWide
+          icon={<ShieldCheck size={16} />}
+          title="副 AI 场景画像"
+          desc="出图前先让一个小模型把上下文改写成画面描述（标签串 + 长句）。不配模型名或调用失败都会自动降级"
+        >
+          <Switch
+            checked={Boolean(config.defaults?.secondary_prompt_enabled)}
+            disabled={!isAdmin}
+            onCheckedChange={(checked) => patchDefaults({ secondary_prompt_enabled: checked })}
+          />
+        </SettingsRowWide>
+        <SettingsRow
+          icon={<ShieldCheck size={16} />}
+          title="副 AI 模型名"
+          desc="网关里的模型名（如 deepseek-v4-flash）。留空 = 未配置，即使开关打开也走降级"
+        >
+          <Input
+            className="w-56"
+            value={config.defaults?.secondary_prompt_model ?? ''}
+            disabled={!isAdmin}
+            placeholder="deepseek-v4-flash"
+            onChange={(e) => patchDefaults({ secondary_prompt_model: e.target.value })}
+          />
+        </SettingsRow>
       </SettingsGroup>
 
       {activeProvider && (

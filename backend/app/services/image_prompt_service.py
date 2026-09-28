@@ -19,8 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,114 @@ def render_prompt(family: ImageFamily, scene: Scene, provider: Optional[Mapping[
     if user_negative:
         negative = f"{negative}, {user_negative}"
     return RenderedPrompt(positive, negative)
+
+
+# ============================================================
+# B1-T2：副 AI 场景画像（一次调用同时产出 tag 串与自然语言段）
+# ============================================================
+
+_SECONDARY_SYSTEM_PROMPT = """你是一个文生图提示词编辑器。你的唯一任务：把给定的聊天上下文改写成一段画面描述，并用**严格 JSON** 输出。
+
+要求：
+1. 只输出 JSON，不要解释、不要 Markdown 代码块标记。
+2. JSON 形如：{"tags": "...", "natural": "..."}
+3. tags：英文 danbooru 风格、**逗号分隔**的字段串，覆盖人物数量/发色/瞳色/发型/服饰/动作/表情/构图/场景/光线，15~30 个字段。
+   **不要写质量词**（masterpiece / best quality / score_9 之类）——质量前缀由渲染器按模型家族自动添加。
+4. natural：一段可直接喂给自然语言类模型（如 Qwen-Image / Flux）的完整英文描述，80~150 词，包含主体、服饰、动作、环境、光线与氛围。
+5. 只描述画面，不写情节发展与对话内容。
+"""
+
+#: 副 AI 调用上限。出图是异步侧挂，副 AI 再慢也不能把整条配图拖到骨架超时之后。
+SECONDARY_TIMEOUT_SECONDS = 30.0
+
+
+def parse_scene_payload(text: str) -> Optional[dict[str, Any]]:
+    """从副 AI 回复里抠出 JSON 对象：剥 code fence → 取第一个配平的花括号片段。"""
+    if not text:
+        return None
+    cleaned = re.sub(r"```[A-Za-z]*", "", text).replace("```", "")
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for index in range(start, len(cleaned)):
+        char = cleaned[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    payload = json.loads(cleaned[start:index + 1])
+                except ValueError:
+                    return None
+                return payload if isinstance(payload, dict) else None
+    return None
+
+
+async def compose_scene(
+    db: Any,
+    user: Any,
+    materials: Sequence[str],
+    *,
+    secondary_enabled: bool,
+    secondary_model: str,
+    fallback_prompt: str = "",
+    model_prompt: str = "",
+    timeout: float = SECONDARY_TIMEOUT_SECONDS,
+    complete_text_completion: Optional[Any] = None,
+) -> Scene:
+    """调副 AI 把上下文改写为 Scene。**任何失败都与"没配副 AI"等价**。
+
+    降级不是返回空，而是返回 `Scene(natural=fallback_prompt, tags="")`——渲染器对空
+    tags 的处理就是整段回退 natural，于是最坏情况的输出与今天逐字一致
+    （SPEC §2.2「永不比现状差」）。
+
+    四个降级点：开关关 / 未配模型 / 调用失败或超时 / JSON 解析不出来。
+    降级只打一行 info 日志，不 toast——出图是聊天外的侧挂，别打扰对话。
+
+    `complete_text_completion` 可注入（测试用）；不注入时走真实网关客户端。
+    素材由调用方收集好后传进来：这一层不反向依赖 ORM 模型。
+    """
+    fallback = Scene(tags="", natural=fallback_prompt or model_prompt or "")
+    if not secondary_enabled or not str(secondary_model or "").strip():
+        return fallback
+
+    user_content = "\n".join(str(line) for line in materials if str(line).strip())
+    if not user_content.strip():
+        return fallback
+
+    caller = complete_text_completion
+    try:
+        if caller is None:
+            # 与 MVU 副 AI 同一取模型方式；函数内 import 为避免与推理层的循环依赖。
+            from .inference_dispatcher import complete_text_completion as caller  # type: ignore[no-redef]
+        response = await caller(
+            model_id=str(secondary_model).strip(),
+            messages=[
+                {"role": "system", "content": _SECONDARY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.4,
+            max_tokens=1200,
+            timeout=float(timeout),
+        )
+    except Exception as exc:
+        logger.info("Image scene composer unavailable, fallback to raw prompt (model=%s): %s", secondary_model, exc)
+        return fallback
+
+    payload = parse_scene_payload(str((response or {}).get("content") or ""))
+    if not payload:
+        logger.info("Image scene composer returned unparsable output, fallback to raw prompt")
+        return fallback
+
+    tags = str(payload.get("tags") or "").strip()
+    natural = str(payload.get("natural") or "").strip()
+    if not tags and not natural:
+        return fallback
+    # 两个字段互为兜底：只有 tags 时 NL 渲染需要点东西；只有 natural 时 danbooru
+    # 渲染会因空 tags 自动回退 natural，无需额外处理。
+    return Scene(tags=tags, natural=natural or tags.replace(",", " "))
 
 
 # ============================================================

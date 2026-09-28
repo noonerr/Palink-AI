@@ -31,6 +31,7 @@ from app.services.image_prompt_service import (  # noqa: E402
     Scene,
     build_comfyui_workflow,
     clamp_tags,
+    compose_scene,
     detect_family,
     normalize_family,
     render_prompt,
@@ -288,6 +289,143 @@ def test_invalid_workflow_json_is_rejected_at_save(write_config):
                            "base_url": "http://127.0.0.1:8188", "workflow_json": "{broken"}],
         })
     assert "自定义工作流 JSON 无效" in str(excinfo.value)
+
+
+# ════════════════════════════════════════════════════════════════════
+# 5. B1-T2：副 AI 场景画像（四级降级 = 永不比现状差）
+# ════════════════════════════════════════════════════════════════════
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_compose_scene_disabled_returns_fallback_verbatim():
+    scene = _run(compose_scene(
+        None, None, ["Character: 桃汐"],
+        secondary_enabled=False, secondary_model="deepseek-v4-flash", fallback_prompt="RAW PROMPT",
+    ))
+    assert scene == Scene(tags="", natural="RAW PROMPT")
+
+
+def test_compose_scene_without_model_returns_fallback():
+    scene = _run(compose_scene(
+        None, None, ["Character: 桃汐"],
+        secondary_enabled=True, secondary_model="", fallback_prompt="RAW PROMPT",
+    ))
+    assert scene == Scene(tags="", natural="RAW PROMPT")
+
+
+def test_compose_scene_call_failure_returns_fallback():
+    async def boom(**kwargs):
+        raise RuntimeError("gateway down")
+
+    scene = _run(compose_scene(
+        None, None, ["x"], secondary_enabled=True, secondary_model="m",
+        fallback_prompt="RAW PROMPT", complete_text_completion=boom,
+    ))
+    assert scene == Scene(tags="", natural="RAW PROMPT")
+
+
+def test_compose_scene_unparsable_output_returns_fallback():
+    async def garbage(**kwargs):
+        return {"content": "我觉得应该画一张很好看的图，但是我不输出 JSON"}
+
+    scene = _run(compose_scene(
+        None, None, ["x"], secondary_enabled=True, secondary_model="m",
+        fallback_prompt="RAW PROMPT", complete_text_completion=garbage,
+    ))
+    assert scene == Scene(tags="", natural="RAW PROMPT")
+
+
+def test_compose_scene_success_parses_both_fields():
+    async def ok(**kwargs):
+        return {"content": '{"tags": "1girl, blue eyes, rain", "natural": "A girl standing in the rain."}'}
+
+    scene = _run(compose_scene(
+        None, None, ["x"], secondary_enabled=True, secondary_model="m",
+        fallback_prompt="RAW PROMPT", complete_text_completion=ok,
+    ))
+    assert scene.tags == "1girl, blue eyes, rain"
+    assert scene.natural == "A girl standing in the rain."
+    # 落到达成：danbooru 渲染会用 tags，nl 渲染会用 natural
+    danbooru = render_prompt(detect_family({"type": "comfyui", "model": "pony-v6"}), scene, {})
+    assert "1girl, blue eyes, rain" in danbooru.positive
+    nl = render_prompt(detect_family({"type": "comfyui", "model": "qwen-image-2.1"}), scene, {})
+    assert nl.positive == "A girl standing in the rain."
+
+
+def test_compose_scene_strips_code_fence():
+    async def fenced(**kwargs):
+        return {"content": '```json\n{"tags": "1girl", "natural": "A girl."}\n```'}
+
+    scene = _run(compose_scene(
+        None, None, ["x"], secondary_enabled=True, secondary_model="m",
+        fallback_prompt="RAW", complete_text_completion=fenced,
+    ))
+    assert scene.tags == "1girl"
+
+
+def test_compose_scene_passes_materials_to_the_model():
+    captured = {}
+
+    async def spy(**kwargs):
+        captured.update(kwargs)
+        return {"content": '{"tags": "1girl", "natural": "A girl."}'}
+
+    _run(compose_scene(
+        None, None, ["Character: 桃汐", "user: 下雨了"], secondary_enabled=True,
+        secondary_model="m", fallback_prompt="RAW", complete_text_completion=spy,
+    ))
+    joined = captured["messages"][-1]["content"]
+    assert "桃汐" in joined and "下雨了" in joined
+
+
+def test_defaults_roundtrip_secondary_prompt_fields(write_config):
+    """[R1 同源] defaults 也是白名单重建：新字段不补进 save 清单就会被静默丢掉。"""
+    write_config({"enabled": True, "active_provider_id": "comfyui", "providers": [], "defaults": {}})
+    igs.save_image_generation_config({
+        "enabled": True,
+        "active_provider_id": "comfyui",
+        "providers": [{"id": "comfyui", "type": "comfyui", "execution": "browser",
+                       "base_url": "http://127.0.0.1:8188"}],
+        "defaults": {"secondary_prompt_enabled": True, "secondary_prompt_model": "deepseek-v4-flash"},
+    })
+    defaults = igs._get_raw_config()["defaults"]
+    assert defaults["secondary_prompt_enabled"] is True
+    assert defaults["secondary_prompt_model"] == "deepseek-v4-flash"
+
+
+def test_defaults_default_to_disabled(write_config):
+    write_config({"enabled": True, "active_provider_id": "comfyui", "providers": [], "defaults": {}})
+    defaults = igs._get_raw_config()["defaults"]
+    assert defaults.get("secondary_prompt_enabled", False) is False
+    assert defaults.get("secondary_prompt_model", "") == ""
+
+
+def test_collect_scene_material_is_shared_by_template_and_secondary():
+    class _Msg:
+        def __init__(self, mid, role, content):
+            self.id = mid
+            self.role = role
+            self.content = content
+
+    class _Char:
+        name = "桃汐"
+        description = "守塔人"
+        personality = "安静"
+        scenario = "雨夜"
+
+    target = _Msg(3, "assistant", "她推开门")
+    lines, target_text = igs.collect_scene_material(
+        target, [_Msg(1, "user", "下雨了"), _Msg(2, "assistant", "嗯"), target], _Char(), 4
+    )
+    assert lines[0] == "Character: 桃汐"
+    assert "下雨了" in "\n".join(lines)
+    assert target_text == "她推开门"
+    # 模板路径的产出与抽出前一致：行为没有被"顺手改成"
+    assert "{{" not in "\n".join(lines)
 
 
 def test_legacy_config_without_new_fields_gets_defaults(write_config):

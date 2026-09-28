@@ -53,6 +53,10 @@ export interface ImageGenerationProvider {
 export interface ImageGenerationDefaults {
   prompt_template: string;
   include_recent_context_count: number;
+  /** 副 AI 场景画像总开关（默认关）：开启后每次配图多一次网关调用。 */
+  secondary_prompt_enabled?: boolean;
+  /** 副 AI 用的网关模型名；空 = 未配置（即便开关开着也自动降级）。 */
+  secondary_prompt_model?: string;
 }
 
 export interface ImageGenerationConfig {

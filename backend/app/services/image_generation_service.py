@@ -26,6 +26,7 @@ from . import image_prompt_service
 from .image_prompt_service import (
     Scene,
     build_comfyui_workflow,
+    compose_scene,
     detect_family,
     normalize_family,
     render_prompt,
@@ -154,6 +155,12 @@ def _default_config() -> dict[str, Any]:
         "defaults": {
             "prompt_template": DEFAULT_PROMPT_TEMPLATE,
             "include_recent_context_count": 4,
+            # 副 AI 场景画像（B1-T2）。与 MVU 副 AI 的存储选择**刻意不同**：
+            # MVU 挂在 per-user 列（models/system.py:71-75，变量是用户自己的），
+            # 出图配置本来就是 admin 级 JSON 面（PUT /config 已有），
+            # 为两个开关再开一次 alembic 不划算。
+            "secondary_prompt_enabled": False,
+            "secondary_prompt_model": "",
         },
     }
 
@@ -361,9 +368,17 @@ def save_image_generation_config(config: dict[str, Any]) -> dict[str, Any]:
         cleaned_providers = current.get("providers", _default_config()["providers"])
 
     defaults_update = config.get("defaults") or {}
+    current_defaults = current.get("defaults", {})
+    # **逐字段白名单**重建（不是 dict.update）：新增 defaults 字段若不在这里补一行，
+    # PUT /config 保存后会被静默丢掉——与 §9 R1 的 provider 字段是同一个坑，
+    # 只是换到 defaults 这张表上。
     defaults = current.get("defaults", _default_config()["defaults"]) | {
         "prompt_template": str(defaults_update.get("prompt_template") or current.get("defaults", {}).get("prompt_template") or DEFAULT_PROMPT_TEMPLATE),
         "include_recent_context_count": max(0, min(int(defaults_update.get("include_recent_context_count", current.get("defaults", {}).get("include_recent_context_count", 4)) or 4), 20)),
+        "secondary_prompt_enabled": bool(defaults_update.get(
+            "secondary_prompt_enabled", current_defaults.get("secondary_prompt_enabled", False))),
+        "secondary_prompt_model": str(defaults_update.get(
+            "secondary_prompt_model", current_defaults.get("secondary_prompt_model", "")) or "").strip(),
     }
 
     cleaned_config = {
@@ -727,18 +742,19 @@ def append_generated_image_markdown(content: str, image_url: str) -> str:
     return f"{base}\n\n{markdown}" if base else markdown
 
 
-def build_message_image_prompt(
+def collect_scene_material(
     target_message: ChatMessage | CharacterChatMessage,
     context_messages: Sequence[ChatMessage | CharacterChatMessage],
     character: Optional[Character] = None,
-) -> str:
-    config = _get_raw_config()
-    defaults = config.get("defaults", {})
-    template = defaults.get("prompt_template") or DEFAULT_PROMPT_TEMPLATE
-    context_limit = int(defaults.get("include_recent_context_count") or 4)
+    context_limit: int = 4,
+) -> tuple[list[str], str]:
+    """素材收集 —— **模板路径与副 AI 路径共用**（B1-T2 抽出）。
 
+    返回 (上下文行列表, 目标消息正文)。上下文行的格式刻意与原实现逐字一致：
+    模板产出的 prompt 必须与改动前相同，否则等于在没要求改的地方改了行为。
+    """
     nearby = list(context_messages)[-context_limit:] if context_limit > 0 else []
-    context_lines = []
+    context_lines: list[str] = []
     if character:
         context_lines.append(f"Character: {character.name}")
         for label, value in (
@@ -756,8 +772,59 @@ def build_message_image_prompt(
             context_lines.append(f"{message.role}: {text[:1200]}")
 
     target_text = clean_content_for_image_prompt(target_message.content)
+    return context_lines, target_text
+
+
+def build_message_image_prompt(
+    target_message: ChatMessage | CharacterChatMessage,
+    context_messages: Sequence[ChatMessage | CharacterChatMessage],
+    character: Optional[Character] = None,
+) -> str:
+    config = _get_raw_config()
+    defaults = config.get("defaults", {})
+    template = defaults.get("prompt_template") or DEFAULT_PROMPT_TEMPLATE
+    context_limit = int(defaults.get("include_recent_context_count") or 4)
+
+    context_lines, target_text = collect_scene_material(
+        target_message, context_messages, character, context_limit
+    )
     context = "\n".join(context_lines).strip() or "No additional context."
     return template.replace("{{context}}", context).replace("{{message}}", target_text[:3000] or target_message.role)
+
+
+async def compose_scene_for_message(
+    db: Session,
+    user: User,
+    message: ChatMessage | CharacterChatMessage,
+    context_messages: Sequence[ChatMessage | CharacterChatMessage],
+    character: Optional[Character],
+    fallback_prompt: str,
+) -> Scene:
+    """读副 AI 配置 → 收集素材 → 调 `image_prompt_service.compose_scene`。
+
+    配置读取留在本层（那是出图配置面的职责），适配层只管"给素材、拿 Scene"。
+    返回的 Scene 永远不会是 None：未启用/未配模型/调用失败/解析失败四级降级都退回
+    `Scene(natural=fallback_prompt)`，即渲染前的那句原话。
+    """
+    defaults = _get_raw_config().get("defaults", {}) or {}
+    context_limit = int(defaults.get("include_recent_context_count") or 4)
+    context_lines, target_text = collect_scene_material(
+        message, context_messages, character, context_limit
+    )
+    materials = list(context_lines)
+    if target_text:
+        materials.append(f"TargetMessage: {target_text[:2000]}")
+    if fallback_prompt:
+        # P4 模型自主出图时这就是模型自己写的画面描述，作为「指定画面」交给副 AI。
+        materials.append(f"RequestedScene: {fallback_prompt[:3000]}")
+    return await compose_scene(
+        db,
+        user,
+        materials,
+        secondary_enabled=bool(defaults.get("secondary_prompt_enabled", False)),
+        secondary_model=str(defaults.get("secondary_prompt_model") or "").strip(),
+        fallback_prompt=fallback_prompt,
+    )
 
 
 def image_result_to_dict(result: GeneratedImage, include_prompt: bool = False) -> dict[str, Any]:
@@ -877,16 +944,19 @@ async def generate_image_for_message(
     provider_id = str(provider.get("id") or "")
 
     # ── 家族渲染（B1-T1 落地；T2 的副 AI 场景画像接在这里）──────────────
-    # Scene 的两个来源：T2 上线后由 `compose_scene()` 产出 tag 串 + NL 段；
-    # T1 阶段只有 natural（= 现有模板长句 / 模型自给的画面描述），tags 为空 →
-    # danbooru 渲染走「tags 空回退 natural」分支，nl 渲染本身就是原样透传。
-    # 任何异常都退回原始 prompt：这一层**永不比现状差**。
+    # Scene 由 `compose_scene_for_message()` 产出 tag 串 + NL 段；它内部四级降级
+    # （未启用/未配模型/调用失败/解析失败）都退回 `Scene(natural=渲染前 prompt)`，
+    # 因此最坏输出与未开副 AI 时**逐字一致**。这里再兜一层：连降级过程本身也不许
+    # 炸掉出图主流程。降级只打一行日志，不打扰聊天（出图是异步侧挂）。
     positive, negative = prompt, str(provider.get("negative_prompt") or "")
     try:
-        rendered = render_prompt(detect_family(provider), Scene(natural=prompt), provider)
+        scene = await compose_scene_for_message(
+            db, user, message, context_messages, character, prompt
+        )
+        rendered = render_prompt(detect_family(provider), scene, provider)
         positive, negative = (rendered.positive or prompt), rendered.negative
     except Exception as exc:  # pragma: no cover - 纯防御
-        logger.warning("Image prompt render failed, fallback to raw prompt: %s", exc)
+        logger.warning("Image prompt compose failed, fallback to raw prompt: %s", exc)
     # 从此往下 `prompt` = 渲染后终稿：media 的 prompt 字段与最终请求体一致，
     # 前端展示位点开看到的就是真正送给出图服务的那段。
     prompt = positive
