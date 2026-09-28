@@ -7,6 +7,19 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·实机取证闭环] MVU 变量不更新——SSE 侧补齐解析 + 一次真机取证（本 agent，2026-09-28）
+
+- **承接**：`docs/SPEC_MVU变量更新SSE侧补齐与取证_2026-09-28.md`（Qoder 审查方交接单）。T1=`a1e31e8`、T2=`32a3359`、T3=TODOS 本条。备份：tag `pre-mvu-sse-20260928` + `D:\_palink_backup_20260928_mvusse\repo.bundle`（136MB 全历史）。
+- **T1（本单主件）**：新增共用函数 **`apply_mvu_reply_to_session`**（`character_message_builder.py`：角色卡 extensions 重查/eager load + character_book 合并 + 会话变量读写 + update_from_reply + `MVU variables updated` 日志；**不 commit**，随调用方事务）；WS 主路径（`websocket.py` persist_snapshot）内联 MVU 段改为同调（`[MVU-SECONDARY-MANUAL]` 手动策略原样保留，§6 待拍板项未动）；**SSE 四入口接线**（此前 F4 实锤全链路一处都没接）：①`_character_chat_impl` persist_snapshot（仅 force 快照解析一次 + `strip_update_variable_blocks` 剥正文）②`regenerate_message` persist_fn ③`swipe_message` persist_fn ④`continue_session` persist_fn（续写增量解析、剥 `new_part`）。四入口均先解析落库、后剥正文（顺序对齐 WS），msg `extra.variables` 回写；顺带修掉"SSE 不剥标签→正文泄漏 `<UpdateVariable>`"的一致性缺口。
+- **T2**：`backend/tests/test_mvu_sse_wiring.py` 8 例（零网络）。Part 1 共用函数行为：4 条 patch（replace 好感度 51→54 / delta 性欲值 20→24 / 文本×2）→ 数值变化 + chat_metadata 落库 + 无 variables 时初始化兜底 + 会话缺失返回 `(None, [])` + 剥离正文干净；Part 2 四入口计数桩（monkeypatch `character_ext.apply_mvu_reply_to_session`，直调端点函数捕获/驱动 persist_fn，真实 event_generator 驱动普通对话入口）。**变异验证**：摘掉 swipe 入口调用（保留 try/except）→ rebuild 后仅 `test_swipe_entry` 变红（1 failed / 7 passed），还原全绿。
+- **T3 真机取证（WS 主路径抓流式原文，脚本 SPEC §4 / `D:\_palink_review_20260928\mvu_capture.py`；会话 2cb171bf/卡 7b064410/deepseek-v4-flash）**：
+  - 付费调用 **2 次**：第 1 次上游 429（Baidu 共享池 tpm 限流，同 F8，零 token 消耗）→ 等 60s 第 2 次成功（9.4s，291 事件）。
+  - **判据**：原始流 553 字正文 + 519 字 reasoning，**`<UpdateVariable>` 出现 0 次**（JSONPatch/`${new_value}`/`${positive_or_negative_delta}` 全 0）；【声音：…】存活 1 次；`update_from_reply` logs 为空（无 `MVU variables updated` 行，与"无块可解析"一致）；`stat_data` 前后逐字段 diff = **0**（69 键→69 键）；落库正文（msg 2368）**不含标签**、`extra.variables=yes`（WS 既有回写行为）。
+  - **结论（SPEC §4 三选一的第三种）**：**模型没输出 `<UpdateVariable>` 块**——走 WS 时模型确实不输出，事后看不出来是因为落库前剥标签的猜测可以排除了（流式原文就没有）。与 09-28 两次 regenerate 探针（370 字/307 字均 0 标签）三方互证。→ **MVU 变量不更新的根因闭环：模型侧不产出指令块 + SSE 侧（已补）不解析，两者叠加**；下一步属提示词议题（为何装配后的提示词模型不遵循世界书 [mvu_update] 输出格式指令），**本单未改提示词**。
+- **取证产物登记（默认保留，删除需授权）**：会话 2cb171bf 新增 user 2366（第 1 次 429 残留）、user 2367 + assistant 2368（第 2 次成功轮）；此前 429 残留 user 2365 仍在。
+- **门禁**：每 Task 容器内全量 `python -m pytest tests/ -q`：T1 前 1460/42/0（改后持平）→ T2 后 **1468 passed / 42 skipped / 0 failed**（基线 1460 + 8）；`npx tsc --noEmit` 0 错；vitest 27 文件 393 passed | 3 skipped（6 unhandled errors 为既有噪声）。改后端代码后均 `docker compose build backend && up -d` 再测。
+- **撞坑登记**：① Mimosa hook 拦 `docker cp` 一切 `.py`（连 tarlist 内容都解析）→ 变异验证同步改走 `docker compose build backend`（§8 sanction 路径），变异本身用 Edit 工具做（hook 只放行 Write/Edit 候选检查）；② 测试里 stub 端点内部调用的 async 生成器函数时，捕获副作用必须放在**普通函数体**里急切执行（async gen 函数体首次迭代才跑，端点只构造 StreamingResponse 不迭代）；③ `_character_chat_impl` 的 `final_raw` 经 think-strip 会 `.strip()` 掉尾随换行，夹具回复末尾带 `\n` 会让"原始文本原样转发"断言误报。
+
 ### [已完成·三笔 commit] 注入落点对齐 ST（depth 下限）+ dialogue_mode 漏删清理 + 2899 字符差查明（本 agent，2026-09-28）
 
 - **承接**：`docs/SPEC_注入落点对齐ST_depth下限与漏删清理_2026-09-28.md`（Qoder 审查方交接单）+ 复核报告附录 A（ST 源码依据）。三 Task 三 commit：**T1=`2204691`**（注入下限）、**T2=`6cb2f8a`**（清漏删）、**T3=`4634bd3`**（2899 查明，只读）。备份：tag `pre-depth-floor-20260928` + 物理备份 `D:\_palink_backup_20260928_depthfloor\`（含 `repo.bundle` 全历史 136MB + 5 个待改文件原件）。
