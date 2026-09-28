@@ -7,12 +7,17 @@ from pydantic import BaseModel, Field, field_validator
 # 另外两种，导致自建 SD WebUI / ComfyUI 的配置根本存不进去。
 ImageGenerationProviderType = Literal["openai_compatible", "sd_webui", "comfyui"]
 
+# 执行位置：server = Palink 后端直接出站调用（自托管同机）；browser = 任务下发给
+# 用户浏览器，由浏览器 fetch 用户本机服务（托管部署下后端够不到用户内网）。
+ImageGenerationExecutionMode = Literal["server", "browser"]
+
 
 class ImageGenerationProvider(BaseModel):
     id: str = "openai_compatible"
     name: str = "OpenAI Compatible"
     type: ImageGenerationProviderType = "openai_compatible"
     enabled: bool = True
+    execution: ImageGenerationExecutionMode = "server"
     base_url: str = ""
     api_key: str = ""
     model: str = ""
@@ -76,3 +81,17 @@ class ImageGenerationMessageResponse(BaseModel):
     status: str = "ok"
     image: ImageGenerationResult
     updated_message: dict[str, Any]
+
+
+class LocalImageTaskResultRequest(BaseModel):
+    """浏览器执行器回传出图结果。
+
+    `images` 取第一张（与 SD/ComfyUI 服务端路径同语义），元素接受裸 base64 或
+    data URL（执行器用 FileReader 产出 dataURL，服务端两种都剥）。
+    """
+
+    images: list[str] = Field(..., min_length=1, max_length=4)
+
+
+class LocalImageTaskFailRequest(BaseModel):
+    error: str = Field(..., min_length=1, max_length=500)

@@ -5,11 +5,16 @@
  */
 export type ImageGenerationProviderType = 'openai_compatible' | 'sd_webui' | 'comfyui';
 
+/** 执行位置：server = Palink 后端直连；browser = 任务下发用户浏览器驱动本机服务。 */
+export type ImageGenerationExecutionMode = 'server' | 'browser';
+
 export interface ImageGenerationProvider {
   id: string;
   name: string;
   type: ImageGenerationProviderType;
   enabled: boolean;
+  /** 仅 sd_webui / comfyui 有意义；browser 模式下 base_url 是「用户浏览器视角」地址。 */
+  execution?: ImageGenerationExecutionMode;
   base_url: string;
   api_key: string;
   model: string;
@@ -18,6 +23,12 @@ export interface ImageGenerationProvider {
   style?: string | null;
   response_format?: 'auto' | 'b64_json' | 'url' | null;
   timeout_seconds: number;
+  /** [AUDIT-2026-09-25] SD/ComfyUI 出图参数（后端 schema 已有，前端此前一直缺）。 */
+  negative_prompt?: string;
+  steps?: number;
+  cfg_scale?: number;
+  sampler_name?: string;
+  seed?: number;
 }
 
 export interface ImageGenerationDefaults {
@@ -67,4 +78,22 @@ export interface ImageGenerationMessageResponse {
     media_index?: number;
     media_display?: string;
   };
+}
+
+/**
+ * 浏览器桥接执行任务（后端 local_image_bridge 下发）。
+ * `workflow` 是后端组装好的完整 ComfyUI POST /prompt body，执行器原样提交。
+ */
+export interface LocalImageTask {
+  task_id: string;
+  kind: 'comfyui';
+  message_kind: 'chat' | 'character';
+  session_id?: string | null;
+  message_id?: number | null;
+  media_id: string;
+  prompt: string;
+  base_url: string;
+  workflow: Record<string, unknown>;
+  timeout_ms: number;
+  created_at: number;
 }

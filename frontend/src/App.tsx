@@ -14,6 +14,7 @@ import { WidescreenPrompt } from '@/components/ui/custom/WidescreenPrompt';
 import { StPluginMountPoints } from '@/components/st-plugin-ui-host/StPluginMountPoints';
 import { Popup } from '@/lib/popup-system';
 import { mobilePager } from '@/lib/mobilePagerBridge';
+import { useImageTaskExecutor } from '@/lib/image-gen/use-image-task-executor';
 
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, ApiError, AUTH_FAILURE_EVENT, invalidateCache, isAbortError } from '@/services/api';
@@ -446,6 +447,9 @@ function App() {
   // [iOS-HISTORY] 幽灵历史条目探针：popstate 但 URL 未变时 console.warn 计数。
   // 只在移动端开启——桌面端不使用 iOS 边缘返回手势，噪声无意义。
   useGhostHistoryProbe(isMobile);
+  // 文生图浏览器桥接执行器（SPEC_文生图浏览器桥接执行_2026-09-28）：
+  // 仅当出图配置启用 browser 执行时才启动认领轮询，否则零开销。
+  useImageTaskExecutor();
   // N8-c 终态：哨兵值驱动既有渲染门控（/api/users/me 探测判定登录态）。
   // 值为常量 _ 即可满足类型断言，不影响被下发子组件（其默认已不消费凭据）。
   const [token] = useState<string | null>('_');

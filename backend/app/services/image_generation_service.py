@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..core import settings
 from ..models import Character, CharacterChatMessage, ChatMessage, User, UserSetting
+from .local_image_bridge import await_local_task, create_local_task
 from .mcp_service import _is_safe_mcp_url
 from .message_media_service import (
     DEFAULT_MEDIA_HEIGHT,
@@ -115,6 +116,7 @@ def _default_config() -> dict[str, Any]:
                 "name": "Stable Diffusion WebUI",
                 "type": "sd_webui",
                 "enabled": True,
+                "execution": "server",
                 "base_url": "",
                 "api_key": "",
                 "model": "",
@@ -129,6 +131,7 @@ def _default_config() -> dict[str, Any]:
                 "name": "ComfyUI",
                 "type": "comfyui",
                 "enabled": True,
+                "execution": "server",
                 "base_url": "",
                 "api_key": "",
                 "model": "",
@@ -212,6 +215,20 @@ def is_image_generation_available() -> bool:
         return False
 
 
+def is_browser_execution_active(provider_id: Optional[str] = None) -> bool:
+    """当前激活服务商是否为浏览器桥接执行。
+
+    服务端执行面（`POST /test` 等）据此拒绝——browser 模式下服务端无法代为
+    执行，验证连通性的正确入口是前端设置页的探测按钮。不可用/未配置一律
+    False（此时 /test 会走 generate_image 的既有 400 语义）。
+    """
+    try:
+        provider = _get_active_provider(_get_raw_config(), provider_id)
+    except HTTPException:
+        return False
+    return str(provider.get("type") or "") == "comfyui" and provider.get("execution") == "browser"
+
+
 def is_image_tool_enabled_for_user(db: Session, user_id: Any) -> bool:
     """P4 模型自主出图的**暴露门控**：用户级开关 + 服务商就绪，两者缺一不可。
 
@@ -236,12 +253,22 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
     if provider_type not in {"openai_compatible", "sd_webui", "comfyui"}:
         raise ValueError("Unsupported image generation provider type")
 
+    # 执行位置归一化：仅 sd_webui / comfyui 有"浏览器桥接"的概念，其余恒 server。
+    execution = str(provider.get("execution") or "server").strip().lower()
+    if execution not in {"server", "browser"}:
+        execution = "server"
+    if provider_type == "openai_compatible":
+        execution = "server"
+
     base_url = str(provider.get("base_url") or "").strip()
     if base_url and not _is_masked(base_url):
         parsed = urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("Image generation Base URL must be a valid HTTP(S) URL")
-        if not _is_safe_mcp_url(base_url):
+        # SSRF 语义分层：browser 模式下后端对该 base_url 发起**零请求**（任务只经
+        # 用户浏览器之手），因此内网守卫不适用——127.0.0.1 恰恰是 browser 模式的
+        # 正常取值。server 模式的后端出站守卫原样保留，两层不得"顺手统一"。
+        if not (execution == "browser" and provider_type in {"sd_webui", "comfyui"}) and not _is_safe_mcp_url(base_url):
             raise ValueError("Image generation Base URL must not point to a private/internal network address")
         base_url = base_url.rstrip("/")
 
@@ -271,6 +298,7 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
         "name": str(provider.get("name") or "OpenAI Compatible").strip() or "OpenAI Compatible",
         "type": provider_type,
         "enabled": bool(provider.get("enabled", True)),
+        "execution": execution,
         "base_url": base_url,
         "api_key": str(provider.get("api_key") or ""),
         "model": str(provider.get("model") or "").strip(),
@@ -508,6 +536,57 @@ async def _generate_image_via_comfyui(
     if not images:
         raise HTTPException(status_code=502, detail="ComfyUI 未返回图片数据")
     return _result_from_base64(provider, prompt, user_id, images, result.get("seed"))
+
+
+async def _generate_image_via_local_browser(
+    *,
+    user: User,
+    message: ChatMessage | CharacterChatMessage,
+    media_id: str,
+    provider: dict[str, Any],
+    prompt: str,
+    width: int,
+    height: int,
+) -> GeneratedImage:
+    """浏览器桥接执行（托管部署专用，SPEC_文生图浏览器桥接执行_2026-09-28）。
+
+    服务端够不到用户本机 ComfyUI：后端只组装工作流并创建任务，随后**原地等待**
+    用户浏览器执行器回传结果。成功/失败/超时全部沿用
+    `generate_image_for_message` 的既有收敛链——本函数只负责"把字节等回来"，
+    绝不直接碰 media。base_url 是"用户浏览器视角"地址，后端对它发起零请求。
+    """
+    base_url = str(provider.get("base_url") or "")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="ComfyUI 未配置 Base URL")
+    timeout_seconds = int(provider.get("timeout_seconds") or 120)
+    workflow, used_seed = _build_comfyui_workflow(
+        prompt=prompt,
+        negative_prompt=str(provider.get("negative_prompt") or ""),
+        width=width,
+        height=height,
+        steps=int(provider.get("steps") or 20),
+        cfg_scale=float(provider.get("cfg_scale") or 7.0),
+        seed=int(provider.get("seed", -1)),
+    )
+    task = create_local_task(
+        user_id=user.id,
+        kind="comfyui",
+        message_kind="character" if isinstance(message, CharacterChatMessage) else "chat",
+        session_id=getattr(message, "session_id", None),
+        message_id=getattr(message, "id", None),
+        media_id=media_id,
+        prompt=prompt,
+        base_url=base_url,
+        workflow=workflow,
+        seed=used_seed,
+        timeout_seconds=timeout_seconds,
+    )
+    logger.info(
+        "Local image task dispatched: task=%s media=%s base=%s timeout=%ds",
+        task.task_id, media_id, task.base_url, timeout_seconds,
+    )
+    result = await await_local_task(task)
+    return _result_from_base64(provider, prompt, user.id, result.get("base64"), result.get("seed"))
 
 
 async def generate_image(prompt: str, user_id: int, provider_id: Optional[str] = None) -> GeneratedImage:
@@ -778,7 +857,19 @@ async def generate_image_for_message(
         )
 
     try:
-        result = await generate_image(prompt=prompt, user_id=user.id)
+        if str(provider.get("type") or "") == "comfyui" and provider.get("execution") == "browser":
+            # 浏览器桥接：任务下发用户浏览器执行，原地等待后走同一收敛链。
+            result = await _generate_image_via_local_browser(
+                user=user,
+                message=message,
+                media_id=target_media_id,
+                provider=provider,
+                prompt=prompt,
+                width=width,
+                height=height,
+            )
+        else:
+            result = await generate_image(prompt=prompt, user_id=user.id)
     except Exception as exc:
         detail = str(getattr(exc, "detail", "") or "图片生成失败")
         status_code = int(getattr(exc, "status_code", 502) or 502)
@@ -1037,8 +1128,8 @@ def _extract_comfyui_image_ref(history_entry: dict) -> Optional[dict[str, str]]:
     return fallback
 
 
-async def _generate_comfyui(
-    base_url: str,
+def _build_comfyui_workflow(
+    *,
     prompt: str,
     negative_prompt: str = "",
     width: int = 512,
@@ -1046,15 +1137,13 @@ async def _generate_comfyui(
     steps: int = 20,
     cfg_scale: float = 7.0,
     seed: int = -1,
-    timeout_seconds: int = 120,
-) -> dict[str, Any]:
-    """通过 ComfyUI HTTP API 出图：提交工作流 → 轮询 /history → /view 取图。
+) -> tuple[dict[str, Any], int]:
+    """组装 ComfyUI 默认文生图工作流，返回 (workflow, 实际使用的 seed)。
 
-    审计（2026-09-25）实锤旧实现"只下单不取货"：POST /prompt 后直接返回，
-    base64 恒为空，消息出图路径恒 501。这里补全取图闭环。
+    服务端路径（`_generate_comfyui`）与浏览器桥接路径共用，保证两条执行面
+    出图参数语义一致。ComfyUI 没有 seed=-1 的"随机"约定：不取随机值会恒用
+    0（每次同图），故在此处一次性定死并回传实际值。
     """
-    base = base_url.rstrip("/")
-    # ComfyUI 没有 seed=-1 的"随机"约定：不取随机值会恒用 0（每次同图）。
     used_seed = seed if seed >= 0 else random.randint(0, _COMFYUI_SEED_MAX)
     workflow = {
         "3": {
@@ -1097,6 +1186,35 @@ async def _generate_comfyui(
             "inputs": {"images": ["8", 0]},
         },
     }
+    return workflow, used_seed
+
+
+async def _generate_comfyui(
+    base_url: str,
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = 512,
+    height: int = 512,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    """通过 ComfyUI HTTP API 出图：提交工作流 → 轮询 /history → /view 取图。
+
+    审计（2026-09-25）实锤旧实现"只下单不取货"：POST /prompt 后直接返回，
+    base64 恒为空，消息出图路径恒 501。这里补全取图闭环。
+    """
+    base = base_url.rstrip("/")
+    workflow, used_seed = _build_comfyui_workflow(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        seed=seed,
+    )
     payload = {"prompt": workflow}
     logger.info("ComfyUI prompt submit: url=%s, size=%dx%d, seed=%d", f"{base}/prompt", width, height, used_seed)
     try:

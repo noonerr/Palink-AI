@@ -4,6 +4,7 @@ import type {
   ImageGenerationConfig,
   ImageGenerationMessageResponse,
   ImageGenerationTestResponse,
+  LocalImageTask,
 } from '@/types/imageGeneration';
 import type {
   TTSBindingPayload,
@@ -466,6 +467,15 @@ export const api = {
         mediaId ? { media_id: mediaId } : undefined,
         options,
       ),
+    /** 浏览器桥接执行：认领待执行任务（调用即置 dispatched）。 */
+    listLocalTasks: () =>
+      api.get<{ tasks: LocalImageTask[] }>('/api/image-generation/local-tasks/pending'),
+    /** 浏览器桥接执行：回传出图结果（裸 base64 或 dataURL）。 */
+    submitLocalTaskResult: (taskId: string, images: string[]) =>
+      api.post<{ status: string }>(`/api/image-generation/local-tasks/${taskId}/result`, { images }),
+    /** 浏览器桥接执行：上报执行失败原因。 */
+    submitLocalTaskFail: (taskId: string, error: string) =>
+      api.post<{ status: string }>(`/api/image-generation/local-tasks/${taskId}/fail`, { error }),
   },
 };
 

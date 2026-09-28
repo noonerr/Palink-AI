@@ -22,6 +22,8 @@ export interface ImageGenerationAvailability {
   enabled: boolean;
   /** 首次配置尚未取回：按钮先禁用，避免「点了没反应」。 */
   loading: boolean;
+  /** 当前激活服务商是否为浏览器桥接执行（任务由本页执行器驱动本机 ComfyUI）。 */
+  browserExecution: boolean;
   /** 占位骨架的目标尺寸（取自当前服务商的 size，与后端 media.width/height 同源）。 */
   width: number;
   height: number;
@@ -37,6 +39,7 @@ const REQUEST_TIMEOUT_MARGIN_SECONDS = 30;
 const INITIAL: ImageGenerationAvailability = {
   enabled: false,
   loading: true,
+  browserExecution: false,
   width: DEFAULT_MEDIA_WIDTH,
   height: DEFAULT_MEDIA_HEIGHT,
   requestTimeoutMs: (DEFAULT_PROVIDER_TIMEOUT_SECONDS + REQUEST_TIMEOUT_MARGIN_SECONDS) * 1000,
@@ -86,6 +89,7 @@ export function ensureImageGenerationConfigLoaded(): Promise<void> {
       emit({
         enabled: Boolean(config?.enabled) && Boolean(provider?.base_url),
         loading: false,
+        browserExecution: provider?.type === 'comfyui' && provider?.execution === 'browser',
         width,
         height,
         requestTimeoutMs: (timeoutSeconds + REQUEST_TIMEOUT_MARGIN_SECONDS) * 1000,
@@ -130,9 +134,20 @@ export function getMediaPlaceholderSize(): { width: number; height: number } {
   return { width: state.width, height: state.height };
 }
 
-/** 出图请求该等多久（服务商 timeout_seconds + 余量）。 */
+/**
+ * 出图请求该等多久（服务商 timeout_seconds + 余量）。
+ */
 export function getImageGenerationRequestTimeoutMs(): number {
   return state.requestTimeoutMs;
+}
+
+/**
+ * 设置页保存配置后调用：清缓存并通知订阅者（配图按钮、浏览器执行器）立即重新读取。
+ */
+export function invalidateImageGenerationConfig(): void {
+  inflight = null;
+  state = { ...INITIAL, loading: false };
+  listeners.forEach((listener) => listener());
 }
 
 /** 测试用：重置模块级状态。 */

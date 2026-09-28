@@ -14,6 +14,7 @@ import {
   Puzzle,
   ChevronDown,
   ChevronRight,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -24,6 +25,7 @@ import { PromptSettings } from './settings-tabs/PromptSettings';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { TokenUsagePanel } from '@/components/ui/custom/TokenUsagePanel';
 import { ModelManagementTab } from './settings-tabs/ModelManagementTab';
+import { ImageGenerationTab } from './settings-tabs/ImageGenerationTab';
 import { AboutTab } from './settings-tabs/AboutTab';
 import { ProfileTab } from './settings-tabs/ProfileTab';
 import { AuthSettingsTab } from './settings-tabs/AuthSettingsTab';
@@ -52,7 +54,7 @@ interface SettingsViewProps {
   onLangToggle?: () => void;
 }
 
-type SettingsTab = 'profile' | 'roleplay_engine' | 'appearance' | 'models' | 'oc' | 'prompts' | 'admin_users' | 'admin_auth' | 'admin_defaults' | 'admin_plugins' | 'about' | 'usage' | 'user_usage';
+type SettingsTab = 'profile' | 'roleplay_engine' | 'appearance' | 'models' | 'oc' | 'prompts' | 'image_gen' | 'admin_users' | 'admin_auth' | 'admin_defaults' | 'admin_plugins' | 'about' | 'usage' | 'user_usage';
 
 export function SettingsView({
   token,
@@ -74,7 +76,7 @@ export function SettingsView({
   const bottomPadding = useMobileBottomPadding();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const state = location.state as { activeTab?: string } | null;
-    if (state?.activeTab && ['profile', 'roleplay_engine', 'appearance', 'models', 'oc', 'prompts', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
+    if (state?.activeTab && ['profile', 'roleplay_engine', 'appearance', 'models', 'oc', 'prompts', 'image_gen', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins', 'about', 'usage', 'user_usage'].includes(state.activeTab)) {
       return state.activeTab as SettingsTab;
     }
     return 'profile';
@@ -457,8 +459,9 @@ export function SettingsView({
   if (isAdmin) {
     menuItems.push(
       { id: 'models' as SettingsTab, label: '模型管理', icon: Bot },
+      { id: 'image_gen' as SettingsTab, label: '图片生成', icon: ImageIcon },
       { id: 'admin_users' as SettingsTab, label: t.admin_users, icon: Users },
-      { id: 'admin_auth' as SettingsTab, label: '认证设置', icon: Key },
+      { id: 'admin_auth' as SettingsTab, label: t.admin_auth, icon: Key },
       { id: 'admin_defaults' as SettingsTab, label: t.admin_defaults, icon: Shield },
       { id: 'admin_plugins' as SettingsTab, label: '插件管理', icon: Puzzle }
     );
@@ -476,7 +479,7 @@ export function SettingsView({
     { title: '通用', ids: ['appearance', 'usage', 'about'] },
   ];
   if (isAdmin) {
-    mobileMenuGroups.push({ title: '管理', ids: ['models', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins'] });
+    mobileMenuGroups.push({ title: '管理', ids: ['models', 'image_gen', 'admin_users', 'admin_auth', 'admin_defaults', 'admin_plugins'] });
   }
 
   return (
@@ -606,6 +609,9 @@ export function SettingsView({
                   onLogout={onLogout}
                 />
               )}
+
+          {/* Image Generation Tab */}
+          {activeTab === 'image_gen' && <ImageGenerationTab />}
 
           {/* Models Tab - Unified Model Management */}
           {activeTab === 'models' && (
