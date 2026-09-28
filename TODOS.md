@@ -7,9 +7,18 @@
 
 ## 待办任务（进行中 / 未完成）
 
-### [待施工·SPEC 已写] 出图提示词智能化（副 AI 场景画像 + 家族适配）与多设备算力路由（本 agent，2026-09-29）
+### [已完成·三笔独立提交 · 待真机验收] 出图提示词智能化（副 AI 场景画像 + 家族适配）与多设备算力路由（本 agent，2026-09-29）
 
-- **承接**：用户拍板（B1 完整版含副 AI + B2 全量），SPEC = `docs/SPEC_出图提示词智能化与多设备算力路由_2026-09-29.md`。三 Task 可独立施工：**T1** 家族识别+渲染器+工作流模板库（sdxl/flux/qwen_image）+checkpoint 选择器与自定义 workflow JSON（消灭 `model.safetensors` 硬编码）→ **T2** 副 AI 场景画像（一次调用双出 tag 串+NL 段；配置放 `image_generation_config.json` defaults 免迁移；四级降级=永不比现状差）→ **T3** 多设备算力路由（设备登记/心跳，派单只给在线 provider 设备，手机降级遥控器，修"手机抢任务必死"竞态）。零 DB 迁移、零接触触发点。估 2~3 天，顺序 T1→T2→T3 每步独立提交。
+- **承接**：用户拍板（B1 完整版含副 AI + B2 全量），SPEC = `docs/SPEC_出图提示词智能化与多设备算力路由_2026-09-29.md`，**§9「复核修订（Qoder）」优先级高于正文**。施工前先做了独立评审（`docs/评审_出图提示词智能化SPEC可行度_2026-09-29.md`）。备份：tag `pre-image-prompt-ai-20260929` + `D:/_palink_backup_20260929_imageprompt/repo.bundle`（136MB 全历史）。**零 DB 迁移、零接触出图触发点**（chat.py / websocket.py / character_ext.py 未动）；付费模型调用 0 次。
+- **门禁基线（开工前实测，不是照抄 SPEC 数字）**：后端容器内全量 `pytest` **1494 passed / 42 skipped**；前端 `vitest` **408 passed | 3 skipped**、`tsc --noEmit` 0 错。SPEC §5 与旧 TODOS 记的 `1485/51` 是错的（总数同为 1536，差 9 例在本环境 skip→pass）。**建议门禁口径改为「failed=0 且 passed 不下降」，别死记数字。**
+- **T1 `d43ecbb`（家族识别 + 渲染器 + 工作流模板库）**：新 `backend/app/services/image_prompt_service.py`（纯函数）——`detect_family`（显式 family > 名称启发表 > 类型默认）+ `render_prompt`（danbooru 加质量前缀/负面预设，nl 恒空 negative）+ 工作流三套（sdxl / flux / qwen_image）+ 用户自定义 `workflow_json`。接线点只有 `generate_image_for_message`（3 个 API 入口共用），渲染后 positive/negative 透传到 sd_webui / comfyui / 浏览器桥接三条执行面；`media.prompt` 存渲染后终稿。新端点 `GET /api/image-generation/comfyui/models`（admin，仅服务端模式，复用 `_is_safe_mcp_url`）。
+- **T2 `f13f825`（副 AI 场景画像）**：`compose_scene` 一次调用双出 tag 串 + NL 段，剥 code fence → 首个配平花括号 → `json.loads`；素材收集抽成 `collect_scene_material` 供模板与副 AI 共用（模板产出**逐字未变**）。**四级降级**（未启用/未配模型/调用失败或超时 30s/解析失败）统统退回 `Scene(natural=渲染前 prompt)`，最坏输出与今天一致。配置在 `image_generation_config.json` defaults，**默认关**。
+- **T3 `1687469`（多设备算力路由）**：`claimed_device_id` + `claim_pending_tasks(user_id, device_id, capability)`；controller 只登记心跳、恒返回空且**绝不置 dispatched**（"手机抢任务却画不出来"的根因）；[R2] 选 ① **认领后每轮 poll 顺带心跳续期**，渲染中不被第二台机器重画；[R3] 移除"隐藏页即 return"分支，隐藏也拉请求；失败文案按 `dispatched_at is None` 分级。
+- **按 §9 逐条**：R1 三新字段进 `_validate_provider` **白名单重建返回** + 往返测试（另补 `_get_active_provider` 读路径兜底，老 JSON 不 KeyError；defaults 也是白名单，同样补了三处 + 往返测试）；R2 选①并写进注释；R3 改行为并锁两种可见性测试；R4 开工实测基线写进 T1 commit message；R5 启发表长名在前（单测锁"同时命中两条规则"）+ nl 下 negative 恒空。
+- **刻意偏离 1 处（已写明理由）**：设备心跳 TTL 取 90s 而非 §3.1 的 15s——TTL 只用于内存清扫，在线判据看任务是否被认领过；15s 会在"电脑开着但页面在后台"时误判离线，而那恰是主场景。单测锁 `TTL > 60`。
+- **另修两条 SPEC 正文没写、但会在施工中途炸的口子**：①家族判定源改为 **checkpoint_name 优先**（ComfyUI/SD 设置页根本没有 model 输入框，靠 model 判 = 静默掉默认 = SDXL 加载器打不开 Qwen checkpoint）；②自定义工作流占位符做 JSON 转义 + 数值校验，消除"保存通过、出图时被提示词引号撑破"的 400。
+- **门禁（每 Task 独立跑，镜像先 rebuild）**：T1 后 `pytest` **1521/42**；T2 后 **1531/42**；T3 后 **1545 passed / 42 skipped / 0 failed**。三次 `npx tsc --noEmit` 0 错；vitest 终态 **423 passed | 3 skipped**（开工 408|3；6 errors 为 plugin-runtime-diff-hotswap 既有噪声）。前端 `dist` 已重建（旧目录留为 `dist_old_20260929`）。
+- **待真机/待授权（未做，别当成已完成）**：① flux / qwen_image 工作流的节点名真机标定（当前结构取自官方/社区模板）；② 隐藏标签页接单时延实测（Chrome 后台节流是否豁免），未写入任何用户可见文案；③ 副 AI 出图效果标定（要付费调用）；④ Qwen-Image-2.1 自带提示词增强与副 AI 的收益对比；⑤ SDXL 默认 20 步对 Qwen-Image（官方 40 步）偏低，属参数建议，未擅自改 provider 默认值。
 
 ### [已完成·零生产改动] MVU 提示词依从性零成本筛查（10/10 无法区分）+ 副 AI 兜底 A/B 调研 + 正则深度窗口径调研（本 agent，2026-09-28）
 
