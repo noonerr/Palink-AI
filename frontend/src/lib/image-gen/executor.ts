@@ -39,7 +39,10 @@ function createExecutor(deps: ExecutorDeps) {
 
   /** 单轮认领+执行。同一 task_id 不会并发执行；单轮串行处理，未完成留到下轮。 */
   async function pollOnce(): Promise<void> {
-    if (inFlight.size > 0) return; // 上一轮还没跑完，等下一轮
+    // 注意顺序：认领请求**永远要发出去**，哪怕手里还有活没干完。
+    // [§9 R2 选项①] 后端靠同一 device_id 的重复认领给"正在渲染的任务"续期，
+    // 否则第 45 秒任务就会被回收、被另一台设备重画一遍。改动前这里是
+    // `if (inFlight.size > 0) return`，等于渲染期间不发心跳。
     let tasks: LocalImageTask[] = [];
     try {
       const resp = await deps.listTasks();
@@ -48,6 +51,7 @@ function createExecutor(deps: ExecutorDeps) {
       return; // 后端不可达/未登录：静默等下一轮
     }
     deps.onPolled?.(tasks);
+    if (inFlight.size > 0) return; // 手里还有活：这一轮只当心跳，不接新活
     for (const task of tasks) {
       if (inFlight.has(task.task_id)) continue;
       inFlight.add(task.task_id);
@@ -110,7 +114,10 @@ export function startExecutorLoop(deps: {
   let stopped = false;
   const tick = () => {
     if (stopped || !deps.isEnabled()) return;
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    // [§9 R3] **行为改动**：改动前这里是 `visibilityState !== 'visible' → return`，
+    // 即页面一进后台就完全不拉（手机遥控、电脑出图的主场景直接失效）。
+    // 现在改为隐藏也拉，如实接受浏览器的后台节流——Chrome 对隐藏页 timer 有钳制
+    // （最坏分钟级；持有活跃 WebSocket 的页面豁免强化节流），实测项见 SPEC §7。
     void executor.pollOnce();
   };
   tick();

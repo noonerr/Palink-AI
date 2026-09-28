@@ -69,7 +69,10 @@ describe('executor 轮询执行', () => {
     expect(executor.state.lastError).toBe('CORS 未放行');
   });
 
-  it('in-flight 期间重复 poll 不重复执行', async () => {
+  it('in-flight 期间重复 poll：照发认领（= 心跳续期），但不重复执行', async () => {
+    // [§9 R2 选项①] 改动前 in-flight 时直接 return，连认领请求都不发，于是渲染
+    // 期间没有心跳 → 45s 后任务被回收、被另一台设备重画一遍。现在是：
+    // 认领请求照发（后端据此续期），但绝不把同一个任务再跑一次。
     let release!: (images: string[]) => void;
     const gate = new Promise<string[]>((resolve) => { release = resolve; });
     const deps = makeDeps({
@@ -81,12 +84,12 @@ describe('executor 轮询执行', () => {
     const first = executor.pollOnce();
     // 等第一轮真正进入 in-flight（listTasks 已返回、任务已登记）再发第二轮
     await vi.waitFor(() => expect(executor.state.inFlightTaskIds).toEqual(['lt_3']));
-    await executor.pollOnce(); // 应早退（in-flight 非空）
+    await executor.pollOnce();
     release(['AAAA']);
     await first;
 
-    expect(deps.listTasks).toHaveBeenCalledTimes(1);
-    expect(deps.executeTask).toHaveBeenCalledTimes(1);
+    expect(deps.listTasks).toHaveBeenCalledTimes(2); // 第二轮照样发请求 = 续期
+    expect(deps.executeTask).toHaveBeenCalledTimes(1); // 但没有重复执行
     expect(deps.submitResult).toHaveBeenCalledTimes(1);
   });
 

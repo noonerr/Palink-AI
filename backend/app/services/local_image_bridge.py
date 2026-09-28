@@ -13,6 +13,22 @@
 - **SSRF 语义分层**：本模块对 `base_url` 发起零请求（它只经浏览器之手），
   因此不受 `_is_safe_mcp_url` 内网守卫约束——那是后端出站面的守卫，两层
   语义不得"顺手统一"。
+
+## 多设备算力路由（B2-T3）
+
+同账号多台设备时，只有**声明自己有算力**的设备才接单（手机当遥控器）。
+两个时间语义必须分开看，混在一起就是 bug：
+
+- `_CLAIM_TTL_SECONDS`(45s)：任务级——某台设备认领后 45s 未回传视为失联，
+  任务回收为 pending 可再认领；
+- `_DEVICE_HEARTBEAT_TTL_SECONDS`(90s)：设备级——只用于**内存清扫**，不参与
+  任何对外文案。取值刻意大于浏览器后台节流的最坏周期（分钟级）：按 SPEC §3.1
+  的 15s 会在「电脑开着但页面在后台」时把设备判成离线，而那恰恰是本特性的主场景。
+
+[§9 R2] 45s < 120s 渲染超时意味着"第二台设备会在第 45 秒重抢同一张图"。
+本实现的处置 = 选项①：**认领后由前端每轮 poll 顺带心跳续期**，渲染中不被回收；
+只有心跳真的停了（关页/断网）才会被别的设备接手。这样多机不是"重复出图"，
+也不是"负载均衡"，而是"谁先接谁画完"。
 """
 
 from __future__ import annotations
@@ -38,6 +54,13 @@ _CLAIM_TTL_SECONDS = 45.0
 _MAX_ACTIVE_TASKS_PER_USER = 8
 _SWEEP_INTERVAL_SECONDS = 60.0
 
+# 设备能力：provider = 本机装了出图服务，可以接单；controller = 只当遥控器。
+DEVICE_CAPABILITY_PROVIDER = "provider"
+DEVICE_CAPABILITY_CONTROLLER = "controller"
+_VALID_CAPABILITIES = frozenset({DEVICE_CAPABILITY_PROVIDER, DEVICE_CAPABILITY_CONTROLLER})
+# 见模块 docstring：这是内存清扫用的 TTL，不是在线判据。
+_DEVICE_HEARTBEAT_TTL_SECONDS = 90.0
+
 
 @dataclass
 class LocalImageTask:
@@ -59,10 +82,44 @@ class LocalImageTask:
     created_at: float = field(default_factory=time.monotonic)
     dispatched_at: Optional[float] = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+    # 认领它的设备（T3）：同一台设备再来认领时被认作心跳续期，而不是"抢占自己"。
+    claimed_device_id: Optional[str] = None
 
 
 _tasks: dict[str, LocalImageTask] = {}
+_devices: dict[int, dict[str, dict[str, Any]]] = {}  # user_id -> device_id -> {last_seen, capability}
 _sweeper_task: Optional[asyncio.Task] = None
+
+
+def normalize_capability(value: Any) -> str:
+    """设备自报的能力归一化；认不出来按 provider（保持改动前的行为，不至于没人接单）。"""
+    text = str(value or "").strip().lower()
+    return text if text in _VALID_CAPABILITIES else DEVICE_CAPABILITY_PROVIDER
+
+
+def _touch_device(user_id: int, device_id: Optional[str], capability: str) -> None:
+    """登记一次心跳。认领请求本身就是心跳——不额外开端点。"""
+    if not device_id:
+        return
+    bucket = _devices.setdefault(user_id, {})
+    bucket[device_id] = {"last_seen": time.monotonic(), "capability": capability}
+
+
+def has_provider_device(user_id: int) -> bool:
+    """该用户是否**曾经**有设备自报过算力。
+
+    只用于日志/诊断，不参与失败文案：在线判据一律看任务是否被认领过
+    （`dispatched_at`），因为设备心跳会被浏览器节流，拿它判在线会误报。
+    """
+    return any(
+        info.get("capability") == DEVICE_CAPABILITY_PROVIDER
+        for info in _devices.get(user_id, {}).values()
+    )
+
+
+def device_snapshot(user_id: int) -> dict[str, dict[str, Any]]:
+    """测试/诊断用：返回该用户的设备心跳快照（不含凭据，device_id 是随机 uuid）。"""
+    return dict(_devices.get(user_id, {}))
 
 
 def _get_sweeper() -> Optional[asyncio.Task]:
@@ -91,6 +148,24 @@ async def _sweep_loop() -> None:
                     task.status = TASK_STATUS_EXPIRED
                     task.error = "本地出图任务超时未回传"
                     task.done.set()
+        _sweep_devices(now)
+
+
+def _sweep_devices(now: Optional[float] = None) -> None:
+    """淘汰过期设备心跳。抽成函数是为了能离线单测（清扫协程本身要真等 60s）。
+
+    这只是**内存卫生**：设备表不参与"在线"判定，所以 TTL 取大值也无害。
+    """
+    now = time.monotonic() if now is None else now
+    for user_id, bucket in list(_devices.items()):
+        stale = [
+            device_id for device_id, info in bucket.items()
+            if now - float(info.get("last_seen", 0)) > _DEVICE_HEARTBEAT_TTL_SECONDS
+        ]
+        for device_id in stale:
+            bucket.pop(device_id, None)
+        if not bucket:
+            _devices.pop(user_id, None)
 
 
 def _drop_oldest_if_overflow(user_id: int) -> None:
@@ -149,22 +224,46 @@ def _get_task_for_user(task_id: str, user_id: int) -> Optional[LocalImageTask]:
     return task
 
 
-def claim_pending_tasks(user_id: int) -> list[dict[str, Any]]:
-    """认领该用户可执行的任务：pending、以及 dispatched 超过 TTL 未回传的（标签页失联回收）。"""
+def claim_pending_tasks(
+    user_id: int,
+    device_id: Optional[str] = None,
+    capability: str = DEVICE_CAPABILITY_PROVIDER,
+) -> list[dict[str, Any]]:
+    """认领该用户可执行的任务。**认领请求本身即一次心跳**（T3）。
+
+    - capability=controller（遥控器）：只登记心跳，**恒返回空**、且绝不把任务置
+      dispatched——这正是"手机抢了任务却画不出来"的根因修复。
+    - capability=provider：认领 pending 任务；被同一台设备已认领的任务只做
+      **dispatched_at 续期**，不再下发一次（[§9 R2] 选项①：渲染中不许被别人抢）。
+
+    未传 device_id（旧客户端）时退化为改动前的行为：只有一台设备的语义。
+    """
+    cap = normalize_capability(capability)
+    _touch_device(user_id, device_id, cap)
+    if cap != DEVICE_CAPABILITY_PROVIDER:
+        return []
+
     now = time.monotonic()
     claimed: list[dict[str, Any]] = []
     for task in _tasks.values():
         if task.user_id != user_id or task.done.is_set():
             continue
-        reclaimable = (
-            task.status == TASK_STATUS_DISPATCHED
-            and task.dispatched_at is not None
-            and now - task.dispatched_at > _CLAIM_TTL_SECONDS
-        )
-        if task.status != TASK_STATUS_PENDING and not reclaimable:
+        if task.status == TASK_STATUS_DISPATCHED:
+            if device_id and task.claimed_device_id == device_id:
+                # 自己还在画：续期，别让 45s TTL 把自己的活回收给别人。
+                task.dispatched_at = now
+                continue
+            reclaimable = (
+                task.dispatched_at is not None
+                and now - task.dispatched_at > _CLAIM_TTL_SECONDS
+            )
+            if not reclaimable:
+                continue
+        elif task.status != TASK_STATUS_PENDING:
             continue
         task.status = TASK_STATUS_DISPATCHED
         task.dispatched_at = now
+        task.claimed_device_id = device_id
         claimed.append(task_to_client_payload(task))
     claimed.sort(key=lambda item: item["created_at"])
     return claimed
@@ -220,7 +319,16 @@ async def await_local_task(task: LocalImageTask) -> dict[str, Any]:
             task.status = TASK_STATUS_EXPIRED
             task.error = "本地出图任务超时未回传"
             task.done.set()
-        raise HTTPException(status_code=504, detail="本机 ComfyUI 未在时限内回传结果") from exc
+        # ── 失败文案分级（SPEC §3.2）─────────────────────────────────
+        # dispatched_at 为空 = 从头到尾没有任何设备认领过 → 要告诉用户去开电脑；
+        # 认领过却没回传 = 那台机器上的服务出了问题。两种情况的下一步动作完全不同，
+        # 混成一句会让用户不知道该干嘛。
+        detail = (
+            "没有在线的算力设备——请在装有所需服务的电脑上打开 Palink 并保持页面开启"
+            if task.dispatched_at is None
+            else "本机 ComfyUI 未在时限内回传结果"
+        )
+        raise HTTPException(status_code=504, detail=detail) from exc
     if task.status == TASK_STATUS_EXPIRED:
         # 清扫器先行置 expired（如等待协程尚未到点）：语义仍是超时
         raise HTTPException(status_code=504, detail="本机 ComfyUI 未在时限内回传结果")
@@ -232,9 +340,10 @@ async def await_local_task(task: LocalImageTask) -> dict[str, Any]:
 
 
 def reset_for_tests() -> None:
-    """测试隔离：清空任务表与清扫协程句柄（仅测试调用）。"""
+    """测试隔离：清空任务表、设备表与清扫协程句柄（仅测试调用）。"""
     global _sweeper_task
     for task in _tasks.values():
         task.done.set()
     _tasks.clear()
+    _devices.clear()
     _sweeper_task = None

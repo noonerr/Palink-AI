@@ -19,6 +19,12 @@ import { SettingsGroup, SettingsRow, SettingsRowWide, Segmented } from './settin
 import { api } from '@/services/api';
 import { invalidateImageGenerationConfig } from '@/hooks/useImageGenerationAvailability';
 import { probeComfyUI, listComfyUICheckpoints, type ComfyUIProbeResult } from '@/lib/image-gen/comfyui-client';
+import {
+  getComputeRole,
+  resolveCapability,
+  setComputeRole,
+  type ComputeRole,
+} from '@/lib/image-gen/device';
 import type {
   ImageGenerationConfig,
   ImageGenerationDefaults,
@@ -62,6 +68,12 @@ export function ImageGenerationTab() {
   const [models, setModels] = useState<string[]>([]);
   const [modelsMessage, setModelsMessage] = useState<string>('');
   const [loadingModels, setLoadingModels] = useState(false);
+  const [role, setRole] = useState<ComputeRole>(() => getComputeRole());
+
+  const handleRoleChange = (next: ComputeRole) => {
+    setRole(next);
+    setComputeRole(next); // 写 localStorage + 广播，App 根部的执行器据此重挂
+  };
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -453,6 +465,28 @@ export function ImageGenerationTab() {
               )}
             </>
           )}
+        </SettingsGroup>
+      )}
+
+      {browserMode && (
+        <SettingsGroup label="本设备角色">
+          <SettingsRowWide
+            icon={<ShieldCheck size={16} />}
+            title="这台设备做什么"
+            desc="同账号多台设备时，只有「提供算力」的浏览器会去领活；选「仅遥控」的手机不再抢任务（它照常看得到图，图存在服务端）"
+          >
+            <select
+              className="text-sm rounded-md border bg-transparent px-2 py-1"
+              value={role}
+              onChange={(e) => handleRoleChange(e.target.value as ComputeRole)}
+            >
+              <option value="auto">
+                自动（按指针类型判断：当前={resolveCapability('auto') === 'provider' ? '提供算力' : '仅遥控'}）
+              </option>
+              <option value="provider">提供算力（本机装了出图服务）</option>
+              <option value="controller">仅遥控（不接单）</option>
+            </select>
+          </SettingsRowWide>
         </SettingsGroup>
       )}
 

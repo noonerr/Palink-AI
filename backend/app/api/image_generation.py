@@ -30,6 +30,7 @@ from ..services.image_generation_service import (
     save_image_generation_config,
 )
 from ..services.local_image_bridge import (
+    DEVICE_CAPABILITY_PROVIDER,
     claim_pending_tasks,
     complete_local_task,
     fail_local_task,
@@ -251,9 +252,19 @@ async def generate_for_character_message(
 # ============================================================
 
 @router.get("/local-tasks/pending")
-async def list_pending_local_tasks(current_user: User = Depends(get_current_user)):
-    """浏览器执行器认领任务：调用即置 dispatched，45s 未回传自动回收重认领。"""
-    return {"tasks": claim_pending_tasks(current_user.id)}
+async def list_pending_local_tasks(
+    device_id: Optional[str] = None,
+    capability: str = DEVICE_CAPABILITY_PROVIDER,
+    current_user: User = Depends(get_current_user),
+):
+    """浏览器执行器认领任务：调用即置 dispatched，45s 未回传自动回收重认领。
+
+    T3 多设备：`capability=controller` 的设备（手机当遥控器）只登记心跳、恒返回
+    空列表，不再把任务抢到自己手上却画不出来。`device_id` 是前端 localStorage 里
+    的随机 uuid（可重置，非设备指纹），同一台设备重复认领 = 渲染中心跳续期，
+    避免第二台机器在第 45 秒把同一张图重画一遍（[§9 R2] 选项①）。
+    """
+    return {"tasks": claim_pending_tasks(current_user.id, device_id, capability)}
 
 
 @router.post("/local-tasks/{task_id}/result")

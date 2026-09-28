@@ -470,9 +470,22 @@ export const api = {
     /** 服务端模式下拉 ComfyUI checkpoint 列表（admin）。浏览器模式请走前端直连。 */
     listComfyUIModels: () =>
       api.get<{ models: string[] }>('/api/image-generation/comfyui/models'),
-    /** 浏览器桥接执行：认领待执行任务（调用即置 dispatched）。 */
-    listLocalTasks: () =>
-      api.get<{ tasks: LocalImageTask[] }>('/api/image-generation/local-tasks/pending'),
+    /**
+     * 浏览器桥接执行：认领待执行任务（调用即置 dispatched）。
+     *
+     * `capability=controller` 时后端只登记心跳、恒返回空（手机不再抢活）；
+     * `device_id` 相同 = 同一台设备重复认领 = 渲染中心跳续期（§9 R2）。
+     */
+    listLocalTasks: (params?: { device_id?: string; capability?: string }) => {
+      const search = params
+        ? new URLSearchParams(
+            Object.entries(params).filter(([, value]) => value !== undefined && value !== '') as [string, string][],
+          ).toString()
+        : '';
+      return api.get<{ tasks: LocalImageTask[] }>(
+        `/api/image-generation/local-tasks/pending${search ? `?${search}` : ''}`,
+      );
+    },
     /** 浏览器桥接执行：回传出图结果（裸 base64 或 dataURL）。 */
     submitLocalTaskResult: (taskId: string, images: string[]) =>
       api.post<{ status: string }>(`/api/image-generation/local-tasks/${taskId}/result`, { images }),
