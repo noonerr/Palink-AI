@@ -2,8 +2,9 @@
 
 import base64
 import logging
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, selectinload
 
@@ -21,6 +22,7 @@ from ..schemas.image_generation import (
 from ..services.image_generation_service import (
     generate_image,
     generate_image_for_message,
+    get_comfyui_provider,
     get_image_generation_config,
     image_result_to_dict,
     is_browser_execution_active,
@@ -32,6 +34,7 @@ from ..services.local_image_bridge import (
     complete_local_task,
     fail_local_task,
 )
+from ..services.mcp_service import _is_safe_mcp_url
 
 router = APIRouter(prefix="/api/image-generation", tags=["image-generation"])
 logger = logging.getLogger(__name__)
@@ -116,6 +119,56 @@ async def update_config(req: ImageGenerationConfigRequest, http_request: Request
         _rid = getattr(http_request.state, "request_id", "unknown")
         logger.warning("Image generation config save failed: %s request_id=%s", exc, _rid)
         raise HTTPException(status_code=400, detail=f"图片生成配置无效 (request_id: {_rid})") from exc
+
+
+@router.get("/comfyui/models")
+async def list_comfyui_models(current_user: User = Depends(get_admin)):
+    """服务端模式下拉取 ComfyUI 的 checkpoint 列表（设置页下拉用）。
+
+    安全口径（`image_generation_service._validate_provider` 的同款 SSRF 语义）：
+    这里是**后端出站**，必须过 `_is_safe_mcp_url`；浏览器桥接模式（后端对用户
+    本机零请求，127.0.0.1 是合法取值）不适用本端点，那种拓扑由前端直连
+    `/object_info` 拉取，故这里显式拒绝并给出指向。
+    """
+    provider = get_comfyui_provider()
+    if not provider:
+        raise HTTPException(status_code=404, detail="未配置 ComfyUI 服务商")
+    if str(provider.get("execution") or "server") != "server":
+        raise HTTPException(
+            status_code=400,
+            detail="浏览器桥接模式下请由设置页前端直连本机 ComfyUI 拉取模型列表",
+        )
+    base_url = str(provider.get("base_url") or "").rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="ComfyUI 未配置 Base URL")
+    if not _is_safe_mcp_url(base_url):
+        raise HTTPException(status_code=400, detail="ComfyUI Base URL 不是允许的服务端地址")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{base_url}/object_info/CheckpointLoaderSimple")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        logger.warning("ComfyUI object_info fetch failed: %s", exc)
+        raise HTTPException(status_code=502, detail="读取 ComfyUI 模型列表失败") from exc
+    return {"models": _extract_checkpoint_names(data)}
+
+
+def _extract_checkpoint_names(object_info: Any) -> list[str]:
+    """兼容 ComfyUI 两种键名（`input` 为 /object_info 实际字段名，`inputs` 兜底）。"""
+    if not isinstance(object_info, dict):
+        return []
+    node = object_info.get("CheckpointLoaderSimple")
+    if isinstance(node, dict):
+        for key in ("input", "inputs"):
+            section = node.get(key)
+            required = section.get("required") if isinstance(section, dict) else None
+            if not isinstance(required, dict):
+                continue
+            entry = required.get("ckpt_name")
+            if isinstance(entry, list) and entry and isinstance(entry[0], list):
+                return [str(name) for name in entry[0] if name]
+    return []
 
 
 @router.post("/test")

@@ -35,6 +35,24 @@ class ImageGenerationProvider(BaseModel):
     sampler_name: str = "Euler a"
     seed: int = Field(default=-1, ge=-1)  # -1 = 随机（ComfyUI 侧由服务层取随机值）
 
+    # ── 家族适配三件套（SPEC §1，B1-T1）──────────────────────────────
+    # 这三个字段与 image_generation_service._validate_provider 的**白名单返回**
+    # 必须同步：那里漏一个 = 设置页保存成功但字段被静默丢弃。默认值全部等价于
+    # 改动前的行为（自动识别 / 空 checkpoint / 无自定义工作流）。
+    family: str = "auto"
+    checkpoint_name: str = ""
+    workflow_json: str = ""
+
+    @field_validator("family")
+    @classmethod
+    def validate_family(cls, value: str) -> str:
+        allowed = {
+            "auto", "nl", "danbooru",
+            "qwen_image", "flux", "sdxl", "pony", "illustrious", "noobai",
+        }
+        text = str(value or "").strip().lower()
+        return text if text in allowed else "auto"
+
 
 class ImageGenerationDefaults(BaseModel):
     prompt_template: str

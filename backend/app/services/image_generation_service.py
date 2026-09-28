@@ -22,6 +22,15 @@ from sqlalchemy.orm import Session
 from ..core import settings
 from ..models import Character, CharacterChatMessage, ChatMessage, User, UserSetting
 from .local_image_bridge import await_local_task, create_local_task
+from . import image_prompt_service
+from .image_prompt_service import (
+    Scene,
+    build_comfyui_workflow,
+    detect_family,
+    normalize_family,
+    render_prompt,
+    validate_workflow_template,
+)
 from .mcp_service import _is_safe_mcp_url
 from .message_media_service import (
     DEFAULT_MEDIA_HEIGHT,
@@ -293,6 +302,16 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
         seed = -1
     seed = max(seed, -1)
 
+    # ── 出图家族（B1-T1）───────────────────────────────────────────────
+    # [SPEC §9 R1] 这三个字段必须落在**白名单重建的返回字典**里。历史坑：
+    # 早期 Schema Literal 收窄导致 sd_webui / comfyui 配置「填了存不进去」，
+    # 同族问题一旦漏进这里，表现为设置页保存成功、出图时静默读默认值。
+    workflow_json = str(provider.get("workflow_json") or "").strip()
+    if workflow_json:
+        error = validate_workflow_template(workflow_json)
+        if error:
+            raise ValueError(f"自定义工作流 JSON 无效：{error}")
+
     return {
         "id": str(provider.get("id") or DEFAULT_PROVIDER_ID).strip() or DEFAULT_PROVIDER_ID,
         "name": str(provider.get("name") or "OpenAI Compatible").strip() or "OpenAI Compatible",
@@ -312,6 +331,10 @@ def _validate_provider(provider: dict[str, Any]) -> dict[str, Any]:
         "cfg_scale": cfg_scale,
         "sampler_name": str(provider.get("sampler_name") or "Euler a").strip() or "Euler a",
         "seed": seed,
+        # 家族适配三件套（默认值向后兼容：auto / 空 = 现有行为）
+        "family": normalize_family(provider.get("family")),
+        "checkpoint_name": str(provider.get("checkpoint_name") or "").strip(),
+        "workflow_json": workflow_json,
     }
 
 
@@ -375,7 +398,16 @@ def _get_active_provider(config: dict[str, Any], provider_id: Optional[str] = No
         not provider.get("api_key") or not provider.get("model")
     ):
         raise HTTPException(status_code=400, detail="图片生成服务尚未配置完整")
-    return provider
+    # 读路径补齐家族三件套：磁盘上的老 JSON（新增字段之前写的）不会有这三个键，
+    # 而 `_get_raw_config` 返回的是**原样**配置、不过 `_validate_provider`。
+    # 与其让每个消费方都用 .get()，不如在这一处补齐默认值 —— 这是所有出图路径
+    # 取 provider 的唯一入口。缺 key 的下游代码不该 KeyError。
+    return {
+        **provider,
+        "family": normalize_family(provider.get("family")),
+        "checkpoint_name": str(provider.get("checkpoint_name") or ""),
+        "workflow_json": str(provider.get("workflow_json") or ""),
+    }
 
 
 def _build_generation_url(base_url: str) -> str:
@@ -490,17 +522,19 @@ def _sd_auth_header(api_key: str) -> Optional[str]:
 
 
 async def _generate_image_via_sd_webui(
-    provider: dict[str, Any], prompt: str, user_id: int
+    provider: dict[str, Any], prompt: str, user_id: int, negative_prompt: Optional[str] = None
 ) -> GeneratedImage:
     base_url = str(provider.get("base_url") or "")
     if not base_url:
         raise HTTPException(status_code=400, detail="SD WebUI 未配置 Base URL")
     width, height = _parse_size(provider.get("size"), 512, 512)
+    # negative 由渲染层给出（None = 沿用 provider 配置，兼容既有调用）。
+    resolved_negative = str(provider.get("negative_prompt") or "") if negative_prompt is None else negative_prompt
     # [AUDIT-2026-09-25] 出图参数从配置透传（此前全吃函数默认值的硬编码）。
     result = await _generate_sd_webui(
         base_url=base_url,
         prompt=prompt,
-        negative_prompt=str(provider.get("negative_prompt") or ""),
+        negative_prompt=resolved_negative,
         sampler=str(provider.get("sampler_name") or "Euler a"),
         steps=int(provider.get("steps") or 20),
         cfg_scale=float(provider.get("cfg_scale") or 7.0),
@@ -515,22 +549,24 @@ async def _generate_image_via_sd_webui(
 
 
 async def _generate_image_via_comfyui(
-    provider: dict[str, Any], prompt: str, user_id: int
+    provider: dict[str, Any], prompt: str, user_id: int, negative_prompt: Optional[str] = None
 ) -> GeneratedImage:
     base_url = str(provider.get("base_url") or "")
     if not base_url:
         raise HTTPException(status_code=400, detail="ComfyUI 未配置 Base URL")
     width, height = _parse_size(provider.get("size"), 512, 512)
+    resolved_negative = str(provider.get("negative_prompt") or "") if negative_prompt is None else negative_prompt
     result = await _generate_comfyui(
         base_url=base_url,
         prompt=prompt,
-        negative_prompt=str(provider.get("negative_prompt") or ""),
+        negative_prompt=resolved_negative,
         width=width,
         height=height,
         steps=int(provider.get("steps") or 20),
         cfg_scale=float(provider.get("cfg_scale") or 7.0),
         seed=int(provider.get("seed", -1)),
         timeout_seconds=int(provider.get("timeout_seconds") or 120),
+        provider=provider,
     )
     images = result.get("base64") or []
     if not images:
@@ -547,6 +583,7 @@ async def _generate_image_via_local_browser(
     prompt: str,
     width: int,
     height: int,
+    negative_prompt: Optional[str] = None,
 ) -> GeneratedImage:
     """浏览器桥接执行（托管部署专用，SPEC_文生图浏览器桥接执行_2026-09-28）。
 
@@ -559,14 +596,16 @@ async def _generate_image_via_local_browser(
     if not base_url:
         raise HTTPException(status_code=400, detail="ComfyUI 未配置 Base URL")
     timeout_seconds = int(provider.get("timeout_seconds") or 120)
+    resolved_negative = str(provider.get("negative_prompt") or "") if negative_prompt is None else negative_prompt
     workflow, used_seed = _build_comfyui_workflow(
         prompt=prompt,
-        negative_prompt=str(provider.get("negative_prompt") or ""),
+        negative_prompt=resolved_negative,
         width=width,
         height=height,
         steps=int(provider.get("steps") or 20),
         cfg_scale=float(provider.get("cfg_scale") or 7.0),
         seed=int(provider.get("seed", -1)),
+        provider=provider,
     )
     task = create_local_task(
         user_id=user.id,
@@ -589,7 +628,13 @@ async def _generate_image_via_local_browser(
     return _result_from_base64(provider, prompt, user.id, result.get("base64"), result.get("seed"))
 
 
-async def generate_image(prompt: str, user_id: int, provider_id: Optional[str] = None) -> GeneratedImage:
+async def generate_image(
+    prompt: str,
+    user_id: int,
+    provider_id: Optional[str] = None,
+    *,
+    negative_prompt: Optional[str] = None,
+) -> GeneratedImage:
     config = _get_raw_config()
     if not config.get("enabled", False):
         raise HTTPException(status_code=400, detail="图片生成未启用")
@@ -603,9 +648,9 @@ async def generate_image(prompt: str, user_id: int, provider_id: Optional[str] =
     # schema 让配置存得进去，自建 SD / ComfyUI 依然出不了图。这才是真堵点。
     provider_type = str(provider.get("type") or "openai_compatible")
     if provider_type == "sd_webui":
-        return await _generate_image_via_sd_webui(provider, prompt, user_id)
+        return await _generate_image_via_sd_webui(provider, prompt, user_id, negative_prompt=negative_prompt)
     if provider_type == "comfyui":
-        return await _generate_image_via_comfyui(provider, prompt, user_id)
+        return await _generate_image_via_comfyui(provider, prompt, user_id, negative_prompt=negative_prompt)
 
     payload: dict[str, Any] = {
         "model": provider["model"],
@@ -831,6 +876,21 @@ async def generate_image_for_message(
     width, height = _parse_size(provider.get("size"), DEFAULT_MEDIA_WIDTH, DEFAULT_MEDIA_HEIGHT)
     provider_id = str(provider.get("id") or "")
 
+    # ── 家族渲染（B1-T1 落地；T2 的副 AI 场景画像接在这里）──────────────
+    # Scene 的两个来源：T2 上线后由 `compose_scene()` 产出 tag 串 + NL 段；
+    # T1 阶段只有 natural（= 现有模板长句 / 模型自给的画面描述），tags 为空 →
+    # danbooru 渲染走「tags 空回退 natural」分支，nl 渲染本身就是原样透传。
+    # 任何异常都退回原始 prompt：这一层**永不比现状差**。
+    positive, negative = prompt, str(provider.get("negative_prompt") or "")
+    try:
+        rendered = render_prompt(detect_family(provider), Scene(natural=prompt), provider)
+        positive, negative = (rendered.positive or prompt), rendered.negative
+    except Exception as exc:  # pragma: no cover - 纯防御
+        logger.warning("Image prompt render failed, fallback to raw prompt: %s", exc)
+    # 从此往下 `prompt` = 渲染后终稿：media 的 prompt 字段与最终请求体一致，
+    # 前端展示位点开看到的就是真正送给出图服务的那段。
+    prompt = positive
+
     adopted_id = normalize_media_id(media_id)
     if adopted_id and reset_media_for_retry(
         db,
@@ -867,9 +927,10 @@ async def generate_image_for_message(
                 prompt=prompt,
                 width=width,
                 height=height,
+                negative_prompt=negative,
             )
         else:
-            result = await generate_image(prompt=prompt, user_id=user.id)
+            result = await generate_image(prompt=prompt, user_id=user.id, negative_prompt=negative)
     except Exception as exc:
         detail = str(getattr(exc, "detail", "") or "图片生成失败")
         status_code = int(getattr(exc, "status_code", 502) or 502)
@@ -1095,8 +1156,9 @@ async def _generate_sd_webui_img2img(
 
 # ComfyUI /history 轮询间隔（测试里 monkeypatch 缩短）
 COMFYUI_POLL_INTERVAL_SECONDS = 1.0
-# ComfyUI 返回的 seed 是 32 位无符号整数
-_COMFYUI_SEED_MAX = 2**32 - 1
+# ComfyUI 返回的 seed 是 32 位无符号整数。真源移到 image_prompt_service（随机种子
+# 现在由适配层定死），这里保留同名引用：既有测试与代码都读本模块的这个符号。
+_COMFYUI_SEED_MAX = image_prompt_service._COMFYUI_SEED_MAX
 
 
 def _extract_comfyui_image_ref(history_entry: dict) -> Optional[dict[str, str]]:
@@ -1137,56 +1199,28 @@ def _build_comfyui_workflow(
     steps: int = 20,
     cfg_scale: float = 7.0,
     seed: int = -1,
+    provider: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], int]:
-    """组装 ComfyUI 默认文生图工作流，返回 (workflow, 实际使用的 seed)。
+    """组装 ComfyUI 文生图工作流，返回 (workflow, 实际使用的 seed)。
 
     服务端路径（`_generate_comfyui`）与浏览器桥接路径共用，保证两条执行面
     出图参数语义一致。ComfyUI 没有 seed=-1 的"随机"约定：不取随机值会恒用
     0（每次同图），故在此处一次性定死并回传实际值。
+
+    具体节点图按 provider 所属**家族**下发（sdxl / flux / qwen_image 三套内置
+    模板 + 用户自定义 `workflow_json`），判定与渲染全在 `image_prompt_service`。
+    `provider` 为空时等价于改动前的默认 sdxl 行为，既有调用不会被破坏。
     """
-    used_seed = seed if seed >= 0 else random.randint(0, _COMFYUI_SEED_MAX)
-    workflow = {
-        "3": {
-            "class_type": "KSampler",
-            "inputs": {
-                "seed": used_seed,
-                "steps": steps,
-                "cfg": cfg_scale,
-                "sampler_name": "euler",
-                "scheduler": "normal",
-                "denoise": 1.0,
-                "model": ["4", 0],
-                "positive": ["6", 0],
-                "negative": ["7", 0],
-                "latent_image": ["5", 0],
-            },
-        },
-        "4": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": "model.safetensors"},
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {"width": width, "height": height, "batch_size": 1},
-        },
-        "6": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": prompt, "clip": ["4", 1]},
-        },
-        "7": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": negative_prompt, "clip": ["4", 1]},
-        },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
-        },
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {"images": ["8", 0]},
-        },
-    }
-    return workflow, used_seed
+    return build_comfyui_workflow(
+        provider=provider or {},
+        positive=prompt,
+        negative=negative_prompt,
+        width=width,
+        height=height,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        seed=seed,
+    )
 
 
 async def _generate_comfyui(
@@ -1199,6 +1233,7 @@ async def _generate_comfyui(
     cfg_scale: float = 7.0,
     seed: int = -1,
     timeout_seconds: int = 120,
+    provider: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """通过 ComfyUI HTTP API 出图：提交工作流 → 轮询 /history → /view 取图。
 
@@ -1214,6 +1249,7 @@ async def _generate_comfyui(
         steps=steps,
         cfg_scale=cfg_scale,
         seed=seed,
+        provider=provider,
     )
     payload = {"prompt": workflow}
     logger.info("ComfyUI prompt submit: url=%s, size=%dx%d, seed=%d", f"{base}/prompt", width, height, used_seed)

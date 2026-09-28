@@ -142,6 +142,68 @@ function describeFetchError(error: unknown, stage: string): ComfyUIError {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 模型清单（浏览器模式下拉用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 从 `/object_info/CheckpointLoaderSimple` 的响应里抽出 checkpoint 名。
+ * ComfyUI 实际字段名是 `input`（单数），历史版本/二手服务也有 `inputs`，两者都兜。
+ */
+export function extractCheckpointNames(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const node = (payload as Record<string, unknown>).CheckpointLoaderSimple;
+  if (!node || typeof node !== 'object') return [];
+  for (const key of ['input', 'inputs']) {
+    const section = (node as Record<string, unknown>)[key];
+    if (!section || typeof section !== 'object') continue;
+    const required = (section as Record<string, unknown>).required;
+    if (!required || typeof required !== 'object') continue;
+    const entry = (required as Record<string, unknown>).ckpt_name;
+    if (Array.isArray(entry) && Array.isArray(entry[0])) {
+      return (entry[0] as unknown[]).filter((n): n is string => typeof n === 'string' && Boolean(n));
+    }
+  }
+  return [];
+}
+
+export interface CheckpointListResult {
+  ok: boolean;
+  models: string[];
+  message: string;
+}
+
+/**
+ * 浏览器直连拉 checkpoint 列表（托管部署/浏览器模式专用）。
+ *
+ * 只在 HOSTED（浏览器模式）拓扑下有意义：后端够不到用户本机；服务端模式请走
+ * 后端 `/api/image-generation/comfyui/models`（那个端点带 SSRF 守卫）。
+ * 失败一律返回空列表 + 中文原因，绝不抛（设置页是给用户看的）。
+ */
+export async function listComfyUICheckpoints(baseUrl: string, timeoutMs = 4000): Promise<CheckpointListResult> {
+  const base = normalizeBase(baseUrl);
+  if (!base) {
+    return { ok: false, models: [], message: '请先填写 ComfyUI 地址' };
+  }
+  try {
+    const resp = await fetchWithTimeout(`${base}/object_info/CheckpointLoaderSimple`, {}, timeoutMs);
+    if (!resp.ok) {
+      return { ok: false, models: [], message: `ComfyUI 返回 HTTP ${resp.status}` };
+    }
+    const models = extractCheckpointNames(await resp.json().catch(() => null));
+    if (!models.length) {
+      return { ok: false, models: [], message: 'ComfyUI 未返回 checkpoint 列表' };
+    }
+    return { ok: true, models, message: `已读到 ${models.length} 个 checkpoint` };
+  } catch {
+    return {
+      ok: false,
+      models: [],
+      message: '读取失败：本机 ComfyUI 未启动？浏览器未授权本地网络访问？或 CORS 未放行本站点',
+    };
+  }
+}
+
 export interface ComfyUIExecuteOptions {
   /** 阶段回调：submit → poll → fetch（设置页试跑时可展示进度）。 */
   onStage?: (stage: 'submit' | 'poll' | 'fetch') => void;

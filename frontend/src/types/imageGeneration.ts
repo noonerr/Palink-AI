@@ -8,6 +8,19 @@ export type ImageGenerationProviderType = 'openai_compatible' | 'sd_webui' | 'co
 /** 执行位置：server = Palink 后端直连；browser = 任务下发用户浏览器驱动本机服务。 */
 export type ImageGenerationExecutionMode = 'server' | 'browser';
 
+/** 出图家族：‘auto’ = 由 checkpoint / 模型名启发推断，其余为手动指定。
+ *  取值必须与后端 `image_prompt_service._VALID_FAMILIES` 同步，否则会被归一化回 auto。 */
+export type ImageGenerationFamily =
+  | 'auto'
+  | 'nl'
+  | 'danbooru'
+  | 'qwen_image'
+  | 'flux'
+  | 'sdxl'
+  | 'pony'
+  | 'illustrious'
+  | 'noobai';
+
 export interface ImageGenerationProvider {
   id: string;
   name: string;
@@ -29,6 +42,12 @@ export interface ImageGenerationProvider {
   cfg_scale?: number;
   sampler_name?: string;
   seed?: number;
+  /** 家族覆盖：决定提示词口味与 ComfyUI 工作流套。默认 auto。 */
+  family?: ImageGenerationFamily;
+  /** ComfyUI / SD WebUI 真正加载的模型文件名（这两个服务没有 model 输入框）。 */
+  checkpoint_name?: string;
+  /** ComfyUI 自定义工作流（API 格式 JSON 文本），非空时覆盖内置模板。 */
+  workflow_json?: string;
 }
 
 export interface ImageGenerationDefaults {

@@ -18,10 +18,11 @@ import { Switch } from '@/components/ui/switch';
 import { SettingsGroup, SettingsRow, SettingsRowWide, Segmented } from './settings-ui';
 import { api } from '@/services/api';
 import { invalidateImageGenerationConfig } from '@/hooks/useImageGenerationAvailability';
-import { probeComfyUI, type ComfyUIProbeResult } from '@/lib/image-gen/comfyui-client';
+import { probeComfyUI, listComfyUICheckpoints, type ComfyUIProbeResult } from '@/lib/image-gen/comfyui-client';
 import type {
   ImageGenerationConfig,
   ImageGenerationExecutionMode,
+  ImageGenerationFamily,
   ImageGenerationProvider,
 } from '@/types/imageGeneration';
 
@@ -35,6 +36,17 @@ const PROVIDER_LABELS: Record<string, string> = {
  *  浏览器出图超过它骨架会先显示失败——向导据此建议 ≤110s。 */
 const SKELETON_TIMEOUT_SECONDS = 110;
 
+/** 家族下拉。`nl` / `danbooru` 是纯风格值，交给自动识别即可，不进 UI。 */
+const FAMILY_OPTIONS: { value: ImageGenerationFamily; label: string }[] = [
+  { value: 'auto', label: '自动（按 checkpoint / 模型名识别）' },
+  { value: 'qwen_image', label: 'Qwen-Image（自然语言描述）' },
+  { value: 'flux', label: 'Flux（自然语言描述）' },
+  { value: 'sdxl', label: 'SDXL（英文标签串）' },
+  { value: 'pony', label: 'Pony（英文标签串）' },
+  { value: 'illustrious', label: 'Illustrious（英文标签串）' },
+  { value: 'noobai', label: 'NoobAI（英文标签串）' },
+];
+
 function asExecution(value: unknown): ImageGenerationExecutionMode {
   return value === 'browser' ? 'browser' : 'server';
 }
@@ -46,6 +58,9 @@ export function ImageGenerationTab() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [probe, setProbe] = useState<ComfyUIProbeResult | null>(null);
   const [probing, setProbing] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsMessage, setModelsMessage] = useState<string>('');
+  const [loadingModels, setLoadingModels] = useState(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -81,6 +96,30 @@ export function ImageGenerationTab() {
     });
     setProbe(null);
   };
+
+  const handleLoadModels = async () => {
+    setLoadingModels(true);
+    setModelsMessage('');
+    try {
+      // 两种拓扑谁去打 ComfyUI 是有分工的：浏览器模式下后端压根够不到用户本机，
+      // 只能前端直连；服务端模式下反过来——后端出站点才有 SSRF 守卫，走后端端点。
+      if (browserMode) {
+        const result = await listComfyUICheckpoints(activeProvider!.base_url);
+        setModels(result.models);
+        setModelsMessage(result.message);
+      } else {
+        const result = await api.imageGeneration.listComfyUIModels();
+        setModels(result.models ?? []);
+        setModelsMessage(`已读到 ${result.models?.length ?? 0} 个 checkpoint`);
+      }
+    } catch (error) {
+      setModelsMessage(`读取失败：${(error as Error)?.message || '未知错误'}`);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  const patchFamily = (family: ImageGenerationFamily) => patchProvider({ family });
 
   const handleSave = async () => {
     if (!config || !isAdmin) return;
@@ -167,6 +206,7 @@ export function ImageGenerationTab() {
             ))}
           </select>
         </SettingsRowWide>
+
       </SettingsGroup>
 
       {activeProvider && (
@@ -305,6 +345,81 @@ export function ImageGenerationTab() {
                   onChange={(e) => patchProvider({ seed: Number(e.target.value) })}
                 />
               </SettingsRow>
+
+              <SettingsRow
+                icon={<ShieldCheck size={16} />}
+                title="模型家族"
+                desc="决定提示词口味（长句 / 标签串）与工作流怎么加载模型"
+              >
+                <select
+                  className="text-sm rounded-md border bg-transparent px-2 py-1"
+                  value={activeProvider.family ?? 'auto'}
+                  disabled={!isAdmin}
+                  onChange={(e) => patchFamily(e.target.value as ImageGenerationFamily)}
+                >
+                  {FAMILY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </SettingsRow>
+
+              {activeProvider.type === 'comfyui' && (
+                <>
+                  <SettingsRowWide
+                    icon={<RefreshCw size={16} />}
+                    title="Checkpoint"
+                    desc="工作流里真正加载的模型文件——这类服务商没有「模型名」概念，不填就会去加载模板里的占位文件名"
+                  >
+                    <div className="flex items-center gap-2">
+                      {models.length > 0 ? (
+                        <select
+                          className="text-sm rounded-md border bg-transparent px-2 py-1 w-72"
+                          value={activeProvider.checkpoint_name ?? ''}
+                          disabled={!isAdmin}
+                          onChange={(e) => patchProvider({ checkpoint_name: e.target.value })}
+                        >
+                          <option value="">（不指定，用模板兜底）</option>
+                          {models.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <Input
+                          className="w-72"
+                          value={activeProvider.checkpoint_name ?? ''}
+                          disabled={!isAdmin}
+                          placeholder="如 qwen_image_bf16.safetensors"
+                          onChange={(e) => patchProvider({ checkpoint_name: e.target.value })}
+                        />
+                      )}
+                      <Button variant="outline" size="sm" onClick={handleLoadModels} disabled={loadingModels}>
+                        <RefreshCw size={14} className={`mr-1 ${loadingModels ? 'animate-spin' : ''}`} />
+                        {loadingModels ? '读取中…' : '读取列表'}
+                      </Button>
+                    </div>
+                    {modelsMessage && <p className="mt-1.5 text-xs text-muted-foreground">{modelsMessage}</p>}
+                  </SettingsRowWide>
+
+                  <SettingsRowWide
+                    icon={<ShieldCheck size={16} />}
+                    title="自定义工作流 JSON"
+                    desc="ComfyUI「导出(API)」格式。支持占位符 {{PROMPT}} {{NEGATIVE}} {{CKPT}} {{WIDTH}} {{HEIGHT}} {{SEED}} {{STEPS}} {{CFG}}；留空则用内置模板"
+                  >
+                    <textarea
+                      className="w-full rounded-md border border-border/60 bg-transparent px-3 py-2 font-mono text-xs leading-relaxed"
+                      rows={6}
+                      disabled={!isAdmin}
+                      value={activeProvider.workflow_json ?? ''}
+                      placeholder='{"6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{PROMPT}}"}}}'
+                      onChange={(e) => patchProvider({ workflow_json: e.target.value })}
+                    />
+                  </SettingsRowWide>
+                </>
+              )}
             </>
           )}
         </SettingsGroup>

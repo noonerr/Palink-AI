@@ -467,6 +467,9 @@ export const api = {
         mediaId ? { media_id: mediaId } : undefined,
         options,
       ),
+    /** 服务端模式下拉 ComfyUI checkpoint 列表（admin）。浏览器模式请走前端直连。 */
+    listComfyUIModels: () =>
+      api.get<{ models: string[] }>('/api/image-generation/comfyui/models'),
     /** 浏览器桥接执行：认领待执行任务（调用即置 dispatched）。 */
     listLocalTasks: () =>
       api.get<{ tasks: LocalImageTask[] }>('/api/image-generation/local-tasks/pending'),

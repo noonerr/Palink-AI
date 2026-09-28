@@ -490,7 +490,7 @@ def test_generate_image_for_message_uses_model_prompt(
     message = make_message()
     captured = {}
 
-    async def _fake_generate_image(*, prompt, user_id, provider_id=None):
+    async def _fake_generate_image(*, prompt, user_id, provider_id=None, **kwargs):
         captured["prompt"] = prompt
         captured["user_id"] = user_id
         return igs.GeneratedImage(
@@ -524,7 +524,7 @@ def test_generate_image_for_message_without_prompt_keeps_template_path(
     """不传 prompt 时维持既有启发式行为（模板拼装），P1 回归保护。"""
     message = make_message()
 
-    async def _fake_generate_image(*, prompt, user_id, provider_id=None):
+    async def _fake_generate_image(*, prompt, user_id, provider_id=None, **kwargs):
         return igs.GeneratedImage(
             image_url="/media/generated/p4b.png", prompt=prompt, provider_id="prov-1",
         )
@@ -677,7 +677,7 @@ def test_assistant_entry_prefers_model_prompt_over_heuristic(
     message = make_message()
     calls = {"model": 0, "heuristic": 0}
 
-    async def _fake_generate_image(*, prompt, user_id, provider_id=None):
+    async def _fake_generate_image(*, prompt, user_id, provider_id=None, **kwargs):
         calls["model"] += 1
         return igs.GeneratedImage(
             image_url="/media/generated/p4c.png", prompt=prompt, provider_id="prov-1"
