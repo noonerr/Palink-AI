@@ -74,6 +74,26 @@ def book_id(client: TestClient, auth_headers: dict) -> str:
     return _import_book(client, auth_headers, "同步触发夹具书", vectorized=False)
 
 
+def _set_recall_switch(db_session, user, enabled: bool, *, nested: bool = True) -> None:
+    """F2 (2026-09-30): 设置用户的「世界书语义召回」总开关。
+
+    ``nested=True`` 写到正确的键路径 world_info_settings.vectorized_enabled；
+    ``nested=False`` 故意写到顶层（用于证明键路径漂移不会被误判为开启）。
+    """
+    from app.models import UserSetting
+
+    if nested:
+        payload = json.dumps({"world_info_settings": {"vectorized_enabled": enabled}})
+    else:
+        payload = json.dumps({"vectorized_enabled": enabled})
+    us = db_session.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if us is None:
+        db_session.add(UserSetting(user_id=user.id, silly_tavern_settings=payload))
+    else:
+        us.silly_tavern_settings = payload
+    db_session.commit()
+
+
 @pytest.fixture()
 def sync_calls(monkeypatch) -> list:
     """拦截 _fire_vector_sync（真 fire-and-forget 线程），只记录 book_id。"""
@@ -84,21 +104,50 @@ def sync_calls(monkeypatch) -> list:
     return calls
 
 
-def test_update_stage_triggers_vector_sync_once(
-    client: TestClient, auth_headers: dict, book_id: str, sync_calls: list
+def test_update_stage_does_not_trigger_sync_when_switch_off(
+    client: TestClient, auth_headers: dict, db_session, test_user, book_id: str, sync_calls: list
 ):
+    """F2 反例：总开关关着时，勾选题目不得派嵌入（默认态，存量零突变）。"""
+    # 不设置开关 = 默认关（与 roleplay_prompt_assembly.py:4156 的默认一致）
     sid = _stage_id(client, auth_headers, book_id)
     resp = client.put(
         f"/api/worldbooks/{book_id}/stages/{sid}", headers=auth_headers, json={"vectorized": True}
     )
     assert resp.status_code == 200
-    assert sync_calls == [book_id], f"勾选后应触发一次同步，实际 {sync_calls}"
+    assert resp.json()["vectorized"] is True, "勾选本身仍要落库（UI 看得见）"
+    assert sync_calls == [], f"总开关关闭时不得派活，实际 {sync_calls}"
+
+
+def test_update_stage_does_not_trigger_sync_when_switch_written_at_wrong_path(
+    client: TestClient, auth_headers: dict, db_session, test_user, book_id: str, sync_calls: list
+):
+    """F2 反例加固：开关写在 world_info_settings 之外不算开（键路径漂移防护）。"""
+    _set_recall_switch(db_session, test_user, True, nested=False)
+    sid = _stage_id(client, auth_headers, book_id)
+    client.put(
+        f"/api/worldbooks/{book_id}/stages/{sid}", headers=auth_headers, json={"vectorized": True}
+    )
+    assert sync_calls == [], f"键路径不对时不得派活，实际 {sync_calls}"
+
+
+def test_update_stage_triggers_vector_sync_once_when_switch_on(
+    client: TestClient, auth_headers: dict, db_session, test_user, book_id: str, sync_calls: list
+):
+    """F2 正例：总开关开 + 勾选 → 派活一次。"""
+    _set_recall_switch(db_session, test_user, True)
+    sid = _stage_id(client, auth_headers, book_id)
+    resp = client.put(
+        f"/api/worldbooks/{book_id}/stages/{sid}", headers=auth_headers, json={"vectorized": True}
+    )
+    assert resp.status_code == 200
+    assert sync_calls == [book_id], f"总开关开 + 勾选题目应触发一次同步，实际 {sync_calls}"
 
 
 def test_update_stage_content_change_triggers_sync(
-    client: TestClient, auth_headers: dict, book_id: str, sync_calls: list
+    client: TestClient, auth_headers: dict, db_session, test_user, book_id: str, sync_calls: list
 ):
     """R1 核心：改内容也要触发——就绪检测只比行数，不做内容脏检查。"""
+    _set_recall_switch(db_session, test_user, True)  # F2 前置
     sid = _stage_id(client, auth_headers, book_id)
     client.put(
         f"/api/worldbooks/{book_id}/stages/{sid}", headers=auth_headers, json={"vectorized": True}
@@ -128,12 +177,13 @@ def test_update_stage_without_vectorized_entry_does_not_trigger_sync(
 
 
 def test_update_stage_of_vectorized_book_triggers_sync(
-    client: TestClient, auth_headers: dict, sync_calls: list
+    client: TestClient, auth_headers: dict, db_session, test_user, sync_calls: list
 ):
     """书内已有 vectorized 条目时，编辑同书条目也要触发（该书整体重算）。
 
     注意：导入路径本身就会触发一次（既有行为），故断言"增量 +1"而非绝对次数。
     """
+    _set_recall_switch(db_session, test_user, True)  # F2 前置
     book = _import_book(client, auth_headers, "混合夹具书", vectorized=True)
     detail = client.get(f"/api/worldbooks/{book}", headers=auth_headers).json()
     sid = detail["stages"][0]["id"]

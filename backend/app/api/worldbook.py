@@ -108,8 +108,55 @@ def _fire_vector_delete(world_book_id: str) -> None:
     task.add_done_callback(_PENDING_VECTOR_SYNC_TASKS.discard)
 
 
+def _worldbook_vector_recall_enabled(db: Session, user_id) -> bool:
+    """F2 (2026-09-30): 该用户的「世界书语义召回」总开关是否打开。
+
+    读 ``UserSetting.silly_tavern_settings`` → ``world_info_settings.vectorized_enabled``，
+    与装配层消费点（roleplay_prompt_assembly.py:4196）**同一字典、同一键名**。
+
+    读不到 / 解析异常一律视为**关**：功能关着时宁可不派活，也不要白烧算力
+    （勾选一次 = 整本书重新嵌入一遍）。
+    """
+    try:
+        from ..models import UserSetting
+
+        us = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+        if us is None or not us.silly_tavern_settings:
+            return False
+        raw = (
+            json.loads(us.silly_tavern_settings)
+            if isinstance(us.silly_tavern_settings, str)
+            else us.silly_tavern_settings
+        )
+        wis = raw.get("world_info_settings") if isinstance(raw, dict) else None
+        if not isinstance(wis, dict):
+            return False
+        return bool(wis.get("vectorized_enabled", False))
+    except Exception as exc:
+        logger.debug(
+            "worldbook vector recall switch probe failed (user=%s): %s", user_id, exc,
+        )
+        return False
+
+
 def _schedule_worldbook_vector_sync(db: Session, world_book_id: str) -> None:
-    """commit 后调用：该书存在任一 vectorized=true 条目才触发后台同步（存量零突变）。"""
+    """commit 后调用：**总开关开** 且 该书存在任一 vectorized=true 条目才触发后台同步。
+
+    F2 (2026-09-30) 增加"用户总开关"这道前置。此前只判书内有无 vectorized 条目，
+    结果是——功能默认关着，用户每勾一个词条就给整本书排一次嵌入（几百条 × bge-m3），
+    而他什么都看不到。开关打开后的第一轮检索由 P2 的懒触发后台同步补齐
+    （worldbook_service._collect_vector_hits 路径），行为自洽，无需在此预热。
+    存量零突变：开关默认关 → 勾选/编辑都不派活。
+    """
+    try:
+        owner = db.query(WorldBook.user_id).filter(WorldBook.id == world_book_id).first()
+    except Exception as exc:
+        logger.debug("worldbook owner probe failed (book=%s): %s", world_book_id, exc)
+        return
+    if owner is None or owner[0] is None:
+        return
+    if not _worldbook_vector_recall_enabled(db, owner[0]):
+        return
     try:
         has_vectorized = (
             db.query(WorldBookStage.id)

@@ -64,6 +64,24 @@ def _mk_parents(db_session: Session, sess_id: str, book_id: str):
     return user, char
 
 
+def _set_recall_switch(db_session: Session, user: User, enabled: bool) -> None:
+    """F2 (2026-09-30): 设置该用户的「世界书语义召回」总开关。
+
+    写入 UserSetting.silly_tavern_settings["world_info_settings"]["vectorized_enabled"]，
+    与后端读取点（api/worldbook.py::_worldbook_vector_recall_enabled、
+    roleplay_prompt_assembly.py:4196）同一键路径。
+    """
+    from app.models import UserSetting
+
+    us = db_session.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    payload = json.dumps({"world_info_settings": {"vectorized_enabled": enabled}})
+    if us is None:
+        db_session.add(UserSetting(user_id=user.id, silly_tavern_settings=payload))
+    else:
+        us.silly_tavern_settings = payload
+    db_session.commit()
+
+
 def _mk_stage(eid: str, key: str, content: str, *, vectorized: bool = False,
               world_book_id: str = "wb") -> WorldBookStage:
     return WorldBookStage(
@@ -188,18 +206,20 @@ class TestSyncTriggerWiring:
         return app
 
     def test_stage_update_triggers_sync(self, db_session, monkeypatch):
-        """条目编辑路径：vectorized 书 commit 后应调度 sync。"""
+        """条目编辑路径：总开关开 + 含 vectorized 条目 → commit 后应调度 sync。"""
         from app.api import worldbook as wb_api
 
-        _mk_parents(db_session, "sess-t1", "wb-t1")
+        user, _ = _mk_parents(db_session, "sess-t1", "wb-t1")
         db_session.add(_mk_stage("vt1", "dragon", "Dragon lore", vectorized=True,
                                  world_book_id="wb-t1"))
         db_session.commit()
+        # F2：调度新增"总开关"前置，本例必须显式打开才会派活
+        _set_recall_switch(db_session, user, True)
 
         fired: list[str] = []
         monkeypatch.setattr(wb_api, "_fire_vector_sync", lambda bid: fired.append(bid))
         wb_api._schedule_worldbook_vector_sync(db_session, "wb-t1")
-        assert fired == ["wb-t1"], "含 vectorized 条目的书编辑后必须调度同步"
+        assert fired == ["wb-t1"], "总开关开 + 含 vectorized 条目的书编辑后必须调度同步"
 
     def test_schedule_gate_skips_non_vectorized_books(self, db_session, monkeypatch):
         """无 vectorized 条目的书不应触发同步（存量零突变）。"""
@@ -216,11 +236,12 @@ class TestSyncTriggerWiring:
         assert fired == [], "无 vectorized 条目时不得触发"
 
     def test_import_endpoint_fires_sync_for_vectorized_entries(
-        self, client, db_session, monkeypatch,
+        self, client, db_session, test_user, monkeypatch,
     ):
-        """ST V2 导入路径：含 vectorized 条目时 commit 后调度同步。"""
+        """ST V2 导入路径：总开关开 + 含 vectorized 条目时 commit 后调度同步。"""
         from app.api import worldbook as wb_api
 
+        _set_recall_switch(db_session, test_user, True)  # F2：总开关前置
         payload = {
             "name": "imported-vec-book",
             "entries": {

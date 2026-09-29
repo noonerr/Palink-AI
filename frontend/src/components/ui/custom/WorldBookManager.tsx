@@ -311,7 +311,8 @@ export function WorldBookManager({
                       )}
                       {(vectorOverride[stage.id] ?? stage.vectorized) && (
                         <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
-                          还要在「设置 → 角色扮演引擎 → 世界书全局设置」里打开「世界书语义召回」才生效；
+                          还要在「设置 → 角色扮演引擎 → 世界书全局设置」里打开「世界书语义召回」：
+                          打开总开关后才会开始为这本书建立索引，现在还没开始算；
                           第一次打开后的下一条消息开始准备，再下一条才生效。
                         </p>
                       )}
