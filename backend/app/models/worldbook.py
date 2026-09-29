@@ -112,9 +112,11 @@ class WorldBookEntryVector(Base):
 
     生产 Postgres 由 ``services/worldbook_vector_service.ensure_table`` 以原生
     ``vector(dim)`` 列建表；此模型与该 DDL 列一一对应，供同步/清理路径读写
-    与 SQLite 测试建表。embedding 统一以 ``[f1,f2,...]`` 字符串承载：
-    psycopg 文本字面量在 Postgres 上可隐式转换为 vector 类型，
-    SQLite/单测环境下按 Text 原样存储。
+    与 SQLite 测试建表。embedding 统一以 ``[f1,f2,...]`` 字符串承载。
+    ⚠ P5 勘误（2026-09-29 实弹）：**写入必须走原生 SQL + ``CAST(:v AS vector)``
+    （sync_worldbook_vectors._write_vector_sql）**——ORM 语句把 Text 参数显式
+    绑定为 ::TEXT，PG 拒绝 text→vector 隐式转换，ORM 直写在真 PG 上必炸
+    （DatatypeMismatch）。SQLite/单测环境无此问题。
     """
     __tablename__ = "world_book_entry_vectors"
     id = Column(Integer, primary_key=True, autoincrement=True)

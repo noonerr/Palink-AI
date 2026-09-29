@@ -179,6 +179,32 @@ class WorldBookVectorService:
             self.db.rollback()
             raise
 
+    def _write_vector_sql(self, entry_id: str, ch: str, vec_str: str, is_new: bool) -> None:
+        """写入/更新一行向量（PG 原生 SQL + 显式 CAST）。
+
+        P5 实弹修正（2026-09-29 e2e 探针发现，SPEC 勘误③）：ORM 模型的
+        embedding 列声明为 Text，而生产 PG 表列是 vector(dim)——ORM 语句把
+        参数显式绑定成 ``::TEXT``，PG 拒绝 text→vector 隐式转换
+        （DatatypeMismatch），sync_worldbook_vectors 在真 PG 上**从未成功
+        写入过一行**（此前"写入链路已实测可用"是假象，0 行表佐证）。
+        原生 SQL + ``CAST(:v AS vector)`` 与查询侧既有写法对齐；
+        SQLite（单测）按方言回退为原样文本绑定——SQLite 会把 CAST 到未知
+        类型名按数字亲和性解析，向量字符串会被吞成 0。
+        """
+        is_pg = self.db.get_bind().dialect.name == "postgresql"
+        vec_expr = "CAST(:v AS vector)" if is_pg else ":v"
+        if is_new:
+            self.db.execute(text(
+                f"INSERT INTO world_book_entry_vectors (entry_id, content_hash, embedding) "
+                f"VALUES (:e, :c, {vec_expr})"
+            ), {"e": entry_id, "c": ch, "v": vec_str})
+        else:
+            self.db.execute(text(
+                f"UPDATE world_book_entry_vectors SET content_hash = :c, "
+                f"embedding = {vec_expr}, updated_at = CURRENT_TIMESTAMP "
+                f"WHERE entry_id = :e"
+            ), {"e": entry_id, "c": ch, "v": vec_str})
+
     def sync_worldbook_vectors(self, world_book_id: str) -> dict:
         """全量同步世界书的 vectorized 条目向量。
 
@@ -245,16 +271,11 @@ class WorldBookVectorService:
                             try:
                                 vec = _flatten_embedding(embeddings[i])
                                 vec_str = _vector_to_pgstr(vec)
-                                existing = existing_map.get(entry_id)
-                                if existing:
-                                    existing.content_hash = ch
-                                    existing.embedding = vec_str
-                                else:
-                                    self.db.add(WorldBookEntryVector(
-                                        entry_id=entry_id,
-                                        content_hash=ch,
-                                        embedding=vec_str,
-                                    ))
+                                # P5: 原生 SQL + 显式 CAST（ORM Text 绑定在真 PG 上必炸）
+                                self._write_vector_sql(
+                                    entry_id, ch, vec_str,
+                                    is_new=entry_id not in existing_map,
+                                )
                                 synced += 1
                             except Exception as e:
                                 logger.warning(f"处理条目 {entry_id} 向量失败: {e}")
@@ -274,16 +295,11 @@ class WorldBookVectorService:
                                     )
                                     continue
                                 vec_str = _vector_to_pgstr(vec)
-                                existing = existing_map.get(entry_id)
-                                if existing:
-                                    existing.content_hash = ch
-                                    existing.embedding = vec_str
-                                else:
-                                    self.db.add(WorldBookEntryVector(
-                                        entry_id=entry_id,
-                                        content_hash=ch,
-                                        embedding=vec_str,
-                                    ))
+                                # P5: 原生 SQL + 显式 CAST（同上）
+                                self._write_vector_sql(
+                                    entry_id, ch, vec_str,
+                                    is_new=entry_id not in existing_map,
+                                )
                                 synced += 1
                             except Exception as e2:
                                 logger.warning(f"单条嵌入条目 {entry_id} 失败: {e2}")
