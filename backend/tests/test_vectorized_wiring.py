@@ -375,8 +375,9 @@ class TestVectorParams:
     def test_defaults_without_env(self, monkeypatch):
         monkeypatch.delenv("WI_VECTOR_TOP_K", raising=False)
         monkeypatch.delenv("WI_VECTOR_THRESHOLD", raising=False)
-        assert _resolve_vector_top_k() == 5
-        assert _resolve_vector_threshold() == 0.25
+        # P1 (2026-09-29): 默认从 5/0.25 收紧到 3/0.55（SPEC §3 P1）
+        assert _resolve_vector_top_k() == 3
+        assert _resolve_vector_threshold() == 0.55
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("WI_VECTOR_TOP_K", "7")
@@ -393,8 +394,9 @@ class TestVectorParams:
     def test_invalid_env_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("WI_VECTOR_TOP_K", "not-a-number")
         monkeypatch.setenv("WI_VECTOR_THRESHOLD", "oops")
-        assert _resolve_vector_top_k() == 5
-        assert _resolve_vector_threshold() == 0.25
+        # P1 (2026-09-29): 默认 3/0.55
+        assert _resolve_vector_top_k() == 3
+        assert _resolve_vector_threshold() == 0.55
 
 
 # ---------------------------------------------------------------------------

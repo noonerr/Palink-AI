@@ -1359,25 +1359,100 @@ def _apply_budget(
     return result
 
 
-def _resolve_vector_top_k(explicit: Optional[int] = None) -> int:
-    """V-3: 向量检索 top_k 解析——显式参数优先，其次 env WI_VECTOR_TOP_K，默认 5。"""
+def _resolve_vector_top_k(
+    explicit: Optional[int] = None,
+    settings_value: Optional[int] = None,
+) -> int:
+    """V-3/P1 (2026-09-29): top_k 解析优先级——显式参数 > world_info_settings.vector_top_k
+    > env WI_VECTOR_TOP_K > 默认 3。
+
+    P1（SPEC_世界书向量召回接通与防护 §3）: 默认从 5 收紧到 3，且 settings 层
+    优先于 env（env 仅作兜底）。越界值钳制到 1~10。
+    """
     if explicit is not None and explicit > 0:
         return int(explicit)
+    if settings_value is not None:
+        try:
+            return max(1, min(10, int(settings_value)))
+        except (TypeError, ValueError):
+            pass
     try:
-        value = int(os.getenv("WI_VECTOR_TOP_K", "5"))
-        return value if value > 0 else 5
+        value = int(os.getenv("WI_VECTOR_TOP_K", "3"))
+        return max(1, min(10, value)) if value > 0 else 3
     except ValueError:
-        return 5
+        return 3
 
 
-def _resolve_vector_threshold(explicit: Optional[float] = None) -> float:
-    """V-3: 相似度阈值解析——显式参数优先，其次 env WI_VECTOR_THRESHOLD，默认 0.25。"""
+def _resolve_vector_threshold(
+    explicit: Optional[float] = None,
+    settings_value: Optional[float] = None,
+) -> float:
+    """V-3/P1 (2026-09-29): 相似度阈值解析优先级——显式参数 >
+    world_info_settings.vector_threshold > env WI_VECTOR_THRESHOLD > 默认 0.55。
+
+    P1（SPEC §3）: 默认从 0.25 提到 0.55——本项目 bge-m3 实测无关查询
+    top1=0.459、0.3 阈值下 77 条里 75 条过阈（memory_module/config.py
+    MIN_SIMILARITY 注释），0.25 一旦开关打开就是"每轮无脑塞 5 条不相干设定"。
+    世界书条目短、误召代价高，比记忆的 0.5 更保守。
+    **换嵌入模型后必须重测校准，勿沿用此值。** 越界值钳制到 0~1。
+    """
     if explicit is not None:
-        return float(explicit)
+        return max(0.0, min(1.0, float(explicit)))
+    if settings_value is not None:
+        try:
+            return max(0.0, min(1.0, float(settings_value)))
+        except (TypeError, ValueError):
+            pass
     try:
-        return float(os.getenv("WI_VECTOR_THRESHOLD", "0.25"))
+        value = float(os.getenv("WI_VECTOR_THRESHOLD", "0.55"))
+        return max(0.0, min(1.0, value)) if 0.0 <= value <= 1.0 else 0.55
     except ValueError:
-        return 0.25
+        return 0.55
+
+
+def _read_vector_params_from_settings(
+    db: DBSession,
+    user_id: int,
+) -> tuple[Optional[int], Optional[float]]:
+    """P1 (2026-09-29): 从 ``silly_tavern_settings["world_info_settings"]`` 读取
+    ``vector_top_k`` / ``vector_threshold``（优先级链中的 settings 层）。
+
+    键缺失/非法返回 None，走 env 兜底。UserSetting 通常已被装配层在同一
+    session 中加载过，此处走 SQLAlchemy identity map，不产生额外 SQL。
+    任何异常只 warning，绝不阻塞装配。
+    """
+    try:
+        from ..models import UserSetting
+
+        us = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+        if us is None or not us.silly_tavern_settings:
+            return None, None
+        raw = (
+            json.loads(us.silly_tavern_settings)
+            if isinstance(us.silly_tavern_settings, str)
+            else us.silly_tavern_settings
+        )
+        wis = raw.get("world_info_settings") if isinstance(raw, dict) else None
+        if not isinstance(wis, dict):
+            return None, None
+        top_k: Optional[int] = None
+        threshold: Optional[float] = None
+        try:
+            tk = wis.get("vector_top_k")
+            if tk is not None and str(tk).strip() != "":
+                top_k = int(tk)
+        except (TypeError, ValueError):
+            top_k = None
+        try:
+            tv = wis.get("vector_threshold")
+            if tv is not None and str(tv).strip() != "":
+                threshold = float(tv)
+        except (TypeError, ValueError):
+            threshold = None
+        return top_k, threshold
+    except Exception as exc:
+        logger.warning("worldbook vector params settings read failed: %s", exc)
+        return None, None
 
 
 def _vector_query_text(recent_messages: list[dict]) -> str:
@@ -1618,10 +1693,11 @@ def build_worldbook_context(
     # A4 修复: ST world_info_depth 全局扫描深度（设置层默认对齐 ST=2）。
     # None 时回退 DEFAULT_SCAN_DEPTH；仅影响未设置自定义 scan_depth 的条目。
     world_info_depth: Optional[int] = None,
-    # V-3 (2026-08-25): vectorized 检索总开关——WI 全局设置
+    # V-3 (2026-08-25) / P1 (2026-09-29): vectorized 检索总开关——WI 全局设置
     # silly_tavern_settings["world_info_settings"]["vectorized_enabled"]，
-    # 默认 False 存量零突变；top_k/threshold 缺省走 env
-    # WI_VECTOR_TOP_K / WI_VECTOR_THRESHOLD（5 / 0.25）。
+    # 默认 False 存量零突变。top_k/threshold 解析优先级：显式参数 >
+    # world_info_settings（vector_top_k / vector_threshold）> env
+    # WI_VECTOR_TOP_K / WI_VECTOR_THRESHOLD > 默认（3 / 0.55，P1 收紧）。
     vectorized_enabled: bool = False,
     vector_top_k: Optional[int] = None,
     vector_threshold: Optional[float] = None,
@@ -1760,12 +1836,17 @@ def build_worldbook_context(
     # 时，以最近 4 条消息拼接为查询做语义检索；嵌入失败/服务不可用静默降级为
     # "本轮无命中"（_collect_vector_hits 与此处双重兜底），绝不阻塞主对话。
     vector_hits: dict[str, float] = {}
+    # P1 (2026-09-29): 解析优先级 explicit > settings > env > 默认（3 / 0.55）。
+    # settings 层在本函数内部读取 world_info_settings（identity map 命中，
+    # 不额外打 SQL），装配层 roleplay_prompt_assembly 保持零接触。
+    _settings_top_k, _settings_threshold = (None, None)
     if vectorized_enabled:
+        _settings_top_k, _settings_threshold = _read_vector_params_from_settings(db, user_id)
         try:
             vector_hits = _collect_vector_hits(
                 db, entries, msgs,
-                top_k=vector_top_k,
-                threshold=vector_threshold,
+                top_k=_resolve_vector_top_k(vector_top_k, _settings_top_k),
+                threshold=_resolve_vector_threshold(vector_threshold, _settings_threshold),
             )
         except Exception as exc:
             logger.warning("worldbook vector retrieval degraded (no hits this turn): %s", exc)
