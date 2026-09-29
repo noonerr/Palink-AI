@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, BookOpen, FileJson, X, Layers } from 'lucide-react';
 import { GlassCard } from './GlassCard';
-import type { WorldBook, WorldBookDetail } from '@/types';
+import type { WorldBook, WorldBookDetail, WorldBookStage } from '@/types';
 import type { Translations } from '@/types';
 import type { Blueprint } from '@/lib/worldbook/types';
 import { worldbookApi } from '@/services/worldbookApi';
@@ -45,6 +45,40 @@ export function WorldBookManager({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [internalTypeFilter, setInternalTypeFilter] = useState<'character_book' | 'world_book' | null>(null);
+
+  // 语义召回勾选（SPEC §11 D）：本组件此前无任何写通道（展开区全 readOnly），
+  // 勾选走 worldbookApi.updateStage 单独落库；本地乐观更新 + 失败回滚，
+  // 其余字段仍保持只读展示（不在本批范围内）。
+  const [vectorOverride, setVectorOverride] = useState<Record<string, boolean>>({});
+  const [vectorSaving, setVectorSaving] = useState<Record<string, boolean>>({});
+  const [vectorError, setVectorError] = useState<string>('');
+
+  // 换书时清空乐观覆盖，避免上一本书的勾选状态串到新书
+  useEffect(() => {
+    setVectorOverride({});
+    setVectorSaving({});
+    setVectorError('');
+  }, [selectedWorldBook?.id]);
+
+  const handleToggleVectorRecall = useCallback(async (stage: WorldBookStage, next: boolean) => {
+    if (!selectedWorldBook || vectorSaving[stage.id]) return;
+    setVectorSaving((s) => ({ ...s, [stage.id]: true }));
+    setVectorError('');
+    setVectorOverride((o) => ({ ...o, [stage.id]: next }));  // 乐观更新
+    try {
+      const updated = await worldbookApi.updateStage(
+        selectedWorldBook.id, stage.id, { vectorized: next },
+      );
+      // 以服务端回读值为准（后端 _stage_to_response 是真白名单）
+      setVectorOverride((o) => ({ ...o, [stage.id]: !!updated.vectorized }));
+    } catch (e) {
+      setVectorOverride((o) => ({ ...o, [stage.id]: !!stage.vectorized }));  // 回滚
+      setVectorError('保存失败，「按意思找」的勾选没有生效');
+      console.error('Failed to update stage vectorized:', e);
+    } finally {
+      setVectorSaving((s) => ({ ...s, [stage.id]: false }));
+    }
+  }, [selectedWorldBook, vectorSaving]);
 
   // Blueprint apply state
   const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
@@ -205,6 +239,9 @@ export function WorldBookManager({
                       {stage.stage_index + 1}
                     </span>
                     <span className="font-medium text-sm">{stage.title || `词条 ${stage.stage_index + 1}`}</span>
+                    {(vectorOverride[stage.id] ?? stage.vectorized) && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-teal-500/15 dark:bg-teal-500/20 text-teal-600 dark:text-teal-300">按意思找</span>
+                    )}
                     {stage.constant && (
                       <span className="px-1.5 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-400">常量</span>
                     )}
@@ -248,6 +285,40 @@ export function WorldBookManager({
                       <span>扫描深度: {stage.scan_depth}</span>
                       {stage.selective && <span className="text-orange-500 dark:text-orange-400">双键模式</span>}
                     </div>
+                    {/* 语义召回勾选（SPEC §11 D）：文案一律人话，不出现英文键名 */}
+                    <div className="pt-1">
+                      <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="w-3.5 h-3.5 accent-primary"
+                          disabled={!!vectorSaving[stage.id]}
+                          checked={vectorOverride[stage.id] ?? stage.vectorized}
+                          onChange={(e) => void handleToggleVectorRecall(stage, e.target.checked)}
+                        />
+                        <span className="font-medium">按意思找这条设定</span>
+                        {vectorSaving[stage.id] && (
+                          <span className="text-[11px] text-muted-foreground">保存中…</span>
+                        )}
+                      </label>
+                      <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                        勾上后这条<strong className="font-medium text-foreground">不再靠关键词触发</strong>，
+                        而是按语义相似度找；写了关键词的条目建议不要勾。
+                      </p>
+                      {(vectorOverride[stage.id] ?? stage.vectorized) && (stage.keys ?? []).length === 0 && (
+                        <p className="mt-1 text-[11px] text-orange-500 dark:text-orange-400 leading-relaxed">
+                          这条没写关键词，只能靠语义召回；语义服务不可用时这条不会被注入。
+                        </p>
+                      )}
+                      {(vectorOverride[stage.id] ?? stage.vectorized) && (
+                        <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                          还要在「设置 → 角色扮演引擎 → 世界书全局设置」里打开「世界书语义召回」才生效；
+                          第一次打开后的下一条消息开始准备，再下一条才生效。
+                        </p>
+                      )}
+                    </div>
+                    {vectorError && (
+                      <p className="text-[11px] text-red-500 dark:text-red-400">{vectorError}</p>
+                    )}
                     {stage.summary && (
                       <p className="text-xs text-muted-foreground italic">{stage.summary}</p>
                     )}
