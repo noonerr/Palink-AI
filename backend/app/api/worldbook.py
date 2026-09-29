@@ -637,6 +637,10 @@ async def update_stage(
 
     wb.updated_at = _utc_now()
     db.commit()
+    # SPEC §11 R1：词条编辑后必须复用既有调度触发后台同步。
+    # P2 的 _book_vectors_ready 只比行数、不做内容脏检查，不触发的话
+    # 改了词条内容向量库仍留着旧内容的向量（界面看着勾上了、召回的却是旧设定）。
+    _schedule_worldbook_vector_sync(db, world_book_id)
     return _stage_to_response(stage)
 
 
