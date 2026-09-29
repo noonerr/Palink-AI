@@ -42,6 +42,66 @@ const MANAGER_SOURCE = readFileSync(
   'utf-8',
 );
 
+// 组件的 JSX 区：所有 hook / handler 代码都在 `if (selectedWorldBook) {` 之前，
+// 从那里切到文件尾只剩两个 return 的 JSX，避免把代码标识符误当成界面文案。
+const MANAGER_JSX_REGION = MANAGER_SOURCE.slice(
+  MANAGER_SOURCE.indexOf('if (selectedWorldBook) {'),
+);
+
+/** 找到与 open 处 '{' 配对的 '}' 下标；不配对返回 -1。 */
+function matchBrace(src: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 抽取 JSX **文本节点**——用户在界面上真正看得见的字。
+ *
+ * 做法：只取 `>` 与 `<` 之间的内容（天然排除标签属性），并把
+ * `{cond && (<p>文案</p>)}` 这类表达式容器里嵌套的 JSX 递归展开；
+ * `{/* ... *​/}` 注释与 `{stage.content}` 这类纯表达式丢弃。
+ *
+ * 这是 F1 的修复点：原来的写法先把所有含 vector 的 token 删光再断言找不到
+ * vector，是恒真断言（永远绿）。这里只扫描看得见的文本，往任意一条文案里
+ * 塞一个 "vectorized" 都会让它变红。
+ */
+function collectJsxText(src: string, out: string[] = [], depth = 0): string[] {
+  if (depth > 8) return out;
+  const re = />([^<>]*)</g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    let chunk = m[1];
+    let i = 0;
+    while (i < chunk.length) {
+      const open = chunk.indexOf('{', i);
+      if (open === -1) break;
+      const close = matchBrace(chunk, open);
+      if (close === -1) {
+        // 形如 `{cond && (` 的容器：闭合括号在嵌套 JSX 之后、超出本 chunk。
+        // 它是纯代码，丢弃；其内部嵌套的 JSX 会由外层扫描单独命中。
+        chunk = chunk.slice(0, open);
+        break;
+      }
+      const inner = chunk.slice(open + 1, close);
+      if (!/^\s*\/\*/.test(inner)) {
+        collectJsxText(inner, out, depth + 1);
+      }
+      chunk = chunk.slice(0, open) + chunk.slice(close + 1);
+      i = open;
+    }
+    out.push(chunk);
+  }
+  return out;
+}
+
 /** 取 updateStage 的函数体（到下一个顶层成员为止）。 */
 function updateStageBody(): string {
   const start = WORLDBOOK_API_SOURCE.indexOf('updateStage:');
@@ -117,10 +177,21 @@ describe('WorldBookManager 勾选接线与文案（SPEC §11 D）', () => {
     expect(MANAGER_SOURCE).toContain('只能靠语义召回');
   });
 
-  it('界面文案不出现 vectorized 字样（只许出现在代码标识符里）', () => {
-    // 剔除所有含 vector 的标识符（属性读取 / 对象键 / 状态名 / 注释引用）后
-    // 若仍残留 "vector" 字样，说明它漏进了面向用户的文案
-    const stripped = MANAGER_SOURCE.replace(/vector\w*/gi, '');
-    expect(stripped.toLowerCase().includes('vector')).toBe(false);
+  it('界面文案不出现 vectorized 字样（只扫描 JSX 文本节点）', () => {
+    const texts = collectJsxText(MANAGER_JSX_REGION);
+    const visible = texts.join('\n');
+
+    // 自检：扫描器必须真的抽到了界面文案，否则又变成一个空断言
+    expect(visible).toContain('按意思找这条设定');
+    expect(visible).toContain('不再靠关键词触发');
+
+    // F1 真守卫：只查看得见的文本——往任意一条文案里塞 "vectorized" 会变红
+    expect(visible).not.toMatch(/vector/i);
+  });
+
+  it('F2 文案：勾选后说明"打开总开关后才会开始建立索引"，不让用户以为已经算完', () => {
+    const texts = collectJsxText(MANAGER_JSX_REGION).join('\n');
+    expect(texts).toContain('打开总开关后才会开始为这本书建立索引');
+    expect(texts).toContain('现在还没开始算');
   });
 });
