@@ -18,6 +18,18 @@ from ..models.worldbook import WorldBookStage, WorldBookEntryVector
 
 logger = logging.getLogger(__name__)
 
+# P4 (2026-09-29, SPEC §3): provider → 实际嵌入维度对照表（静态声明，不实例化嵌入器）。
+# MEMORY_VECTOR_DIMENSION 与 provider 实际维度漂移时，写入/检索全部作废——
+# 2026-09-22 实测过 vector(512) vs 配置 1024 的死表（DIM-CONTRACT）。
+# 三方口径：ollama+bge-m3=1024（docker-compose）/ fastembed+bge-small-zh-v1.5=512
+# （memory_module/config.py 默认）/ SimpleHash 兜底=384（embedder.py）。
+# 换嵌入模型必须同步改 MEMORY_VECTOR_DIMENSION 并重测相似度阈值。
+_PROVIDER_EXPECTED_DIMS: dict = {
+    "ollama": 1024,
+    "fastembed": 512,
+    "openai": 1536,
+}
+
 
 def _content_hash(content: str) -> str:
     """计算内容的 blake2b 哈希（64 位十六进制）用于脏检查。"""
@@ -109,10 +121,33 @@ class WorldBookVectorService:
             )
         self.db.execute(text("DROP TABLE IF EXISTS world_book_entry_vectors"))
 
+    def _declared_dim_matches_provider(self) -> bool:
+        """P4 (2026-09-29, SPEC §3): 声明维度与 provider 实际维度一致性门禁。
+
+        不一致时拒绝建表/自愈——拒绝即自然降级为关键词召回，不污染、不自毁
+        （原来的 ALTER 整表自愈会把已有向量作废重来）。未知 provider 不拦，
+        运行时写入/查询侧另有逐向量维度校验兜底。
+        """
+        provider = memory_config.EMBEDDING_PROVIDER
+        expected = _PROVIDER_EXPECTED_DIMS.get(provider)
+        if expected is None or expected == memory_config.VECTOR_DIMENSION:
+            return True
+        logger.error(
+            "MEMORY_VECTOR_DIMENSION=%s 与 provider=%s 实际维度 %s 不一致，"
+            "拒绝为世界书向量建表/同步/检索（自然降级为关键词召回，不污染）。"
+            "请修正 .env / docker-compose 的 MEMORY_VECTOR_DIMENSION 后重启。",
+            memory_config.VECTOR_DIMENSION, provider, expected,
+        )
+        return False
+
     def ensure_table(self):
         """确保向量表和索引存在（幂等）。"""
         dim = memory_config.VECTOR_DIMENSION
         try:
+            if not self._declared_dim_matches_provider():
+                # P4: 维度门禁不过 → 拒建。调用方（sync/query）随后的 SQL 会因
+                # 表缺失而失败，走各自降级路径（sync error / query degraded）。
+                return
             self._reconcile_vector_dimension(dim)
             self.db.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS world_book_entry_vectors (
@@ -196,6 +231,16 @@ class WorldBookVectorService:
                         embeddings = embed_text(texts)
                         if isinstance(embeddings, np.ndarray) and embeddings.ndim == 1:
                             embeddings = embeddings.reshape(1, -1)
+                        # P4: 产出维度 ≠ 声明维度 → 整块拒绝（嵌入服务降级或配置漂移，
+                        # 宁缺勿错，坏向量写进去就是"存得进召不回"的死数据）
+                        if (
+                            embeddings.ndim == 2
+                            and embeddings.shape[-1] != memory_config.VECTOR_DIMENSION
+                        ):
+                            raise ValueError(
+                                f"嵌入维度 {embeddings.shape[-1]} ≠ 声明维度 "
+                                f"{memory_config.VECTOR_DIMENSION}（P4 门禁，整块拒绝）"
+                            )
                         for i, (entry_id, _content, ch) in enumerate(_chunk):
                             try:
                                 vec = _flatten_embedding(embeddings[i])
@@ -221,6 +266,13 @@ class WorldBookVectorService:
                         for entry_id, content, ch in _chunk:
                             try:
                                 vec = _flatten_embedding(embed_text(content))
+                                # P4: 单条同样校验维度
+                                if len(vec) != memory_config.VECTOR_DIMENSION:
+                                    logger.warning(
+                                        "条目 %s 嵌入维度 %s ≠ 声明 %s，拒绝写入（P4）",
+                                        entry_id, len(vec), memory_config.VECTOR_DIMENSION,
+                                    )
+                                    continue
                                 vec_str = _vector_to_pgstr(vec)
                                 existing = existing_map.get(entry_id)
                                 if existing:
@@ -286,6 +338,14 @@ class WorldBookVectorService:
             # 1. 嵌入查询文本
             query_emb = embed_text(query_text)
             query_vec = _flatten_embedding(query_emb)
+            # P4: 查询向量维度 ≠ 声明维度（嵌入服务降级/配置漂移）→ 降级返回，
+            # 调用方（_collect_vector_hits）会按 P3 对该书回退关键词匹配
+            if len(query_vec) != memory_config.VECTOR_DIMENSION:
+                logger.warning(
+                    "worldbook query 嵌入维度 %s ≠ 声明 %s，本轮降级（P3 回退关键词）",
+                    len(query_vec), memory_config.VECTOR_DIMENSION,
+                )
+                return [], True
             query_vec_str = _vector_to_pgstr(query_vec)
 
             # 2. 用 pgvector 的 <=> 算子在 DB 内做 cosine 距离查询

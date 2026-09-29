@@ -460,3 +460,86 @@ class TestP2NoSyncInAssemblyPath:
         finally:
             with wb_svc._LAZY_SYNC_LOCK:
                 wb_svc._LAZY_SYNC_INFLIGHT.discard("wb-dedupe")
+
+
+# ---------------------------------------------------------------------------
+# P4: 维度门禁（provider 对照表拒建表 / 写入侧逐向量校验 / 查询侧降级）
+# ---------------------------------------------------------------------------
+class TestP4DimensionGate:
+    def _svc(self, db_session):
+        from app.services.worldbook_vector_service import WorldBookVectorService
+        return WorldBookVectorService(db_session)
+
+    def test_ensure_table_refuses_on_provider_dim_mismatch(self, db_session, monkeypatch):
+        """声明维度与 provider 实际维度不符 → 拒绝进入建表/自愈流程（自然降级，不自毁）。
+
+        注：conftest 的 create_all 会预建全部模型表，无法用 has_table 观察拒建，
+        改为断言 reconcile（唯一 DDL 入口）未被调用。
+        """
+        from app.memory_module.config import memory_config
+        from app.services.worldbook_vector_service import WorldBookVectorService
+
+        monkeypatch.setattr(memory_config, "EMBEDDING_PROVIDER", "ollama")
+        monkeypatch.setattr(memory_config, "VECTOR_DIMENSION", 512)
+        svc = self._svc(db_session)
+        called: list[int] = []
+        monkeypatch.setattr(
+            WorldBookVectorService, "_reconcile_vector_dimension",
+            lambda self, dim: called.append(dim),
+        )
+        svc.ensure_table()
+        assert called == [], "维度门禁不过时不得进入建表/自愈流程"
+
+    def test_ensure_table_creates_when_matched(self, db_session):
+        """默认测试环境（fastembed/512）一致 → 正常建表。"""
+        from sqlalchemy import inspect
+
+        svc = self._svc(db_session)
+        svc.ensure_table()
+        assert inspect(db_session.bind).has_table("world_book_entry_vectors")
+
+    def test_sync_rejects_wrong_dim_vectors(self, db_session, monkeypatch):
+        """嵌入器产出维度 ≠ 声明维度 → 拒绝写入（宁缺勿错，不产生死向量）。"""
+        import numpy as np
+
+        from app.memory_module.config import memory_config
+
+        user, _ = _mk_parents(db_session, "sess-p4a", "wb-p4a")
+        db_session.add(_mk_stage("vp4a", "dragon", "Dragon lore", vectorized=True,
+                                 world_book_id="wb-p4a"))
+        db_session.commit()
+        monkeypatch.setattr(
+            "app.services.worldbook_vector_service.embed_text",
+            lambda texts: np.ones((len(texts), 777), dtype="float32") * 0.01,
+        )
+        result = self._svc(db_session).sync_worldbook_vectors("wb-p4a")
+        assert result.get("synced") == 0, "维度不符的向量不得写入"
+        from app.models.worldbook import WorldBookEntryVector
+        assert db_session.query(WorldBookEntryVector).count() == 0
+
+    def test_query_degrades_on_wrong_dim_query_vector(self, db_session, monkeypatch):
+        """查询向量维度不符 → ([], True) 降级，调用方回退关键词。"""
+        import numpy as np
+
+        monkeypatch.setattr(
+            "app.services.worldbook_vector_service.embed_text",
+            lambda texts: np.ones((1, 777), dtype="float32") * 0.01,
+        )
+        hits, degraded = self._svc(db_session).query_entries("wb-any", "hello")
+        assert hits == []
+        assert degraded is True, "查询维度不符必须降级而非可信的空结果"
+
+    def test_sync_still_works_when_dims_match(self, db_session, monkeypatch):
+        """回归基线：维度一致时 sync 正常入库（512/512 测试环境）。"""
+        import numpy as np
+
+        user, _ = _mk_parents(db_session, "sess-p4b", "wb-p4b")
+        db_session.add(_mk_stage("vp4b", "dragon", "Dragon lore", vectorized=True,
+                                 world_book_id="wb-p4b"))
+        db_session.commit()
+        monkeypatch.setattr(
+            "app.services.worldbook_vector_service.embed_text",
+            lambda texts: np.ones((len(texts), 512), dtype="float32") * 0.01,
+        )
+        result = self._svc(db_session).sync_worldbook_vectors("wb-p4b")
+        assert result.get("synced") == 1, "维度一致时必须正常入库"

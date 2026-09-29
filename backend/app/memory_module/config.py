@@ -3,6 +3,13 @@ from typing import Optional
 
 
 class MemoryConfig:
+    # 向量维度必须与 provider 实际产出一致，三档对照（2026-09-29 世界书向量 P4 勘定）：
+    #   ollama+bge-m3=1024（docker-compose 口径）/
+    #   fastembed+BAAI/bge-small-zh-v1.5=512（本文件默认）/
+    #   SimpleHash 兜底=384（embedder.py）。
+    # 漂移会让世界书向量表作废、记忆检索报错（世界书侧已加门禁拒绝建表并降级，
+    # 见 worldbook_vector_service._declared_dim_matches_provider）；
+    # 换嵌入模型必须同步改此值并重测相似度阈值（见下方 MIN_SIMILARITY 注释）。
     VECTOR_DIMENSION: int = int(os.getenv("MEMORY_VECTOR_DIMENSION", "512"))
     EMBEDDING_PROVIDER: str = os.getenv("MEMORY_EMBEDDING_PROVIDER", "fastembed")
     LOCAL_MODEL_NAME: str = os.getenv("MEMORY_LOCAL_MODEL", "BAAI/bge-small-zh-v1.5")
