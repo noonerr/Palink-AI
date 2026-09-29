@@ -284,7 +284,7 @@ class TestVectorInjection:
         user, char, msgs = self._setup_book(db_session)
         monkeypatch.setattr(
             "app.services.worldbook_service._collect_vector_hits",
-            lambda db, entries, recent, top_k=None, threshold=None: {"vinj-hit": 0.8712},
+            lambda db, entries, recent, top_k=None, threshold=None: ({"vinj-hit": 0.8712}, set()),
         )
         result = build_worldbook_context(
             db=db_session, session_id="sess-vinj", user_id=user.id,
@@ -303,7 +303,7 @@ class TestVectorInjection:
         user, char, msgs = self._setup_book(db_session)
         monkeypatch.setattr(
             "app.services.worldbook_service._collect_vector_hits",
-            lambda db, entries, recent, top_k=None, threshold=None: {"vinj-hit": 0.9},
+            lambda db, entries, recent, top_k=None, threshold=None: ({"vinj-hit": 0.9}, set()),
         )
         result = build_worldbook_context(
             db=db_session, session_id="sess-vinj", user_id=user.id,
@@ -327,7 +327,7 @@ class TestVectorInjection:
         calls: list[int] = []
         monkeypatch.setattr(
             "app.services.worldbook_service._collect_vector_hits",
-            lambda *a, **k: calls.append(1) or {},
+            lambda *a, **k: calls.append(1) or ({}, set()),
         )
         result = build_worldbook_context(
             db=db_session, session_id="sess-vinj", user_id=user.id,

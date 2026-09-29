@@ -742,9 +742,12 @@ def _scan_entries(
     chat_length: Optional[int] = None,
     # V-2 (2026-08-25): vectorized 接线——开关开启时 vectorized 条目不参与
     # 关键词扫描，命中向量检索的直接激活，未命中的不注入（对齐 ST 语义）。
-    # 开关关闭时整段旁路，存量行为零突变。
+    # 开关关闭时整段旁路，vectorized 列被完全忽略（存量零突变）。
+    # P3 (2026-09-29): vector_degraded_books = 本轮检索不可信的书集合，
+    # 其中有关键词的条目回退关键词匹配，不再静默消失。
     vectorized_enabled: bool = False,
     vector_hits: Optional[dict[str, float]] = None,
+    vector_degraded_books: Optional[set[str]] = None,
     # C3 修复（批次 C）: 透传给 _build_haystack 的 include_names
     include_names: bool = True,
     # C5 修复（批次 C）: 全局大小写敏感/全词匹配（entry 级 NULL 继承）
@@ -924,36 +927,52 @@ def _scan_entries(
                 timed_mgr.record_activation(entry, message_index)
             continue
 
-        # V-2 (2026-08-25): vectorized 条目被向量库接管——开关开启时不再参与
-        # 常规关键词扫描（对齐 ST）。命中向量检索 → 跳过关键词匹配直接激活
-        # （后续 budget/decorators/group_scoring 管线天然复用）；未命中 →
-        # 不注入。开关关闭时不进入此分支，vectorized 列被完全忽略（存量零突变）。
+        # V-2 (2026-08-25) / P3 (2026-09-29): vectorized 条目被向量库接管——
+        # 开关开启时不再参与常规关键词扫描（对齐 ST）。命中向量检索 → 跳过
+        # 关键词匹配直接激活（后续 budget/decorators/group_scoring 管线天然
+        # 复用）；未命中 → 不注入。开关关闭时不进入此分支，vectorized 列被
+        # 完全忽略（存量零突变）。
+        # P3 降级回退（SPEC §3）：该书本轮检索不可信（degraded_books 标记）
+        # 且条目有一级关键词时，不按"未命中"吞掉，而是回退下方常规关键词
+        # 匹配——嵌入服务挂掉/向量未就绪时，有关键词的条目仍按老规矩工作。
+        _p3_degraded_fallback = False
         if vectorized_enabled and entry.vectorized:
             score = (vector_hits or {}).get(entry.id)
             if score is None:
+                _wb_id = getattr(entry, "world_book_id", None)
+                _degraded = _wb_id is not None and _wb_id in (vector_degraded_books or set())
+                if _degraded and _parse_json_list(entry.keys):
+                    # P3: 降级回退——不 continue，落入下方常规关键词匹配管线
+                    _p3_degraded_fallback = True
+                else:
+                    report.append(
+                        WorldbookEntryReport(
+                            entry_id=entry.id,
+                            title=entry.title or "",
+                            status="skipped",
+                            reason=(
+                                "vectorized_degraded_no_keywords"
+                                if _degraded
+                                else "vectorized_no_match"
+                            ),
+                        )
+                    )
+                    continue
+            else:
+                activated.append(entry)
+                visited.add(entry.id)
                 report.append(
                     WorldbookEntryReport(
                         entry_id=entry.id,
                         title=entry.title or "",
-                        status="skipped",
-                        reason="vectorized_no_match",
+                        status="activated",
+                        reason=f"vectorized_hit(score={score:.4f})",
+                        tokens_estimate=_estimate_tokens(entry.content),
                     )
                 )
+                if timed_mgr:
+                    timed_mgr.record_activation(entry, message_index)
                 continue
-            activated.append(entry)
-            visited.add(entry.id)
-            report.append(
-                WorldbookEntryReport(
-                    entry_id=entry.id,
-                    title=entry.title or "",
-                    status="activated",
-                    reason=f"vectorized_hit(score={score:.4f})",
-                    tokens_estimate=_estimate_tokens(entry.content),
-                )
-            )
-            if timed_mgr:
-                timed_mgr.record_activation(entry, message_index)
-            continue
 
         haystack = _build_haystack(entry, recent_messages, char, chat_metadata=chat_metadata, persona_description=persona_description, group_chars=group_chars, global_scan_depth=global_scan_depth, recurse_buffer=recurse_buffer, include_names=include_names)
         # P1-14: 传入 char_name/user_name 用于 key 宏替换
@@ -1016,7 +1035,12 @@ def _scan_entries(
                 entry_id=entry.id,
                 title=entry.title or "",
                 status="activated",
-                reason="keyword_match",
+                # P3: 降级回退的条目在 report 里如实标注，与常规 keyword_match 区分
+                reason=(
+                    "vectorized_degraded_keyword_fallback"
+                    if _p3_degraded_fallback
+                    else "keyword_match"
+                ),
                 matched_keywords=matched,
                 tokens_estimate=_estimate_tokens(entry.content),
                 use_probability=use_prob,
@@ -1057,8 +1081,10 @@ def _recursive_scan(
     # None 时回退 DEFAULT_SCAN_DEPTH（既有行为，存量直接调用方不受影响）。
     global_scan_depth: Optional[int] = None,
     # V-2 (2026-08-25): vectorized 接线参数，透传给每轮 _scan_entries
+    # P3 (2026-09-29): degraded_books 同路透传（检索不可信的书 → 关键词回退）
     vectorized_enabled: bool = False,
     vector_hits: Optional[dict[str, float]] = None,
+    vector_degraded_books: Optional[set[str]] = None,
     # C3/C5 修复（批次 C）: include_names 与全局匹配开关，透传给每轮 _scan_entries
     include_names: bool = True,
     global_case_sensitive: bool = False,
@@ -1109,6 +1135,7 @@ def _recursive_scan(
             global_scan_depth=global_scan_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            vector_degraded_books=vector_degraded_books,
             include_names=include_names,
             global_case_sensitive=global_case_sensitive,
             global_match_whole_words=global_match_whole_words,
@@ -1254,6 +1281,7 @@ def _recursive_scan(
                     chat_length=chat_length,
                     vectorized_enabled=vectorized_enabled,
                     vector_hits=vector_hits,
+                    vector_degraded_books=vector_degraded_books,
                     include_names=include_names,
                     global_case_sensitive=global_case_sensitive,
                     global_match_whole_words=global_match_whole_words,
@@ -1468,8 +1496,13 @@ def _collect_vector_hits(
     recent_messages: list[dict],
     top_k: Optional[int] = None,
     threshold: Optional[float] = None,
-) -> dict[str, float]:
-    """V-2: 对每本含 vectorized 条目的世界书执行向量检索，返回 {entry_id: score}。
+) -> tuple[dict[str, float], set[str]]:
+    """V-2/P3 (2026-09-29): 对每本含 vectorized 条目的世界书执行向量检索。
+
+    返回 ``({entry_id: score}, degraded_books)``。degraded_books 内的书，
+    本轮检索结果**不可信**（同步失败/查询异常/查询文本为空），接管分支应
+    对其中有关键词的条目回退关键词匹配，不得静默吞掉（SPEC §3 P3）——
+    否则嵌入服务一挂，勾选了向量的设定就"既不关键词也不向量"地消失。
 
     兜底懒同步取舍（spec §1 V-1 第 3 点）：检索前对每本书调
     ``sync_worldbook_vectors``——其内部按 blake2b content_hash 脏检查，
@@ -1485,11 +1518,13 @@ def _collect_vector_hits(
             seen_books.add(wb_id)
             books_with_vec.append(wb_id)
     if not books_with_vec:
-        return {}
+        return {}, set()
 
     query_text = _vector_query_text(recent_messages)
     if not query_text.strip():
-        return {}
+        # P3: 查询文本为空（开场首轮空消息等）→ 本轮检索做不了，按降级处理，
+        # 让有关键词的条目走关键词匹配，而非被当成"真未命中"吞掉。
+        return {}, set(books_with_vec)
 
     effective_top_k = _resolve_vector_top_k(top_k)
     effective_threshold = _resolve_vector_threshold(threshold)
@@ -1497,6 +1532,7 @@ def _collect_vector_hits(
     from .worldbook_vector_service import WorldBookVectorService
     svc = WorldBookVectorService(db)
     hits: dict[str, float] = {}
+    degraded_books: set[str] = set()
     for wb_id in books_with_vec:
         try:
             sync_result = svc.sync_worldbook_vectors(wb_id)
@@ -1505,18 +1541,24 @@ def _collect_vector_hits(
                     "worldbook lazy vector sync degraded (book=%s): %s",
                     wb_id, sync_result.get("error"),
                 )
+                degraded_books.add(wb_id)
         except Exception as exc:
             logger.warning("worldbook lazy vector sync failed (book=%s): %s", wb_id, exc)
+            degraded_books.add(wb_id)
         try:
-            for entry_id, score in svc.query_entries(
+            book_hits, book_degraded = svc.query_entries(
                 wb_id, query_text, top_k=effective_top_k, threshold=effective_threshold,
-            ):
+            )
+            for entry_id, score in book_hits:
                 # 多本书场景下同一 entry 只保留更高分
                 if entry_id not in hits or score > hits[entry_id]:
                     hits[entry_id] = float(score)
+            if book_degraded:
+                degraded_books.add(wb_id)
         except Exception as exc:
             logger.warning("worldbook vector query degraded (book=%s): %s", wb_id, exc)
-    return hits
+            degraded_books.add(wb_id)
+    return hits, degraded_books
 
 
 def _sort_by_insertion_strategy(
@@ -1836,6 +1878,7 @@ def build_worldbook_context(
     # 时，以最近 4 条消息拼接为查询做语义检索；嵌入失败/服务不可用静默降级为
     # "本轮无命中"（_collect_vector_hits 与此处双重兜底），绝不阻塞主对话。
     vector_hits: dict[str, float] = {}
+    vector_degraded_books: set[str] = set()
     # P1 (2026-09-29): 解析优先级 explicit > settings > env > 默认（3 / 0.55）。
     # settings 层在本函数内部读取 world_info_settings（identity map 命中，
     # 不额外打 SQL），装配层 roleplay_prompt_assembly 保持零接触。
@@ -1843,7 +1886,7 @@ def build_worldbook_context(
     if vectorized_enabled:
         _settings_top_k, _settings_threshold = _read_vector_params_from_settings(db, user_id)
         try:
-            vector_hits = _collect_vector_hits(
+            vector_hits, vector_degraded_books = _collect_vector_hits(
                 db, entries, msgs,
                 top_k=_resolve_vector_top_k(vector_top_k, _settings_top_k),
                 threshold=_resolve_vector_threshold(vector_threshold, _settings_threshold),
@@ -1851,6 +1894,11 @@ def build_worldbook_context(
         except Exception as exc:
             logger.warning("worldbook vector retrieval degraded (no hits this turn): %s", exc)
             vector_hits = {}
+            # P3: 整链异常时按"全部相关书降级"处理——有关键词的条目回退关键词匹配
+            vector_degraded_books = {
+                e.world_book_id for e in entries
+                if getattr(e, "vectorized", False) and getattr(e, "world_book_id", None)
+            }
 
     # Phase E: min_activations>0 时强制走 _recursive_scan 路径以运行状态机，
     # 即使 enable_recursive=False（ST 的 MIN_ACTIVATIONS 不依赖 world_info_recursive）
@@ -1871,6 +1919,7 @@ def build_worldbook_context(
             global_scan_depth=world_info_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            vector_degraded_books=vector_degraded_books,
             include_names=include_names,
             global_case_sensitive=world_info_case_sensitive,
             global_match_whole_words=world_info_match_whole_words,
@@ -1890,6 +1939,7 @@ def build_worldbook_context(
             global_scan_depth=world_info_depth,
             vectorized_enabled=vectorized_enabled,
             vector_hits=vector_hits,
+            vector_degraded_books=vector_degraded_books,
             include_names=include_names,
             global_case_sensitive=world_info_case_sensitive,
             global_match_whole_words=world_info_match_whole_words,

@@ -251,19 +251,26 @@ class WorldBookVectorService:
         self,
         world_book_id: str,
         query_text: str,
-        top_k: int = 5,
-        threshold: float = 0.25,
-    ) -> List[Tuple[str, float]]:
+        top_k: int = 3,
+        threshold: float = 0.55,
+    ) -> Tuple[List[Tuple[str, float]], bool]:
         """向量检索命中的 entry_id 列表。
+
+        P3 (2026-09-29, SPEC §3): 返回 ``(hits, degraded)``。degraded=True 表示
+        本轮结果**不可信**（检索异常），调用方应把该书 vectorized 条目回退
+        关键词匹配（有关键词时），不得当"真未命中"静默吞掉——否则嵌入服务
+        一挂，勾选了向量的设定就"既不关键词也不向量"地消失。空 hits 且
+        degraded=False 才是可信的"无命中"。
 
         Args:
             world_book_id: 世界书 ID
             query_text: 查询文本
-            top_k: 返回条数上限
-            threshold: 相似度阈值（cosine similarity），低于此值的不返回
+            top_k: 返回条数上限（默认对齐 P1 收紧值 3）
+            threshold: 相似度阈值（cosine similarity，默认对齐 P1 收紧值 0.55），
+                低于此值的不返回
 
         Returns:
-            [(entry_id, similarity_score), ...] 按 similarity 降序
+            ([(entry_id, similarity_score), ...] 按 similarity 降序, degraded)
         """
         try:
             self.ensure_table()
@@ -292,11 +299,12 @@ class WorldBookVectorService:
                 "threshold": threshold,
                 "top_k": top_k,
             })
-            return [(row.entry_id, float(row.similarity)) for row in result]
+            return [(row.entry_id, float(row.similarity)) for row in result], False
         except Exception as e:
             logger.error(f"世界书向量检索失败: {e}")
             self.db.rollback()
-            return []
+            # P3: 异常 = 降级，而非可信的"无命中"
+            return [], True
 
     def delete_vectors(self, world_book_id: str) -> int:
         """清空世界书的所有向量。"""
