@@ -40,6 +40,18 @@ export enum ScanState {
 
 /**
  * 世界书条目
+ *
+ * ⚠️ 两套类型警告（2026-09-30，SPEC_世界书向量召回接通与防护 §11）：
+ * 本文件是**插件面**类型（喂给 SillyTavern 插件用，字段名为 ST camelCase 风格：
+ * key/constant/vectorized…），与**第一方 UI 面**类型
+ * `types/index.ts::WorldBookStage`（后端 API snake_case：keys/scan_depth/vectorized）
+ * 是两套，**不要互相替换或合并**。
+ *
+ * 本批（前端批 A~D）只接通了第一方 UI 面：后端 `WorldBookStage.vectorized` 已可读可写，
+ * 设置页与词条勾选已落地。**插件面这一套本批没有接通**——`vectorized` 字段虽然在
+ * 这里已声明，但 `lib/sillytavern/getContext.ts` 转换 WorldBookStage → WorldBookEntry 时
+ * 该字段是**硬编码 `false`**（后端当时未暴露该字段），插件永远看到"未启用向量匹配"。
+ * 别因为"类型里有这个字段"就以为链路已经通了。
  */
 export interface WorldBookEntry {
   id: string;
@@ -57,7 +69,9 @@ export interface WorldBookEntry {
   selectiveLogic: WorldInfoLogic;
   selective: boolean;      // 是否启用选择性匹配
   constant: boolean;       // 是否常驻注入
-  vectorized: boolean;     // 是否使用向量匹配
+  // 是否使用向量匹配。**当前恒为 false**：getContext.ts 转换时硬编码，
+  // 后端字段已就绪但未接线（详见本 interface 上方"两套类型警告"注释）。
+  vectorized: boolean;
   
   // 位置
   position: WorldInfoPosition;
