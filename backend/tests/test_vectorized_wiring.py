@@ -89,8 +89,12 @@ def _mk_stage(eid: str, key: str, content: str, *, vectorized: bool = False,
 # ---------------------------------------------------------------------------
 class TestSyncThreeStates:
     def _fake_embed(self, texts):
+        # P4 门禁上线后，mock 向量维度必须与运行环境声明维度一致
+        # （宿主机 fastembed/512、容器 ollama/1024），否则被拒写
+        from app.memory_module.config import memory_config
+
         n = len(texts) if isinstance(texts, (list, tuple)) else 1
-        return np.ones((n, 512), dtype="float32") * 0.01
+        return np.ones((n, memory_config.VECTOR_DIMENSION), dtype="float32") * 0.01
 
     def _sync(self, db_session, book_id):
         from app.services.worldbook_vector_service import WorldBookVectorService

@@ -530,8 +530,10 @@ class TestP4DimensionGate:
         assert degraded is True, "查询维度不符必须降级而非可信的空结果"
 
     def test_sync_still_works_when_dims_match(self, db_session, monkeypatch):
-        """回归基线：维度一致时 sync 正常入库（512/512 测试环境）。"""
+        """回归基线：维度一致时 sync 正常入库（维度取运行环境声明值，环境无关）。"""
         import numpy as np
+
+        from app.memory_module.config import memory_config
 
         user, _ = _mk_parents(db_session, "sess-p4b", "wb-p4b")
         db_session.add(_mk_stage("vp4b", "dragon", "Dragon lore", vectorized=True,
@@ -539,7 +541,9 @@ class TestP4DimensionGate:
         db_session.commit()
         monkeypatch.setattr(
             "app.services.worldbook_vector_service.embed_text",
-            lambda texts: np.ones((len(texts), 512), dtype="float32") * 0.01,
+            lambda texts: np.ones(
+                (len(texts), memory_config.VECTOR_DIMENSION), dtype="float32",
+            ) * 0.01,
         )
         result = self._svc(db_session).sync_worldbook_vectors("wb-p4b")
         assert result.get("synced") == 1, "维度一致时必须正常入库"
