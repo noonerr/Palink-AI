@@ -47,10 +47,27 @@ const SETTINGS_TAB_SOURCE = readFileSync(
 // ============================================================
 
 describe('世界书全局设置 源码契约：设置页接线', () => {
-  it('设置页含全部 8 个 world_info_* key', () => {
+  it('设置页含全部 world_info_* / vector_* 受管 key', () => {
     for (const key of WORLD_INFO_GLOBAL_KEYS) {
       expect(SETTINGS_TAB_SOURCE.includes(key)).toBe(true);
     }
+  });
+
+  it('设置页出现语义召回三键（漏一个即开关无处可写）', () => {
+    for (const key of ['vectorized_enabled', 'vector_threshold', 'vector_top_k']) {
+      expect(WORLD_INFO_GLOBAL_KEYS).toContain(key);
+      expect(SETTINGS_TAB_SOURCE.includes(key)).toBe(true);
+    }
+  });
+
+  it('语义召回文案是人话，且界面不出现 vectorized 字样', () => {
+    // SPEC §11：界面文案不许出现 "vectorized"（只许出现在代码标识符里）。
+    // 剔除所有含 vector 的标识符（属性读取 / 对象键）后若仍残留，即为漏进文案
+    const stripped = SETTINGS_TAB_SOURCE.replace(/vector\w*/gi, '');
+    expect(stripped.toLowerCase().includes('vector')).toBe(false);
+    // 开关说明必须写清 P2 的首轮降级，否则用户"看不到效果"
+    expect(SETTINGS_TAB_SOURCE).toContain('第一次打开后的下一条消息开始准备，再下一条才生效');
+    expect(SETTINGS_TAB_SOURCE).toContain('世界书语义召回');
   });
 
   it('设置页走 /api/settings/get 读、/api/settings/save 写（既有通道，非新造）', () => {
@@ -142,6 +159,130 @@ describe('世界书全局设置 行为：范围钳制', () => {
     expect(s.world_info_depth).toBe(4);
     expect(s.world_info_budget).toBe(30);
     expect(JSON.stringify(input)).toBe(snapshot);
+  });
+});
+
+// ============================================================
+// 行为契约：语义召回三键（SPEC §11 C）
+// vectorized_enabled=false / vector_threshold=0.55(0~1) / vector_top_k=3(1~10)
+// ============================================================
+
+describe('世界书全局设置 行为：语义召回三键默认值', () => {
+  it('缺 key / 空 dict → 开关关、门槛 0.55、条数 3（与后端 P1 默认一致）', () => {
+    for (const raw of [undefined, null, 'not-a-dict', 42, {}]) {
+      const r = resolveWorldInfoGlobalSettings(raw);
+      expect(r.vectorized_enabled).toBe(false);
+      expect(r.vector_threshold).toBe(0.55);
+      expect(r.vector_top_k).toBe(3);
+    }
+  });
+
+  it('threshold 是浮点：0.55 不得被取整成 0（toIntOrDefault 会把门槛打回 0）', () => {
+    expect(resolveWorldInfoGlobalSettings({ vector_threshold: 0.55 }).vector_threshold).toBe(0.55);
+    expect(resolveWorldInfoGlobalSettings({ vector_threshold: 0.7 }).vector_threshold).toBe(0.7);
+    expect(resolveWorldInfoGlobalSettings({ vector_threshold: '0.35' }).vector_threshold).toBe(0.35);
+  });
+
+  it('非法值回退默认；开关按 truthy 语义解析', () => {
+    const r = resolveWorldInfoGlobalSettings({
+      vectorized_enabled: 1,
+      vector_threshold: 'abc',
+      vector_top_k: Number.NaN,
+    });
+    expect(r.vectorized_enabled).toBe(true);
+    expect(r.vector_threshold).toBe(0.55);
+    expect(r.vector_top_k).toBe(3);
+  });
+});
+
+describe('世界书全局设置 行为：语义召回三键钳制', () => {
+  it('threshold 钳到 0~1、top_k 钳到 1~10（超界与负数）', () => {
+    const s = sanitizeWorldInfoGlobalSettings({
+      ...WORLD_INFO_GLOBAL_DEFAULTS,
+      vector_threshold: 9,
+      vector_top_k: 99,
+    });
+    expect(s.vector_threshold).toBe(1);
+    expect(s.vector_top_k).toBe(10);
+
+    const low = sanitizeWorldInfoGlobalSettings({
+      ...WORLD_INFO_GLOBAL_DEFAULTS,
+      vector_threshold: -3,
+      vector_top_k: -1,
+    });
+    expect(low.vector_threshold).toBe(0);
+    expect(low.vector_top_k).toBe(1);
+  });
+
+  it('范围内值原样保留（含浮点），且不修改入参', () => {
+    const input = {
+      ...WORLD_INFO_GLOBAL_DEFAULTS,
+      vectorized_enabled: true,
+      vector_threshold: 0.62,
+      vector_top_k: 5,
+    };
+    const snapshot = JSON.stringify(input);
+    const s = sanitizeWorldInfoGlobalSettings(input);
+    expect(s.vectorized_enabled).toBe(true);
+    expect(s.vector_threshold).toBe(0.62);
+    expect(s.vector_top_k).toBe(5);
+    expect(JSON.stringify(input)).toBe(snapshot);
+  });
+
+  it('threshold/top_k 非法（NaN/非数）→ 回退默认后再钳制', () => {
+    const s = sanitizeWorldInfoGlobalSettings({
+      ...WORLD_INFO_GLOBAL_DEFAULTS,
+      // 故意喂非法值（UI 输入框可能给出非数字串），断言走默认而非 NaN 落库
+      vector_threshold: 'abc' as unknown as number,
+      vector_top_k: 'abc' as unknown as number,
+    });
+    expect(s.vector_threshold).toBe(0.55);
+    expect(s.vector_top_k).toBe(3);
+  });
+});
+
+describe('世界书全局设置 行为：三键参与 merge 且保留无关键', () => {
+  it('merge：三键可写，同时 existing 内无关 key 原样保留', () => {
+    const existing = {
+      world_info_min_activations: 3,
+      world_info_depth: 4,
+      vectorized_enabled: false,
+    };
+    const merged = mergeWorldInfoGlobalSettings(existing, {
+      vectorized_enabled: true,
+      vector_threshold: 0.6,
+      vector_top_k: 4,
+    });
+    expect(merged.vectorized_enabled).toBe(true);
+    expect(merged.vector_threshold).toBe(0.6);
+    expect(merged.vector_top_k).toBe(4);
+    expect(merged.world_info_min_activations).toBe(3);
+    expect(merged.world_info_depth).toBe(4);
+  });
+
+  it('merge：next 未提供三键时不写（存量值不被覆盖）', () => {
+    const existing = { vectorized_enabled: true, vector_threshold: 0.8, vector_top_k: 7 };
+    const merged = mergeWorldInfoGlobalSettings(existing, { world_info_depth: 9 });
+    expect(merged.vectorized_enabled).toBe(true);
+    expect(merged.vector_threshold).toBe(0.8);
+    expect(merged.vector_top_k).toBe(7);
+    expect(merged.world_info_depth).toBe(9);
+  });
+
+  it('buildWorldInfoGlobalSavePayload：整 blob 覆盖语义下顶层其他 key 与无关键都保留', () => {
+    const payload = buildWorldInfoGlobalSavePayload(
+      {
+        oai_settings: { temp_openai: 0.7 },
+        world_info_settings: { world_info_min_activations: 2, vector_top_k: 7 },
+      },
+      { vectorized_enabled: true, vector_threshold: 0.5 },
+    );
+    const wis = payload.world_info_settings as Record<string, unknown>;
+    expect(payload.oai_settings).toEqual({ temp_openai: 0.7 });
+    expect(wis.vectorized_enabled).toBe(true);
+    expect(wis.vector_threshold).toBe(0.5);
+    expect(wis.vector_top_k).toBe(7);
+    expect(wis.world_info_min_activations).toBe(2);
   });
 });
 

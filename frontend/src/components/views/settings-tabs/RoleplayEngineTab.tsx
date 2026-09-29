@@ -374,6 +374,81 @@ function SillyTavernSettingsPanel({ onOpenPlugins }: { onOpenPlugins: () => void
             />
           </div>
 
+          {/* ── 语义召回（Palink 自研，默认关）── */}
+          <div className="flex items-start justify-between gap-4 border-t border-border/30 pt-4">
+            <div className="min-w-0">
+              <p className="text-[15px] font-medium leading-snug">世界书语义召回</p>
+              <p className="text-xs text-muted-foreground">
+                打开后，标了「按意思找」的设定会按语义相似度注入，而不是必须出现关键词。
+                第一次打开后的下一条消息开始准备，再下一条才生效。
+              </p>
+            </div>
+            <Switch
+              className="shrink-0"
+              disabled={!wiLoaded}
+              checked={wiSettings.vectorized_enabled}
+              onCheckedChange={(v) => setWiSettings((s) => ({ ...s, vectorized_enabled: v }))}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[15px] font-medium leading-snug">匹配松紧（0~1，越大越严）</p>
+              <p className="text-xs text-muted-foreground">
+                语义相似度的及格线，越大越不容易塞进不相干的设定（默认 0.55）。换嵌入模型后需重测。
+              </p>
+              <button
+                type="button"
+                disabled={!wiLoaded}
+                onClick={() => setWiSettings((s) => ({
+                  ...s,
+                  vector_threshold: WORLD_INFO_GLOBAL_DEFAULTS.vector_threshold,
+                }))}
+                className="mt-1 text-xs text-primary hover:underline disabled:opacity-40"
+              >
+                恢复默认
+              </button>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              className="w-24 shrink-0"
+              disabled={!wiLoaded || !wiSettings.vectorized_enabled}
+              value={wiSettings.vector_threshold}
+              onChange={(e) => {
+                const num = e.target.value === '' ? 0 : Number(e.target.value);
+                if (!Number.isNaN(num)) {
+                  setWiSettings((s) => ({ ...s, vector_threshold: num }));
+                }
+              }}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[15px] font-medium leading-snug">每轮最多命中几条</p>
+              <p className="text-xs text-muted-foreground">
+                每本世界书每轮最多按语义注入的条目数（1-10，默认 3）
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              className="w-24 shrink-0"
+              disabled={!wiLoaded || !wiSettings.vectorized_enabled}
+              value={wiSettings.vector_top_k}
+              onChange={(e) => {
+                const num = e.target.value === '' ? 1 : Number(e.target.value);
+                if (!Number.isNaN(num)) {
+                  setWiSettings((s) => ({ ...s, vector_top_k: num }));
+                }
+              }}
+            />
+          </div>
+
           <div>
             <div className="min-w-0">
               <p className="text-[15px] font-medium leading-snug">插入策略</p>
