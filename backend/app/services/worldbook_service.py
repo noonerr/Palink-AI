@@ -41,6 +41,7 @@ import logging
 import os
 import random
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ from ..models.worldbook import (
     WorldBookBlueprint,
     SessionWorldBook,
     SessionWorldBookEntryState,
+    WorldBookEntryVector,
 )
 from ..models.character import CharacterChatSession, Character
 from ..services.worldbook_import_utils import normalize_worldbook_position
@@ -1490,6 +1492,82 @@ def _vector_query_text(recent_messages: list[dict]) -> str:
     return text[:2000]
 
 
+# P2 (2026-09-29): 检索路径懒触发的后台同步——单飞去重（同一本书同一时刻最多一个线程）
+_LAZY_SYNC_INFLIGHT: set[str] = set()
+_LAZY_SYNC_LOCK = threading.Lock()
+
+
+def _book_vectors_ready(svc, world_book_id: str) -> bool:
+    """P2 (2026-09-29, SPEC §3): 该书向量是否就绪——向量行数 ≥ vectorized 条目数。
+
+    只做两次计数（ORM 写法跨 SQLite/PG 方言），**不做内容哈希脏检查**：
+    内容变更的收敛由书级 PUT / 导入的既有后台触发（api/worldbook.py
+    _schedule_worldbook_vector_sync）负责，检索路径绝不做嵌入重活。
+    表不存在 / 查询失败一律按未就绪处理（未就绪 → 降级 + 懒触发补齐）。
+    """
+    try:
+        stage_count = (
+            svc.db.query(WorldBookStage)
+            .filter(
+                WorldBookStage.world_book_id == world_book_id,
+                WorldBookStage.vectorized.is_(True),
+            )
+            .count()
+        )
+        if stage_count == 0:
+            return True
+        vec_count = (
+            svc.db.query(WorldBookEntryVector)
+            .filter(
+                WorldBookEntryVector.entry_id.in_(
+                    svc.db.query(WorldBookStage.id).filter(
+                        WorldBookStage.world_book_id == world_book_id,
+                        WorldBookStage.vectorized.is_(True),
+                    )
+                )
+            )
+            .count()
+        )
+        return vec_count >= stage_count
+    except Exception as exc:
+        logger.warning(
+            "worldbook vector readiness check failed (book=%s): %s", world_book_id, exc,
+        )
+        return False
+
+
+def _fire_lazy_vector_sync(world_book_id: str) -> None:
+    """P2: 检索路径懒触发的后台同步（daemon 线程 + 独立 SessionLocal，单飞去重）。
+
+    全局开关经 API/直写打开（无 UI 时代）或绕过编辑 API 的写入导致书未就绪时，
+    首轮检索在此补齐，下一轮生效；绝不阻塞当前对话轮。与 api/worldbook.py 的
+    _fire_vector_sync 语义一致，但服务层没有事件循环，用普通 daemon 线程。
+    """
+    from ..core.database import SessionLocal
+    from .worldbook_vector_service import WorldBookVectorService
+
+    with _LAZY_SYNC_LOCK:
+        if world_book_id in _LAZY_SYNC_INFLIGHT:
+            return
+        _LAZY_SYNC_INFLIGHT.add(world_book_id)
+
+    def _worker(bid: str) -> None:
+        try:
+            WorldBookVectorService(SessionLocal()).sync_worldbook_vectors(bid)
+        except Exception as exc:
+            logger.warning("worldbook lazy background sync failed (book=%s): %s", bid, exc)
+        finally:
+            with _LAZY_SYNC_LOCK:
+                _LAZY_SYNC_INFLIGHT.discard(bid)
+
+    threading.Thread(
+        target=_worker,
+        args=(world_book_id,),
+        daemon=True,
+        name=f"wb-vec-sync-{world_book_id[:8]}",
+    ).start()
+
+
 def _collect_vector_hits(
     db: DBSession,
     entries: list[WorldBookStage],
@@ -1500,15 +1578,15 @@ def _collect_vector_hits(
     """V-2/P3 (2026-09-29): 对每本含 vectorized 条目的世界书执行向量检索。
 
     返回 ``({entry_id: score}, degraded_books)``。degraded_books 内的书，
-    本轮检索结果**不可信**（同步失败/查询异常/查询文本为空），接管分支应
+    本轮检索结果**不可信**（向量未就绪/查询异常/查询文本为空），接管分支应
     对其中有关键词的条目回退关键词匹配，不得静默吞掉（SPEC §3 P3）——
     否则嵌入服务一挂，勾选了向量的设定就"既不关键词也不向量"地消失。
 
-    兜底懒同步取舍（spec §1 V-1 第 3 点）：检索前对每本书调
-    ``sync_worldbook_vectors``——其内部按 blake2b content_hash 脏检查，
-    无变更时仅 2 次 SELECT 即返回，可防绕过编辑 API 的写入导致向量库陈旧；
-    首次启用时一次性完成存量条目嵌入。
-    任何失败均降级为"本轮无命中"，绝不阻塞主对话。
+    P2 (2026-09-29, SPEC §3): 装配路径**零 sync、只查**——原"检索前懒同步
+    整本书"会把首次开启的存量嵌入压在对话请求里。改为只做两次计数的就绪
+    检测（_book_vectors_ready），未就绪 → 本轮按降级处理并懒触发后台同步
+    （_fire_lazy_vector_sync，单飞去重），下一轮生效；任何失败均降级，
+    绝不阻塞主对话。
     """
     books_with_vec: list[str] = []
     seen_books: set[str] = set()
@@ -1534,17 +1612,11 @@ def _collect_vector_hits(
     hits: dict[str, float] = {}
     degraded_books: set[str] = set()
     for wb_id in books_with_vec:
-        try:
-            sync_result = svc.sync_worldbook_vectors(wb_id)
-            if isinstance(sync_result, dict) and sync_result.get("error"):
-                logger.warning(
-                    "worldbook lazy vector sync degraded (book=%s): %s",
-                    wb_id, sync_result.get("error"),
-                )
-                degraded_books.add(wb_id)
-        except Exception as exc:
-            logger.warning("worldbook lazy vector sync failed (book=%s): %s", wb_id, exc)
+        # P2: 就绪检测（两次计数）——未就绪 → 本轮降级 + 懒触发后台补齐。
+        # 装配路径绝不调 sync_worldbook_vectors（嵌入重活不压在对话请求里）。
+        if not _book_vectors_ready(svc, wb_id):
             degraded_books.add(wb_id)
+            _fire_lazy_vector_sync(wb_id)
         try:
             book_hits, book_degraded = svc.query_entries(
                 wb_id, query_text, top_k=effective_top_k, threshold=effective_threshold,

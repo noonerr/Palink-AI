@@ -183,51 +183,59 @@ class WorldBookVectorService:
                     continue
                 to_embed.append((stage.id, content, ch))
 
-            # 4. 对变更/新增的条目批量嵌入并 upsert
+            # 4. 对变更/新增的条目分块嵌入并 upsert
+            #    P2 (2026-09-29, SPEC §3): 32/批——整书一次大批量在 30s
+            #    httpx 超时（OLLAMA_TIMEOUT）下必失败；分块后单块失败只回退
+            #    该块的单条嵌入，不影响其余块。
             if to_embed:
-                texts = [item[1] for item in to_embed]
-                try:
-                    embeddings = embed_text(texts)
-                    if isinstance(embeddings, np.ndarray) and embeddings.ndim == 1:
-                        embeddings = embeddings.reshape(1, -1)
-                    for i, (entry_id, _content, ch) in enumerate(to_embed):
-                        try:
-                            vec = _flatten_embedding(embeddings[i])
-                            vec_str = _vector_to_pgstr(vec)
-                            existing = existing_map.get(entry_id)
-                            if existing:
-                                existing.content_hash = ch
-                                existing.embedding = vec_str
-                            else:
-                                self.db.add(WorldBookEntryVector(
-                                    entry_id=entry_id,
-                                    content_hash=ch,
-                                    embedding=vec_str,
-                                ))
-                            synced += 1
-                        except Exception as e:
-                            logger.warning(f"处理条目 {entry_id} 向量失败: {e}")
-                            continue
-                except Exception as e:
-                    logger.warning(f"批量嵌入失败，回退到单条嵌入: {e}")
-                    for entry_id, content, ch in to_embed:
-                        try:
-                            vec = _flatten_embedding(embed_text(content))
-                            vec_str = _vector_to_pgstr(vec)
-                            existing = existing_map.get(entry_id)
-                            if existing:
-                                existing.content_hash = ch
-                                existing.embedding = vec_str
-                            else:
-                                self.db.add(WorldBookEntryVector(
-                                    entry_id=entry_id,
-                                    content_hash=ch,
-                                    embedding=vec_str,
-                                ))
-                            synced += 1
-                        except Exception as e2:
-                            logger.warning(f"单条嵌入条目 {entry_id} 失败: {e2}")
-                            continue
+                _EMBED_BATCH = 32
+                for _start in range(0, len(to_embed), _EMBED_BATCH):
+                    _chunk = to_embed[_start:_start + _EMBED_BATCH]
+                    texts = [item[1] for item in _chunk]
+                    try:
+                        embeddings = embed_text(texts)
+                        if isinstance(embeddings, np.ndarray) and embeddings.ndim == 1:
+                            embeddings = embeddings.reshape(1, -1)
+                        for i, (entry_id, _content, ch) in enumerate(_chunk):
+                            try:
+                                vec = _flatten_embedding(embeddings[i])
+                                vec_str = _vector_to_pgstr(vec)
+                                existing = existing_map.get(entry_id)
+                                if existing:
+                                    existing.content_hash = ch
+                                    existing.embedding = vec_str
+                                else:
+                                    self.db.add(WorldBookEntryVector(
+                                        entry_id=entry_id,
+                                        content_hash=ch,
+                                        embedding=vec_str,
+                                    ))
+                                synced += 1
+                            except Exception as e:
+                                logger.warning(f"处理条目 {entry_id} 向量失败: {e}")
+                                continue
+                    except Exception as e:
+                        logger.warning(
+                            f"分块嵌入失败（第 {_start}~{_start + len(_chunk)} 条），回退单条: {e}"
+                        )
+                        for entry_id, content, ch in _chunk:
+                            try:
+                                vec = _flatten_embedding(embed_text(content))
+                                vec_str = _vector_to_pgstr(vec)
+                                existing = existing_map.get(entry_id)
+                                if existing:
+                                    existing.content_hash = ch
+                                    existing.embedding = vec_str
+                                else:
+                                    self.db.add(WorldBookEntryVector(
+                                        entry_id=entry_id,
+                                        content_hash=ch,
+                                        embedding=vec_str,
+                                    ))
+                                synced += 1
+                            except Exception as e2:
+                                logger.warning(f"单条嵌入条目 {entry_id} 失败: {e2}")
+                                continue
 
             # 6. 删除不再 vectorized 的条目的向量记录
             all_stages = self.db.query(WorldBookStage).filter(

@@ -315,6 +315,16 @@ class TestP3CollectDegradedSignals:
         msgs = [{"role": "user", "content": "about the dragon"}]
         return user, char, msgs
 
+    def _patch_ready_and_fire(self, monkeypatch, fired):
+        """P2 起检索路径含就绪检测与懒触发：单测里固定就绪=True、fire 记录不落线程。"""
+        monkeypatch.setattr(
+            "app.services.worldbook_service._book_vectors_ready", lambda svc, bid: True,
+        )
+        monkeypatch.setattr(
+            "app.services.worldbook_service._fire_lazy_vector_sync",
+            lambda bid: fired.append(bid),
+        )
+
     def _collect(self, db_session, entries, msgs):
         from app.services.worldbook_service import _collect_vector_hits
         return _collect_vector_hits(db_session, entries, msgs, top_k=3, threshold=0.55)
@@ -330,10 +340,7 @@ class TestP3CollectDegradedSignals:
         from app.services.worldbook_vector_service import WorldBookVectorService
 
         user, char, msgs = self._mk_book_with_vec_entry(db_session, "sess-p3d", "wb-p3d")
-        monkeypatch.setattr(
-            WorldBookVectorService, "sync_worldbook_vectors",
-            lambda self, bid: {"synced": 0, "skipped": 0, "deleted": 0},
-        )
+        self._patch_ready_and_fire(monkeypatch, fired := [])
 
         def _boom(self, bid, qtext, top_k=3, threshold=0.55):
             raise RuntimeError("embedding service unavailable")
@@ -347,10 +354,7 @@ class TestP3CollectDegradedSignals:
         from app.services.worldbook_vector_service import WorldBookVectorService
 
         user, char, msgs = self._mk_book_with_vec_entry(db_session, "sess-p3e", "wb-p3e")
-        monkeypatch.setattr(
-            WorldBookVectorService, "sync_worldbook_vectors",
-            lambda self, bid: {"synced": 0, "skipped": 0, "deleted": 0},
-        )
+        self._patch_ready_and_fire(monkeypatch, fired := [])
         monkeypatch.setattr(
             WorldBookVectorService, "query_entries",
             lambda self, bid, qtext, top_k=3, threshold=0.55: ([("x1", 0.9)], False),
@@ -358,6 +362,7 @@ class TestP3CollectDegradedSignals:
         hits, degraded = self._collect(db_session, self._entries(db_session, "wb-p3e"), msgs)
         assert hits == {"x1": 0.9}
         assert degraded == set(), "查询成功且未降级时不得标记"
+        assert fired == [], "就绪的书不得触发后台同步"
 
     def test_empty_query_text_degrades_all_books(self, db_session):
         user, char, msgs = self._mk_book_with_vec_entry(db_session, "sess-p3f", "wb-p3f")
@@ -367,3 +372,91 @@ class TestP3CollectDegradedSignals:
         )
         assert hits == {}
         assert degraded == {"wb-p3f"}, "查询文本为空时应整书降级（回退关键词）"
+
+
+# ---------------------------------------------------------------------------
+# P2: 装配路径零 sync + 未就绪懒触发后台同步
+# ---------------------------------------------------------------------------
+class TestP2NoSyncInAssemblyPath:
+    def _setup(self, db_session, sess_id, book_id):
+        user, char = _mk_parents(db_session, sess_id, book_id)
+        db_session.add(_mk_stage(f"{book_id}-vec", "dragon", "Dragon lore",
+                                 vectorized=True, world_book_id=book_id))
+        db_session.commit()
+        msgs = [{"role": "user", "content": "tell me about the dragon"}]
+        return user, char, msgs
+
+    def test_assembly_path_never_calls_sync(self, db_session, monkeypatch):
+        """P2 核心：装配/检索路径不得调用 sync_worldbook_vectors。"""
+        from app.services.worldbook_vector_service import WorldBookVectorService
+
+        user, char, msgs = self._setup(db_session, "sess-p2a", "wb-p2a")
+
+        def _forbidden(self, bid):
+            raise AssertionError("装配路径不得调用 sync_worldbook_vectors")
+
+        monkeypatch.setattr(WorldBookVectorService, "sync_worldbook_vectors", _forbidden)
+        monkeypatch.setattr(
+            WorldBookVectorService, "query_entries",
+            lambda self, bid, qtext, top_k=3, threshold=0.55: ([], False),
+        )
+        fired: list[str] = []
+        monkeypatch.setattr(
+            "app.services.worldbook_service._fire_lazy_vector_sync",
+            lambda bid: fired.append(bid),
+        )
+        result = build_worldbook_context(
+            db=db_session, session_id="sess-p2a", user_id=user.id,
+            recent_messages=list(msgs), character=char,
+            enable_timed_effects=False, vectorized_enabled=True,
+        )
+        # SQLite 无向量表 → 未就绪 → 懒触发 + 降级；但绝无 sync 调用
+        assert fired == ["wb-p2a"], "未就绪的书应懒触发一次后台同步"
+        reports = [r for r in result.debug_report if r.entry_id == "wb-p2a-vec"]
+        assert reports and reports[-1].reason == "vectorized_degraded_keyword_fallback", \
+            "未就绪=降级：有关键词的条目应回退关键词匹配"
+
+    def test_ready_book_does_not_fire_sync(self, db_session, monkeypatch):
+        from app.services.worldbook_vector_service import WorldBookVectorService
+
+        user, char, msgs = self._setup(db_session, "sess-p2b", "wb-p2b")
+        monkeypatch.setattr(
+            "app.services.worldbook_service._book_vectors_ready", lambda svc, bid: True,
+        )
+        monkeypatch.setattr(
+            WorldBookVectorService, "query_entries",
+            lambda self, bid, qtext, top_k=3, threshold=0.55: ([], False),
+        )
+        fired: list[str] = []
+        monkeypatch.setattr(
+            "app.services.worldbook_service._fire_lazy_vector_sync",
+            lambda bid: fired.append(bid),
+        )
+        build_worldbook_context(
+            db=db_session, session_id="sess-p2b", user_id=user.id,
+            recent_messages=list(msgs), character=char,
+            enable_timed_effects=False, vectorized_enabled=True,
+        )
+        assert fired == [], "已就绪的书不得重复触发同步"
+
+    def test_lazy_fire_dedupes_inflight(self, monkeypatch):
+        """同一本书 in-flight 期间重复触发只起一个线程（单飞去重）。"""
+        import app.services.worldbook_service as wb_svc
+
+        started: list[str] = []
+
+        class _FakeThread:
+            def __init__(self, target=None, args=(), daemon=False, name=None):
+                started.append(args[0] if args else "")
+
+            def start(self):
+                pass  # worker 不执行 → inflight 不清除
+
+        monkeypatch.setattr(wb_svc.threading, "Thread", _FakeThread)
+        try:
+            wb_svc._fire_lazy_vector_sync("wb-dedupe")
+            wb_svc._fire_lazy_vector_sync("wb-dedupe")
+            assert started == ["wb-dedupe"], "in-flight 期间必须单飞去重"
+        finally:
+            with wb_svc._LAZY_SYNC_LOCK:
+                wb_svc._LAZY_SYNC_INFLIGHT.discard("wb-dedupe")
