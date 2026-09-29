@@ -81,6 +81,11 @@ export const worldbookApi = {
     selective?: boolean;
     probability?: number;
     constant?: boolean;
+    /**
+     * 语义召回勾选（SPEC §11 A 白名单之一）。
+     * 不传 = 不修改（后端 Optional[bool]=None），只改内容时不会把勾选冲掉。
+     */
+    vectorized?: boolean;
   }) => api.put<WorldBookStage>(`/api/worldbooks/${worldBookId}/stages/${stageId}`, data).then((res) => {
     invalidateCache('/api/worldbooks');
     return res;

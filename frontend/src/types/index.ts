@@ -533,6 +533,13 @@ export interface WorldBookStage {
   selective: boolean;
   probability: number;
   constant: boolean;
+  /**
+   * 是否启用语义召回（后端 WorldBookStage.vectorized）。
+   * 勾选后该条目不再走关键词扫描，只认向量命中（worldbook_service 接管分支）。
+   * 注意：这是**第一方 UI 面**类型；插件面另有一套
+   * `lib/worldbook/types.ts::WorldBookEntry.vectorized`，两者不要混。
+   */
+  vectorized: boolean;
 }
 
 export interface WorldBookDetail extends Omit<WorldBook, 'stage_count'> {

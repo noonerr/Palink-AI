@@ -184,6 +184,8 @@ def _stage_to_response(s: WorldBookStage) -> dict:
         "probability": s.probability if s.probability is not None else 100,
         "use_probability": bool(s.use_probability) if s.use_probability is not None else True,
         "constant": bool(s.constant),
+        # SPEC §11 A：这张逐字段手抄的 dict 才是真白名单，漏这行前端读不到勾选状态
+        "vectorized": bool(s.vectorized),
         "group": s.group,
         "extensions_json": s.extensions_json,
     }
@@ -627,6 +629,9 @@ async def update_stage(
         stage.use_probability = req.use_probability
     if req.constant is not None:
         stage.constant = req.constant
+    # SPEC §11 A：词条级语义召回勾选（None = 不修改，避免只改内容时冲掉已勾选）
+    if req.vectorized is not None:
+        stage.vectorized = req.vectorized
     if req.group is not None:
         stage.group = req.group
 

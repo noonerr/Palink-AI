@@ -104,6 +104,9 @@ class WorldBookStageResponse(BaseModel):
     probability: int = 100
     use_probability: bool = True
     constant: bool = False
+    # 语义召回勾选（SPEC_世界书向量召回接通与防护 §11 A 白名单之一：
+    # 响应不带该字段 → 前端拿不到勾选状态，保存即丢）
+    vectorized: bool = False
     group: Optional[str] = None
     extensions_json: Optional[str] = None
 
@@ -126,6 +129,9 @@ class WorldBookStageUpdate(BaseModel):
     probability: Optional[int] = None
     use_probability: Optional[bool] = None
     constant: Optional[bool] = None
+    # 语义召回勾选（SPEC §11 A 白名单之一）。None = 本次不修改，
+    # 避免只改内容/关键词的请求把已勾选项冲成 False。
+    vectorized: Optional[bool] = None
     group: Optional[str] = None
     extensions_json: Optional[str] = None
 
