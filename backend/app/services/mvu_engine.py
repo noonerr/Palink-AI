@@ -1021,8 +1021,126 @@ def merge_character_book_entries(
     return merged
 
 
+def _raw_card_data(character_extensions: dict) -> dict:
+    """取 `palink_raw_card_data`（导入时写入的原始卡快照，v2/v3 结构）。"""
+    raw = character_extensions.get("palink_raw_card_data")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _raw_card_data_payload(raw: dict) -> dict:
+    """raw 卡的 `data` 层（v3 结构；v2 无此层则返回空 dict）。"""
+    data = raw.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _card_field_variants(character_extensions: dict, field: str) -> list:
+    """收集某问候字段（first_mes / alternate_greetings）的**全部**可用形态，按优先级升序返回。
+
+    [T1 2026-09-30] 历史 BUG：这里以前只读 `character_extensions` **顶层**，
+    而真实卡（palink_raw_card_data 结构）的 first_mes/alternate_greetings 在
+    `palink_raw_card_data.data.*`（v3）或 `palink_raw_card_data.*`（v2）嵌套层 →
+    提取扑空 → 卡 schema 的 zod prefault 占位值（年=1/月=1/魔力值=100/饥饿度=0/
+    当前位置=未知）成了会话初始变量 → 注入提示词后与剧情上下文全面矛盾 → 模型
+    思考死循环（2026-09-30 实测 10605 reasoning tokens / 正文 1005 字符）。
+    权威取证：docs/SPEC_MVU初始变量断链与输出tag裸显修复_2026-09-30.md。
+
+    优先级（后者覆盖前者，与 `_deep_merge` 语义一致）：
+      1. extensions 顶层（legacy 结构，先于 raw 快照的老存储位）
+      2. palink_sillytavern.card_fields.*（导入时保留的深水区副本）
+      3. palink_raw_card_data.*（v2 快照顶层）
+      4. palink_raw_card_data.data.*（v3 快照权威层）
+      → 调用点传入的数据库列值（见 build_initial_stat_data 的显式参数）优先级最高，
+        由调用方追加在末尾。
+    """
+    variants: list = []
+    ext = character_extensions
+
+    def _push(value) -> None:
+        # 空串/空列表视为"该来源没有"，不参与合并（避免用空值覆盖有效来源）
+        if isinstance(value, str):
+            if value.strip():
+                variants.append(value)
+            return
+        if isinstance(value, list) and value:
+            variants.append(value)
+
+    _push(ext.get(field))
+
+    st = ext.get("palink_sillytavern")
+    if isinstance(st, dict):
+        card_fields = st.get("card_fields")
+        if isinstance(card_fields, dict):
+            _push(card_fields.get(field))
+
+    raw = _raw_card_data(ext)
+    if raw:
+        _push(raw.get(field))
+        _push(_raw_card_data_payload(raw).get(field))
+
+    return variants
+
+
+def _coerce_greeting_values(value) -> list:
+    """把调用点传来的列值规整为 list（JSON 字符串 / list / 单条字符串 / None）。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "[{":
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                return [value]
+            return _coerce_greeting_values(parsed)
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return []
+
+
+def _character_book_variants(character_extensions: dict) -> list[list]:
+    """收集 character_book 的 entries（多个存储形态），按优先级升序返回。
+
+    同 first_mes 的历史问题：卡内嵌 world book 有三个落点——导入快照的
+    `palink_raw_card_data.data.character_book`（v3）/ `palink_raw_card_data.character_book`（v2）、
+    导入保留副本 `palink_sillytavern.card_fields.character_book`，以及**权威落点**
+    `character_extensions.character_book`（由 `merge_character_book_entries` 从
+    world_books 表合并而来，用户可编辑）。前两者只做兜底，权威落点必须排最后（覆盖）。
+    """
+    groups: list[list] = []
+
+    def _push_entries(container) -> None:
+        if not isinstance(container, dict):
+            return
+        entries = container.get("entries")
+        if isinstance(entries, dict):
+            entries = list(entries.values())
+        if isinstance(entries, list) and entries:
+            groups.append(entries)
+
+    ext = character_extensions
+    raw = _raw_card_data(ext)
+    if raw:
+        _push_entries(raw.get("character_book"))
+        payload = _raw_card_data_payload(raw)
+        if payload:
+            _push_entries(payload.get("character_book"))
+
+    st = ext.get("palink_sillytavern")
+    if isinstance(st, dict):
+        card_fields = st.get("card_fields")
+        if isinstance(card_fields, dict):
+            _push_entries(card_fields.get("character_book"))
+
+    # 权威落点（world_books 合并结果）最后 → 优先级最高
+    _push_entries(ext.get("character_book"))
+    return groups
+
+
 def _extract_initvar_from_character_book(character_extensions: dict) -> dict:
-    """从 character_extensions.character_book 的所有 entry content 提取 <initvar> 块。
+    """从角色的 character_book entries 提取 <initvar> 块（多存储形态，后者覆盖前者）。
 
     角色卡内嵌的 world book（character_book）常以禁用状态携带 <initvar> 初始变量
     （作者注释"变量初始化勿开"），用于提供头像 URL、服饰、内心想法等初始值。
@@ -1031,36 +1149,38 @@ def _extract_initvar_from_character_book(character_extensions: dict) -> dict:
     result: dict = {}
     if not isinstance(character_extensions, dict):
         return result
-    cb = character_extensions.get("character_book")
-    if not isinstance(cb, dict):
-        return result
-    entries = cb.get("entries")
-    if isinstance(entries, dict):
-        entries = list(entries.values())
-    if not isinstance(entries, list):
-        return result
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        content = entry.get("content")
-        if isinstance(content, str):
-            result = _deep_merge(result, _extract_initvar_from_text(content))
+    for entries in _character_book_variants(character_extensions):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            content = entry.get("content")
+            if isinstance(content, str):
+                result = _deep_merge(result, _extract_initvar_from_text(content))
     return result
 
 
-def build_initial_stat_data(character_extensions: dict) -> dict:
+def build_initial_stat_data(
+    character_extensions: dict,
+    *,
+    first_mes: str | None = None,
+    alternate_greetings=None,
+) -> dict:
     """合成会话初始 stat_data。
 
     优先级（后者深合并覆盖前者）：
       1. schema 默认值
       2. tavern_helper.variables
-      3. first_mes / alternate_greetings 内 <initvar> 块
+      3. first_mes / alternate_greetings 内 <initvar> 块（按存储形态多源，见 `_card_field_variants`）
       4. character_book.entries 内 <initvar> 块（头像 URL、服饰、内心想法等初始值）
+
+    [T1 2026-09-30] 新增可选入参 `first_mes` / `alternate_greetings`：调用点应传
+    `characters` 表**列值**（live 值，用户可在卡编辑器里改），它优先于
+    `palink_raw_card_data` 里的导入快照（该快照只在导入时写一次，永不回写）。
 
     返回 {"stat_data": {...}}。
     """
     if not isinstance(character_extensions, dict):
-        return {"stat_data": {}}
+        character_extensions = {}
 
     stat_data: dict = {}
 
@@ -1075,15 +1195,18 @@ def build_initial_stat_data(character_extensions: dict) -> dict:
         if isinstance(variables, dict) and variables:
             stat_data = _deep_merge(stat_data, copy.deepcopy(variables))
 
-    # 3. <initvar> 块（从 first_mes / alternate_greetings 提取）
-    for field in ("first_mes",):
-        stat_data = _deep_merge(
-            stat_data, _extract_initvar_from_text(character_extensions.get(field, ""))
-        )
-    alt = character_extensions.get("alternate_greetings")
-    if isinstance(alt, list):
-        for greeting in alt:
+    # 3. <initvar> 块（从 first_mes / alternate_greetings 提取，多存储形态按优先级升序合并）
+    for text in _card_field_variants(character_extensions, "first_mes"):
+        stat_data = _deep_merge(stat_data, _extract_initvar_from_text(text))
+    # 显式入参（数据库列值）优先级最高，追加在末尾
+    for text in _coerce_greeting_values(first_mes):
+        stat_data = _deep_merge(stat_data, _extract_initvar_from_text(text))
+
+    for greetings in _card_field_variants(character_extensions, "alternate_greetings"):
+        for greeting in greetings:
             stat_data = _deep_merge(stat_data, _extract_initvar_from_text(greeting))
+    for greeting in _coerce_greeting_values(alternate_greetings):
+        stat_data = _deep_merge(stat_data, _extract_initvar_from_text(greeting))
 
     # 4. character_book.entries 内 <initvar> 块（最后合并，覆盖 schema 空默认值）
     stat_data = _deep_merge(
@@ -1102,27 +1225,47 @@ class MvuEngine:
     """无状态封装，供 websocket.py / character_ext.py 集成层调用。"""
 
     @staticmethod
-    def init_session_variables(character_extensions: dict) -> dict:
-        """返回会话初始变量 {"stat_data": {...}}。"""
-        return build_initial_stat_data(character_extensions)
+    def init_session_variables(
+        character_extensions: dict,
+        *,
+        first_mes: str | None = None,
+        alternate_greetings=None,
+    ) -> dict:
+        """返回会话初始变量 {"stat_data": {...}}。
+
+        [T1 2026-09-30] 调用点应传角色卡的**列值**（`characters.first_mes` /
+        `characters.alternate_greetings`），它优先于 extensions 里的导入快照。
+        """
+        return build_initial_stat_data(
+            character_extensions,
+            first_mes=first_mes,
+            alternate_greetings=alternate_greetings,
+        )
 
     @staticmethod
     def update_from_reply(
         current_variables: dict,
         reply_text: str,
         character_extensions: dict,
+        *,
+        first_mes: str | None = None,
+        alternate_greetings=None,
     ) -> tuple[dict, list[str]]:
         """解析 AI 回复中的 <UpdateVariable> 并应用到 *current_variables*。
 
         返回 (新 variables, 变更日志)。
-        若 current_variables 为空且有 schema，先兜底初始化。
+        若 current_variables 为空且有 schema，先兜底初始化（同样接受列值入参）。
         """
         if not isinstance(current_variables, dict):
             current_variables = {"stat_data": {}}
 
         # 兜底初始化
         if not current_variables.get("stat_data"):
-            current_variables = build_initial_stat_data(character_extensions)
+            current_variables = build_initial_stat_data(
+                character_extensions,
+                first_mes=first_mes,
+                alternate_greetings=alternate_greetings,
+            )
 
         blocks = extract_update_variable_blocks(reply_text)
         if not blocks:

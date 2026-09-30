@@ -304,6 +304,110 @@ function normalizePresetRegexScripts(presetData: unknown): RegexScript[] {
   return [];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// [BUBBLE-DISPLAY 2026-09-30] @bubble 标记的显示侧两段处理 + 【声音】行隐藏
+//
+// 实测背景（会话 93cee77b 逐条取证，2382/2384/2387/2389/2393）：
+//  · @bubble 的**渲染宿主**是卡正则「正文美化」产出的 dcRoot iframe —— BubbleDialogue
+//    `_getBubbleRenderFrames()` 只认 srcdoc/contentDocument 含 `id="dcRoot"` 的 iframe。
+//    模型输出缺 `<now_plot><content>` 包裹时该正则不命中 → 没有卡 → 没有 iframe →
+//    标记无宿主可渲染，原样漏进正文（2382 就是这一类，且它的方括号格式**完全合规**）。
+//  · 卡内解析器（plugin_scripts「数据库界面插件(@bubble改造版)」）的
+//    `RE_BUBBLE_LINE = /^@bubble:([^|]+)\|([^|]+)\|\[([^\]]+)\]\s*$/` **只认方括号**，
+//    模型改用引号时（2384/2387/2389/2393）即便有宿主也解析不出气泡。
+// 因此这里补两段（都在**显示层**；不改后端落库文本、不动 tts 的声线提取路径）：
+//    1) prepass —— 引号形态归一成方括号，交给卡内解析器；
+//    2) postpass —— 最终输出里若 @bubble 标记仍未被任何宿主消费（非卡片分支），
+//       降级成可读文本，而不是把原始标记漏给用户。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `@bubble:角色|情绪|"对白"` / `“对白”` / `'对白'` 行（引号严格贴着行尾） */
+const BUBBLE_QUOTED_LINE_RE =
+  /^([ \t]*@bubble:[^\n|]+\|[^\n|]+\|)[ \t]*(?:"([^\n]*)"|“([^\n]*)”|'([^\n]*)')[ \t]*$/gm;
+
+const VOICE_DESCRIPTION_RE = /【(?:声音|语音)[：:]\s*[^】]+】/g;
+
+/** `@bubble:角色|情绪|正文`（正文含方括号/引号均可），容忍 Showdown 已包一层 `<p>` */
+const BUBBLE_MARKER_LINE_RE =
+  /^([ \t]*(?:<p\b[^>]*>[ \t]*)?)@bubble:([^\n|]+)\|([^\n|]+)\|([\s\S]*?)([ \t]*<\/p>)?[ \t]*$/gm;
+
+/**
+ * 把 `@bubble:` 行的**引号对白**归一为方括号对白（卡内解析器唯一认得的形态）。
+ * 只动引号形态，其余字符原样保留；未出现 `@bubble:` 时零成本返回原串。
+ */
+export function normalizeBubbleDialogueQuotes(content: string): string {
+  if (!content || !content.includes('@bubble:')) return content;
+  return content.replace(
+    BUBBLE_QUOTED_LINE_RE,
+    (_match: string, prefix: string, dQuote?: string, cnQuote?: string, sQuote?: string) =>
+      `${prefix}[${dQuote ?? cnQuote ?? sQuote ?? ''}]`,
+  );
+}
+
+/**
+ * 隐藏【声音：…】/【语音：…】行（提示词要求模型输出、消费方是 TTS 声线提取）。
+ *
+ * ⚠️ **只用于显示层**：`Message.tsx` 传给 `ttsService.playMessage` 的 `displayContent`
+ * 必须保持原样 —— `tts.ts` 的 `extractVoiceDescription` 是从该入参里提取声线的，
+ * 在 displayContent 上剥离会让声线恒为 null（2026-09-25 修过的旧故障会复现）。
+ * 未闭合的半截（流式中途 `【声音：xx`）不匹配，属预期行为。
+ */
+export function stripVoiceDescriptionMarkers(content: string): string {
+  if (!content || (!content.includes('【声音') && !content.includes('【语音'))) return content;
+  return content
+    .replace(/^[ \t]*【(?:声音|语音)[：:][^\n】]*】[ \t]*\r?\n?/gm, '')
+    .replace(VOICE_DESCRIPTION_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd();
+}
+
+/**
+ * 未被任何宿主消费的 `@bubble:` 标记降级为可读文本：`角色（情绪）：对白`。
+ * 用于"卡正则没命中 / 插件没渲染"时的兜底，避免原始标记漏进正文。
+ */
+export function downgradeUnconsumedBubbleMarkers(content: string): string {
+  if (!content || !content.includes('@bubble:')) return content;
+  return content.replace(
+    BUBBLE_MARKER_LINE_RE,
+    (
+      _match: string,
+      lead: string,
+      speaker: string,
+      mood: string,
+      body: string,
+      closing?: string,
+    ) => {
+      const text = String(body)
+        .trim()
+        .replace(/^\[([\s\S]*)\]$/, '$1')
+        .replace(/^"([\s\S]*)"$/, '$1')
+        .replace(/^“([\s\S]*)”$/, '$1')
+        .replace(/^'([\s\S]*)'$/, '$1')
+        .trim();
+      return `${lead}${String(speaker).trim()}（${String(mood).trim()}）：${text}${closing ?? ''}`;
+    },
+  );
+}
+
+/** 显示侧预处理：引号归一 + 隐藏【声音】行（用户消息不动） */
+function applyBubbleDisplayPrepass(
+  content: string,
+  input: SillyTavernDisplayPipelineInput,
+): string {
+  if (!content || input.isUser) return content;
+  return stripVoiceDescriptionMarkers(normalizeBubbleDialogueQuotes(content));
+}
+
+/** 显示侧后处理：仅对"非卡片/非已渲染 HTML"做裸标记降级（卡内运行时自己读标记） */
+function applyBubbleDisplayPostpass(
+  content: string,
+  input: SillyTavernDisplayPipelineInput,
+): string {
+  if (!content || input.isUser || !content.includes('@bubble:')) return content;
+  if (looksLikeRenderableCardHtml(content) || looksLikeSmartCardHtml(content)) return content;
+  return downgradeUnconsumedBubbleMarkers(content);
+}
+
 function preprocessSillyTavernRawDisplay(content: string, _input: SillyTavernDisplayPipelineInput): string {
   // 宏替换由 formatMessage（非流式路径）或 fallback 路径统一处理，
   // 此处不再重复执行 substituteParamsExtended，避免双重替换导致的不一致。
@@ -365,6 +469,8 @@ export function applySillyTavernDisplayPipeline(input: SillyTavernDisplayPipelin
   const placement = getSillyTavernRegexPlacement(input);
   const formatterBase = getMessageFormatterBase(input, depth, placement);
   let content = preprocessSillyTavernRawDisplay(input.content || '', input);
+  // [BUBBLE-DISPLAY 2026-09-30] 显示侧预处理：@bubble 引号归一 + 隐藏【声音】行
+  content = applyBubbleDisplayPrepass(content, input);
   let appliedRegex = false;
   let markdownContent: string;
   const alreadyRenderedDisplay = isAlreadyRenderedSmartCardDisplay(content);
@@ -505,6 +611,12 @@ export function applySillyTavernDisplayPipeline(input: SillyTavernDisplayPipelin
       ? 'html-display'
       : 'markdown';
 
+  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
+  content = applyBubbleDisplayPostpass(content, input);
+  if (typeof markdownContent === 'string') {
+    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
+  }
+
   return { content, kind, depth, appliedRegex, markdownContent };
 }
 
@@ -531,6 +643,8 @@ export async function applySillyTavernDisplayPipelineAsync(
   const placement = getSillyTavernRegexPlacement(input);
   const formatterBase = getMessageFormatterBase(input, depth, placement);
   let content = preprocessSillyTavernRawDisplay(input.content || '', input);
+  // [BUBBLE-DISPLAY 2026-09-30] 显示侧预处理：@bubble 引号归一 + 隐藏【声音】行
+  content = applyBubbleDisplayPrepass(content, input);
   let appliedRegex = false;
   let markdownContent: string;
   const alreadyRenderedDisplay = isAlreadyRenderedSmartCardDisplay(content);
@@ -655,6 +769,12 @@ export async function applySillyTavernDisplayPipelineAsync(
     : looksLikeRenderableCardHtml(content) || /<\/?(?:p|div|span|q|em|strong|table|thead|tbody|tr|td|th|ul|ol|li|blockquote|section|article|aside|header|footer|nav|main)\b/i.test(content)
       ? 'html-display'
       : 'markdown';
+
+  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
+  content = applyBubbleDisplayPostpass(content, input);
+  if (typeof markdownContent === 'string') {
+    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
+  }
 
   return { content, kind, depth, appliedRegex, markdownContent };
 }

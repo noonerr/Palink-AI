@@ -25,7 +25,7 @@ import TavernHelperPanel from './TavernHelperPanel';
 import { extractCharacterStatusBars } from '@/lib/statusBar';
 import { ttsService } from '@/services/tts';
 import { useTtsMessageStatus } from '@/hooks/useTtsMessageStatus';
-import { messageFormatter, applySillyTavernDisplayPipeline } from '@/utils/sillyTavernDisplayPipeline';
+import { messageFormatter, applySillyTavernDisplayPipeline, stripVoiceDescriptionMarkers } from '@/utils/sillyTavernDisplayPipeline';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { stripHtmlFenceLeftovers } from './smart-card-runtime/primitives';
 import {
@@ -902,6 +902,16 @@ function MessageInner({
 
   const hasDisplayContent = !isUser && !!displayContent;
 
+  // [BUBBLE-DISPLAY 2026-09-30] 渲染专用内容：隐藏【声音：…】行（提示词要求模型输出，
+  // 消费方是 TTS 声线提取）。刻意与 displayContent 分离 —— displayContent 会被传给
+  // ttsService.playMessage，而 tts.ts 的 extractVoiceDescription 正是从该入参取声线，
+  // 在 displayContent 上剥离会让声线恒为 null（2026-09-25 修过的旧故障会复现）。
+  // 编辑预填（handleStartEdit）同样继续用 displayContent，避免用户保存时丢掉该行。
+  const renderContent = useMemo(
+    () => (isUser ? (displayContent || '') : stripVoiceDescriptionMarkers(displayContent || '')),
+    [displayContent, isUser],
+  );
+
   const [formatterRevision, setFormatterRevision] = useState(() => messageFormatter.getRevision());
   useEffect(() => {
     return messageFormatter.subscribe(() => setFormatterRevision(messageFormatter.getRevision()));
@@ -968,8 +978,8 @@ function MessageInner({
     // [N-3] sanitizeStCompatHtml（DOMPurify）从 render 体移入本 memo：仅随 content/正则脚本集
     // 等输入重算。上游 smartCardChatMessages 引用稳定后，流式期间历史消息不会重入本 memo，
     // 消毒不再每帧裸跑；render 体只读 stCompatSanitizedHtml。
-    return { ...result, stCompatSanitizedHtml: sanitizeStCompatHtml(result.content || displayContent) };
-  }, [isCharacterChat, isUser, displayContent, useNativeStRendering, characterName, _userName, messageIndex, _totalMessages, streaming, isLast, _globalRegexScripts, _characterExtensions, _characterPresetData, _chatMessages, formatterRevision, hasStatusBarScript]);
+    return { ...result, stCompatSanitizedHtml: sanitizeStCompatHtml(result.content || renderContent) };
+  }, [isCharacterChat, isUser, displayContent, renderContent, useNativeStRendering, characterName, _userName, messageIndex, _totalMessages, streaming, isLast, _globalRegexScripts, _characterExtensions, _characterPresetData, _chatMessages, formatterRevision, hasStatusBarScript]);
 
   // [FULLSCREEN-ADAPT] 全屏界面检测：smart-card 内容若为「开局界面/星空启动器」等界面文档
   // （body 撑满视口 height:100vh/100dvh、或含 #launcher/.launcher 主体、或 mg-launcher 家族），
@@ -1077,15 +1087,15 @@ function MessageInner({
     // - 流式时：markdownContent 等于 pipelineResult.content（流式路径处理后的 markdown）
     // - 完成态：markdownContent 是 formatMessage 调用前的流式路径处理结果
     // 这样流式和完成态使用相同的处理链路，确保分段解析结果一致
-    const source = pipelineResult?.markdownContent || displayContent;
+    const source = pipelineResult?.markdownContent || renderContent;
     return parseContentSegments(source, streaming && isLast);
-  }, [isUser, isCharacterChat, displayContent, streaming, isLast, pipelineResult]);
+  }, [isUser, isCharacterChat, renderContent, streaming, isLast, pipelineResult]);
 
   const framelessSegments = useMemo(() => {
     if (!isFrameless || isUser) return [];
-    const source = pipelineResult?.markdownContent || displayContent;
+    const source = pipelineResult?.markdownContent || renderContent;
     return parseContentSegments(source, streaming && isLast);
-  }, [isFrameless, isUser, displayContent, streaming, isLast, pipelineResult]);
+  }, [isFrameless, isUser, renderContent, streaming, isLast, pipelineResult]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -1519,7 +1529,7 @@ function MessageInner({
                 </div>
               ) : streaming && isLast ? (
                 <SmoothOutput
-                  content={displayContent}
+                  content={renderContent}
                   streaming={streaming}
                 />
               ) : isCharacterChat && !isUser && !useNativeStRendering && isHtmlOrCard && (pipelineResult?.kind !== 'smart-card' || isGreetingInlineHtml) ? (
@@ -1551,7 +1561,14 @@ function MessageInner({
                       characterName,
                       userName: _userName,
                       messageId: message.id,
+                      // [P0-FIX 2026-09-30] 补传 messageIndex：渲染器用它做 chat 压缩与
+                      // "当前消息"定位，ST 语义的 getCurrentMessageId 也依赖它。
+                      messageIndex: typeof messageIndex === 'number' ? messageIndex : undefined,
                       messageContent: displayContent,
+                      // [P0-FIX 2026-09-30] 必须把 chatMessages 传入渲染器上下文：否则 iframe
+                      // 的 compatChat 恒为空，卡内 getChatMessages/getContext().chat 永远拿不到
+                      // 消息（含 <story> 正文），图文排版类卡脚本的故事区永远"故事正文为空"。
+                      chatMessages: _chatMessages as any,
                       firstMes: _characterFirstMes,
                       alternateGreetings: _characterAlternateGreetings,
                       sessionId: _sessionId ? String(_sessionId) : undefined,
@@ -1572,7 +1589,7 @@ function MessageInner({
                     rehypePlugins={[...REHYPE_PLUGINS, rehypeRaw]}
                     components={markdownComponents}
                   >
-                    {preprocessImageUrls(sanitizeMarkdownSource(pipelineResult?.content || displayContent))}
+                    {preprocessImageUrls(sanitizeMarkdownSource(pipelineResult?.content || renderContent))}
                   </ReactMarkdown>
                 </div>
               )}

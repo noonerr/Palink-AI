@@ -4375,7 +4375,13 @@ async def _character_chat_impl(
                 for stage in (wb.entries or [])
             ]
             char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
-            init_vars = MvuEngine.init_session_variables(char_ext_raw)
+            # [T1 2026-09-30] initvar 常见于卡的 first_mes（含嵌套在 palink_raw_card_data
+            # 的结构），而卡编辑器改的是 characters 列 → 列值优先于导入快照。
+            init_vars = MvuEngine.init_session_variables(
+                char_ext_raw,
+                first_mes=getattr(char, "first_mes", None),
+                alternate_greetings=getattr(char, "alternate_greetings", None),
+            )
             if init_vars.get("stat_data"):
                 new_session.chat_metadata = json.dumps(
                     {"variables": init_vars}, ensure_ascii=False
@@ -6191,7 +6197,13 @@ async def trigger_mvu_secondary(
             pass
     if not isinstance(cur_vars, dict) or not cur_vars.get("stat_data"):
         from app.services.mvu_engine import MvuEngine
-        cur_vars = MvuEngine.init_session_variables(char_ext_raw)
+        # [T1 2026-09-30] 同上：列值优先于 extensions 里的导入快照
+        _mvu_char_for_init = _mvu_char if _mvu_char is not None else char
+        cur_vars = MvuEngine.init_session_variables(
+            char_ext_raw,
+            first_mes=getattr(_mvu_char_for_init, "first_mes", None),
+            alternate_greetings=getattr(_mvu_char_for_init, "alternate_greetings", None),
+        )
 
     # 副 AI 配置检查（未开启/未配置模型 → 返回空结果）
     from app.models.system import UserSetting

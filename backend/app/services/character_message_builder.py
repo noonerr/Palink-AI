@@ -582,8 +582,19 @@ def apply_mvu_reply_to_session(
             pass
     cur_vars = cur_meta.get("variables")
     if not isinstance(cur_vars, dict) or not cur_vars.get("stat_data"):
-        cur_vars = MvuEngine.init_session_variables(char_ext_raw)
-    new_vars, logs = MvuEngine.update_from_reply(cur_vars, reply_text, char_ext_raw)
+        # [T1 2026-09-30] 传角色卡的**列值**（live 值）优先于 extensions 里的导入快照
+        cur_vars = MvuEngine.init_session_variables(
+            char_ext_raw,
+            first_mes=getattr(_mvu_char, "first_mes", None),
+            alternate_greetings=getattr(_mvu_char, "alternate_greetings", None),
+        )
+    new_vars, logs = MvuEngine.update_from_reply(
+        cur_vars,
+        reply_text,
+        char_ext_raw,
+        first_mes=getattr(_mvu_char, "first_mes", None),
+        alternate_greetings=getattr(_mvu_char, "alternate_greetings", None),
+    )
     cur_meta["variables"] = new_vars
     sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
     if logs:

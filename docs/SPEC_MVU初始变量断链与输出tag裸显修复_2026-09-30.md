@@ -275,3 +275,98 @@ docker exec palink-ai-db-1 psql -U ai_user -d ai_hub -t -A -c \
 - `HANDOFF_卡片正文空白与卡脚本执行_2026-09-30.md`（正文美化卡渲染排查，R4 同源）
 - `docs/SPEC_MVU变量更新SSE侧补齐与取证_2026-09-28.md`（apply_mvu_reply_to_session 四入口契约出处）
 - `docs/SPEC_MVU提示词依从性零成本筛查_2026-09-28.md`（T3 深度窗对齐背景）
+
+---
+
+## 8. 施工结果（2026-09-30 本 agent，按「修订记录」执行）
+
+### 8.1 T1（P0）后端：initvar 多存储形态 + 列值优先
+
+- **`backend/app/services/mvu_engine.py`**（+205/-44 行区间）：
+  - 新增 `_raw_card_data` / `_raw_card_data_payload` / `_card_field_variants` / `_coerce_greeting_values` / `_character_book_variants`；
+  - `build_initial_stat_data(ext, *, first_mes=None, alternate_greetings=None)` —— 问候字段按
+    **extensions 顶层 → palink_sillytavern.card_fields → raw 顶层(v2) → raw.data(v3) → 显式列值** 升序合并；
+  - `_extract_initvar_from_character_book` 改为多形态：**raw 快照只兜底，顶层 `character_book`
+    （= world_books 合并结果，用户可编辑）永远最后合并**（B7）；
+  - `MvuEngine.init_session_variables` / `update_from_reply` 透传列值入参（关键字参数，旧位置调用签名不变）；
+  - 深合并顺序保持「initvar 覆盖 schema prefault」；**不做存量会话迁移**（照原 SPEC）。
+- **调用点**（全部改为传列值，live 值优先于导入快照）：
+  `backend/app/api/character_ext.py:4378`（建会话）/ `:6197`（副 AI 路径）、
+  `backend/app/services/character_message_builder.py:585,586`（`apply_mvu_reply_to_session`）。
+- **测试**：新增 `backend/tests/test_mvu_initial_stat_data_sources.py`（18 例，全部通过）——
+  覆盖 v3 嵌套 / v2 顶层 / 深水区 / 优先级序 / 列值优先 / 空列值不清空 / character_book 权威优先 /
+  alternate_greetings 列表与 JSON 字符串 / `MvuEngine` 透传 / 旧位置调用签名回归。
+
+### 8.2 零成本等价验收（替代付费实跑）
+
+对真实卡 `be906232…`（露缇雅1.2）走真实调用路径 `MvuEngine.init_session_variables(ext, first_mes=列值, alternate_greetings=列值)`：
+
+```json
+{ "prefault_hits": [],
+  "环境.时间": { "年": 2026, "季节": "夏", "月": 7, "日": 8, "星期": "二", "小时": 7, "分钟": 0 },
+  "状态": { "爱意": 5, "魔力值": 60, "饥饿度": 60, "当前位置": "哥哥的卧室", "当前动作或体位": "抓紧床单被角……" },
+  "穿着": { "上身": "浅粉色纯棉无袖睡裙……", "下身": "无", "内衣": "白色棉质内衣", "内裤": "白色棉质内裤", "鞋子": "赤裸，光脚踩在地毯上", "袜子": "无" } }
+```
+
+**占位指纹全部消失**（年=1 / 爱意=0 / 魔力值=100 / 饥饿度=0 / 位置=未知 / 穿着空 → 一个不剩），
+数值与卡内 initvar 完全一致。修复前同一调用返回的是全套 prefault 值（见 `docs/复核_…_2026-09-30.md` §1.1）。
+
+### 8.3 T3 + T2c 前端：显示层两段处理
+
+落点选 **`frontend/src/utils/sillyTavernDisplayPipeline.ts`**（B1/B3 修订：不动 `plugin_scripts`、
+不在 `displayContent` 上剥离、不改 `formatting.ts` 热文件），新增四个纯函数 + 两处管线接线：
+
+| 函数 | 作用 | 接线位置 |
+| --- | --- | --- |
+| `normalizeBubbleDialogueQuotes` | `@bubble:名\|情绪\|"…"` / `“…”` / `'…'` → `[…]` | prepass（正则之前，卡内解析器只认方括号） |
+| `stripVoiceDescriptionMarkers` | 隐藏【声音/语音：…】行（未闭合半截不匹配） | prepass |
+| `downgradeUnconsumedBubbleMarkers` | 未被子消费的裸标记 → `角色（情绪）：对白` | postpass（**卡片/已渲染 HTML 分支跳过**） |
+
+- prepass 带 `isUser` 门控（用户自己打的内容不动）；postpass 同样门控 +卡片判定守卫。
+- **`Message.tsx`**：新增 `renderContent = stripVoiceDescriptionMarkers(displayContent)`，
+  仅用于**渲染**（流式 SmoothOutput、两个段落 memo 的 fallback、ReactMarkdown fallback、
+  pipeline fallback）；`displayContent` **原样**继续喂给 `ttsService.playMessage`（声线提取入参）与编辑预填。
+- **测试**：新增 `frontend/src/utils/__tests__/bubble-display-voice-hide.test.ts`（25 例全绿），含
+  卡片分支「标记必须保留」与「引号仍被归一」两条反向护栏，以及一条**结构护栏**：
+  断言 `Message.tsx` 的 TTS 文本仍取自 `displayContent` 且不存在 `playMessage(message.id, renderContent…)`。
+
+### 8.4 门禁（2026-09-30 实跑）
+
+| 门禁 | 结果 |
+| --- | --- |
+| 后端全量（容器内单条命令） | **1599 passed / 42 skipped / 0 failed**（4m57s；新增 18 例后 collect 1641） |
+| 前端 `npx tsc --noEmit` | **0 错** |
+| 前端 `npx vitest run` | **40 文件 / 512 passed / 3 skipped / 0 fail** |
+| 镜像时效性 | 容器内 `grep` 新符号命中（`_card_field_variants`×4 / `_mvu_char_for_init`×3 / T1 注释×1） |
+
+### 8.5 未做 / 已知边界
+
+- **未做付费实弹**（用户选择零成本等价验证）：`reasoning_tokens` 是否自 10605 回落需真机一轮对话确认。
+- T2c 的"降级"只覆盖**非卡片分支**；卡片分支里标记由卡内运行时消费（这是设计意图，不是遗漏）。
+- 卡内解析器（`plugin_scripts`）与卡自带正则**一字未改** —— 契约仍由"显示侧归一"保证。
+- 存量错乱会话（本会话 `爱意=1/魔力值=100/…`）不会自愈：`stat_data` 非空即不走兜底 init，
+  需重开会话或另立项迁移（与原 SPEC §T1「不做存量迁移」一致）。
+
+### 8.6 前端产物上线核验（2026-09-30 实跑）
+
+本次**踩中一个部署坑并已修正**（务必按新姿势操作）：
+
+- ✗ `mv dist dist_prev && mv dist_new dist`：`dist` 是 nginx bind mount 的目标路径，重命名后
+  新产物会被落到 **`frontend/dist/dist/`**（多一层），容器顶层仍读旧产物（本次表现为站点未白屏但也没更新）。
+- ✓ 正确姿势（零空窗、无需重启容器）：
+  ```bash
+  cd frontend
+  npx vite build --outDir dist_new --emptyOutDir
+  cp -r dist_new/. dist/          # 原地覆盖：新增新 hash 资源 + 覆盖 index.html
+  node scripts/gzip-dist.cjs      # 该脚本硬编码 dist，必须在覆盖之后跑
+  rm -rf dist_new
+  ```
+  **旧的 hashed 资源不删**（in-flight 客户端可能仍在引用，删了就是 404）。
+
+线上核验（`curl --noproxy '*'`，前端端口是 **host 13000 → 容器 8080**）：
+
+| 请求 | 结果 |
+| --- | --- |
+| `GET /` | 200，7225B，引用 **`index-HhgR8otE.js`**（新产物） |
+| `GET /assets/index-HhgR8otE.js` | 200，1874622B，`application/javascript`，内含新正则 `【(?:声音\|语音)…` |
+| `node scripts/gzip-dist.cjs` | 生成 133 个 `.gz`，比原始体积减少 9286 KB |
