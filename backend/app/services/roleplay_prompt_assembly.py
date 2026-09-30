@@ -1565,9 +1565,20 @@ def _char_card_has_bubble_regex(extensions_raw) -> bool:
 
 
 def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
-    """当前角色是否有 @bubble 配套渲染正则（三源任一命中即为有）。"""
+    """
+    当前角色是否有 @bubble 配套渲染能力。
+
+    [BUBBLE-HOST-GATE 2026-10-01] 两源的可靠性并不对等：
+      · 卡自带正则（源 1）—— 卡自己声明要渲染 @bubble，最可信；正则可能直接产出
+        内联 HTML 气泡，不依赖 iframe。
+      · 插件 / 用户正则（源 2、3）—— 其消费方是 BubbleDialogue 的 dcRoot **iframe**，
+        而 Palink 的 FORBID_TAGS 含 'iframe' → 宿主活不了 → 标记无人渲染。
+        故该源仅在宿主可用时成立（PALINK_BUBBLE_IFRAME_HOST=1），否则视为不支持。
+    """
     if _char_card_has_bubble_regex(char_extensions_raw):
         return True
+    if not _bubble_iframe_host_available():
+        return False
     try:
         # 函数级局部导入：character_ext 反向依赖本模块，模块级导入会成环。
         from ..api.character_ext import (
@@ -1593,15 +1604,39 @@ def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
 # 插件名单（plugin_scope_mode='allowlist'），两边可能打架：UI 勾了、装配层
 # 又判这张卡不需要。统一优先级（从高到低）：
 #   1. BUBBLE_DEBUG 环境变量   —— 调试逃生门，无条件保留
-#   2. 用户显式选择（allowlist）—— 用户勾选即权威，装配层让位、跳过自动检测
-#   3. 装配层自动门控          —— 仅在 inherit（含 NULL）时生效
-# 命中 1/2 时不再跑 _has_bubble_render_support，避免决策打架。
+#   2. 这张卡能否渲染 @bubble  —— 由 _has_bubble_render_support 判定（见下）
+#   3. 装配层自动门控          —— inherit（含 NULL）时同样按 2 判定
+#
+# [BUBBLE-HOST-GATE 2026-10-01] 原先 allowlist（用户手工勾选插件）会跳过 2、无条件保留，
+# 实测导致"卡根本没要求 @bubble 却被强制注入"（会话 a0accf94）。现改为：
+# allowlist 只决定"插件启不启用"，格式规范一律按"这张卡能否渲染"判定。
 
 
 def _bubble_debug_forced() -> bool:
     """调试逃生门：BUBBLE_DEBUG=1/true/on/yes 时无条件保留 @bubble 类注入。"""
     try:
         raw = (os.environ.get("BUBBLE_DEBUG") or "").strip().lower()
+    except Exception:
+        return False
+    return raw in {"1", "true", "on", "yes"}
+
+
+def _bubble_iframe_host_available() -> bool:
+    """
+    [BUBBLE-HOST-GATE 2026-10-01] dcRoot 渲染宿主在 Palink 下是否真的可用。
+
+    插件「对话渲染系统 v7.1」的「正文美化」正则产出的气泡宿主是
+    `<iframe srcdoc="…id="dcRoot"…">`，而 Palink 的 ST 兼容消毒配置
+    `ST_DOMPURIFY_CONFIG.FORBID_TAGS`（frontend/src/lib/sillytavern/formatting.ts）
+    含 `'iframe'` —— iframe 会被消毒掉，宿主活不下来，模型输出的 @bubble
+    标记没有任何消费方，只会原样裸在正文里。
+
+    因此：插件/用户正则这一源**只有在宿主确实可用时**才算"有渲染支持"。
+    默认关闭（当前 Palink 渲染不了）；将来打通 iframe 白名单后，
+    用 `PALINK_BUBBLE_IFRAME_HOST=1` 打开即可恢复，无需改代码。
+    """
+    try:
+        raw = (os.environ.get("PALINK_BUBBLE_IFRAME_HOST") or "").strip().lower()
     except Exception:
         return False
     return raw in {"1", "true", "on", "yes"}
@@ -1742,12 +1777,29 @@ def _collect_extension_prompts(
                 len(bubble_entries),
             )
         elif _character_plugin_scope_mode(char_obj) == "allowlist":
-            # 用户已手工确认该卡插件名单 → 装配层让位，不再跑自动检测
-            logger.info(
-                "[PLUGIN-ON-DEMAND] character %s is allowlist: auto bubble gate deferred to user choice "
-                "(%d injection(s) kept)",
-                getattr(char_obj, "id", None), len(bubble_entries),
+            # [BUBBLE-HOST-GATE 2026-10-01] 旧行为：用户勾了插件 → 装配层完全让位、
+            # 无条件保留 @bubble 注入。实测这是错的 —— "启用插件"不等于"这张卡要 @bubble
+            # 格式"，裸卡被强制输出无人渲染的原始标记（会话 a0accf94 取证）。
+            # 让位只让到"插件能否被启用"这一层；格式规范仍以「这张卡能否渲染」为准。
+            has_support = _has_bubble_render_support(
+                req.db, getattr(getattr(req, "user", None), "id", None),
+                getattr(char_obj, "extensions", None),
             )
+            if has_support:
+                logger.info(
+                    "[PLUGIN-ON-DEMAND] character %s is allowlist and has bubble render support: "
+                    "keeping %d injection(s)",
+                    getattr(char_obj, "id", None), len(bubble_entries),
+                )
+            else:
+                for entry in bubble_entries:
+                    merged.pop(entry["identifier"], None)
+                logger.info(
+                    "[PLUGIN-ON-DEMAND] character %s is allowlist but has NO bubble render support "
+                    "(card declares none; dcRoot iframe host unavailable): "
+                    "dropped %d bubble-format injection(s)",
+                    getattr(char_obj, "id", None), len(bubble_entries),
+                )
         else:
             has_support = _has_bubble_render_support(
                 req.db, getattr(getattr(req, "user", None), "id", None),
