@@ -408,6 +408,26 @@ function applyBubbleDisplayPostpass(
   return downgradeUnconsumedBubbleMarkers(content);
 }
 
+/**
+ * [BUBBLE-DISPLAY-2026-09-30 · 卡片分支补丁] 卡脚本"看得见"的那份消息文本的归一化。
+ *
+ * 取证（plugin_scripts「数据库界面插件(@bubble改造版)」+ 卡正则「正文美化」模板）：
+ *  · 「正文美化」模板里**没有正文占位符**（`$1` 出现 0 次），它在 `init()` 里自己取正文：
+ *    `getChatMessages(getCurrentMessageId())[0].message`；
+ *  · `extractMessageContent()` 的优先级是 格式化 swipe → `ctx.chat[i].mes`（原始内容）
+ *    → DOM `.mes_text`（渲染产物，第 3 位兜底）。
+ *  ⇒ 卡片分支的正文来自**原始消息内容**，渲染层的归一/隐藏对它无效。
+ *  故：把同一套「引号归一 + 隐藏【声音】行」施加到**喂给卡脚本的 chat 条目**上
+ *  （CharacterChat.buildSmartCardChatEntry），卡片分支才真正生效。
+ *
+ * 副作用（已知并接受）：卡脚本经 `getChatMessages()` 看到的是归一后的文本；
+ * 变换只改 @bubble 行的引号形态、并移除 Palink 专有的【声音】提示行，不改剧情文字。
+ */
+export function normalizeCardFacingMessage(content: string): string {
+  if (!content) return content;
+  return stripVoiceDescriptionMarkers(normalizeBubbleDialogueQuotes(content));
+}
+
 function preprocessSillyTavernRawDisplay(content: string, _input: SillyTavernDisplayPipelineInput): string {
   // 宏替换由 formatMessage（非流式路径）或 fallback 路径统一处理，
   // 此处不再重复执行 substituteParamsExtended，避免双重替换导致的不一致。

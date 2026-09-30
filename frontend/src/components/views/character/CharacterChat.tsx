@@ -31,6 +31,12 @@ import {
   handleSmartCardCompatRequest,
   type SmartCardCompatControllerState,
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
+// 卡内 tavern_helper 脚本执行器（用户决策 2026-09-30：允许卡片执行自带脚本并从 CDN 拉库）
+import {
+  ensureCardScriptBridge,
+  removeCardTavernHelperScripts,
+  runCardTavernHelperScripts,
+} from '@/lib/sillytavern/card-script-runner';
 import { ErrorToast } from '@/components/ui/custom/ErrorToast';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
 // 重构后提取的子组件
@@ -50,7 +56,7 @@ import type {
   GenerationPreset,
 } from '@/types';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
-import { getCachedGlobalRegexScripts, preloadGlobalRegexScripts, loadEngineConfig } from '@/utils/sillyTavernDisplayPipeline';
+import { getCachedGlobalRegexScripts, preloadGlobalRegexScripts, loadEngineConfig, normalizeCardFacingMessage } from '@/utils/sillyTavernDisplayPipeline';
 // D 批清理: 类型改取自正则引擎正典定义（utils/regexEngine.ts 已删除）
 import type { RegexScript } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
@@ -122,6 +128,11 @@ function buildSmartCardChatEntry(
   const rawSwipes: string[] = Array.isArray((item as any).swipes) && (item as any).swipes.length
     ? (item as any).swipes
     : [item.content || ''];
+  // [BUBBLE-DISPLAY 2026-09-30] 卡脚本读的是**原始消息内容**（正文美化模板在 init() 里
+  // 自己 `getChatMessages(currentId)[0].message`，extractMessageContent 也优先 raw 而非 DOM）
+  // ⇒ 渲染层的引号归一/【声音】隐藏到不了卡里。这里在"喂给卡脚本的 chat 条目"上做同一套
+  // 归一（引号 → 方括号、去掉 Palink 专有的【声音】提示行），卡片分支才会真正生效。
+  const cardFacing = (s: string) => normalizeCardFacingMessage(s);
   return {
     id: item.id ?? null,
     message_id: item.message_id ?? item.id ?? null,
@@ -143,11 +154,11 @@ function buildSmartCardChatEntry(
     selected_group: (item as any).selected_group ?? (item as any).extra?.selected_group,
     groups: (item as any).groups ?? (item as any).extra?.groups,
     name: item.name || (item.role === 'user' ? userNameFallback : item.role === 'system' ? 'System' : characterName),
-    content: cleanMes,
-    mes: cleanMes,
-    message: cleanMes,
-    text: cleanMes,
-    swipes: rawSwipes.map(stripSwipe),
+    content: cardFacing(cleanMes),
+    mes: cardFacing(cleanMes),
+    message: cardFacing(cleanMes),
+    text: cardFacing(cleanMes),
+    swipes: rawSwipes.map(stripSwipe).map(cardFacing),
     swipe_id: Number.isFinite(Number((item as any).swipe_id)) ? Number((item as any).swipe_id) : 0,
     swipe_info: Array.isArray((item as any).swipe_info) ? (item as any).swipe_info : [],
     extra: boundaryExtra,
@@ -344,6 +355,9 @@ export function CharacterChat(props: CharacterChatProps) {
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
   // MVU 会话级变量（后端下发的 stat_data，作为消息级 extra.variables 的兜底）
   const [sessionVariables, setSessionVariables] = useState<{ stat_data?: Record<string, unknown> } | undefined>(undefined);
+  // 卡内脚本桥接用：注入 effect 只在切卡时重跑，变量必须走 ref 读最新值，否则脚本读到旧 stat_data
+  const sessionVariablesRef = useRef(sessionVariables);
+  sessionVariablesRef.current = sessionVariables;
 
   // 生成流的 final_content 事件会携带后端刚保存的 MVU variables；直接写入页面状态，
   // 不等待生成状态 effect 或再次 GET，确保 iframe context-update 立即收到最新 stat_data。
@@ -1557,11 +1571,46 @@ export function CharacterChat(props: CharacterChatProps) {
     };
   }, [selectedCharacter?.id]);
 
+  // [CARD-SCRIPT] 执行卡自带 tavern_helper 脚本（CG 图库悬浮按钮、图鉴、状态栏特效等）。
+  // 必须在插件 runtime 注入之后跑：脚本依赖 setup 挂上来的 getChatMessages /
+  // window.__palinkChatMessages。失败按条隔离，一条坏脚本不得拖垮其余（当天事故教训）。
+  // 止血：localStorage.palink_card_tavern_helper_scripts = '0' 后刷新，整体不执行。
+  useEffect(() => {
+    const ext = compatCharacterExtensions || (selectedCharacter as any)?.extensions;
+    if (!ext) return;
+    // 复用插件容器（display:none）：卡脚本自己会把悬浮按钮挂到 document.body
+    let host = document.getElementById('palink-st-plugin-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'palink-st-plugin-host';
+      host.style.display = 'none';
+      document.body.appendChild(host);
+    }
+    ensureCardScriptBridge({
+      getVariables: () => (sessionVariablesRef.current as Record<string, unknown>) || {},
+      getCurrentMessageId: () => {
+        const msgs = (window as any).__palinkChatMessages;
+        return Array.isArray(msgs) && msgs.length > 0 ? msgs.length - 1 : -1;
+      },
+    });
+    const res = runCardTavernHelperScripts(ext, host);
+    if (res.failed.length > 0) {
+      console.warn('[card-script] 卡内脚本有失败项（已隔离，不影响其余）:', res.failed);
+    }
+    if (res.ran.length > 0) {
+      console.warn('[card-script] 已执行卡内脚本 ' + res.ran.length + ' 条');
+    }
+  }, [selectedCharacter?.id, compatCharacterExtensions]);
+
   useEffect(() => {
     // 离开聊天页才真正清空插件 [PLUGIN-ON-DEMAND L1]
     const runtime = stRuntimeRef.current;
     return () => {
       runtime?.unloadAll();
+      // 卡内脚本同批清理：既摘脚本节点，也摘它在 body 上创建的悬浮按钮/弹窗，
+      // 否则切到别的页面会飘着一个不属于该页的卡片 UI。
+      const host = document.getElementById('palink-st-plugin-host');
+      if (host) removeCardTavernHelperScripts(host);
     };
   }, []);
 

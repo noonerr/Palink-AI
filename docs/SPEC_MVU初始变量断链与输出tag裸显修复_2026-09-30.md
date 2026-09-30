@@ -370,3 +370,49 @@ docker exec palink-ai-db-1 psql -U ai_user -d ai_hub -t -A -c \
 | `GET /` | 200，7225B，引用 **`index-HhgR8otE.js`**（新产物） |
 | `GET /assets/index-HhgR8otE.js` | 200，1874622B，`application/javascript`，内含新正则 `【(?:声音\|语音)…` |
 | `node scripts/gzip-dist.cjs` | 生成 133 个 `.gz`，比原始体积减少 9286 KB |
+
+### 8.7 复核纠错（2026-09-30 19:3x）——卡片分支的落点补正【以此节为准】
+
+**§8.3 / §8.5 中关于"卡片分支也生效"的表述有误，特此更正。**
+
+**错在哪**：原文说「卡片分支：引号仍被归一 / 【声音】行同样被隐藏」。实际取证（`plugin_scripts`
+「数据库界面插件(@bubble改造版)」+ 卡正则「正文美化」模板，均可复现）：
+
+1. 「正文美化」的 replaceString（30181 字符）**不含正文占位符**（`$1` 出现 **0** 次）；
+   它在 `init()` 里自己取正文：
+   ```js
+   const currentId = getCurrentMessageId();
+   const msgs = getChatMessages(currentId);
+   rawMessage = msgs[0].message || '';
+   const parsed = cleanAndExtractStory(rawMessage);
+   renderStoryStream(storyContainer, parsed.content);
+   ```
+2. 卡内 `extractMessageContent()` 的取值优先级为
+   **① 格式化 swipe（`getChatMessages(...).swipes`）→ ② `ctx.chat[i].mes`（原始内容）→ ③ DOM `.mes_text`（渲染产物，仅兜底）**。
+3. Palink 侧 `getChatMessages` → `getCompatChatMessages` → `compatChat`，其数据源是
+   `ctx.chatMessages`（即 `CharacterChat.buildSmartCardChatEntry` 产出的条目）。
+
+⇒ **卡片分支读的是原始消息内容，不是渲染产物**；我原先只改渲染层（`applySillyTavernDisplayPipeline`），
+对卡片分支**完全无效**。**这条同时也解释了 2384（有包裹、卡渲染成功却仍用引号）为何仍解析失败。**
+
+**补正做法**：新增 `normalizeCardFacingMessage(content)`（= 引号归一 + 隐藏【声音】行，幂等），
+施加到**喂给卡脚本的 chat 条目**上 —— `CharacterChat.buildSmartCardChatEntry` 的
+`content` / `mes` / `message` / `text` 四个字段与 `swipes`（`rawSwipes.map(stripSwipe).map(cardFacing)`）。
+
+**修正后的生效面（如实口径）**：
+
+| 分支 | 引号归一 | 隐藏【声音】 | 裸标记降级 |
+| --- | --- | --- | --- |
+| 非卡片分支（无 `<now_plot><content>` 包裹，如 2382/2387/2389/2393） | ✅ prepass | ✅ prepass | ✅ postpass |
+| 卡片分支（如 2384，卡渲染成功） | ✅ 经 `normalizeCardFacingMessage`（**原先 ❌**） | ✅ 同上（**原先 ❌**） | 不适用（标记由卡内运行时消费） |
+| Galgame 全屏 overlay（若启用） | ✅ 同上（同一数据源） | ✅ 同上 | 不适用 |
+
+**已知副作用（接受）**：卡脚本经 `getChatMessages()` 看到的是归一后的文本；变换只改 @bubble 行的
+引号形态、移除 Palink 专有的【声音】提示行，不改剧情文字；对卡的存档/导出无影响（实测该卡只存 CG/头像）。
+
+**门禁复跑（含补正）**：`tsc --noEmit` 0 错；`vitest` 40 文件 / **516 passed** / 3 skipped / 0 fail
+（新增 `normalizeCardFacingMessage` 3 例 + 1 条结构护栏，断言 `CharacterChat` 五个字段均施加归一）。
+产物重建并线上核验：`GET /` 200 引用 **`index-hIIHf84K.js`**，该 asset 200（1874672B）且含新正则。
+
+> 教训：判定"某修复落在渲染层是否有效"之前，必须先确认**消费方读的是 DOM 还是数据源**。
+> 本批卡片分支的消费方读数据源（`getChatMessages`），渲染层产物只是第 3 位兜底。

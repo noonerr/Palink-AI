@@ -20,6 +20,7 @@ import {
   normalizeBubbleDialogueQuotes,
   stripVoiceDescriptionMarkers,
   downgradeUnconsumedBubbleMarkers,
+  normalizeCardFacingMessage,
   applySillyTavernDisplayPipeline,
 } from '@/utils/sillyTavernDisplayPipeline';
 
@@ -206,11 +207,44 @@ describe('applySillyTavernDisplayPipeline 集成：助手消息', () => {
     expect(result.content).not.toContain('“真的不是。”');
   });
 
-  it('卡片分支：【声音】行同样被隐藏', () => {
+  it('卡片分支：【声音】行同样被隐藏（仅指管线产物；卡运行时另见 normalizeCardFacingMessage）', () => {
     const cardHtml = '<div id="dcRoot"><script>/* card runtime */</script></div>';
     const content = `${cardHtml}\n${VOICE_LINE}`;
     const result = applySillyTavernDisplayPipeline({ ...baseInput, content });
     expect(result.content).not.toContain('【声音');
+  });
+});
+
+describe('normalizeCardFacingMessage —— 卡脚本读到的那份文本（卡片分支的唯一有效落点）', () => {
+  it('引号归一 + 隐藏【声音】行', () => {
+    const raw = `叙述。\n\n@bubble:露缇雅|不安|“真的不是。”\n\n${VOICE_LINE}`;
+    const out = normalizeCardFacingMessage(raw);
+    expect(out).toContain('@bubble:露缇雅|不安|[真的不是。]');
+    expect(out).not.toContain('【声音');
+    expect(out).not.toContain('“真的不是。”');
+  });
+
+  it('已合规内容保持不变（幂等）', () => {
+    const raw = '叙述。\n\n@bubble:露缇雅|不安|[真的不是。]';
+    expect(normalizeCardFacingMessage(raw)).toBe(raw);
+    expect(normalizeCardFacingMessage(normalizeCardFacingMessage(raw))).toBe(raw);
+  });
+
+  it('空值安全', () => {
+    expect(normalizeCardFacingMessage('')).toBe('');
+  });
+
+  it('结构护栏：CharacterChat 把归一施加到喂给卡脚本的 chat 条目（content/mes/message/text/swipes）', () => {
+    // 取证依据：正文美化模板不含 $1，运行时自己 getChatMessages()[0].message 取正文 ⇒
+    // 渲染层归一无效，必须改这份数据源。缺了这段，卡片分支的引号/【声音】问题会复发。
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '../../components/views/character/CharacterChat.tsx'),
+      'utf8',
+    );
+    expect(src).toContain('normalizeCardFacingMessage');
+    expect(src).toContain('const cardFacing = (s: string) => normalizeCardFacingMessage(s);');
+    expect(src).toContain('message: cardFacing(cleanMes)');
+    expect(src).toContain('swipes: rawSwipes.map(stripSwipe).map(cardFacing)');
   });
 });
 
