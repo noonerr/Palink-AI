@@ -7,6 +7,62 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已完成·待实机验收] MVU 初始变量断链（过度思考根因）+ 输出 tag 裸显修复（本 agent，2026-09-30）
+
+- **文档**：SPEC `docs/SPEC_MVU初始变量断链与输出tag裸显修复_2026-09-30.md`（**施工以「修订记录」节为准**，
+  施工结果见 §8）；交接提示词 `HANDOFF_MVU初始变量断链与输出tag裸显_2026-09-30.md`；
+  施工前复核 `docs/复核_MVU初始变量断链与输出tag裸显_2026-09-30.md`（10 项修正，全部有实库/实跑证据）。
+- **备份**：`_BACKUPS/2026-09-30_mvu-initvar-修复前/`（stash `e5d0d07` + tag `pre-mvu-initvar-fix-20260930` = `15dc75c`）。
+- **提交**：`cb6e498`（复核 + SPEC 修订 + 备份台账）/ `0ce1760`（T1 后端 + T3/T2c 前端 + 测试）。
+- **复核确认成立**：R1/T1 根因——`build_initial_stat_data` 只按顶层取 `first_mes`/`alternate_greetings`/`character_book`，
+  而 v3 卡的 initvar 在 `palink_raw_card_data.data.first_mes`（实测该函数输出 = 消息 2382 思考原文引用的占位值，逐项吻合）。
+  影响面：24 卡中 2 张（同名重复卡）；`extensions` 顶层 `first_mes` 全库 0 张（旧分支是死代码）。
+- **复核推翻/修正的 5 处（施工已按修订执行）**：① T3 落点不得改 `displayContent`（`tts.ts` 从 `playMessage` 入参提取声线）
+  → 最终落在 `sillyTavernDisplayPipeline.ts`；② R2 重定性：2382 的 `@bubble` 格式**完全合规**，
+  裸显真因是缺 `<now_plot><content>` 包裹 → 无 `dcRoot` 渲染宿主；③ T2a 落点作废（方括号约束早已存在，
+  注入文本由客户端 IndexedDB `format_rule` 每请求组装）；④ 数据源改为 `characters.first_mes` 列优先；
+  ⑤ 验收口径前移/改判占位指纹（门禁基线实测 **1623 collected**，原文 1566 作废）。
+- **门禁**：后端容器全量 **1599 passed / 42 skipped / 0 failed**（4m57s，collect 1641）；
+  `tsc --noEmit` 0 错；`vitest` 40 文件 / **512 passed** / 3 skipped / 0 fail。
+  前端产物已重建并线上核验（`GET /` 200 且引用 `index-HhgR8otE.js`，该 asset 200 且含新逻辑）。
+- **验收（零成本等价，实跑）**：真实卡走 `MvuEngine.init_session_variables(ext, 列值)` →
+  `prefault_hits: []`（年=1/爱意=0/魔力值=100/饥饿度=0/位置=未知/穿着空 六个占位指纹全消），
+  值 = 卡内 initvar（2026/7/8、爱意5、魔力60、饥饿60），穿着 6 字段齐。
+- **仍待用户真机确认**：首轮 `reasoning_tokens` 是否自 10605 回落（本轮未付费实跑）；
+  消息 UI 是否不再出现【声音：…】与裸 `@bubble:`（需刷新页面拿新产物）。
+- **已知边界**：存量错乱会话不自愈（`stat_data` 非空即不走兜底 init，需重开会话）；
+  T2c 的降级只覆盖非卡片分支（卡片分支由卡内运行时消费标记，属设计意图）；
+  卡内 `plugin_scripts` 与卡自带正则**一字未改**。
+- **部署坑（本轮踩中并修正）**：`mv dist dist_prev && mv dist_new dist` 会让新产物落进
+  `frontend/dist/dist/`（bind mount 路径跟随），容器顶层仍旧产物。正确姿势 =
+  `cp -r dist_new/. dist/` 原地覆盖 → `gzip-dist.cjs`；旧的 hashed 资源不删。
+
+### [已完成·已构建 · Qoder 复核通过] 世界书语义召回接通界面（2026-09-30 前端批 A~E + 收尾批 F1/F2）
+
+- **SPEC**：`docs/SPEC_世界书向量召回接通与防护_2026-09-29.md` §11（定稿设计）；复核报告
+  `docs/复核_世界书向量召回前端批A-E_2026-09-30.md`。
+- **提交链**：`960be2b`(A 四处白名单+落库赋值) / `2702943`(B R1：`update_stage` commit 后复用 `_schedule_worldbook_vector_sync`) /
+  `4f083b8`(C 三新键 + 设置页开关与数字框) / `0b2140e`(D 词条「按意思找这条设定」勾选，真发 PUT + 乐观更新回滚) /
+  `15f6f9b`(E 插件面两套类型注释)。备份 stash `bdba716` + tag `pre-worldbook-ui-20260930`。**开关默认仍关**。
+- **收尾批（2026-09-30，Qoder 已复核通过）**：`b6825c3`(F2 总开关关着不派嵌入：新增
+  `_worldbook_vector_recall_enabled`，读不到一律视为关；文案补"打开总开关后才会开始建立索引") /
+  `88036f1`(F1 恒真断言改为只扫 JSX 文本节点，**我注入违规串实测它能变红**、还原后 11/11 绿) /
+  `15dc75c`(前端构建产物，dist 内已含两处新文案，未提交任何 tracked 文件)。
+  门禁复跑：容器全量 **1581 passed / 42 skipped**、四个向量测试文件 53 passed、`vitest` 34 文件
+  **463 passed / 3 skipped / 0 fail**、容器代码 md5 == HEAD。备份 stash `pre-worldbook-fin snapshot 2026-09-30` + 同名 tag。
+- **施工方避开的两个真坑（我已核）**：① `toIntOrDefault` 会把 0.55 截成 0（门槛失效=什么都召回），
+  已新增 `toNumberOrDefault` 供浮点键；② `vectorized` 的"真白名单"是 `_stage_to_response` 那张逐字段手抄 dict，
+  光加 schema 字段往返照样红——与上一批 `_validate_provider` 同类陷阱。
+- **我的复跑**：容器全量 **1579 passed / 42 skipped**；`tsc` 0 错；`vitest` 444 passed / 3 skipped / 0 fail
+  （6 unhandled = `plugin-runtime-diff-hotswap` 既有 jsdom 噪声）；容器三文件 md5 == HEAD（跑的是新代码）。
+  **并补了他们没测的一环**：按 `update_stage` 动作序列（赋值→commit→调度）在真 PG 上实跑，
+  1 秒内写出 1 行向量、语义召回 0.6388 命中，探针自清（向量表 0 行、282 条目中 0 条 vectorized）。
+- **待排期 F3（可见性缺口，这条线唯一残留）**：`WorldbookEntryReport` 的 reason（含 `vectorized_hit(score=…)` /
+  `vectorized_degraded_keyword_fallback`）在 worldbook_service 之外**零消费者**——用户无法确认"这一轮到底按意思捞到了什么"。
+  与「副任务轨迹只读留痕」同类，建议并批做，别单开一次施工。
+- **本批不做（已判定不阻塞）**：词条完整编辑器保存链——属"世界书词条在界面根本不可编辑"这个更大缺口，
+  要做得先定产品形态；本批已把"写通道 + 写后同步"地基打通，接编辑器不返工。
+
 ### [已完成·后端批] 世界书向量召回修坑 P1~P5（2026-09-29 施工+实弹闭环，等用户复核）
 
 - **SPEC**：`docs/SPEC_世界书向量召回接通与防护_2026-09-29.md`（§2.1 施工前复核勘误①②③ + §10 施工结果）。D1=A 已拍板（2026-09-29 用户授权修复路线），本批只做后端修坑，**开关保持默认关**（存量零突变）。
@@ -14,7 +70,12 @@
 - **P5（施工中发现的最大鱼）**：**sync 写入在真 PG 上从未成功过**——ORM embedding 列 Text 绑定 ::TEXT 被 vector 列拒绝（DatatypeMismatch），"写入链路已实测可用"是假象（0 行表佐证）。已改原生 SQL + `CAST(:v AS vector)`（SQLite 方言回退原样文本）。读取侧本就带 CAST 不受影响。
 - **复核勘误（SPEC §2.1）**：词条级写通道只对导入路径成立（编辑端点 `WorldBookStageUpdate` 不收 vectorized、前端 `worldbookApi.updateStage` 零调用方、WorldBookManager 无保存链）→ §4 词条 UI 按新功能估工作量；改动清单补 `schemas/worldbook.py`。
 - **门禁与实弹**：容器全量 pytest 1566/42skip；向量两文件容器 42/42；tsc 0 错；vitest 423/3skip/0fail。e2e（容器内真 bge-m3+真 PG，中性夹具自清）：synced=2 真落库、相关 0.6977 命中@0.55、无关 top1=0.3855 零命中（旧 0.25 会误放行）、维度漂移触发门禁降级；探针自清向量表 0 行。备份：stash e845db13 + tag pre-worldbook-vector-20260929。
-- **下一批（§4 前端，未开工）**：全局开关+两数字框（RoleplayEngineTab）、词条"向量匹配"勾选（需 schema 加字段 + update_stage 接收触发 + WorldBookManager 新建保存链）、settings 三新键（vectorized_enabled/vector_threshold/vector_top_k）契约测试。
+- **下一批（§4 前端）**：→ 已完成，见顶部「[已完成·前端批 A~E]」条目（2026-09-30）。
+- **复核追加（Qoder 2026-09-29，详见 `docs/复核_世界书向量召回P1-P5施工_2026-09-29.md` §3）**：
+  后端批判定**通过**（容器全量我复跑 1570 passed / 42 skipped，两向量文件 42 passed，端到端我另造夹具独立复现"写入真落库 + 0.55 下无关查询 0 命中"）。
+  三条残留随下一批处理：**R1 词条编辑端点 `PUT /{wb}/stages/{stage_id}` 不触发向量同步**（就绪检测只比行数、无内容脏检查），
+  改了词条内容会按旧向量召回，**必须与词条 UI 同批修**；R2 `synced` 是执行计数不是已提交（上一轮误判就栽在这），
+  建议成功路径加 `committed` 标记；R3 首次开启首轮必降级、P4 维度门禁是静态对照表（换嵌入模型须同步改表+重测阈值），两条都要进 UI 文案/运维文档。
 
 ### [进行中·已派单] 出图桥接可用性修复批（checkpoint 回填 / 45s 误回收 / 安全上下文提示 / 试跑按钮）
 
@@ -532,6 +593,53 @@
 - **验证**：pytest 全绿（新 test_plugin_import_url.py 14 例：SSRF 六态/下载三态/include_disabled 三态；曾抓到并修复 runtime/config 30s 缓存跨用例串扰→测试加 autouse 缓存清理）；tsc 干净；npm build 治愈体检报告 R1 坏 dist（主 chunk HTTP 200）；后端镜像重建部署，实弹 smoke：import-url→401（存在待认证）、extensions/install|discover→404（已删）。
 - **新发现（超出本批范围，仅登记）**：`frontend/src/lib/extension-market/manager.ts` 调用的 `/api/extensions/search|{name}|popular|recent|recommended` 实弹全 404——extension-market 前端是死功能，去留待拍板。
 - **注意**：ChatViewMobile.tsx 的提交携带一处前置 K 批次未提交 hunk（欢迎页渐变分隔线删除，09-03 已随 dist 上线），非本批改动。
+
+### [已施工·待真机验证] K20 iOS 27.x PWA 底部 64pt 空白复发：svh+env 校准过期，shell 在 PWA 内改锚 100%（2026-09-30）
+- **症状（用户真机截图 1179×2556，iOS PWA 亮色）**：dock/输入框悬浮在距屏底 ~64pt 处，下方一片画布色空白；消息正文最后一行在 y≈788pt 被硬裁切。
+- **像素级反推（本轮实证，非猜测）**：shell 底边=788pt（正文裁切线）；dock 药丸底边=748pt=shell底−34pt（`min(max(env,8),34)` 封顶值）；composer 位置与 `--palink-dock-height` 自洽；顶部菜单按钮 y=89pt=env(top)+布局 ⇒ 页面无滚动偏移。⇒ **dock/composer/消息列表全部忠实贴着 shell，唯独 shell 本身矮了 64pt**。
+- **根因判定**：shell 公式 `calc(100svh + env-bottom)` 与 K19（09-03 实测满屏 852pt）以来一字未改 ⇒ 代码未变、是 iOS 侧 svh/env 上报值变了（27.x 点更新；且 K19 后用户按指引删 PWA 重添，快照环境变化）。今日读数 100svh+env≈788pt（组合值），旧校准 852pt 作废。
+- **修复（红线合规）**：`index.css` coarse 块之后新增 `@media (hover:none) and (pointer:coarse) { @media (display-mode:standalone) { .palink-app-shell{height:100%!important} } }`——仅 PWA+触屏生效；html/body/#root 在 coarse 块已是 100%!important（=ICB=布局视口实高），100% 定义上等于系统授予高度，不依赖 svh/env 任一上报值。iOS 键盘 overlay 模型下布局视口恒定 ⇒ 无 K6/K7 蠕动。**Safari 浏览器模式不匹配 standalone，红线「svh 继续服务浏览器模式」不受影响**。
+- **兜底路径**：若系统真把屏底划为不可绘制预留区（K18 假设场景），clientHeight 本身=788 ⇒ 100% 与现状等价、不会更差；届时 PWA 内开 `?vpdebug=1` 截图回传（本轮已给浮层补 `clientHeight=` 读数行）即可定论。
+- **验证**：`tsc --noEmit` 0 错；`npx vitest run` 33 文件/449 passed/3 skipped/0 failed；构建门禁见下条 K20b。
+- **生效条件**：PWA 冷启动即可（CSS 按文件名 hash 换名，index.html 已 no-cache）；若首页被 PWA 缓存顽固缓存，杀掉 PWA 重开。
+
+### [已闭环·待真机复验] K20b 真正的元凶：CSS 改动**永远送不到 iOS**（Vite 对纯 CSS 的 hash 不含 CSS 自身内容 + nginx 年度 immutable）（2026-09-30）
+- **报告「没有变化」后的续查（用户真机口径「怎么还是一样」）**：nginx 日志抓到决定性证据 ——
+  `iPhone … "GET / HTTP/1.1" 200 3240`（旧版 index.html，新的是 6962/7225）+ `iPhone … "GET /assets/index-DAHj4yWK.css" 304 0`（**同名 CSS 被回 304，径直吃本地旧副本**）。
+  即 K20 的 shell 修复根本没到过手机上，Swift/前端侧无从生效。
+- **根因链（决定性）**：① `vite.config.ts` 的 `assetFileNames: 'assets/[name]-[hash][extname]'` ——
+  这个 `[hash]` 取**入口 chunk 的依赖图 hash**，**不含纯 CSS 资源自身内容**：实测 `src/index.css`
+  新增 23 行后产物**仍叫** `index-DAHj4yWK.css`，与改动前 SHA256 完全一致（161699 字节）。
+  ② nginx 自 2026-09-21「性能优化 N1」把 hash 资产标成 `public, max-age=31536000, immutable`，
+  其推理前提是「内容变则文件名变」——名字不变 + immutable 一年 ⇒ 该 URL 在 iOS 上**永不重新拉取**。
+  ③ 桌面 Chrome 因刷新策略/内存缓存行为不同，侥幸拿到新版 ⇒ **问题被掩盖一年**，这就是用户口径
+  「修过一次又回来了」的真正机制：不是修复无效，是**任何一次 CSS 改动都送不到 iOS**。
+- **为什么不用 `[hash:8]`（踩过的错路，已实测）**：Vite 的 `[hash:8]` 走 `chunk.contentHash`，
+  而纯 CSS chunk 的 `viteMetadata.importedCss` 为空 ⇒ hash 退化为空串 ⇒ 产物被同名互相覆盖，
+  改名后重构建 `index-DAHj4yWK.css` 仍与旧文件 SHA256 一致（161699 字节不变）。**此路不通**。
+- **为什么不用 `generateBundle` 改 bundle key（踩过的错路）**：即使 `enforce:'post'`，
+  Vite 内建 CSS 处理插件随后按原文件名把 CSS 重新写回，改名被覆盖（实测 log 显示 renames 算对、
+  产物名未变）。**改用 `writeBundle`**（文件全部落盘后直接操作磁盘）才可靠。
+- **修复落地**：新增 `frontend/vite-plugins/asset-content-hash.ts`（在 `vite.config.ts` 注册）——
+  `writeBundle` 阶段对 `assets/` 下非 JS 的 hash 资产按**自身内容** sha256 取前 8 位改名
+  （`index-DAHj4yWK-18f17586.css`），并全局替换 HTML/CSS/JS 文本里的引用。内容变 ⇒ 新 URL
+  （天然绕开一切旧缓存）；内容不变 ⇒ 名字不变（继续吃缓存，不做无谓失效）。JS 产物一律跳过
+  （Rollup 的 hash 已按内容负责，手动改名会割裂 `import()`/`modulepreload` 引用图）。
+  **范围严格限定 `assets/` 前缀** —— `manifest.json` / `katex.min.css` / `/st/css/*` / `icons/` 等
+  按固定路径引用的资源**不许改名**（首轮放宽到全量时曾误改 manifest，已收窄）。
+- **验证（改坏→还原对照已做）**：往 `index.css` 加一条**有效**规则后重构建，产物名从
+  `index-DAHj4yWK-18f17586.css` 变为 `index-CwNjcwMW-21189ec1.css`（两层 hash 同变，标记内容亦进产物）
+  ⇒ **机制成立**；还原后名字复位。（注：追加**孤立 CSS 注释**不会触发变化，因 Vite 的 CSS 压缩会剥掉注释，
+  属正常行为，非机制缺陷。）
+- **上线与线上核实**：`vite build --outDir dist_new` → `mv` 换目录 → `gzip-dist.cjs`（须在换目录**之后**跑，
+  该脚本硬编码 `dist`）⇒ 线上 `index.html` 200 7225 字节、引用 `assets/index-DAHj4yWK-18f17586.css`；
+  **拿旧 ETag 请求新 URL 返回 200（不再是 304）**，新 CSS 内含 `display-mode:standalone` 修复。
+  tsc 0 错、vitest 33 文件/449 passed/0 failed。
+- **⚠️ 后续注意**：① 任何新构建都必须 `build → mv → gzip-dist`（顺序颠倒会把 gz 写进旧 dist）；
+  ② `frontend/` 下不得再留 `dist_old_*`（本次已清，按 2026-09-30 备份规范应入 `_BACKUPS/`）；
+  ③ 若日后有人「优化」掉 `assetContentHashPlugin`，CSS 改动会立刻重新变成送不到 iOS —— 见插件头部长注释。
+- **待真机复验**：PWA 冷启动（需 `index.html` 生效；实测 iPhone 侧 index.html 曾持旧版，若仍未见效请杀 PWA 重开），
+  看底部 64pt 空白是否消除；未消除则按 K20 兜底路径取 `?vpdebug=1` 读数。
 
 ### [进行中·待真机验证] K19 iOS 27 PWA 底部空白根因实锤 + composer 不随故事线右移修复 + 按主题双 manifest（2026-09-03）
 - **承接 K18**。第二轮真机截图（暗色，393×852pt）+ 桌面移动视口（393×852）活体复验，三案齐破：
