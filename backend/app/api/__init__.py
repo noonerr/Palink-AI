@@ -27,6 +27,7 @@ from .extension_prompts import router as extension_prompts_router
 from .websocket import router as websocket_router
 from .tts import router as tts_router
 from .image_generation import router as image_generation_router
+from .image_proxy import router as image_proxy_router
 from .plugins import router as plugins_router
 from .smart_card_assets import router as smart_card_assets_router
 from .silly_tavern import router as silly_tavern_router
@@ -86,6 +87,7 @@ api_router.include_router(extension_prompts_router)
 api_router.include_router(websocket_router)
 api_router.include_router(tts_router)
 api_router.include_router(image_generation_router)
+api_router.include_router(image_proxy_router)
 api_router.include_router(plugins_router)
 api_router.include_router(smart_card_assets_router)
 # 【2026-09-05 修复】此处曾把 regex_scripts/expressions/sd/backgrounds/stt/

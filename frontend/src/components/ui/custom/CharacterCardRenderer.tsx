@@ -11,6 +11,7 @@ import { buildSillyTavernCompatRuntimeV2Shim } from '@/components/ui/custom/smar
 import { promptInjection } from '@/services/prompt-injection';
 
 import { REMAINING_MARKDOWN_PLUGINS, REMAINING_REHYPE_PLUGINS, INLINE_MIN_HEIGHT, IFRAME_DEFAULT_HEIGHT, IFRAME_INLINE_MAX_HEIGHT, IFRAME_VIEWPORT_MIN_HEIGHT, IFRAME_AVAILABLE_MIN_HEIGHT, SMART_CARD_CSP_NONCE, SMART_CARD_CONTEXT_UPDATE_DELAY_MS, SMART_CARD_VIEWPORT_SETTLE_DELAYS_MS, SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
+import { resolveAvailableHeightCardResize } from './smart-card-runtime/avail-height-unlock';
 import { smartCardRuntimeConfigFallback } from './smart-card-runtime/helpers';
 import { SMART_CARD_ASSET_MODE_CHANGED_EVENT } from './smart-card-runtime/asset-mode';
 import {
@@ -216,6 +217,13 @@ const IframeRenderer = React.memo(function IframeRenderer({
   const [availableHeight, setAvailableHeight] = useState(initialHeight);
   const [height, setHeight] = useState(initialHeight);
   const stableAvailableHeightRef = useRef(initialHeight);
+  // [CONTENT-UNLOCK 2026-09-30] prefersAvailableHeight 卡的「内容高解锁」态：帧内 realContent
+  // 超出可用空间阈值后置真，此后 iframe 高度跟随内容上报而非视口切片（正文美化等
+  // min-height:100vh 流式长文卡此前被视口切片永久截断）。渲染读 state；postMessage
+  // 回调读 ref（监听器 effect 依赖不含它，避免重挂与闭包陈旧）。
+  const [contentOverrideActive, setContentOverrideActive] = useState(false);
+  const contentOverrideActiveRef = useRef(false);
+  contentOverrideActiveRef.current = contentOverrideActive;
   const htmlResourcePlan = useMemo(
     () => buildSmartCardResourcePlan(`${html}\n${customCss || ''}`),
     [html, customCss]
@@ -640,6 +648,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
 
   useEffect(() => {
     if (prefersAvailableHeight) {
+      // [CONTENT-UNLOCK] 源变更（sourceFingerprint→iframe 重建）/重挂载时重置解锁态，
+      // 重新从可用空间模式起步，由新的 realContent 上报重新判定解锁。
+      contentOverrideActiveRef.current = false;
+      setContentOverrideActive(false);
       stableAvailableHeightRef.current = initialHeight;
       setAvailableHeight(initialHeight);
       setHeight(initialHeight);
@@ -659,14 +671,16 @@ const IframeRenderer = React.memo(function IframeRenderer({
     if (keyboardLooksOpen && stableAvailableHeightRef.current > 0) {
       const lockedHeight = stableAvailableHeightRef.current;
       setAvailableHeight(lockedHeight);
-      setHeight(lockedHeight);
+      // [CONTENT-UNLOCK] 已按内容高渲染时可用空间变化不再改写 height（availableHeight
+      // 状态照常刷新供 viewport 上下文使用），否则滚动/键盘事件会把内容高打回视口切片。
+      if (!contentOverrideActiveRef.current) setHeight(lockedHeight);
       updateViewportContext(lockedHeight);
       return;
     }
     const nextHeight = getSmartCardAvailableHeight(wrapperRef.current, stableViewportSizeRef.current.height);
     stableAvailableHeightRef.current = nextHeight;
     setAvailableHeight(nextHeight);
-    setHeight(nextHeight);
+    if (!contentOverrideActiveRef.current) setHeight(nextHeight);
     updateViewportContext(nextHeight);
   }, [prefersAvailableHeight, updateViewportContext]);
 
@@ -802,7 +816,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
       // window.__palinkFrameErrors（调试用，上限 50 条）并 console.error 输出。
       if (data && data.source === 'palink-smart-card-frame' && frameIdRef.current && data.frameId === frameIdRef.current) {
         if (data.type === 'frame-error' || data.type === 'frame-csp') {
-          const entry = { frameId: frameIdRef.current, type: data.type, message: data.message, directive: data.directive, blockedURI: data.blockedURI, at: Date.now() };
+          // [P0 2026-09-30] filename/lineno 必须透传：shim 的 window.onerror 上报里
+          // 带 e.filename（脚本级 parse error 时即出错资源的 sourceURL/URL），此前在
+          // 这里被丢掉，__palinkFrameErrors 只剩 message，定位"HTML 冒充 JS"只能盲猜。
+          const entry = { frameId: frameIdRef.current, type: data.type, message: data.message, directive: data.directive, blockedURI: data.blockedURI, filename: data.filename, lineno: data.lineno, at: Date.now() };
           try {
             const w = window as unknown as { __palinkFrameErrors?: unknown[] };
             w.__palinkFrameErrors = w.__palinkFrameErrors || [];
@@ -864,6 +881,27 @@ const IframeRenderer = React.memo(function IframeRenderer({
       }
       if (data.type === 'resize' && Number.isFinite(data.height)) {
         if (prefersAvailableHeight) {
+          // [CONTENT-UNLOCK 2026-09-30] 消费帧内 realContent：min-height:100vh 的流式长文卡
+          // （正文美化/故事卡）被 htmlUsesViewportHeight 扫进「按可用空间渲染」，内容高度
+          // 上报此前在此被整条丢弃，正文永远被视口切片截断（点一下 focusin 才重适配一下）。
+          // 判定规则见 avail-height-unlock.ts：realContent 超出可用空间阈值 → 解锁并跟随
+          // 内容高；pinned 界面卡 realContent≤可用空间 → 永不触发，行为与历史版本一致。
+          const decision = resolveAvailableHeightCardResize({
+            reportedHeight: Number(data.height),
+            reportedRealContent: Number.isFinite(data.realContent) ? Number(data.realContent) : 0,
+            currentAvailableHeight: stableAvailableHeightRef.current,
+            overrideActive: contentOverrideActiveRef.current,
+          });
+          if (decision.action === 'unlock-content') {
+            contentOverrideActiveRef.current = true;
+            setContentOverrideActive(true);
+            setHeight(decision.height);
+            return;
+          }
+          if (decision.action === 'follow-content') {
+            setHeight(decision.height);
+            return;
+          }
           updateAvailableHeight();
           return;
         }
@@ -1192,8 +1230,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
     : trustedNative
       ? 'allow-scripts allow-same-origin'
       : 'allow-scripts';
-  const frameHeight = prefersAvailableHeight ? availableHeight : height;
-  const frameMinHeight = prefersAvailableHeight ? availableHeight : minMeasuredHeight;
+  // [CONTENT-UNLOCK] 解锁后 frameHeight 跟随 height（内容高），min 放开到 INLINE_MIN_HEIGHT
+  // 允许内容收缩后 iframe 跟着收缩；未解锁保持视口切片（height=min=max 三重锁定）。
+  const frameHeight = prefersAvailableHeight ? (contentOverrideActive ? height : availableHeight) : height;
+  const frameMinHeight = prefersAvailableHeight ? (contentOverrideActive ? INLINE_MIN_HEIGHT : availableHeight) : minMeasuredHeight;
   const iframeKey = `${frameIdRef.current}-${effectiveMode}-${sourceFingerprint}`;
   const showTrustedControl = prefersImmersive && (mode === 'iframe-js' || mode === 'trusted-native');
   const immersiveStableViewportHeight = Math.max(

@@ -4,7 +4,11 @@ services:
     ports:
       # [2026-08-31] 统一为 3000：dev/部署同端口，不再区分开发与部署。
       # 历史: 3000 曾被 WinNAT 动态保留段(2934-3033)吞掉临时改用 13000，现验证可绑定已改回
-      - "3000:8080"
+      # [TEMP-PORT 2026-09-30] Windows 保留段又吞了 3000（实测 excludedportrange 2959-3058），
+      # docker 绑定失败 → 容器卡在 Created、站点打不开。临时挂 13000 继续测试。
+      # 恢复原样：把下面一行换回 - "3000:8080"，并 `docker compose up -d frontend`。
+      - "13000:8080"
+      # - "3000:8080"
     depends_on:
       backend:
         condition: service_healthy

@@ -3912,7 +3912,15 @@ ${bootHeader}
     if (messageId === undefined || messageId === null || messageId === '') return messages.slice().map(stripStyleBlocksForPlugin);
     if (Number.isInteger(Number(messageId)) && Number(messageId) >= 0) {
       const byIndex = messages[Number(messageId)];
-      return byIndex ? [stripStyleBlocksForPlugin(byIndex)] : [];
+      if (byIndex) return [stripStyleBlocksForPlugin(byIndex)];
+      // [P0-FIX 2026-09-30] 数字 id 未命中索引时回退按 id 匹配：ST 语义里 messageId
+      // 是聊天数组下标，但 Palink 的 ctx.messageId 是消息的数据库行 id（如 2375），
+      // 卡脚本 getChatMessages(getCurrentMessageId()) 会拿到远超数组长度的数字，
+      // 只按索引取值必然落空 → 图文排版卡故事区"故事正文为空"。索引优先不变，
+      // 未命中再按 id/message_id 匹配，两种语义都能命中。
+      const byId = messages.filter((message) => String(message.id) === String(messageId) || String(message.message_id) === String(messageId));
+      if (byId.length > 0) return byId.map(stripStyleBlocksForPlugin);
+      return [];
     }
     return messages.filter((message) => String(message.id) === String(messageId) || String(message.message_id) === String(messageId)).map(stripStyleBlocksForPlugin);
   };
@@ -4411,6 +4419,9 @@ ${bootHeader}
     try { window.dispatchEvent(new Event('orientationchange')); } catch {}
     try { document.dispatchEvent(new Event('palink:viewport')); } catch {}
   };
+  // [P0-FIX 2026-09-30] 数据首达 DOMContentLoaded 补发的一次性标志（闭包级，见
+  // applyParentContextUpdateCompat 的 chat 分支）。
+  var didFireDataReadyDOMContentLoadedCompat = false;
   const applyParentContextUpdateCompat = (nextContext) => {
     if (!nextContext || typeof nextContext !== 'object') return;
     Object.assign(ctx, clone(nextContext));
@@ -4445,6 +4456,17 @@ ${bootHeader}
       compatChat.splice(0, compatChat.length, ...ctx.chatMessages.map(normalizeChatMessage));
       compatChat.forEach((message) => syncSwipeToMesCompat(message, message.swipe_id));
       window.chat = compatChat;
+      // [P0-FIX 2026-09-30] 首次拿到消息数据时补发一次 DOMContentLoaded。沙箱 iframe
+      // 的卡脚本（如图文排版前端）在解析期注册 DOMContentLoaded init，此刻
+      // chatMessages 尚未经 context-update 到达（boot ctx 刻意轻量），init 只跑一次
+      // 且读到空数据 → 故事帧永远"故事正文为空"。ST 里脚本执行时聊天早已加载完毕，
+      // 这里在数据首达后重放该事件对齐 ST 生命周期；一次性标志防止高频
+      // context-update 反复重初始化卡脚本。late-DOMContentLoaded 监听（shim 补发路径）
+      // 不在真实监听列表里，不会被重复触发。
+      if (!didFireDataReadyDOMContentLoadedCompat) {
+        didFireDataReadyDOMContentLoadedCompat = true;
+        try { document.dispatchEvent(new Event('DOMContentLoaded')); } catch (_) {}
+      }
     }
     currentMessageIndex = Number.isFinite(Number(ctx.messageIndex))
       ? Number(ctx.messageIndex)

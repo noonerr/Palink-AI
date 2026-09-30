@@ -22,6 +22,11 @@ export const IFRAME_VIEWPORT_MAX_RATIO = 0.82;
 export const IFRAME_VIEWPORT_BOTTOM_GAP = 8;
 export const IFRAME_VIEWPORT_FALLBACK_BOTTOM_RESERVED = 132;
 export const IFRAME_AVAILABLE_MIN_HEIGHT = 96;
+// [CONTENT-UNLOCK 2026-09-30] prefersAvailableHeight 卡「解锁按内容高渲染」的超额阈值（px）：
+// 帧内 realContent 超出当前可用空间至少该幅度，才判定为「流式内容被视口切片截断」并解锁。
+// 界面卡（body height:100vh 等 pinned 文档）的 realContent ≤ 帧内视口高 ≈ 可用空间，
+// 落在此阈值内永不解锁，行为与历史版本一致；故事卡（min-height:100vh 长文）远超阈值。
+export const SMART_CARD_AVAILHEIGHT_UNLOCK_MARGIN_PX = 8;
 export const SMART_CARD_PRECONNECT_LIMIT = 4;
 export const SMART_CARD_HIGH_RESOURCE_LIMIT = 6;
 export const SMART_CARD_HIGH_STYLE_LIMIT = 2;

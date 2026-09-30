@@ -206,6 +206,10 @@ const INLINE_MATH_HTML_REGEX = /\$([^\s$](?:[^$\n]*[^\s$])?)\$/g;
 const PAREN_MATH_HTML_REGEX = /\\\(([\s\S]+?)\\\)/g;
 const BRACKET_MATH_HTML_REGEX = /\\\[([\s\S]+?)\\\]/g;
 const CODE_SEGMENT_SPLIT_REGEX = /(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/gi;
+// [P0 2026-09-30] script/style 段保护：KaTeX 公式渲染绝不能进入这两类元素内部
+// （pre/code 已有同样保护）。regex_scripts 状态栏卡片的 <script type="module">
+// 里满是 jQuery 代码，是本次"Unexpected token '<' → 整页空白"事故的根因。
+const SCRIPT_STYLE_SEGMENT_REGEX = /(<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>)/gi;
 
 function decodeBasicEntities(input: string): string {
   return input
@@ -231,6 +235,22 @@ function renderSingleMath(tex: string, displayMode: boolean): string {
 }
 
 function renderMathInSegment(segment: string): string {
+  if (!segment.includes('$') && !segment.includes('\\(') && !segment.includes('\\[')) {
+    return segment;
+  }
+  // [P0 2026-09-30] script/style 段内的 $ 不是公式：状态栏/smart-card 卡片的 JS
+  // 满是 jQuery $(...) 与模板串 ${...}，INLINE_MATH_HTML_REGEX 会把相邻两个 $
+  // 之间的代码当成行内公式，KaTeX 解析失败后整段替换成 <span class="katex-error">
+  // —— 脚本文本混入 '<' → 注入 iframe 后 SyntaxError: Unexpected token '<'，
+  // 面板脚本永不执行，角色面板/立绘/故事正文整页空白（HANDOFF_卡片正文空白
+  // 与卡脚本执行_2026-09-30.md 实锤根因）。与 pre/code 同口径原样保留。
+  return segment
+    .split(SCRIPT_STYLE_SEGMENT_REGEX)
+    .map((part, idx) => (idx % 2 === 1 ? part : renderMathInSubSegment(part)))
+    .join('');
+}
+
+function renderMathInSubSegment(segment: string): string {
   if (!segment.includes('$') && !segment.includes('\\(') && !segment.includes('\\[')) {
     return segment;
   }
@@ -989,6 +1009,25 @@ export interface FormatMessageOptions {
   preserveScripts?: boolean;
 }
 
+/**
+ * [IMAGE-PROXY] 被阻断图床的 <img> 改写（2026-09-27 用户报障）。
+ *
+ * 生态卡把头像/CG 图库放在 jsDelivr（GitHub CDN），主域 cdn.jsdelivr.net 在
+ * 大陆网络被阻断（实测 SSL EOF/超时，testingcf 镜像可用）→ 正则渲染出的
+ * <img src="https://cdn.jsdelivr.net/..."> 全部加载失败只剩占位底图。
+ * 渲染层把这类 URL 改写为后端图片代理 `/api/image-proxy?url=...`
+ * （服务端校验 URL + jsDelivr 镜像回退下载 + 落盘缓存）；动态注入的 <img>
+ * 由 setup 脚本里的加载失败回退兜底。
+ */
+const BLOCKED_CDN_IMG_RE = /(https:\/\/[a-z0-9.-]*jsdelivr\.net\/[^"'\s<>)]+?\.(?:png|jpe?g|webp|gif))/gi;
+
+export function rewriteBlockedCdnImages(html: string): string {
+  if (!html || html.indexOf('jsdelivr.net/') === -1) return html;
+  return html.replace(BLOCKED_CDN_IMG_RE, (raw) =>
+    `/api/image-proxy?url=${encodeURIComponent(raw)}`,
+  );
+}
+
 export function formatMessage(
   rawText: string,
   context: FormatMessageContext = {},
@@ -1070,6 +1109,13 @@ export function formatMessage(
         console.error('[formatMessage] afterRegex hook error:', e);
       }
     }
+  }
+
+  // 5.4. [IMAGE-PROXY] 被阻断图床的 <img> 改写（仅显示层语义；提示词侧即使
+  // 偶发改写也无害——模型看到代理地址与原地址等价）。正则渲染出的生态图库
+  // <img>（jsDelivr 主域被阻断）由此改走后端图片代理。
+  if (!isSystem) {
+    mes = rewriteBlockedCdnImages(mes);
   }
 
   // 5.5. Macros / parameters substitution ({{char}}, {{user}}, {{time}}, {{random}}, etc.)

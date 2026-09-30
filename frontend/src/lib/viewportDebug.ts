@@ -76,6 +76,7 @@ export function mountViewportDebug(): void {
         `mode=${standalone ? 'PWA(standalone)' : 'browser'}`,
         `screen=${window.screen.width}x${window.screen.height} dpr=${window.devicePixelRatio}`,
         `innerHeight=${units(window.innerHeight)}`,
+        `clientHeight=${units(document.documentElement.clientHeight)}`,
         `vv.height=${vv ? units(vv.height) : 'n/a'} vv.offsetTop=${vv ? units(vv.offsetTop) : 'n/a'}`,
         ...probes.map((p) => p.read()),
         shellRect

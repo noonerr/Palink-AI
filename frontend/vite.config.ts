@@ -2,11 +2,16 @@ import path from 'path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { smartCardRuntimeAssetPlugin } from './vite-plugins/smart-card-runtime-asset'
+import { assetContentHashPlugin } from './vite-plugins/asset-content-hash'
 
 // https://vite.dev/config/
 export default defineConfig({
   base: '/',
-  plugins: [react(), smartCardRuntimeAssetPlugin()],
+  // assetContentHashPlugin 放最后（enforce:'post'）：在文件名与引用全部定稿后，
+  // 按 CSS 等非 JS 资产的**自身内容**重命名 —— 见 vite-plugins/asset-content-hash.ts
+  // 的 K20 说明（Vite 默认给纯 CSS 的 hash 不含 CSS 自身内容，导致改 CSS 不换文件名，
+  // 叠加 nginx 年度 immutable 缓存后 iOS 端永远拿不到 CSS 更新）。
+  plugins: [react(), smartCardRuntimeAssetPlugin(), assetContentHashPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -69,6 +74,17 @@ export default defineConfig({
     rollupOptions: {
       input: 'index.html',
       output: {
+        // [K20 2026-09-30] ⚠️ 勿改成 `[hash:8]` —— 那是另一条**错路**（实测验证过）。
+        // Vite 的 [hash:8] 走 `chunk.contentHash`，而纯 CSS chunk 的 viteMetadata.importedCss
+        // 为空 ⇒ hash 退化为空串 ⇒ 产物被同名互相覆盖（实测：加 [hash:8] 后重构建，
+        // index-DAHj4yWK.css 与旧文件 SHA256 完全一致、161699 字节不变 —— 名字没换）。
+        // 真正的问题在别处（见下方 vite-plugins/asset-content-hash.ts）：Vite 对纯 CSS 资源
+        // 的 [hash] 取「入口依赖图 hash」，**不含该 CSS 自身内容** —— index.css 改 37 行后
+        // 产物仍叫 index-DAHj4yWK.css。叠加 nginx 自 2026-09-21「性能优化 N1」的
+        // `immutable, max-age=31536000`（前提是「内容变则名字变」）⇒ iOS 端 CSS 改动永远
+        // 送不到：真机实证 iPhone 请求同名 CSS 被回 304、吃本地旧副本；桌面 Chrome 因刷新
+        // 策略不同侥幸拿到新版，从而掩盖了问题一年。
+        // 修复：由插件按「CSS 自身内容」的 sha256 重命名（含回写引用），保持 [name]-[hash8] 格式。
         assetFileNames: 'assets/[name]-[hash][extname]',
         chunkFileNames: 'assets/[name]-[hash].js',
         entryFileNames: 'assets/[name]-[hash].js',

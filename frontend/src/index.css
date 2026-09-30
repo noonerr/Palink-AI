@@ -1388,6 +1388,29 @@ body.ios-mobile-app-dark,
   }
 }
 
+/* ========================================
+   【K20 2026-09-30】iOS 27.x PWA 底部 ~64pt 空白：svh+env 校准过期，shell 改锚布局视口实高
+   【截图实测（1179×2556=393×852pt）】消息正文在 y≈788pt 被硬裁切 ⇒ shell 底边=788pt、
+   距屏底 64pt；dock 药丸底边=748pt=shell底−34pt（paddingBottom 封顶值）、composer 位置
+   亦与 dock 高度变量自洽 —— dock/composer/消息列表全部忠实贴着 shell，唯独 shell 本身矮了
+   64pt。K19（09-03）时代同一公式 calc(100svh + env) 实测满屏 852pt ⇒ 代码未变、
+   是 iOS 侧 svh/env 上报值变了（27.x 点更新 / K19 后删 PWA 重添快照变化）。
+   【修复】仅【standalone + 触屏】范围把 shell 高度改为 100%：
+   html/body/#root 在上方 coarse 块已是 height:100%!important（= ICB = 布局视口实高），
+   100% 定义上就等于系统授予网页的真实高度，不依赖 svh/env 任何一方上报是否失真。
+   - iOS 键盘是 overlay、布局视口恒不变 ⇒ 100% 在键盘弹起/收起全程恒定，无 K6/K7 蠕动；
+   - Safari 浏览器模式不匹配 standalone，红线（svh 继续服务浏览器模式）不受影响；
+   - 若系统真把屏底 64pt 划为不可绘制预留区（K18 假设的场景），clientHeight 本身
+     就只有 788 ⇒ 100% 与现状等价、不会更差，届时用 ?vpdebug=1 读数定论。
+   放在 coarse 块之后：同特异性同 !important，靠源序胜出。 */
+@media (hover: none) and (pointer: coarse) {
+  @media (display-mode: standalone) {
+    .palink-app-shell {
+      height: 100% !important;
+    }
+  }
+}
+
 /* iOS Safari 底部安全区域适配 - 导航栏 */
 @supports (padding: max(0px)) {
   .ios-safe-area-bottom {

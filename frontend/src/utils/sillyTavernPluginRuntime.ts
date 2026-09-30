@@ -1361,6 +1361,28 @@ export class SillyTavernPluginRuntime {
               }
             };
           }
+          // [IMAGE-PROXY] 生态脚本运行时注入的 <img>（头像/图库 src 指向
+          // jsDelivr 主域，大陆网络被阻断）加载失败时改走后端图片代理
+          // （服务端 jsDelivr 镜像回退 + 落盘缓存）。捕获阶段：img 的
+          // error 事件不冒泡，必须 capture 才接得住。
+          window.addEventListener('error', function(e) {
+            var t = e.target;
+            if (t && t.tagName === 'IMG' && !t.getAttribute('data-palink-proxy')) {
+              var src = String(t.getAttribute('src') || '');
+              // 注意：本段是模板字符串里再输出给浏览器的脚本，写正则字面量会因反斜杠
+              // 被模板字符串吞掉而生成非法 JS（2026-09-30 实测整批插件注入中断）。
+              // 故此处刻意用字符串切片判定，等价于 /^https:\\/\\/[a-z0-9.-]*jsdelivr\\.net\\/(.+)$/i。
+              if (src.slice(0, 8) === 'https://') {
+                var rest = src.slice(8);
+                var slash = rest.indexOf('/');
+                if (slash > 0 && rest.length > slash + 1
+                    && rest.slice(0, slash).toLowerCase().slice(-12) === 'jsdelivr.net') {
+                  t.setAttribute('data-palink-proxy', '1');
+                  t.src = '/api/image-proxy?url=' + encodeURIComponent(src);
+                }
+              }
+            }
+          }, true);
         })();
       })();
     `;
@@ -1370,7 +1392,14 @@ export class SillyTavernPluginRuntime {
       container.querySelectorAll('script[data-palink-st-plugin-id]'),
     ).filter((el) => el.getAttribute('data-palink-st-plugin-id') === SETUP_PLUGIN_ID);
     if (existingSetup.length === 0) {
-      container.appendChild(setupScript);
+      // setup 脚本一旦解析失败会同步从 appendChild 抛出，整批插件注入随之中断
+      // （ST 全局没挂上、卡片扩展一个都不注入）。此处兜住并显式报红，
+      // 让「单个 setup 脚本坏了」退化成可观测故障而不是全屏空白。
+      try {
+        container.appendChild(setupScript);
+      } catch (e) {
+        console.error('[SillyTavernPluginRuntime] setup 脚本注入失败，插件全局桥未建立:', e);
+      }
     }
 
     if (!this.config) return;

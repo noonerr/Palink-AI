@@ -273,3 +273,13 @@ tmp-*.cjs
 # 但后端那 5 个文件的副本误落在了仓库根，删它会丢掉唯一物理备份，故保留原地 + 忽略，
 # 避免它长期挂在 git status 里当噪音、更避免被 `git add -A` 整份提进仓库。
 /Palink-AI-backup-*/
+
+# ── 统一备份区 _BACKUPS/（2026-09-30 起）：仅台账与说明文件入库，其余大产物一律排除 ──
+# 规则：先整体排除 _BACKUPS 下所有文件 → 放行目录本身以便遍历 → 放行 _INDEX.md 与每份 BACKUP_INFO.md。
+# 目的： backup 内可达 12GB（repo.bundle / source-snapshot.tar.gz / worktree 全量拷贝），
+#       绝不允入库；而「哪些备份存在、从哪来、为什么备份、还要做什么」必须版本化。
+_BACKUPS/**
+!_BACKUPS/*/
+!_BACKUPS/**/
+!_BACKUPS/_INDEX.md
+!_BACKUPS/**/BACKUP_INFO.md

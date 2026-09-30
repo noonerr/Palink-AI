@@ -11,8 +11,11 @@
          另：maximum-scale/user-scalable 在 iOS 10+ 默认被忽略，保留仅为安卓。 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <!-- 缓存控制：配合 nginx no-cache 策略，进一步防止 iOS Safari 内存缓存 -->
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <!-- 缓存控制：配合 nginx no-store 策略，进一步防止 iOS Safari 内存缓存。
+         注意必须是 no-store：no-cache 语义是「可存储但每次需校验」，iOS 在 304 判等上
+         不可靠（K20 2026-09-30 实证：同名 CSS 被回 304、吃本地旧副本）；no-store 才是
+         「禁止存储、每次必拉」。 -->
+    <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>Palink AI v0.21.2</title>

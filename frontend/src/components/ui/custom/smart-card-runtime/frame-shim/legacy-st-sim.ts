@@ -258,8 +258,19 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
     window.addEventListener('error', function (e) {
       try {
         // 资源加载失败（img/link/script）会触发 error 事件但无 error 对象，仅 e.target 带 src/href。
-        // 这类失败（ERR_ABORTED/403）多为 iframe 重渲染中止在途加载，属良性噪音，不打印。
+        // img/link 失败（ERR_ABORTED/403）多为 iframe 重渲染中止在途加载，属良性噪音，不打印。
         if (e && e.target && e.target !== window && (e.target.src || e.target.href)) {
+          // [P0 2026-09-30] <script> 资源失败不再静默：脚本请求拿到 404/HTML 页
+          // （本站 SPA 兜底、跨站 404 页）时浏览器会把响应体当 JS 解析，
+          // 产生 SyntaxError: Unexpected token '<' —— "内容在源里、渲染全空白"
+          // 的候选元凶，必须连同 URL 上报，否则这一整类故障在父页面不可见。
+          // isConnected 过滤：元素已脱离 DOM 的在途加载中止仍按重渲染噪音跳过。
+          var failedTarget = e.target;
+          var failedTag = String(failedTarget.tagName || '').toUpperCase();
+          if (failedTag === 'SCRIPT' && failedTarget.isConnected && window.parent && window.parent.postMessage) {
+            var failedUrl = String(failedTarget.src || failedTarget.href || '');
+            window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', message: 'script resource failed to load (HTML-as-JS suspect): ' + failedUrl, filename: failedUrl, lineno: 0 }, '*');
+          }
           return;
         }
         var detail = (e && e.error && e.error.stack) ? e.error.stack : ((e && e.message) || 'unknown error');
@@ -282,6 +293,35 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
         }
       } catch (_) {}
     });
+    // [P0-FIX 2026-09-30] DOMContentLoaded 晚注册补发。卡脚本常用裸
+    // document.addEventListener('DOMContentLoaded', init) 做初始化（如图文排版
+    // 前端的故事渲染），但 iframe 的数据（chatMessages/variables）经
+    // context-update 晚到；数据到达后运行时重放卡脚本时 DOMContentLoaded 早已
+    // 触发过——此时注册的是一个永远不会触发的事件，init 永不执行，故事帧
+    // 永远停留在 boot 时空数据下的"故事正文为空"。此处对"文档已加载完毕后的
+    // DOMContentLoaded 注册"改为异步补发一次，语义与主页面 card-script-runner
+    // 的 DOMContentLoaded 改写、本 shim readyCompat（jQuery 式 $(fn)）的
+    // setTimeout 兜底一致——那两条路已有兜底，面板脚本因此能恢复，本补丁
+    // 补齐裸 DOM API 这最后一条路。
+    // ⚠️ 本段整体位于模板字符串内：注释与代码不得出现单反斜杠+字母字面量。
+    try {
+      var realDocAddEventListener = document.addEventListener.bind(document);
+      document.addEventListener = function (type, listener, options) {
+        if (String(type) === 'DOMContentLoaded' && document.readyState !== 'loading') {
+          setTimeout(function () {
+            try {
+              if (typeof listener === 'function') {
+                listener.call(document);
+              } else if (listener && typeof listener.handleEvent === 'function') {
+                listener.handleEvent({ type: 'DOMContentLoaded' });
+              }
+            } catch (_) {}
+          }, 0);
+          return;
+        }
+        return realDocAddEventListener(type, listener, options);
+      };
+    } catch (_) {}
   } catch (_) {}
   const uiText = ctx.language === 'en'
     ? {
