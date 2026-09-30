@@ -327,9 +327,17 @@ const BUBBLE_QUOTED_LINE_RE =
 
 const VOICE_DESCRIPTION_RE = /【(?:声音|语音)[：:]\s*[^】]+】/g;
 
-/** `@bubble:角色|情绪|正文`（正文含方括号/引号均可），容忍 Showdown 已包一层 `<p>` */
-const BUBBLE_MARKER_LINE_RE =
-  /^([ \t]*(?:<p\b[^>]*>[ \t]*)?)@bubble:([^\n|]+)\|([^\n|]+)\|([\s\S]*?)([ \t]*<\/p>)?[ \t]*$/gm;
+/**
+ * `@bubble:角色|情绪|正文` —— **不锚定行首**的全局匹配。
+ *
+ * 历史教训（两次回归）：
+ *  1. Showdown 把段内换行渲染成 `<br>`，标记与正文挤在同一行 → 行首 `^` 失效（2405）；
+ *  2. 卡正则「正文美化」把标记包进 `<div class="dc-msg">…</div>` → 同样不在行首。
+ * 行首锚点在真实产物里根本靠不住，故改为按标记本身匹配，位置无所谓。
+ * 对白形态覆盖方括号与三种引号（规范自 2026-10-01 起为引号）。
+ */
+const BUBBLE_MARKER_RE =
+  /@bubble:([^\n|]+)\|([^\n|]+)\|(?:<q\b[^>]*>)?(\[[^\n]*?\]|"[^"\n]*"|“[^”\n]*”|'[^'\n]*')(?:<\/q>)?/g;
 
 /**
  * 把 `@bubble:` 行的**引号对白**归一为方括号对白（卡内解析器唯一认得的形态）。
@@ -368,45 +376,22 @@ export function stripVoiceDescriptionMarkers(content: string): string {
 export function downgradeUnconsumedBubbleMarkers(content: string): string {
   if (!content || !content.includes('@bubble:')) return content;
 
-  const replacer = (
-    _match: string,
-    lead: string,
-    speaker: string,
-    mood: string,
-    body: string,
-    closing?: string,
-  ) => {
-    const text = String(body)
-      .trim()
-      // [Q-TAG 2026-10-01] Showdown 会给引号套一层 <q>…</q>；先褪掉外层标签再剥引号，
-      // 否则降级结果会变成 `角色（情绪）：<q>“台词”</q>`，渲染出双重引号。
-      .replace(/^<q\b[^>]*>([\s\S]*)<\/q>$/i, '$1')
-      .replace(/^\[([\s\S]*)\]$/, '$1')
-      .replace(/^"([\s\S]*)"$/, '$1')
-      .replace(/^“([\s\S]*)”$/, '$1')
-      .replace(/^'([\s\S]*)'$/, '$1')
-      .trim();
-    return `${lead}${String(speaker).trim()}（${String(mood).trim()}）：${text}${closing ?? ''}`;
-  };
-
-  const firstPass = content.replace(BUBBLE_MARKER_LINE_RE, replacer);
-  if (!firstPass.includes('@bubble:')) return firstPass;
-
-  // [BR-LINE-SPLIT 2026-10-01] Showdown 会把正文段内换行渲染成 `<br>`，
-  // @bubble 行因此与前后正文挤在同一行（实测 2405："…浮木。<br><br>@bubble:露缇雅|慌张|[…]<br><br>…"），
-  // 行首锚点 `^` 失效 → 整条不降级。这里把 `<br>` 还原成换行重跑一次，再把换行还原回 `<br>`。
-  // 仅当重跑确实降级掉更多标记时才采用，避免无谓改写 HTML。
-  const brSplit = firstPass.replace(/<br\s*\/?>/gi, '\n');
-  if (brSplit === firstPass) return firstPass;
-  const retried = brSplit.replace(BUBBLE_MARKER_LINE_RE, replacer);
-  if (countOccurrences(retried, '@bubble:') < countOccurrences(firstPass, '@bubble:')) {
-    return retried.replace(/\n/g, '<br>');
-  }
-  return firstPass;
-}
-
-function countOccurrences(haystack: string, needle: string): number {
-  return (haystack.match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+  return content.replace(
+    BUBBLE_MARKER_RE,
+    (_match: string, speaker: string, mood: string, body: string) => {
+      const text = String(body)
+        .trim()
+        // [Q-TAG 2026-10-01] Showdown 会给引号套一层 <q>…</q>；先褪掉外层标签再剥引号，
+        // 否则降级结果会变成 `角色（情绪）：<q>“台词”</q>`，渲染出双重引号。
+        .replace(/^<q\b[^>]*>([\s\S]*)<\/q>$/i, '$1')
+        .replace(/^\[([\s\S]*)\]$/, '$1')
+        .replace(/^"([\s\S]*)"$/, '$1')
+        .replace(/^“([\s\S]*)”$/, '$1')
+        .replace(/^'([\s\S]*)'$/, '$1')
+        .trim();
+      return `${String(speaker).trim()}（${String(mood).trim()}）：${text}`;
+    },
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -452,13 +437,31 @@ function applyBubbleDisplayPrepass(
   return stripVoiceDescriptionMarkers(normalizeBubbleDialogueQuotes(content));
 }
 
-/** 显示侧后处理：仅对"非卡片/非已渲染 HTML"做裸标记降级（卡内运行时自己读标记） */
+/**
+ * 判断文本里是否**真的存在** @bubble 的渲染宿主（BubbleDialogue 的 dcRoot iframe）。
+ *
+ * v7.1 的 `_getBubbleRenderFrames()` 只认含 `id="dcRoot"` 的 iframe；iframe 的 srcdoc
+ * 里该属性可能是转义形态（`id=&quot;dcRoot&quot;`），故按标识符本身判定。
+ */
+function hasBubbleRenderHost(content: string): boolean {
+  return /dcRoot/i.test(content);
+}
+
+/**
+ * 显示侧后处理：未被渲染宿主消费的 @bubble 标记降级为可读文本。
+ *
+ * [HOST-GATE 2026-10-01] 旧判据是 `looksLikeRenderableCardHtml || looksLikeSmartCardHtml`
+ * （"看起来像卡片就交给卡"），实测**不成立**：卡正则「正文美化」会产出一段卡片 HTML，
+ * 但其中的 dcRoot iframe 会被 `ST_DOMPURIFY_CONFIG.FORBID_TAGS` 的 `'iframe'` 消毒掉
+ * —— 结果"像卡片"却根本没有宿主，标记无人消费，原样漏给用户。
+ * 因此改为**只看渲染宿主是否真的存在**：有 dcRoot 才交给卡内运行时，否则一律降级。
+ */
 function applyBubbleDisplayPostpass(
   content: string,
   input: SillyTavernDisplayPipelineInput,
 ): string {
   if (!content || input.isUser || !content.includes('@bubble:')) return content;
-  if (looksLikeRenderableCardHtml(content) || looksLikeSmartCardHtml(content)) return content;
+  if (hasBubbleRenderHost(content)) return content;
   return downgradeUnconsumedBubbleMarkers(content);
 }
 

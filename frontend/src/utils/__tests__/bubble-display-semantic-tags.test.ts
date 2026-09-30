@@ -111,6 +111,27 @@ describe('applySillyTavernDisplayPipeline —— 真实形态端到端', () => {
     expect(r.content).toContain('露缇雅（低落）：*（他说得那么轻巧……可我知道这一定很疼的。）*');
   });
 
+  it('卡正则产出"像卡片"的 HTML 但无 dcRoot 宿主：仍降级（HOST-GATE 回归）', () => {
+    // 实测场景：卡正则「正文美化」把正文包成卡片 HTML，但其中的 iframe 会被
+    // ST_DOMPURIFY_CONFIG.FORBID_TAGS 的 'iframe' 消毒掉 → 没有宿主 → 标记无人消费。
+    // 旧判据（looksLikeRenderableCardHtml）会误判为"已交给卡"而跳过降级。
+    const cardLike =
+      '<div class="dc-msg" style="color:#fff">@bubble:露缇雅|犹豫|[我……我其实也不太清楚……]</div>';
+    const r = run(cardLike);
+    expect(r.content).not.toContain('@bubble:');
+    expect(r.content).toContain('露缇雅（犹豫）：我……我其实也不太清楚……');
+  });
+
+  it('真有 dcRoot 宿主时不降级（交给卡内运行时渲染）', () => {
+    // 注意：不能用 iframe 构造 —— FORBID_TAGS 含 'iframe'，管线里 iframe 会被移除，
+    // 反而测不出宿主存在。这里用不被引擎移除的形态表达"宿主已就位"。
+    const withHost =
+      '<div id="dcRoot"></div>' +
+      '<div class="dc-msg">@bubble:露缇雅|犹豫|[我……]</div>';
+    const r = run(withHost);
+    expect(r.content).toContain('@bubble:');
+  });
+
   it('用户消息不动', () => {
     const r = applySillyTavernDisplayPipeline({
       content: '@bubble:露缇雅|慌张|[哥哥……]',

@@ -25,7 +25,7 @@ import TavernHelperPanel from './TavernHelperPanel';
 import { extractCharacterStatusBars } from '@/lib/statusBar';
 import { ttsService } from '@/services/tts';
 import { useTtsMessageStatus } from '@/hooks/useTtsMessageStatus';
-import { messageFormatter, applySillyTavernDisplayPipeline, stripVoiceDescriptionMarkers } from '@/utils/sillyTavernDisplayPipeline';
+import { messageFormatter, applySillyTavernDisplayPipeline, stripVoiceDescriptionMarkers, downgradeUnconsumedBubbleMarkers, stripUnrenderedSemanticTags } from '@/utils/sillyTavernDisplayPipeline';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { stripHtmlFenceLeftovers } from './smart-card-runtime/primitives';
 import {
@@ -931,10 +931,16 @@ function MessageInner({
           false,
           typeof messageIndex === 'number' ? messageIndex : undefined
         );
+        // [HOST-GATE 2026-10-01] ST 原生渲染绕过 applySillyTavernDisplayPipeline，
+        // 这里补一次同样的兜底：卡运行时若没产出 dcRoot 宿主，@bubble 与包裹标签会原样
+        // 漏给用户（原生模式下这是唯一能拦住它们的落点）。
+        const nativeHtml = /dcRoot/i.test(html)
+          ? html
+          : stripUnrenderedSemanticTags(downgradeUnconsumedBubbleMarkers(html));
         return {
           kind: 'html-display' as const,
-          content: html,
-          markdownContent: html,
+          content: nativeHtml,
+          markdownContent: nativeHtml,
           // [N-3] 此分支渲染走 InlineHtmlRenderer（内部自行消毒），且下方 ST 兼容内联分支
           // 要求 !useNativeStRendering 不可达；此处恒空占位，统一 memo 返回形状
           stCompatSanitizedHtml: '',
