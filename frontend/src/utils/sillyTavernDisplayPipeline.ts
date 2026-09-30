@@ -367,26 +367,80 @@ export function stripVoiceDescriptionMarkers(content: string): string {
  */
 export function downgradeUnconsumedBubbleMarkers(content: string): string {
   if (!content || !content.includes('@bubble:')) return content;
-  return content.replace(
-    BUBBLE_MARKER_LINE_RE,
-    (
-      _match: string,
-      lead: string,
-      speaker: string,
-      mood: string,
-      body: string,
-      closing?: string,
-    ) => {
-      const text = String(body)
-        .trim()
-        .replace(/^\[([\s\S]*)\]$/, '$1')
-        .replace(/^"([\s\S]*)"$/, '$1')
-        .replace(/^“([\s\S]*)”$/, '$1')
-        .replace(/^'([\s\S]*)'$/, '$1')
-        .trim();
-      return `${lead}${String(speaker).trim()}（${String(mood).trim()}）：${text}${closing ?? ''}`;
-    },
-  );
+
+  const replacer = (
+    _match: string,
+    lead: string,
+    speaker: string,
+    mood: string,
+    body: string,
+    closing?: string,
+  ) => {
+    const text = String(body)
+      .trim()
+      // [Q-TAG 2026-10-01] Showdown 会给引号套一层 <q>…</q>；先褪掉外层标签再剥引号，
+      // 否则降级结果会变成 `角色（情绪）：<q>“台词”</q>`，渲染出双重引号。
+      .replace(/^<q\b[^>]*>([\s\S]*)<\/q>$/i, '$1')
+      .replace(/^\[([\s\S]*)\]$/, '$1')
+      .replace(/^"([\s\S]*)"$/, '$1')
+      .replace(/^“([\s\S]*)”$/, '$1')
+      .replace(/^'([\s\S]*)'$/, '$1')
+      .trim();
+    return `${lead}${String(speaker).trim()}（${String(mood).trim()}）：${text}${closing ?? ''}`;
+  };
+
+  const firstPass = content.replace(BUBBLE_MARKER_LINE_RE, replacer);
+  if (!firstPass.includes('@bubble:')) return firstPass;
+
+  // [BR-LINE-SPLIT 2026-10-01] Showdown 会把正文段内换行渲染成 `<br>`，
+  // @bubble 行因此与前后正文挤在同一行（实测 2405："…浮木。<br><br>@bubble:露缇雅|慌张|[…]<br><br>…"），
+  // 行首锚点 `^` 失效 → 整条不降级。这里把 `<br>` 还原成换行重跑一次，再把换行还原回 `<br>`。
+  // 仅当重跑确实降级掉更多标记时才采用，避免无谓改写 HTML。
+  const brSplit = firstPass.replace(/<br\s*\/?>/gi, '\n');
+  if (brSplit === firstPass) return firstPass;
+  const retried = brSplit.replace(BUBBLE_MARKER_LINE_RE, replacer);
+  if (countOccurrences(retried, '@bubble:') < countOccurrences(firstPass, '@bubble:')) {
+    return retried.replace(/\n/g, '<br>');
+  }
+  return firstPass;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return (haystack.match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [SEMANTIC-TAG-STRIP 2026-10-01] 未被卡脚本消费的正文语义标签剥离
+//
+// 背景（会话 a0accf94，消息 2405/2409 取证）：
+//  · `<now_plot><content>` 是插件「对话渲染系统 v7.1」注入规范要求的包裹标签，
+//    模型照做后由卡正则「正文美化」消费并产出 dcRoot iframe。
+//  · 但 Palink 的 ST 兼容消毒白名单 `ADD_TAGS` 显式含 content/now_plot
+//    （formatting.ts），而 markdown 兜底分支走**无配置** DOMPurify
+//    （Message.tsx sanitizeMarkdownSource）又会剥掉 now_plot、留下 content ——
+//    一旦卡正则没命中（缺包裹 / 卡未加载），这些标签就原样漏进正文。
+// 因此：显示层在确认**没有 dcRoot 宿主、也不是 smart-card** 之后，把这两个裸标签剥掉。
+// 有宿主时不动 —— 它们是卡脚本的输入，剥了卡就没得解析。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UNRENDERED_SEMANTIC_TAG_RE = /<\/?(?:now_plot|content)\b[^>]*>\s*/gi;
+
+export function stripUnrenderedSemanticTags(content: string): string {
+  if (!content) return content;
+  if (!/<(?:now_plot|content)\b/i.test(content)) return content;
+  // dcRoot 既可能是 `id="dcRoot"`，也可能是 iframe srcdoc 里的 `id=&quot;dcRoot&quot;`，
+  // 故只按标识符本身判定。
+  if (/dcRoot/i.test(content)) return content;
+  if (looksLikeSmartCardHtml(content)) return content;
+  return content
+    .replace(UNRENDERED_SEMANTIC_TAG_RE, '')
+    // 标签被吃掉后可能留下孤立的 <br>（Showdown 已把换行渲染成 <br>）：
+    // 收敛连续 3 个以上、并去掉首尾悬空的 <br>，避免正文顶端/底部多出空行。
+    .replace(/(?:<br\s*\/?>\s*){3,}/gi, '<br><br>')
+    .replace(/^(?:<br\s*\/?>\s*)+/i, '')
+    .replace(/(?:<br\s*\/?>\s*)+$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** 显示侧预处理：引号归一 + 隐藏【声音】行（用户消息不动） */
@@ -625,17 +679,22 @@ export function applySillyTavernDisplayPipeline(input: SillyTavernDisplayPipelin
     markdownContent = content;
   }
 
+  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
+  content = applyBubbleDisplayPostpass(content, input);
+  // [SEMANTIC-TAG-STRIP 2026-10-01] 卡没消费掉的 <now_plot>/<content> 裸标签在此剥离，
+  // 避免它们漏进正文；有 dcRoot 宿主 / smart-card 时 stripUnrenderedSemanticTags 内部会跳过。
+  content = stripUnrenderedSemanticTags(content);
+  if (typeof markdownContent === 'string') {
+    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
+    markdownContent = stripUnrenderedSemanticTags(markdownContent);
+  }
+
+  // kind 必须在降级 + 剥标签之后重算：标签剥离后可能从 html-display 回落为 markdown。
   const kind: SillyTavernDisplayKind = looksLikeSmartCardHtml(content)
     ? 'smart-card'
     : looksLikeRenderableCardHtml(content) || /<\/?(?:p|div|span|q|em|strong|table|thead|tbody|tr|td|th|ul|ol|li|blockquote|section|article|aside|header|footer|nav|main)\b/i.test(content)
       ? 'html-display'
       : 'markdown';
-
-  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
-  content = applyBubbleDisplayPostpass(content, input);
-  if (typeof markdownContent === 'string') {
-    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
-  }
 
   return { content, kind, depth, appliedRegex, markdownContent };
 }
@@ -784,17 +843,22 @@ export async function applySillyTavernDisplayPipelineAsync(
     markdownContent = content;
   }
 
+  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
+  content = applyBubbleDisplayPostpass(content, input);
+  // [SEMANTIC-TAG-STRIP 2026-10-01] 卡没消费掉的 <now_plot>/<content> 裸标签在此剥离，
+  // 避免它们漏进正文；有 dcRoot 宿主 / smart-card 时 stripUnrenderedSemanticTags 内部会跳过。
+  content = stripUnrenderedSemanticTags(content);
+  if (typeof markdownContent === 'string') {
+    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
+    markdownContent = stripUnrenderedSemanticTags(markdownContent);
+  }
+
+  // kind 必须在降级 + 剥标签之后重算：标签剥离后可能从 html-display 回落为 markdown。
   const kind: SillyTavernDisplayKind = looksLikeSmartCardHtml(content)
     ? 'smart-card'
     : looksLikeRenderableCardHtml(content) || /<\/?(?:p|div|span|q|em|strong|table|thead|tbody|tr|td|th|ul|ol|li|blockquote|section|article|aside|header|footer|nav|main)\b/i.test(content)
       ? 'html-display'
       : 'markdown';
-
-  // [BUBBLE-DISPLAY 2026-09-30] 未被宿主消费的 @bubble 标记降级（卡片分支内部不碰）
-  content = applyBubbleDisplayPostpass(content, input);
-  if (typeof markdownContent === 'string') {
-    markdownContent = applyBubbleDisplayPostpass(markdownContent, input);
-  }
 
   return { content, kind, depth, appliedRegex, markdownContent };
 }
