@@ -113,36 +113,36 @@ describe('stripVoiceDescriptionMarkers —— 显示层隐藏【声音】行', (
   });
 });
 
-describe('downgradeUnconsumedBubbleMarkers —— 无渲染宿主时降级为可读文本', () => {
-  it('裸标记 → 角色（情绪）：对白', () => {
+// [BUBBLE-SHELL-STRIP 2026-10-01] 用户裁定：角色卡没要求 @bubble 时用最普通的形式 ——
+// 只留说话内容本身，不拼「角色（情绪）：」前缀。
+describe('downgradeUnconsumedBubbleMarkers —— 无渲染宿主时还原为纯对话文本', () => {
+  it('裸标记 → 只留引号台词', () => {
     const input = '@bubble:露缇雅|不安|[还有这里……我醒过来的时候，它就在发光。]';
     expect(downgradeUnconsumedBubbleMarkers(input)).toBe(
-      '露缇雅（不安）：还有这里……我醒过来的时候，它就在发光。',
+      '“还有这里……我醒过来的时候，它就在发光。”',
     );
   });
 
-  it('引号形态（未经归一）也能降级', () => {
+  it('引号形态（未经归一）：保留引号，去掉角色名与情绪', () => {
     const input = '@bubble:露缇雅|委屈|"哥哥，我会变成……怪物吗？"';
-    expect(downgradeUnconsumedBubbleMarkers(input)).toBe(
-      '露缇雅（委屈）：哥哥，我会变成……怪物吗？',
-    );
+    expect(downgradeUnconsumedBubbleMarkers(input)).toBe('“哥哥，我会变成……怪物吗？”');
   });
 
-  it('Showdown 已包 <p> 的形态：保留包裹，只改内容', () => {
+  it('Showdown 已包 <p> 的形态：保留包裹，只替换标记本身', () => {
     const input = '<p>@bubble:露缇雅|悲伤|[你不会……不要我的，对吧？]</p>';
     expect(downgradeUnconsumedBubbleMarkers(input)).toBe(
-      '<p>露缇雅（悲伤）：你不会……不要我的，对吧？</p>',
+      '<p>“你不会……不要我的，对吧？”</p>',
     );
   });
 
-  it('多处标记逐行降级，正文行不动', () => {
+  it('多处标记逐个还原，正文行不动', () => {
     const input = [
       '@bubble:露缇雅|慌张|[才、才不是那样！]',
       '她侧过身。',
       '@bubble:露缇雅|难过|[你看到了吧……]',
     ].join('\n');
     expect(downgradeUnconsumedBubbleMarkers(input)).toBe(
-      ['露缇雅（慌张）：才、才不是那样！', '她侧过身。', '露缇雅（难过）：你看到了吧……'].join('\n'),
+      ['“才、才不是那样！”', '她侧过身。', '“你看到了吧……”'].join('\n'),
     );
   });
 
@@ -160,7 +160,7 @@ describe('applySillyTavernDisplayPipeline 集成：助手消息', () => {
     isSystem: false,
   };
 
-  it('【声音】不出现，裸 @bubble 被降级为可读文本', () => {
+  it('【声音】不出现，裸 @bubble 被还原为纯对话', () => {
     const content = [
       '晨光从窗帘缝隙渗进来。',
       '',
@@ -173,8 +173,8 @@ describe('applySillyTavernDisplayPipeline 集成：助手消息', () => {
 
     expect(result.content).not.toContain('【声音');
     expect(result.content).not.toContain('@bubble:');
-    expect(result.content).toContain('露缇雅（不安）：');
-    expect(result.content).toContain('还有这里……我醒过来的时候，它就在发光。');
+    expect(result.content).not.toContain('（不安）');
+    expect(result.content).toContain('“还有这里……我醒过来的时候，它就在发光。”');
   });
 
   it('用户消息不降级、不隐藏（isUser 门控）', () => {

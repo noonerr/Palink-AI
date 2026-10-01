@@ -1,13 +1,13 @@
 /*
- * [SEMANTIC-TAG-STRIP + 引号形态 2026-10-01] 显示管线契约测试
+ * [SEMANTIC-TAG-STRIP + BUBBLE-SHELL-STRIP 2026-10-01] 显示管线契约测试
  *
  * 取证背景（会话 a0accf94，消息 2405 / 2415）：
  *   1) 2405 带完整 `<now_plot><content>` 包裹，但卡正则没产出 dcRoot iframe ——
  *      标签无人消费，原样漏进正文（用户看到 "content 标签"）。
- *   2) Showdown 会把段内换行渲染成 `<br>`，@bubble 行与正文挤在同一行
- *      （"…浮木。<br><br>@bubble:露缇雅|慌张|[…]<br><br>…"），行首锚点 `^` 失效，
- *      原本的降级逻辑整条漏掉。
- *   3) 注入规范自 2026-10-01 起改为中文引号，降级必须同时吃得下引号与方括号。
+ *   2) Showdown 会把段内换行渲染成 `<br>`、卡正则会把标记包进 `<div class="dc-msg">`，
+ *      两者都让 @bubble 不再位于行首 → 行首锚点 `^` 失效，降级整条漏掉。
+ *   3) 用户裁定：角色卡没要求 @bubble 时，应还原成**最普通的对话文本**（只留说话内容），
+ *      不要 `角色（情绪）：台词` 这种带加工痕迹的形态。
  *
  * 运行: npx vitest run
  */
@@ -63,7 +63,7 @@ describe('stripUnrenderedSemanticTags —— 未被卡消费的包裹标签', ()
 });
 
 describe('applySillyTavernDisplayPipeline —— 真实形态端到端', () => {
-  it('有包裹：标签剥离 + @bubble 降级', () => {
+  it('有包裹：标签剥离 + 标记还原成纯对话', () => {
     const input = [
       '<now_plot>',
       '<content>',
@@ -79,50 +79,54 @@ describe('applySillyTavernDisplayPipeline —— 真实形态端到端', () => {
     expect(r.content).not.toContain('<content>');
     expect(r.content).not.toContain('<now_plot>');
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（慌张）：哥哥……这不是梦，是真的……');
+    expect(r.content).not.toContain('（慌张）');
+    expect(r.content).toContain('“哥哥……这不是梦，是真的……”');
   });
 
-  it('<br> 同行形态：@bubble 仍被降级（2405 真因回归）', () => {
-    // Showdown 产物：段内换行已被渲染成 <br>，@bubble 不在行首
+  it('<br> 同行形态：标记仍被还原（2405 真因回归）', () => {
     const input = '她软软地往前倾倒，额头抵在他的胸口。<br><br>@bubble:露缇雅|害怕|[我早上醒来就变成这样了。]<br><br>她松开床单。';
     const r = run(input);
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（害怕）：我早上醒来就变成这样了。');
+    expect(r.content).toContain('“我早上醒来就变成这样了。”');
   });
 
-  it('引号形态（2026-10-01 起的新规范）：同样被降级', () => {
+  it('引号形态：原样保留引号，不加角色名前缀', () => {
     const input = '她低下头。<br><br>@bubble:露缇雅|犹豫|“我……我其实也不太清楚……”<br><br>她想了想。';
     const r = run(input);
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（犹豫）：我……我其实也不太清楚……');
+    expect(r.content).not.toContain('（犹豫）');
+    expect(r.content).toContain('“我……我其实也不太清楚……”');
   });
 
-  it('引号形态行首：同样被降级', () => {
+  it('行首引号形态：同样只留内容', () => {
     const input = '她低下头。\n\n@bubble:露缇雅|害羞|“我、我不是那个意思！”\n\n她赶紧摆手。';
     const r = run(input);
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（害羞）：我、我不是那个意思！');
+    expect(r.content).toContain('“我、我不是那个意思！”');
   });
 
-  it('内心活动 *…* 形态：星号保留，情绪进括号', () => {
-    const input = '@bubble:露缇雅|低落|“*（他说得那么轻巧……可我知道这一定很疼的。）*”';
+  it('内心活动 [*…*]：去掉星号壳，不加引号', () => {
+    const input = '@bubble:露缇雅|低落|[*（他说得那么轻巧……可我知道这一定很疼的。）*]';
     const r = run(input);
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（低落）：*（他说得那么轻巧……可我知道这一定很疼的。）*');
+    expect(r.content).not.toContain('*');
+    expect(r.content).toContain('（他说得那么轻巧……可我知道这一定很疼的。）');
   });
 
-  it('卡正则产出"像卡片"的 HTML 但无 dcRoot 宿主：仍降级（HOST-GATE 回归）', () => {
-    // 实测场景：卡正则「正文美化」把正文包成卡片 HTML，但其中的 iframe 会被
-    // ST_DOMPURIFY_CONFIG.FORBID_TAGS 的 'iframe' 消毒掉 → 没有宿主 → 标记无人消费。
-    // 旧判据（looksLikeRenderableCardHtml）会误判为"已交给卡"而跳过降级。
+  it('英文直引号 / 单引号：统一成中文引号', () => {
+    expect(run('@bubble:露缇雅|委屈|"才、才不是挂件！"').content).toContain('“才、才不是挂件！”');
+    expect(run("@bubble:樱|无奈|'别把我拉进去啊。'").content).toContain('“别把我拉进去啊。”');
+  });
+
+  it('卡正则产出"像卡片"的 HTML 但无 dcRoot 宿主：仍还原（HOST-GATE 回归）', () => {
     const cardLike =
       '<div class="dc-msg" style="color:#fff">@bubble:露缇雅|犹豫|[我……我其实也不太清楚……]</div>';
     const r = run(cardLike);
     expect(r.content).not.toContain('@bubble:');
-    expect(r.content).toContain('露缇雅（犹豫）：我……我其实也不太清楚……');
+    expect(r.content).toContain('“我……我其实也不太清楚……”');
   });
 
-  it('真有 dcRoot 宿主时不降级（交给卡内运行时渲染）', () => {
+  it('真有 dcRoot 宿主时不还原（交给卡内运行时渲染）', () => {
     // 注意：不能用 iframe 构造 —— FORBID_TAGS 含 'iframe'，管线里 iframe 会被移除，
     // 反而测不出宿主存在。这里用不被引擎移除的形态表达"宿主已就位"。
     const withHost =

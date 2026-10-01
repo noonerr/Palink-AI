@@ -370,28 +370,36 @@ export function stripVoiceDescriptionMarkers(content: string): string {
 }
 
 /**
- * 未被任何宿主消费的 `@bubble:` 标记降级为可读文本：`角色（情绪）：对白`。
- * 用于"卡正则没命中 / 插件没渲染"时的兜底，避免原始标记漏进正文。
+ * [BUBBLE-SHELL-STRIP 2026-10-01] 未被任何宿主消费的 `@bubble:` 标记 → **还原成最普通的对话文本**。
+ *
+ * 用户裁定（2026-10-01）：「角色卡没要求 @bubble，那就该用最普通的形式，也就是对话内容本身。」
+ * 因此这里不再拼 `角色（情绪）：台词` 那种带加工痕迹的形态 —— 直接把 `@bubble:角色|情绪|`
+ * 这层壳连同方括号一起去掉，只留下说话内容：
+ *   `@bubble:露缇雅|犹豫|[我……我不想咬哥哥。]` → `“我……我不想咬哥哥。”`
+ *   `@bubble:露缇雅|低落|[*（他说得那么轻巧……）*]` → `（他说得那么轻巧……）`（内心活动不加引号）
+ *   `@bubble:露缇雅|害羞|“我、我不是那个意思！”` → `“我、我不是那个意思！”`
+ * 角色名与情绪字段在此丢弃 —— 角色卡的正文里本来就有叙述交代说话人，标记是多余的壳。
  */
 export function downgradeUnconsumedBubbleMarkers(content: string): string {
   if (!content || !content.includes('@bubble:')) return content;
 
-  return content.replace(
-    BUBBLE_MARKER_RE,
-    (_match: string, speaker: string, mood: string, body: string) => {
-      const text = String(body)
-        .trim()
-        // [Q-TAG 2026-10-01] Showdown 会给引号套一层 <q>…</q>；先褪掉外层标签再剥引号，
-        // 否则降级结果会变成 `角色（情绪）：<q>“台词”</q>`，渲染出双重引号。
-        .replace(/^<q\b[^>]*>([\s\S]*)<\/q>$/i, '$1')
-        .replace(/^\[([\s\S]*)\]$/, '$1')
-        .replace(/^"([\s\S]*)"$/, '$1')
-        .replace(/^“([\s\S]*)”$/, '$1')
-        .replace(/^'([\s\S]*)'$/, '$1')
-        .trim();
-      return `${String(speaker).trim()}（${String(mood).trim()}）：${text}`;
-    },
-  );
+  return content.replace(BUBBLE_MARKER_RE, (_match: string, _speaker: string, _mood: string, body: string) => {
+    const raw = String(body).trim();
+    // [Q-TAG 2026-10-01] Showdown 会给引号套一层 <q>…</q>，先褪掉再判形态。
+    const unq = raw.replace(/^<q\b[^>]*>([\s\S]*)<\/q>$/i, '$1').trim();
+    // 方括号是 @bubble 规范的"壳"，一律去掉，无论里面是台词还是内心活动。
+    const inner = unq.replace(/^\[([\s\S]*)\]$/, '$1').trim();
+
+    // 内心活动 `*…*`：保留体裁标记去掉星号（外层中文括号本身就表内心），不加引号。
+    const monologue = inner.match(/^\*([\s\S]*)\*$/);
+    if (monologue) return monologue[1].trim();
+
+    // 台词：已有的引号原样保留（英文引号/单引号统一成中文引号），没有则补上。
+    if (/^“[\s\S]*”$/.test(inner)) return inner;
+    if (/^"[\s\S]*"$/.test(inner)) return `“${inner.slice(1, -1)}”`;
+    if (/^'[\s\S]*'$/.test(inner)) return `“${inner.slice(1, -1)}”`;
+    return `“${inner}”`;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
