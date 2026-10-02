@@ -4,6 +4,11 @@ import type {
   SmartCardRuntimeMode,
 } from '@/types';
 import { VARIABLES_COMPAT_SOURCE } from './variables-compat';
+// [IDB-NS 甲] IndexedDB 按角色分库：注入 iframe 的纯 JS 源码串。
+// ⚠️ 必须用相对路径：本文件会被 vite-plugins/smart-card-runtime-asset 直接 import，
+// 而 vite.config / vitest.config 加载插件时 '@' 别名尚未生效 —— 写成 '@/lib/...' 会让
+// 整个 vitest 在「加载配置」这一步就 ERR_MODULE_NOT_FOUND 崩掉（已实踩）。
+import { IDB_NS_RUNTIME_SOURCE } from '../../../../lib/sillytavern/card-idb-namespace';
 
 const RUNTIME_VERSION = '2.0.0';
 
@@ -209,6 +214,9 @@ export function buildSillyTavernCompatRuntimeV2Shim(options: SmartCardRuntimeV2O
     nonceAttr,
     origin,
   } = buildSmartCardCompatRuntimeBootPayload(options);
+  // [IDB-NS 甲] 说明：分库后缀不在构建期注入，而是在 iframe 里由 ctx.characterId 现算
+  // （见 buildSillyTavernCompatRuntimeBodyScript）—— 因为内联与外部脚本两条路径那边的
+  // 作用域里都没有 context，只有 ctx 是两边都有的。
   const bootScript = `<script${nonceAttr}>
 window.__palinkBoot__ = {
   runtimeVersion: ${safeJson(RUNTIME_VERSION)},
@@ -525,6 +533,40 @@ ${bootHeader}
       Object.defineProperty(window, 'localStorage', { value: makeCompatStorage('localStorage', ctx.persistedStorage?.localStorage), configurable: true });
       Object.defineProperty(window, 'sessionStorage', { value: makeCompatStorage('sessionStorage', ctx.persistedStorage?.sessionStorage), configurable: true });
     } catch {}
+  }
+
+  // ── [IDB-NS 甲] IndexedDB 按角色分库（2026-10-02）─────────────────────────
+  // 气泡插件把 CG / 头像缓存在 BubbleDialogueAvatars，而 cg_groups 的主键不含角色，
+  // 两张卡用了同名分组时后写的会整条覆盖前者，且按 charId 过滤后前者永久不可见（数据丢失）。
+  // 给它加角色后缀即可彻底隔开。
+  //
+  // 白名单而非一刀切：GalgameUIPluginDB 是父帧 Live2D 面板与帧内 galgame 插件共用的库名，
+  // 一刀切会让插件去读一个空库，Live2D 绑定直接失效。所以只动有实证问题的那个。
+  //
+  // 为什么还要往子帧传播：shim 装的是本 realm 的 window，而气泡插件跑在嵌套 srcdoc 子帧
+  // （dcRoot）里，那是浏览器给的全新 realm，不继承任何父帧属性 —— 不传播等于白做。
+  //
+  // ⚠️ 从这里往下都是**纯 JS**（本文件整体是注入 iframe 的脚本源码模板串）：
+  // 不许出现 TS 类型注解、as 断言、反引号，也不许出现美元符号紧跟花括号的插值写法 ——
+  // 前者会在 iframe 里报语法错，后者会直接把外层模板串截断。
+${IDB_NS_RUNTIME_SOURCE}
+  var IDB_NS_SUFFIX = sanitizeIdbSuffix(ctx && ctx.characterId);
+  var IDB_NS_BOOTSTRAP = buildIdbBootstrap(IDB_NS_SUFFIX);
+  // 止血：主框架里写 localStorage.palink_idb_namespace = '0' 后刷新即整体关闭。
+  // 万一分库在线上出怪问题，不必重新构建就能退回去。
+  if (IDB_NS_SUFFIX && !idbNamespaceDisabled()) {
+    try {
+      var nativeIdb = window.indexedDB;
+      if (nativeIdb && typeof nativeIdb.open === 'function') {
+        Object.defineProperty(window, 'indexedDB', {
+          configurable: true,
+          value: makeScopedIdbShim(nativeIdb, IDB_NS_SUFFIX),
+        });
+      }
+    } catch (e) {
+      /* 装不上就算了：宁可不隔离，也不能因为这一步让卡渲染不出来 */
+    }
+    installIdbShimPropagation(IDB_NS_SUFFIX, IDB_NS_BOOTSTRAP);
   }
   const persistedLocalStore = (() => {
     try { return JSON.parse(ctx.persistedStorage?.localStorage?.__palink_local_variables || '{}'); } catch { return {}; }

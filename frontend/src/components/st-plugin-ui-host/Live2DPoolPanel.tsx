@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
+import { pluginCharacterKeyFromUuid } from '@/lib/sillytavern/plugin-character-id';
 
 /**
  * Live2D 模型池面板
@@ -9,11 +10,17 @@ import { api } from '@/services/api';
  * 用户无需上传模型文件，即可把池中远程模型绑定到任意角色。
  *
  * 绑定原理（对齐 galgame 界面插件的机制）：
- * - 插件通过角色名 charCode 哈希（与 CharacterChat.tsx 中 this_chid 算法一致）
- *   识别当前角色，加载时调用 getLive2DModel(characterId)；
+ * - 插件读取 ST context 里的 `characterId`，加载时调用 getLive2DModel(characterId)；
  * - 绑定即向插件 IndexedDB（GalgameUIPluginDB -> live2dModels，主键 modelId）
- *   写入 { modelId: <哈希>, source: "remote", modelUrl: <服务器URL> }；
+ *   写入 { modelId: <该 id 的字符串形式>, source: "remote", modelUrl: <服务器URL> }；
  * - 插件 Live2DManager._isRemoteModelData 识别 remote 模型并按 URL 加载。
+ *
+ * **2026-10-02 P1 起：`modelId` 由角色 UUID 派生，不再是角色名 charCode 哈希。**
+ * 名字哈希会让同名不同 id 的卡共用一条绑定（SPEC §2.5/§2.6，库里实际存在 4 张同名卡）。
+ * 派生规则的唯一实现在 `lib/sillytavern/plugin-character-id.ts`，
+ * 本文件与 CharacterChat.tsx 共用，不要各自再算一遍。
+ * 旧的名字哈希绑定**不做重映射**：上线前无存量用户，迁移没有保护对象，
+ * 而"按名字找旧记录"会把 A 卡的绑定原样带给同名的 B 卡，正是要修的缺陷。
  *
  * 服务器模型文件为同源静态资源（GET /api/live2d-pool/files/...），
  * 插件运行时在主 window 内 fetch，无 CORS 问题。
@@ -42,11 +49,7 @@ interface BoundModel {
   [key: string]: unknown;
 }
 
-/** 与 CharacterChat.tsx 一致的插件角色 ID 哈希算法 */
-function pluginCharacterId(name: string): string {
-  const hash = Array.from(name || '').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return String(hash || 1);
-}
+// 注意：此处**不要**再写一份角色 id 算法，一律用 lib/sillytavern/plugin-character-id.ts 的共用实现。
 
 function openGalgameDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -116,14 +119,14 @@ export function Live2DPoolPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [modelRes, charRes, b] = await Promise.all([
+      const [modelRes, charRes] = await Promise.all([
         api.get<{ models: PoolModel[] }>('/api/live2d-pool/models'),
         api.get<CharacterOption[]>('/api/characters?fields=basic'),
-        readRemoteBindings().catch(() => []),
       ]);
+      const characters = Array.isArray(charRes) ? charRes : [];
       setModels(modelRes.models || []);
-      setCharacters(Array.isArray(charRes) ? charRes : []);
-      setBindings(b);
+      setCharacters(characters);
+      setBindings(await readRemoteBindings().catch(() => []));
     } catch (e) {
       console.warn('[Live2DPoolPanel] 加载失败:', e);
       toast.error('加载 Live2D 模型池失败');
@@ -144,7 +147,7 @@ export function Live2DPoolPanel() {
         toast.error('请先选择要绑定的角色');
         return;
       }
-      const modelId = pluginCharacterId(selectedCharacter.name);
+      const modelId = pluginCharacterKeyFromUuid(selectedCharacter.id);
       try {
         await bindModel({
           modelId,
@@ -256,7 +259,7 @@ export function Live2DPoolPanel() {
         </select>
         {selectedCharacter && (
           <span className="text-[10px] text-muted-foreground shrink-0">
-            插件 ID: {pluginCharacterId(selectedCharacter.name)}
+            插件 ID: {pluginCharacterKeyFromUuid(selectedCharacter.id)}
           </span>
         )}
       </div>
