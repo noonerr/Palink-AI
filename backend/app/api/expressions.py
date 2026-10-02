@@ -85,13 +85,32 @@ def _get_character_or_404(db: Session, character_id: str, user: User) -> Charact
 
 
 def _get_character_by_name_or_404(db: Session, name: str, user: User) -> Character:
-    character = db.query(Character).filter(
+    """按名字查角色。**名字去重幽灵系 Not unique**：库里确实存在同名多行
+    （2026-10-02 实测：name=露缇雅1.2 有 4 行、id 各不相同），
+    原本 `.first()` 不带 ORDER BY，返回哪一行取决于 DB 物理顺序 ——
+    用户上传自定义表情时会串到另一张同名卡上。
+
+    修法：加确定性排序，并在命中多行时登记 warning。
+    长期目标是让调用方全部改传 id（`_get_character_or_404` 那条路）。
+    参考 docs/SPEC_卡脚本本地存储按角色与账号隔离_2026-10-02.md §2.8。
+    """
+    query = db.query(Character).filter(
         Character.name == name,
         Character.user_id == user.id,
-    ).first()
-    if character is None:
+    )
+    matches = query.order_by(Character.created_at.asc(), Character.id.asc()).all()
+    if not matches:
         raise HTTPException(status_code=404, detail="Character not found")
-    return character
+    if len(matches) > 1:
+        logger.warning(
+            "[expressions] 同名角色命中 %d 行，按 created_at/id 确定性取第一张 "
+            "(name=%r, picked=%s, others=%s)",
+            len(matches),
+            name,
+            matches[0].id,
+            [c.id for c in matches[1:]],
+        )
+    return matches[0]
 
 
 def _expressions_dir(character_id: str) -> str:

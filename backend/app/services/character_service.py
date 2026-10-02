@@ -11,6 +11,7 @@ from ..models import (
     CharacterChatSession,
     CharacterChatMessage,
     CharacterChatSessionBranch,
+    CharacterPluginStorage,
     ChatVariable,
     GroupChat,
     User,
@@ -187,6 +188,18 @@ class CharacterService:
                 wb.id for wb in
                 self.db.query(WorldBook).filter(WorldBook.character_id == character_id).all()
             ]
+
+            # [PLUGIN-STORAGE] 级联清理卡脚本存档（2026-10-02 P2）。
+            # character_plugin_storage 虽然声明了 ON DELETE CASCADE，但 SQLite 默认
+            # 不强制外键（PRAGMA foreign_keys 未必开），所以这里显式删，确保无残留。
+            try:
+                self.db.query(CharacterPluginStorage).filter(
+                    CharacterPluginStorage.character_id == character_id
+                ).delete(synchronize_session=False)
+            except Exception as exc:  # pragma: no cover - 表尚未建好的老部署
+                logger.warning(
+                    "[PLUGIN-STORAGE] 清理卡脚本存档失败（忽略，不影响删卡）: %s", exc
+                )
 
             self.db.delete(character)
             self.db.commit()

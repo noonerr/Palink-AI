@@ -17,7 +17,7 @@ from ..services.character_import_service import CharacterImportService, PngChara
 from ..core import get_db
 from ..core.cache import cached, invalidate_cache, invalidate_user_cache
 from ..api.dependencies import get_current_user
-from ..models import User, Character
+from ..models import User, Character, CharacterPluginStorage
 from ..models.plugin import Plugin, CharacterPluginState
 from .smart_card_assets import schedule_smart_card_source_prefetch
 
@@ -790,3 +790,115 @@ async def delete_character(
     invalidate_user_cache("character_detail", user.id)
     # ST DATA_ROOT 清理已在 character_service.delete_character 中完成
     return {"status": "ok"}
+
+
+# ── [PLUGIN-STORAGE] 角色卡脚本存档按用户落库（2026-10-02 P2）────────────────
+# 权威 spec：docs/SPEC_卡脚本本地存储按角色与账号隔离_2026-10-02.md §5-P2
+# 解决 D3「这类状态完全不落库」：换设备丢进度、同浏览器多账号互见立绘（隐私问题）。
+# 前端策略是「本地永远先命中」，这里只做同步副本 —— 同步失败前端必须静默降级为纯本地。
+
+_PLUGIN_STORAGE_NS_MAX = 16
+_PLUGIN_STORAGE_KEY_MAX = 512
+_PLUGIN_STORAGE_VALUE_MAX = 256 * 1024
+_PLUGIN_STORAGE_KEYS_PER_REQUEST = 500
+
+
+class _PluginStorageEntry(_PydanticBaseModel):
+    key: str
+    value: str | None = None
+
+
+class _PluginStoragePayload(_PydanticBaseModel):
+    ns: str = "local"
+    entries: list[_PluginStorageEntry] = []
+
+
+@router.get("/{character_id}/plugin-storage")
+async def get_character_plugin_storage(
+    character_id: str,
+    ns: str = Query("local", max_length=_PLUGIN_STORAGE_NS_MAX),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """返回该角色卡在指定命名空间下的全部存档条目。
+
+    前端进入角色页时拉一次作为初始值。**不属于**当前用户的角色一律 404，
+    不返回 403 —— 403 等于告诉调用方"这个 id 存在但你不配"，可被用来探测他人角色。
+    """
+    char = db.query(Character).filter(
+        Character.id == character_id, Character.user_id == user.id
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    rows = db.query(CharacterPluginStorage).filter(
+        CharacterPluginStorage.character_id == char.id,
+        CharacterPluginStorage.ns == (ns or "local"),
+    ).all()
+    values = {row.key: row.value for row in rows if isinstance(row.value, str)}
+    return {"character_id": char.id, "ns": ns or "local", "values": values}
+
+
+@router.put("/{character_id}/plugin-storage")
+async def put_character_plugin_storage(
+    character_id: str,
+    payload: _PluginStoragePayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """按 key **合并** upsert（不是整命名空间覆盖）。
+
+    整命名空间覆盖在多端并发下会互相抹掉对方刚写的键（A 拉旧值并覆盖 → B 的新键消失），
+    因此这里一期就是 merge 语义：只动本次带过来的 key。
+    `value=None` 表示删除该 key。
+    """
+    char = db.query(Character).filter(
+        Character.id == character_id, Character.user_id == user.id
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    ns = (payload.ns or "local").strip()[:_PLUGIN_STORAGE_NS_MAX] or "local"
+    existing = {
+        row.key: row
+        for row in db.query(CharacterPluginStorage).filter(
+            CharacterPluginStorage.character_id == char.id,
+            CharacterPluginStorage.ns == ns,
+        ).all()
+    }
+
+    written = 0
+    removed = 0
+    for item in (payload.entries or [])[:_PLUGIN_STORAGE_KEYS_PER_REQUEST]:
+        key = (item.key or "").strip()
+        if not key or len(key) > _PLUGIN_STORAGE_KEY_MAX:
+            continue
+        row = existing.get(key)
+        if item.value is None:
+            if row is not None:
+                db.delete(row)
+                removed += 1
+            continue
+        if len(item.value) > _PLUGIN_STORAGE_VALUE_MAX:
+            continue
+        if row is None:
+            db.add(CharacterPluginStorage(
+                character_id=char.id,
+                user_id=user.id,
+                ns=ns,
+                key=key,
+                value=item.value,
+            ))
+        else:
+            row.value = item.value
+            row.updated_at = datetime.utcnow()
+        written += 1
+
+    try:
+        db.commit()
+    except Exception as exc:  # pragma: no cover - 数据库异常路径
+        db.rollback()
+        logger.warning("[PLUGIN-STORAGE] 写库失败（已降级为纯本地）: %s", exc)
+        raise HTTPException(500, "Failed to persist storage")
+
+    return {"status": "ok", "ns": ns, "written": written, "removed": removed}

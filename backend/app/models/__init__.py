@@ -18,6 +18,7 @@ from .persona import Persona
 from .extension_prompt import ExtensionPrompt
 from .regex_script import RegexScript
 from .character_expression import CharacterExpression
+from .character_plugin_storage import CharacterPluginStorage
 from .background import Background
 
 __all__ = [
@@ -37,5 +38,6 @@ __all__ = [
     'ExtensionPrompt',
     'RegexScript',
     'CharacterExpression',
+    'CharacterPluginStorage',
     'Background',
 ]
