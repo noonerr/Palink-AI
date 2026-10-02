@@ -148,6 +148,11 @@
   `fcc1933`（C 组实验开关 2 文件）、`7afce4c`（框内断言/审计/稳态/终点约定 3 文件）、
   以及本轮「改默认+删开关+断言」一笔（含镜像重建）。原始日志
   `ab_raw.log` / `c_raw.log` / `steady_raw.log`（在备份目录内，按 `.gitignore` 不入库）。
+- **备份口径说明**：`_BACKUPS/2026-10-02_格式规范残本修复/BACKUP_INFO.md` 登记的是**批次开工时**的
+  3 个原件（`roleplay_prompt_assembly.py` + 2 个测试文件）。本轮追加改动的
+  `character_message_builder.py` / `test_display_markup_whitelist.py`，其"施工前"状态即提交
+  `fcc1933`（已入库、git 可回溯），故**未另建物理备份**；按 AGENTS.md §4「禁止动存量备份」，
+  既有 `BACKUP_INFO.md` 未作任何改写。
 - **P3 未立项前不动输出侧闭合校验**（用户明令）。
 - **未动的红线**：真实记录 `character_chat_messages.id=2468` 未做任何重生成（本轮仅只读审计）；
   `frontend/dist`、`backend/data` 未碰；克隆会话 `295039f9-…` 未新增任何行（前缀截断 + 内存替身方案，零 DB 写入）。
