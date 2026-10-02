@@ -11,7 +11,7 @@ import {
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { animate } from 'framer-motion';
+
 import { mobilePager } from '@/lib/mobilePagerBridge';
 import type { User } from '@/types';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -170,7 +170,11 @@ interface DockPointerState {
 // 弹簧参数：近似临界阻尼（2√(k·m)≈35.8）。滑块与页面共用同一条 p 弹簧，
 // 欠阻尼的过冲在滑块上只有几像素看不出来、在整屏宽的页面上却是几十像素的大甩动
 // ——所以取接近临界的 35.5：页面落位干净不回弹，滑块依然利落带吸入感。
-const PILL_SPRING = { stiffness: 320, damping: 35.5, mass: 1 } as const;
+// 【K21g 2026-10-01】吸附动画：framer-motion JS 弹簧（rAF 驱动，WebApp 内 rAF
+// 实测 60Hz）→ CSS transition（合成器，跟随面板 120Hz）。滑块/页面必须同曲线
+// 同时长（K 系列不变量：否则先后脚）。出手速度不再注入动画（贝塞尔无初速度
+// 参数），仅保留速度决定目标 tab 的落点偏置。
+const PILL_SNAP_TRANSITION = 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1), width 300ms cubic-bezier(0.4, 0, 0.2, 1)';
 const DRAG_START_PX = 6; // 超过该位移才算拖动，否则视为轻点
 const DWELL_MS = 180; // 按住停留在某 tab 上方多久后吸附过去
 
@@ -220,7 +224,6 @@ export function MobileBottomNav({
   const rectsRef = React.useRef<DockRects | null>(null);
   const pRef = React.useRef(0);
   const initedRef = React.useRef(false);
-  const springRef = React.useRef<{ stop: () => void } | null>(null);
   const springTargetRef = React.useRef<number | null>(null);
   const activeIndexRef = React.useRef(activeIndex);
   activeIndexRef.current = activeIndex;
@@ -245,11 +248,14 @@ export function MobileBottomNav({
     return { dockLeft: dockRect.left, items: items as DockRects['items'] };
   }, [tabs]);
 
-  const applyFrame = React.useCallback((p: number) => {
+  const applyFrame = React.useCallback((p: number, animate = false) => {
     pRef.current = p;
     const rects = rectsRef.current;
     const pill = pillRef.current;
     if (rects && pill) {
+      // K21g：animate=true 时挂 CSS transition（吸附，合成器 120Hz）；拖动/初始
+      // 直写一律禁过渡（1:1 跟手）
+      pill.style.transition = animate ? PILL_SNAP_TRANSITION : 'none';
       const cp = Math.min(3, Math.max(0, p));
       const i = Math.min(2, Math.floor(cp));
       const f = cp - i;
@@ -260,49 +266,32 @@ export function MobileBottomNav({
       pill.style.width = `${rects.items[Math.round(cp)].width}px`;
     }
     // 【拖动解耦】不再写 mobilePager：拖动 dock 时只移动滑块，页面停在当前
-    // tab；松手/路由切换时由 applyPageFrame 的弹簧把页面滑到目标页。
+    // tab；松手/路由切换时由 setPageP(true) 的 CSS 过渡把页面滑到目标页。
   }, []);
 
   // 页面轨道位置（0..3），与滑块拖动位置 pRef 分离。只有松手判定/路由变化时
-  // 才由弹簧驱动，保证"拖动时主页不跟着滑、松手后再动画到目标页"。
+  // 才切页（K 不变量：拖动时主页不跟着滑，松手后再动画到目标页）。
   const pagePRef = React.useRef(0);
-  const pageSpringRef = React.useRef<{ stop: () => void } | null>(null);
 
-  const applyPageFrame = React.useCallback((pageP: number) => {
-    pagePRef.current = pageP;
-    mobilePager.p = pageP;
-    mobilePager.emit();
+  const setPageP = React.useCallback((p: number, animate = false) => {
+    pagePRef.current = p;
+    mobilePager.p = p;
+    // K21g：animate=true 时 MobilePager 槽位挂 CSS transition（合成器 120Hz）
+    mobilePager.emit(animate);
   }, []);
 
-  const springTo = React.useCallback((target: number, velocity = 0) => {
+  const springTo = React.useCallback((target: number) => {
     const clamped = Math.min(3, Math.max(0, target));
     springTargetRef.current = clamped;
-    // 滑块：从当前位置（含拖动收尾速度）弹簧吸附到目标 tab
-    springRef.current?.stop();
-    springRef.current = animate(pRef.current, clamped, {
-      type: 'spring',
-      velocity,
-      ...PILL_SPRING,
-      onUpdate: applyFrame,
-    });
-    // 页面：从当前页位置弹簧滑到目标页（拖动期页面未移动，起点即当前页）
-    pageSpringRef.current?.stop();
-    pageSpringRef.current = animate(pagePRef.current, clamped, {
-      type: 'spring',
-      ...PILL_SPRING,
-      onUpdate: applyPageFrame,
-    });
-  }, [applyFrame, applyPageFrame]);
+    // 滑块与页面：同曲线同时长的 CSS 过渡，从各自当前视觉位置滑向目标
+    // （CSS transition 天然支持中途重定位 retarget）
+    applyFrame(clamped, true);
+    setPageP(clamped, true);
+  }, [applyFrame, setPageP]);
 
   // 拖动中的"停留吸附"只收滑块：仍按住、目标只作视觉提示，页面继续等松手判定。
   const snapPillTo = React.useCallback((target: number) => {
-    const clamped = Math.min(3, Math.max(0, target));
-    springRef.current?.stop();
-    springRef.current = animate(pRef.current, clamped, {
-      type: 'spring',
-      ...PILL_SPRING,
-      onUpdate: applyFrame,
-    });
+    applyFrame(Math.min(3, Math.max(0, target)), true);
   }, [applyFrame]);
 
   const pFromX = React.useCallback((clientX: number): number => {
@@ -356,15 +345,13 @@ export function MobileBottomNav({
 
     if (!st.moved) {
       if (Math.abs(e.clientX - st.x0) < DRAG_START_PX) return;
-      // 进入拖动：停掉在途弹簧，滑块开始 1:1 跟手（页面保持不动）
+      // 进入拖动：滑块转 1:1 跟手（applyFrame 直写会关掉在途 CSS 过渡；
+      // K 不变量：拖动时页面保持不动，在途的页面过渡让它自己走完）
       st.moved = true;
-      springRef.current?.stop();
       springTargetRef.current = null;
     }
 
     // 停留吸附后再次移动 → 立即恢复跟手
-    springRef.current?.stop();
-    pageSpringRef.current?.stop();
     springTargetRef.current = null;
     st.dwellTab = null;
 
@@ -405,7 +392,7 @@ export function MobileBottomNav({
     }
 
     // 拖动松手：停留吸附优先，否则按最近 tab（加出手速惯性偏置）收尾；
-    // 弹簧带初速度落位——距离越远时间越长但速度更快，中途页面快速掠过
+    // K21g：速度只决定落点偏置——吸附动画本身是匀速贝塞尔（无初速度参数）
     const rects = rectsRef.current;
     const spacing = rects ? (rects.items[3].center - rects.items[0].center) / 3 : 1;
     const vP = Math.max(-6, Math.min(6, (st.vx / Math.max(1, spacing)) * 1000)); // p/s
@@ -414,7 +401,7 @@ export function MobileBottomNav({
       ? st.dwellTab
       : Math.min(3, Math.max(0, Math.round(pRef.current + bias)));
     navigateToTab(target);
-    springTo(target, vP);
+    springTo(target);
   }, [pFromX, navigateToTab, springTo]);
 
   // 初始对齐：无动画地把滑块/页面放到当前路由对应位置
@@ -423,7 +410,7 @@ export function MobileBottomNav({
     if (rectsRef.current && !initedRef.current) {
       initedRef.current = true;
       applyFrame(activeIndexRef.current);
-      applyPageFrame(activeIndexRef.current);
+      setPageP(activeIndexRef.current);
       setPillReady(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -445,13 +432,6 @@ export function MobileBottomNav({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [measureDock, applyFrame]);
-
-  React.useEffect(() => {
-    return () => {
-      springRef.current?.stop();
-      pageSpringRef.current?.stop();
-    };
-  }, []);
 
   // 路由追上目标后清除乐观高亮态
   React.useEffect(() => {
@@ -478,6 +458,30 @@ export function MobileBottomNav({
       ro.disconnect();
       window.removeEventListener('resize', measureDockHeight);
       window.removeEventListener('orientationchange', measureDockHeight);
+    };
+  }, []);
+
+  // 【K21d 2026-10-01】iOS 27.x PWA 屏底系统预留带探测：布局视口=screen−envTop 且
+  // 顶部锚定（WebKit Bug 301994 的 27.2 变体 + Bug 316008，见 TODOS.md K21 系列），
+  // Home Indicator 实际落在网页不可达的预留带内——dock 的 34pt env 规避变成纯悬空。
+  // strip=screen−clientHeight 实测预留带高度，仅 standalone+iOS 生效（Safari 浏览器
+  // 模式与 Android 的 screen 语义不同，不适用）；Apple 日后修复（clientHeight 回满屏）
+  // 时 strip→0，自动回到原公式。
+  const [phantomStrip, setPhantomStrip] = React.useState(0);
+  React.useEffect(() => {
+    const measure = () => {
+      const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true
+        || window.matchMedia('(display-mode: standalone)').matches;
+      const isIOS = /iP(hone|od|ad)/.test(navigator.userAgent);
+      const strip = window.screen.height - document.documentElement.clientHeight;
+      setPhantomStrip(standalone && isIOS && strip > 2 ? strip : 0);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
     };
   }, []);
 
@@ -514,7 +518,11 @@ export function MobileBottomNav({
       //   - inset=0（浏览器）       → 8px
       //   - inset=34（旧 iOS PWA）  → 34px
       //   - inset≈83（iOS 27 PWA）  → 34px（封顶，回到设计位）
-      paddingBottom: 'min(max(env(safe-area-inset-bottom, 0px), 8px), 34px)',
+      // 【K21d 2026-10-01】iOS 27.x PWA（屏底 59pt 系统预留带，见上方 phantomStrip）：
+      // Home Indicator 已在预留带内、不在页面区域内，34pt env 规避=纯悬空，
+      // 改 8px 让 pill 贴预留带上沿（视觉间隙 93→67pt）。其余环境（浏览器模式/
+      // 正常 iOS/Apple 修复后 strip→0）仍走原公式，行为不变。
+      paddingBottom: phantomStrip > 0 ? '8px' : 'min(max(env(safe-area-inset-bottom, 0px), 8px), 34px)',
     }} data-dock="true">
       <div
         ref={dockRef}

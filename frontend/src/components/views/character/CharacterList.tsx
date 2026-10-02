@@ -182,12 +182,17 @@ const ImportTaskOverlay = ({ char, onClose }: { char: CharacterListItem; onClose
   );
 };
 
-const CharacterCard = ({ 
+// 【K21f 2026-10-01】React.memo：scrollProgress 驱动的头部折叠让本组件每滚动帧
+// re-render 一次，卡片网格跟着全量重渲=列表滑动掉帧主因。memo 后滚动帧里卡片
+// 子树跳过（scroll 重渲时只有本文件内新建的 toggleSelect/onClick 是新身份，
+// 已分别 useCallback 化/改为直接传 onViewProfile；父级传入的 handler 身份
+// 在滚动帧间天然稳定）。代价：新增 props 时若传内联闭包会静默失效，注意。
+const CharacterCard = React.memo(({ 
   char, 
-  onClick, 
   isSelectMode, 
   isSelected, 
   onToggleSelect,
+  onViewProfile,
   processingCharacter,
   forceShowOverlay,
   onStartChat,
@@ -199,10 +204,10 @@ const CharacterCard = ({
   onCloseImporting,
 }: {
   char: CharacterListItem;
-  onClick: () => void;
   isSelectMode: boolean;
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
+  onViewProfile: (char: CharacterListItem) => void;
   processingCharacter: string | null;
   forceShowOverlay: string | null;
   onStartChat: (char: Character) => void;
@@ -216,7 +221,7 @@ const CharacterCard = ({
   <div 
     onClick={() => {
       if (char._importing) return;
-      isSelectMode ? onToggleSelect(char.id) : onClick();
+      isSelectMode ? onToggleSelect(char.id) : onViewProfile(char);
     }}
     className={`palink-press group relative rounded-3xl cursor-pointer transition-all duration-500 overflow-hidden transform-gpu will-change-transform ${
       isSelected ? 'ring-2 ring-primary ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-950' : ''
@@ -361,7 +366,7 @@ const CharacterCard = ({
       )}
     </div>
   </div>
-);
+));
 
 const DesktopSidebar = ({
   searchQuery,
@@ -583,9 +588,11 @@ const MobileView = ({
   const prevCategoryRef = useRef(activeCategory);
   const hasVisibleItems = visibleCharacters.length > 0;
 
-  const toggleSelect = (id: string) => {
+  // 【K21f】useCallback 化：CharacterCard 已 memo，滚动帧里本组件重渲时它必须
+  // 保持同一函数身份才能跳过卡片子树重渲。
+  const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
-  };
+  }, []);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const currentScrollY = e.currentTarget.scrollTop;
@@ -861,7 +868,7 @@ const MobileView = ({
                     isSelectMode={isSelectMode}
                     isSelected={selectedIds.includes(char.id)}
                     onToggleSelect={toggleSelect}
-                    onClick={() => { if (!isSelectMode) onViewProfile(char); }}
+                    onViewProfile={onViewProfile}
                     processingCharacter={processingCharacter}
                     forceShowOverlay={forceShowOverlay}
                     onStartChat={onStartChat}
@@ -1128,7 +1135,7 @@ const DesktopView = ({
                       isSelectMode={isSelectMode}
                       isSelected={selectedIds.includes(char.id)}
                       onToggleSelect={toggleSelect}
-                      onClick={() => { if (!isSelectMode) onViewProfile(char); }}
+                      onViewProfile={onViewProfile}
                       processingCharacter={processingCharacter}
                       forceShowOverlay={forceShowOverlay}
                       onStartChat={onStartChat}

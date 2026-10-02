@@ -9,7 +9,15 @@
          输入框落在布局视口底部被键盘盖住（即「视口显示页面顶部」）。
          保留它没有任何收益：不支持时被忽略，支持时有害。已移除。
          另：maximum-scale/user-scalable 在 iOS 10+ 默认被忽略，保留仅为安卓。 -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- 【K21e 2026-10-01】viewport-fit=cover 已删除（实验）：cover 才是「向 iOS 申请
+         画进安全区」的核心指令（K21c 删的 black-translucent 只是状态栏样式，对
+         manifest 安装的 PWA 实测无效果）。删掉后 iOS 应按默认规则把 webview 放在
+         状态栏与 Home Indicator 之间（393×759，底部齐 Home Indicator 区上沿）⇒
+         dock 再下沉 ~25pt。代价=顶部内容不再延伸到状态栏背后（env→0，顶部变
+         不透明系统条，K19 theme_color 快照继续染色）。回滚=恢复下面这段并重建重添：
+         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+         注意：viewport 相关只在「添加主屏幕」时快照，改后必须删 PWA 重添。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="mobile-web-app-capable" content="yes" />
     <!-- 缓存控制：配合 nginx no-store 策略，进一步防止 iOS Safari 内存缓存。
          注意必须是 no-store：no-cache 语义是「可存储但每次需校验」，iOS 在 304 判等上
@@ -37,10 +45,15 @@
     <meta name="application-name" content="Palink AI" />
 
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <!-- black-translucent：独立模式（添加到主屏幕）下页面延伸到状态栏/灵动岛背后。
-         所有移动端顶栏已用 env(safe-area-inset-top) 避让；状态栏文字为白色，
-         亮色模式下依赖顶栏自身的对比度处理。浏览器模式不受此 meta 影响。 -->
+    <!-- 【K21c 2026-10-01】black-translucent 已删除（实验）：WebKit Bug 316008 实证
+         无此 meta 时 standalone 的 body 不再画到状态栏背后（webview 下移至状态栏
+         下方）——正是 iOS 27.2「屏底 59pt 系统条带、网页不可达」（Bug 301994 变体，
+         见 TODOS.md K21/K21b）唯一没试过的杠杆。验收=删 WebApp 重添后看屏底红线
+         （viewportDebug K21c 探针）是否贴屏幕底 + envTop 读数 59→0；代价=顶部变
+         不透明系统条（不再沉浸），颜色仍由 manifest theme_color 快照控制（K19）。
+         回滚=恢复下面这行并重建重添（meta 只在添加主屏幕时读取，后补无效）：
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+         -->
     <meta name="apple-mobile-web-app-title" content="Palink" />
     <script>
       try {

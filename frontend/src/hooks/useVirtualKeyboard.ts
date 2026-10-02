@@ -190,42 +190,13 @@ export const useVirtualKeyboard = () => {
   // ── 【K13 已移除】滚动压制（scrollTo(0,0)）──
   // 原始基线下要观察系统原生行为（包括它自己的滚动补偿），不做对抗。
 
-  // ── 手势级滚动阻断（一步到位）────────────────────────────────
-  // 【真机教训】"能往下滑到 shell 之下的空白背景"来自手指拖动文档。
-  // 在 touchmove 上按方向判断：这条触摸链上没有任何能在当前方向滚动的
-  // 容器时直接 preventDefault——文档纹丝不动，没有"滚了再拉回"的过程。
-  // 只有消息列表这类真滚动区放行；到边界后继续拖也会被拦（无滚动链传导）。
-  // 点击与水平手势（|dy|<4px）不干预，MobilePager 擦洗 / dock 拖动不受影响。
-  useEffect(() => {
-    let startY = 0;
-    let chain: HTMLElement[] = [];
-    const onTouchStart = (e: TouchEvent) => {
-      startY = e.touches[0].clientY;
-      chain = [];
-      for (let el = e.target as HTMLElement | null; el && el !== document.body; el = el.parentElement) {
-        const oy = window.getComputedStyle(el).overflowY;
-        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
-          chain.push(el);
-        }
-      }
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const dy = e.touches[0].clientY - startY;
-      if (Math.abs(dy) < 4) return; // 点击 / 水平擦洗，不干预
-      for (const el of chain) {
-        const atTop = el.scrollTop <= 0;
-        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-        if ((dy > 0 && !atTop) || (dy < 0 && !atBottom)) return; // 有容器能消化该方向
-      }
-      e.preventDefault(); // 没有任何容器能滚 → 文档纹丝不动
-    };
-    document.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
-    document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
-    return () => {
-      document.removeEventListener('touchstart', onTouchStart, { capture: true });
-      document.removeEventListener('touchmove', onTouchMove, { capture: true });
-    };
-  }, []);
+  // ── 【K21f 2026-10-01 已整体移除】手势级滚动阻断（document 非 passive touchmove）──
+  // 它防的老问题「把页面拖到 shell 之下的空白背景」已随 K21e 几何修复物理消失
+  // （webview=状态栏↔Home Indicator 之间、docHeight==clientHeight，文档无可滚余量），
+  // 且 html/body 的 overscroll-behavior:none 与各容器 contain 已原生断链。
+  // 非 passive document 监听的代价是 iOS 放弃合成器直接滚动（每帧回主线程），
+  // 全 App 滚动发肉——两害相权删除。若旧场景在某种键盘补偿下复发，回滚参考
+  // git 历史（touchstart 祖先链 getComputedStyle + touchmove 方向判断 preventDefault）。
 
   return { keyboardHeight, isKeyboardOpen };
 };
