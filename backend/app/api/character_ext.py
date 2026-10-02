@@ -4735,6 +4735,11 @@ async def _character_chat_impl(
             # per-swipe 元数据: 捕获生成时的 model/token_count (ST 1.18.0 swipe_info[].extra)
             msg_extra["model"] = req.model
             msg_extra["token_count"] = token_count
+            # [PROMPT-EVERY-TURN 2026-10-02] 第 0 步铁证：本轮 extension_prompts 的
+            # received/applied 摘要随 extra 落库（0 条也显式写，规范缺席不再静默）
+            _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
+            if _ext_ev is not None:
+                msg_extra["ext_prompts"] = _ext_ev
 
             # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
             # （仅 force 时；与 WS 主路径 persist_snapshot 共用同一实现）。
@@ -5955,7 +5960,13 @@ async def continue_session(
             patched_extra.setdefault("reasoning_type", "thinking")
         if _mvu_new_vars is not None:
             patched_extra["variables"] = _mvu_new_vars
-        if regexed_reasoning or _mvu_new_vars is not None:
+        # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）。
+        # 注意保留原有"有内容才重写 extra"的条件——测试桩/旧调用方的 assembly 可能
+        # 没有 ext_prompts_evidence 属性，此时行为必须与改前逐字节一致。
+        _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
+        if _ext_ev is not None:
+            patched_extra["ext_prompts"] = _ext_ev
+        if regexed_reasoning or _mvu_new_vars is not None or _ext_ev is not None:
             msg.extra = _json_dump_or_none(patched_extra)
         msg.model = model
         msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
@@ -6094,6 +6105,10 @@ async def regenerate_message(
             current_extra["reasoning_type"] = "thinking"
         if _mvu_new_vars is not None:
             current_extra["variables"] = _mvu_new_vars
+        # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）
+        _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
+        if _ext_ev is not None:
+            current_extra["ext_prompts"] = _ext_ev
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,
@@ -6364,6 +6379,10 @@ async def swipe_message(
             current_extra["reasoning_type"] = "thinking"
         if _mvu_new_vars is not None:
             current_extra["variables"] = _mvu_new_vars
+        # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）
+        _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
+        if _ext_ev is not None:
+            current_extra["ext_prompts"] = _ext_ev
         msg.extra = _json_dump_or_none(_compose_message_extra_with_swipe_info(
             current_extra,
             swipes=current_swipes,

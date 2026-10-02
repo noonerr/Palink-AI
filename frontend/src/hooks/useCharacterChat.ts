@@ -26,6 +26,7 @@ import {
 } from '@/hooks/useImageGenerationAvailability';
 import { messageManager } from '@/services/message-manager';
 import { promptInjection } from '@/services/prompt-injection';
+import { noteSentExtensionPrompts } from '@/services/extensionPromptPersistence';
 import { functionToolRegistry } from '@/lib/plugin-system/sandbox';
 import type { ScanContext } from '@/lib/worldbook/types';
 import type { Attachment, Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
@@ -1220,6 +1221,9 @@ export function useCharacterChat({
         filter: typeof entry.filter === 'function' ? null : entry.filter,
         // scan 字段后端不处理，不发送
       }));
+    // [PROMPT-EVERY-TURN 2026-10-02] 每轮发送登记 identifier 集合（纯 console 诊断：
+    // 上一轮在场、本轮缺失 → warn 一次，不弹用户 UI；后端 extra.ext_prompts 有全量证据）
+    noteSentExtensionPrompts(selectedCharacter?.id, requestSessionId, extensionPrompts.map((e) => e.identifier));
 
     if (useWebSocket && wsConnected && !(isSmartCardTrigger && options.awaitResult)) {
       wsAssistantMessageIdRef.current = assistantMessageId;

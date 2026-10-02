@@ -125,6 +125,10 @@ _RUNTIME_COMPAT_COLUMNS = (
     # [分层记忆 Phase 1] 记忆区注入预算档位（0-3，NULL=标准档 1500），
     # 见 UserSetting.memory_budget_level 注释与 docs/SPEC_分层记忆注入_2026-09-02.md §4.1。
     ("user_settings", "memory_budget_level", sa.Integer()),
+    # [PROMPT-EVERY-TURN 2026-10-02] 卡脚本上报快照的内容来源键（alembic 0066）：
+    # NULL=手动/历史行；非 NULL=插件脚本包内容哈希，按 (user, identifier, source_key)
+    # 幂等，归属卡由 filter.character_ids 维护。
+    ("extension_prompts", "source_key", sa.String()),
 )
 
 

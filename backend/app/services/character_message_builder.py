@@ -65,16 +65,46 @@ def is_smart_card_trigger_message(text: str) -> bool:
     return clean_smart_card_trigger_context(text) != normalized
 
 
+# [PROMPT-EVERY-TURN 2026-10-02] 历史擦标签从「全删」改「白名单删」。
+# 旧兜底正则 `<[^>]+>` 把卡协议的自定义记号一并吃掉：<UpdateVariable>/<initvar>
+# 随历史蒸发，模型在后续轮次失去变量输出模式的参照（与 2026-09-30「MVU 初始变量
+# 断链」修复同源的显示层半边）。现改为只删已知显示标签与外壳记号，其余自定义
+# 标签原样保留。注意 `\b[^>]*/?>` 必须兼容自闭合形态——露缇雅1.2 开场白（消息
+# 2464）实测标签族含 <background scene="…" /> 与 <StatusPlaceHolderImpl/>。
+_DISPLAY_TAG_WHITELIST_RE = re.compile(
+    r"</?(?:style|script|br|p|div|span|section|article|li|tr|h[1-6]"
+    r"|ul|ol|table|thead|tbody|tfoot|td|th|font|b|i|u|s|em|strong"
+    r"|hr|center|small|big|sub|sup|pre|code|blockquote|figure|figcaption"
+    r"|img|a|video|audio|iframe|palink-html)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+# 外壳记号（now_plot/content/story 等排版指令）在历史里继续擦——用户拍板
+# （决定②）：只放行变量块，外壳不恢复原样。
+_SHELL_TAG_STRIP_RE = re.compile(
+    r"</?(?:now_plot|content|story|Lnterleaving|正文|cg|background)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+
+
 def clean_display_markup_for_prompt(text: str) -> str:
-    """Remove SillyTavern display-only HTML that may have been stored by older builds."""
+    """Remove display-only HTML and 外壳记号 from stored assistant history.
+
+    [PROMPT-EVERY-TURN 2026-10-02] 只删白名单内的显示标签与外壳记号；
+    自定义变量块（<UpdateVariable>/<initvar>）、状态栏占位符
+    （<StatusPlaceHolderImpl/>）等卡协议标签保留，模型在后续轮次仍能
+    从历史读到变量模式。不扩大为格式治理，也不新增其他清洗。
+    """
     value = str(text or "")
     value = re.sub(r"<style\b[^>]*>[\s\S]*?</style\s*>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"<script\b[^>]*>[\s\S]*?</script\s*>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"<palink-html>[\s\S]*?</palink-html>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"```html\s*[\s\S]*?```", "\n", value, flags=re.IGNORECASE)
+    value = _HTML_COMMENT_RE.sub("", value)
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"</(?:p|div|section|article|li|tr|h[1-6])\s*>", "\n", value, flags=re.IGNORECASE)
-    value = re.sub(r"<[^>]+>", "", value)
+    value = _DISPLAY_TAG_WHITELIST_RE.sub("", value)
+    value = _SHELL_TAG_STRIP_RE.sub("", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     return value.strip()

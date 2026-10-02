@@ -23,6 +23,7 @@ import type { IframeRenderMode, SmartCardImmersiveTheme, SmartCardViewportContex
 
 import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight, htmlSupportsOuterCollapse, htmlPrefersImmersive, hashSmartCardSource, stableSmartCardStringify, preloadSmartCardRuntimeConfig, getSmartCardBootContextSignature, compactSmartCardChatMessages, readSmartCardTrustGrant, writeSmartCardTrustGrant, getCurrentInterfaceLanguage, isIOSLikeDevice, resolveImmersiveTheme, inferImmersiveThemeFromHtml, estimateIframeInitialHeight, estimateIframeMaxHeight, getLayoutViewportHeight, isSmartCardVisualKeyboardLikelyOpen, collectSmartCardViewportContext, getNearestScrollContainer, getSmartCardAvailableHeight, extractHtmlRenderParts, getHtmlRenderSignature, safeJson, readSmartCardPersistedStorage, applySmartCardStoragePatch, adaptSmartCardRuntimeAccess, normalizeSmartCardScriptBlocks, addSmartCardScriptNonce, optimizeSmartCardHtmlForRuntime, buildSmartCardResourcePlan, mergeSmartCardResourcePlans, buildSillyTavernPluginResourcePlan, buildSmartCardResourceHints, scheduleSmartCardResourceWarmup, buildSmartCardAdapterStyle, resolveHtmlRenderMode, toSmartCardRuntimeMode, prepareInlineHtml, buildShim } from './smart-card-runtime/helpers';
 import { getSmartCardPluginScriptBundle, getSmartCardPluginSourceKey, slimSmartCardPluginScriptBundle } from './smart-card-runtime/primitives';
+import { persistFrameExtensionPrompts, computeSmartCardBundleSourceKey } from '@/services/extensionPromptPersistence';
 import { SMART_CARD_RUNTIME_URL } from './smart-card-runtime/runtime-url';
 
 export { looksLikeSmartCardHtml, looksLikeRenderableCardHtml } from './smart-card-runtime/helpers';
@@ -1083,6 +1084,15 @@ const IframeRenderer = React.memo(function IframeRenderer({
         // 避免跨角色/跨卡污染。
         if (data.prompts && typeof data.prompts === 'object') {
           promptInjection.setSourcePrompts(`frame:${frameIdRef.current}`, data.prompts);
+          // [PROMPT-EVERY-TURN 2026-10-02] 同步中继到后端持久化（extension_prompts
+          // 表，按脚本包内容键），装配层每轮无条件带上；内容未变则去重跳过。
+          try {
+            persistFrameExtensionPrompts(
+              context.characterId,
+              data.prompts,
+              computeSmartCardBundleSourceKey(getSmartCardPluginScriptBundle()),
+            );
+          } catch { /* 中继失败不影响 live 通道 */ }
         }
         return;
       }

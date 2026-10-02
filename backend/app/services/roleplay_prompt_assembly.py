@@ -497,6 +497,11 @@ class PromptAssemblyResult:
     # Populated when instruct mode is enabled and the bound template defines a
     # stop_sequence; empty otherwise (preserves existing behavior).
     stop_sequences: list[str] = field(default_factory=list)
+    # [PROMPT-EVERY-TURN 2026-10-02] 第 0 步铁证：本轮 extension_prompts 的
+    # received（请求体原始携带）/ applied（合并 DB 持久层、@bubble 门控与 filter
+    # 后实际注入）条数与字符量。随装配结果带回，由 API 层落库进 assistant 消息
+    # extra.ext_prompts（0 条也显式写）——规范缺席不再静默。
+    ext_prompts_evidence: dict = field(default_factory=dict)
 
     def debug_dict(self) -> dict[str, Any]:
         return {
@@ -1598,6 +1603,106 @@ def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
     return False
 
 
+# 气泡格式段落标题。整段是 @bubble 的用法说明与情绪词池，卡片渲染不了 @bubble 时
+# 这段没有消费方；更要紧的是段落开头那句「必须严格使用以下格式」在示例行被逐行剔除后
+# 会变成"要求一个不存在的格式"，诱导模型胡编 → 按段落整体摘除，而非逐行删。
+_BUBBLE_SECTION_HEADING_RE = re.compile(r"^\s*\[\s*(?:对话渲染格式规范|情绪词约束)")
+_SECTION_HEADING_RE = re.compile(r"^\s*\[")
+
+
+def _strip_bubble_marker_instructions(content: str) -> str:
+    """只摘掉注入文本里的 @bubble 相关部分，保留其余格式规则。
+
+    「对话渲染系统 v7.1」把两件互不相干的事塞进同一条 extension prompt：
+      · `<content>` 外面必须包 `<now_plot>` —— 消费方是卡自带「正文美化」正则，
+        Palink 能渲染（智能卡的图文排版框就出自它）；
+      · `@bubble:角色|情绪|台词` —— 消费方是插件自建的 dcRoot iframe，Palink 渲染不了。
+
+    旧行为是"渲染不了 @bubble"就整条丢弃，把前者一并砍掉，导致卡框凭空消失
+    （2026-10-02 取证于露缇雅1.2 a36680d6：开场白有框、AI 回复全裸）。
+    """
+    kept: list[str] = []
+    skipping = False
+    for line in (content or "").split("\n"):
+        if _BUBBLE_SECTION_HEADING_RE.match(line):
+            skipping = True
+            continue
+        if skipping:
+            if _SECTION_HEADING_RE.match(line):
+                skipping = False  # 进入下一个段落，本行继续按常规判定
+            else:
+                continue
+        if _BUBBLE_MARKER_RE.search(line):
+            continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _downgrade_bubble_injections(merged: dict, entries: list[dict]) -> tuple[int, int]:
+    """无 @bubble 渲染能力时的处置：逐条摘掉 @bubble 段落，其余格式规则保留。
+
+    摘完什么都不剩的条目才整体丢弃。返回 (摘除后保留的条数, 整条丢弃的条数)。
+    entries 持有 merged 内同一批 dict 的引用，改 content 即改 merged。
+
+    [SHELL-SINGLE-LAYER 2026-10-02] 摘除后再做两层→单层外壳降级（用户拍板⑤：
+    只挂本降级路径，不动有 @bubble 宿主的卡——宿主在用时那份输出结构由插件
+    自己的渲染器消费）。错配实锤：v7.x 规范要求 <now_plot><content>…两层嵌套，
+    而卡「正文美化」正则用单层反向引用 `/<(story|…|now_plot|content|正文)>([\\s\\S]*?)<\\/\\1>/gi`
+    ——配外层时内层 <content> 标签原样漏进渲染框（消息 2466 实测上下各露一对
+    content 记号）；模型只写一半时配不上、整块不出框（消息 2468）。
+    """
+    stripped_and_kept = 0
+    dropped = 0
+    for entry in entries:
+        stripped = _strip_bubble_marker_instructions(entry.get("content") or "")
+        if stripped:
+            entry["content"] = _downgrade_two_layer_shell_to_single(stripped)
+            stripped_and_kept += 1
+        else:
+            merged.pop(entry["identifier"], None)
+            dropped += 1
+    return stripped_and_kept, dropped
+
+
+# ── [SHELL-SINGLE-LAYER 2026-10-02] 两层→单层外壳改写（仅降级路径）──────────
+#
+# 针对「对话渲染系统 v7.x」注入文本的保守文本手术：只改写已知句式，匹配不到
+# 就原样放行（对其他版本的规范是 no-op）。「输出结构/示例」脚手架里的两层嵌套
+# 由「独立行 <content>/</content> 逐行摘除」自然坍缩成单层——
+#   <now_plot>\n<content>\n（正文内容）\n</content>\n</now_plot>
+#   → <now_plot>\n（正文内容）\n</now_plot>
+# 行内提及的 <content> 不动。
+
+_SINGLE_LAYER_RULE_LINE_RE = re.compile(
+    r"<content>\s*标签外面必须包一层\s*<now_plot>\s*标签。?",
+)
+# 注意：替换文本不得再出现字面 `<content>`——改写后的规范全文必须零 content
+# 标签，卡正则（同名反引用）才不可能再配出内层记号。
+_SINGLE_LAYER_RULE_REPLACEMENT = (
+    "正文必须整体包裹在一对 <now_plot> 标签内（单层，标签内直接写正文，"
+    "不要再套 content 内层标签）。"
+)
+_BACKGROUND_RULE_LINE_RE = re.compile(
+    r"必须在\s*<content>\s*内的正文开头输出背景标签",
+)
+_BACKGROUND_RULE_REPLACEMENT = "必须在正文开头输出背景标签"
+_BARE_CONTENT_LINE_RE = re.compile(r"^[ \t]*<\/?content>[ \t]*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _downgrade_two_layer_shell_to_single(content: str) -> str:
+    """把 v7.x 规范的两层外壳要求改写为单层 <now_plot>（匹配不到则原样返回）。"""
+    value = content or ""
+    original = value
+    value = _SINGLE_LAYER_RULE_LINE_RE.sub(_SINGLE_LAYER_RULE_REPLACEMENT, value)
+    value = _BACKGROUND_RULE_LINE_RE.sub(_BACKGROUND_RULE_REPLACEMENT, value)
+    # 示例/输出结构脚手架残留的独立行 <content>/</content> 逐行摘除（两层→单层）
+    value = _BARE_CONTENT_LINE_RE.sub("", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    if value == original:
+        return content or ""
+    return value.strip()
+
+
 # ── [PLUGIN-ON-DEMAND] 装配层让位（spec §2.5.1）────────────────────────────
 #
 # 上面这套 @bubble 自动门控是「装配层自动判定」。若用户在导入卡时手工确认过
@@ -1761,8 +1866,9 @@ def _collect_extension_prompts(
         }
 
     # 3. [PLUGIN-ON-DEMAND] @bubble 类注入按角色生效：内容带 @bubble 的注入
-    # （对话渲染生态的格式规范）仅当角色存在配套渲染正则时注入；无配套
-    # （裸卡）时模型只会输出无人渲染的原始标记 → 丢弃。其余注入零影响。
+    # （对话渲染生态的格式规范）仅当角色存在配套渲染时才原样注入；无配套时只摘掉
+    # @bubble 段落，同一条注入里其余格式规则（尤其 <now_plot> 包裹规则）必须保留。
+    # 其余注入零影响。
     bubble_entries = [
         entry for entry in merged.values()
         if _BUBBLE_MARKER_RE.search(entry.get("content") or "")
@@ -1792,13 +1898,12 @@ def _collect_extension_prompts(
                     getattr(char_obj, "id", None), len(bubble_entries),
                 )
             else:
-                for entry in bubble_entries:
-                    merged.pop(entry["identifier"], None)
+                kept, dropped = _downgrade_bubble_injections(merged, bubble_entries)
                 logger.info(
                     "[PLUGIN-ON-DEMAND] character %s is allowlist but has NO bubble render support "
                     "(card declares none; dcRoot iframe host unavailable): "
-                    "dropped %d bubble-format injection(s)",
-                    getattr(char_obj, "id", None), len(bubble_entries),
+                    "stripped @bubble from %d injection(s), dropped %d entirely",
+                    getattr(char_obj, "id", None), kept, dropped,
                 )
         else:
             has_support = _has_bubble_render_support(
@@ -1806,11 +1911,11 @@ def _collect_extension_prompts(
                 getattr(char_obj, "extensions", None),
             )
             if not has_support:
-                for entry in bubble_entries:
-                    merged.pop(entry["identifier"], None)
+                kept, dropped = _downgrade_bubble_injections(merged, bubble_entries)
                 logger.info(
-                    "[PLUGIN-ON-DEMAND] dropped %d bubble-format injection(s): character has no companion render regex",
-                    len(bubble_entries),
+                    "[PLUGIN-ON-DEMAND] character has no companion bubble renderer: "
+                    "stripped @bubble from %d injection(s), dropped %d entirely",
+                    kept, dropped,
                 )
 
     # 4. 按 filter 过滤
@@ -3387,8 +3492,38 @@ async def _assemble_roleplay_prompt_impl(
     ext_chat_messages: list[dict[str, str]] = []  # {"role": str, "content": str} — 保留以兼容引用，IN_CHAT 改走 ext_depth_entries
     ext_in_prompt_entries: list[tuple[str, str]] = []  # (content, role) for IN_PROMPT(0)
     ext_before_prompt_entries: list[tuple[str, str]] = []  # (content, role) for BEFORE_PROMPT(2)
+
+    # [PROMPT-EVERY-TURN 2026-10-02] 第 0 步铁证：received = 请求体原始携带的
+    # 条目摘要（前端实时通道是否到场）；applied = 合并 DB 持久层、@bubble 门控
+    # 与 filter 后实际注入的条目摘要（0 条也显式记录，缺席不再静默）。
+    def _ext_entry_content(raw: Any) -> str:
+        if hasattr(raw, "content"):
+            return str(getattr(raw, "content", "") or "")
+        if isinstance(raw, dict):
+            return str(raw.get("content") or "")
+        return ""
+
+    _ext_evidence: dict = {
+        "received": {
+            "count": len(req.extension_prompts or []),
+            "total_chars": sum(len(_ext_entry_content(raw)) for raw in (req.extension_prompts or [])),
+        },
+        "applied": {"count": 0, "total_chars": 0, "identifiers": []},
+    }
     try:
         ext_prompts = _collect_extension_prompts(req)
+        _ext_evidence["applied"] = {
+            "count": len(ext_prompts),
+            "total_chars": sum(len((entry.get("content") or "")) for entry in ext_prompts),
+            "identifiers": [
+                {
+                    "identifier": entry.get("identifier"),
+                    "chars": len(entry.get("content") or ""),
+                    "position": entry.get("position"),
+                }
+                for entry in ext_prompts
+            ],
+        }
         for entry in ext_prompts:
             pos = int(entry.get("position", EXTENSION_PROMPT_POSITION_NONE))
             content = entry.get("content", "")
@@ -4152,6 +4287,7 @@ async def _assemble_roleplay_prompt_impl(
         total_tokens_estimate=total_tokens_estimate,
         token_budget=token_budget,
         stop_sequences=stop_sequences,
+        ext_prompts_evidence=_ext_evidence,
     )
 
 

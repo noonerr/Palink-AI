@@ -46,6 +46,12 @@ class ExtensionPrompt(Base):
     # 结构：{"character_ids": [...], "session_ids": [...]}
     # 兼容旧版前端发送的 List[str] 形式（仅 character_ids）。
     filter = Column(Text, nullable=True)
+    # [PROMPT-EVERY-TURN 2026-10-02] 卡脚本上报快照的来源键：前端按插件脚本包
+    # 内容计算的稳定哈希（内容变了键就变，卡名/角色 id 都不进键——重导入换
+    # char id 不失效、同名不同卡不串）。非 NULL = 持久化快照行，按
+    # (user_id, identifier, source_key) 幂等，归属卡由 filter.character_ids
+    # 维护；NULL = 手动/历史行，语义完全不变。
+    source_key = Column(String, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 

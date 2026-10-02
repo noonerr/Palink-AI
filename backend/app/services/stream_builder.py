@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class StreamResult:
-    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "ext_prompts_evidence")
 
     def __init__(self):
         self.full_content = ""
@@ -18,6 +18,9 @@ class StreamResult:
         self.reasoning_tokens = 0
         self.cache_creation_input_tokens = 0
         self.cache_read_input_tokens = 0
+        # [PROMPT-EVERY-TURN 2026-10-02] 本轮 extension_prompts received/applied
+        # 摘要（dict），由装配层经调用方传入，persist 时落 extra.ext_prompts。
+        self.ext_prompts_evidence = None
 
     @property
     def has_content(self) -> bool:

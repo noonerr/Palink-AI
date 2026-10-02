@@ -606,8 +606,12 @@ async def run_character_chat_generation(
     char=None,
     # Task 3.4.3: 前端序列化的插件 function tool（OpenAI 格式）
     tools: Optional[list] = None,
+    # [PROMPT-EVERY-TURN 2026-10-02] 装配层带回的 extension_prompts received/applied
+    # 摘要（PromptAssemblyResult.ext_prompts_evidence），persist 时落 extra.ext_prompts
+    ext_prompts_evidence: Optional[dict] = None,
 ):
     result = StreamResult()
+    result.ext_prompts_evidence = ext_prompts_evidence
     save_db = SessionLocal()
     # 用户 token 额度预检（无额度行/NULL=不限，行为不变）
     try:
@@ -738,6 +742,9 @@ async def run_character_chat_generation(
             msg_extra["reasoning_duration"] = round(time.monotonic() - stream_start_ts, 3)
         msg_extra["model"] = model
         msg_extra["token_count"] = token_count
+        # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）
+        if getattr(result, "ext_prompts_evidence", None) is not None:
+            msg_extra["ext_prompts"] = result.ext_prompts_evidence
 
         # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data（仅 force 时）
         if force and not mvu_variables_saved:
@@ -2110,6 +2117,8 @@ async def ws_character_chat(websocket: WebSocket):
                                 char=speaker_char,
                                 # Task 3.4.3: 传递前端 function tool
                                 tools=ws_tools,
+                                # [PROMPT-EVERY-TURN 2026-10-02] ext_prompts 证据随装配结果透传
+                                ext_prompts_evidence=getattr(assembly, "ext_prompts_evidence", None),
                             )
                         except Exception as _spk_err:
                             logger.exception(
@@ -2266,6 +2275,8 @@ async def ws_character_chat(websocket: WebSocket):
                                 char=speaker_char,
                                 tools=ws_tools,
                                 continue_message_id=_continue_msg_id,
+                                # [PROMPT-EVERY-TURN 2026-10-02] ext_prompts 证据随装配结果透传
+                                ext_prompts_evidence=getattr(assembly, "ext_prompts_evidence", None),
                             )
                         except Exception as _cont_err:
                             logger.exception(
