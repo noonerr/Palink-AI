@@ -275,11 +275,20 @@ tmp-*.cjs
 /Palink-AI-backup-*/
 
 # ── 统一备份区 _BACKUPS/（2026-09-30 起）：仅台账与说明文件入库，其余大产物一律排除 ──
-# 规则：先整体排除 _BACKUPS 下所有文件 → 放行目录本身以便遍历 → 放行 _INDEX.md 与每份 BACKUP_INFO.md。
+# 规则：先整体排除 _BACKUPS 下所有文件 → 放行第一层目录 → 只放行 _INDEX.md 与第一层的 BACKUP_INFO.md。
 # 目的： backup 内可达 12GB（repo.bundle / source-snapshot.tar.gz / worktree 全量拷贝），
 #       绝不允入库；而「哪些备份存在、从哪来、为什么备份、还要做什么」必须版本化。
+#
+# ⚠️ 禁止把下面两条改回 `**/` 形式（2026-10-02 实测）：
+#   !_BACKUPS/**/            与   !_BACKUPS/**/BACKUP_INFO.md
+# 「放行任意层级的目录」会命令 git 钻进每一个被忽略的子目录去找放行文件，剪枝失效。
+# 代价：_BACKUPS/2026-09-30_dsh-源码版清理/ 里存着一份自我嵌套的 node_modules
+#   （@deepseek-ai/cordis → node_modules → cordis → …），git 一路钻到路径超长才停，
+#   单次 `git status -uall` 实测 123 秒、吐出 203,522 行 "Filename too long" 警告、
+#   走过 1,029,959 个 node_modules 路径段。IDE 的 Git 轮询用的正是 -uall，
+#   于是每 2 分钟起一个进程、永远排不空，实测堆到 23 个 git.exe / 15.8GB 内存。
+# 收成一层后 git 无需下探第二层，那 12GB 大产物照旧排除、39 个说明文件照旧入库。
 _BACKUPS/**
 !_BACKUPS/*/
-!_BACKUPS/**/
 !_BACKUPS/_INDEX.md
-!_BACKUPS/**/BACKUP_INFO.md
+!_BACKUPS/*/BACKUP_INFO.md
