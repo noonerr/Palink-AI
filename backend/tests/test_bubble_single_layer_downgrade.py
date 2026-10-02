@@ -70,11 +70,22 @@ def _downgraded():
 
 
 class TestSingleLayerDowngrade:
-    def test_bubble_sections_removed(self):
+    def test_bubble_usage_lines_removed_but_section_kept(self):
+        # [BUBBLE-STRIP-BY-CONTENT 2026-10-02] 主段含非 @bubble 行（输出结构指引等）
+        # → 整段保留，只剔除段内的 @bubble 行。
         out = _downgraded()
         assert "@bubble" not in out
-        assert "对话渲染格式规范" not in out
-        assert "情绪词" not in out
+        assert "1. @bubble: 是固定前缀，不可更改" not in out
+        assert "[对话渲染格式规范]" in out
+        assert "[正文标签规则]" in out
+
+    def test_main_section_survives_without_literal_content_tag(self):
+        """验收线 1：主段到场，且终态不得残留字面 <content>。"""
+        out = _downgraded()
+        assert "[对话渲染格式规范]" in out
+        assert "当角色产生想法、进行对白时必须严格使用以下格式" in out
+        assert "2. 角色名、情绪、台词之间用 | 分隔" in out
+        assert "<content>" not in out and "</content>" not in out
 
     def test_rule_line_rewritten(self):
         out = _downgraded()
@@ -141,3 +152,40 @@ class TestDowngradeScope:
         text = "保持原样\n\n\n多空行折叠"
         out = assembly._downgrade_two_layer_shell_to_single(text)
         assert out == "保持原样\n\n多空行折叠"
+
+
+class TestDowngradeStats:
+    """[PROMPT-STRIP-EVIDENCE 2026-10-02] 降级路径的双计数出参。"""
+
+    def test_stats_capture_reported_injected_and_dropped_titles(self):
+        spec = (
+            "[纯粹气泡段]\n@bubble:角色名|情绪|台词\n\n"
+            "[正文标签规则]\n<content> 标签外面必须包一层 <now_plot> 标签。"
+        )
+        merged = {
+            "fmt": {
+                "identifier": "fmt",
+                "content": spec,
+                "position": 0,
+                "depth": 0,
+                "role": "system",
+                "scan": False,
+                "filter": {},
+            }
+        }
+        stats: dict = {}
+        kept, dropped = assembly._downgrade_bubble_injections(
+            merged, [merged["fmt"]], stats=stats
+        )
+        assert (kept, dropped) == (1, 0)
+        assert stats["entries"]["fmt"]["reported"] == len(spec)
+        assert stats["entries"]["fmt"]["injected"] == len(merged["fmt"]["content"])
+        assert stats["dropped_sections"] == ["[纯粹气泡段]"]
+        assert "<content>" not in merged["fmt"]["content"]
+
+    def test_stats_optional(self):
+        # 不传 stats 时行为逐字节不变
+        merged = {"fmt": {"identifier": "fmt", "content": V71_SPEC, "position": 0, "depth": 0,
+                          "role": "system", "scan": False, "filter": {}}}
+        kept, dropped = assembly._downgrade_bubble_injections(merged, [merged["fmt"]])
+        assert (kept, dropped) == (1, 0)

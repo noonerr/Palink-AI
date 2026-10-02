@@ -1603,42 +1603,108 @@ def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
     return False
 
 
-# 气泡格式段落标题。整段是 @bubble 的用法说明与情绪词池，卡片渲染不了 @bubble 时
-# 这段没有消费方；更要紧的是段落开头那句「必须严格使用以下格式」在示例行被逐行剔除后
-# 会变成"要求一个不存在的格式"，诱导模型胡编 → 按段落整体摘除，而非逐行删。
+# 气泡格式段落标题。**仅供日志归类，不再是任何丢弃条件**——见下。
 _BUBBLE_SECTION_HEADING_RE = re.compile(r"^\s*\[\s*(?:对话渲染格式规范|情绪词约束)")
 _SECTION_HEADING_RE = re.compile(r"^\s*\[")
 
 
-def _strip_bubble_marker_instructions(content: str) -> str:
-    """只摘掉注入文本里的 @bubble 相关部分，保留其余格式规则。
+def _split_bubble_sections(content: str) -> list[tuple[Optional[str], list[str]]]:
+    """按 `^\\s*\\[` 把注入文本切成 (标题行, 正文行列表)；首段可能是无标题前言。"""
+    sections: list[tuple[Optional[str], list[str]]] = []
+    heading: Optional[str] = None
+    body: list[str] = []
+    for line in (content or "").split("\n"):
+        if _SECTION_HEADING_RE.match(line):
+            if heading is not None or body:
+                sections.append((heading, body))
+            heading = line.strip()
+            body = []
+        else:
+            body.append(line)
+    if heading is not None or body:
+        sections.append((heading, body))
+    return sections
+
+
+def _strip_bubble_marker_instructions_detailed(
+    content: str,
+) -> tuple[str, list[str]]:
+    """摘掉 @bubble 相关内容，返回 (处理后文本, 被整段丢弃的段落标题列表)。
 
     「对话渲染系统 v7.1」把两件互不相干的事塞进同一条 extension prompt：
       · `<content>` 外面必须包 `<now_plot>` —— 消费方是卡自带「正文美化」正则，
         Palink 能渲染（智能卡的图文排版框就出自它）；
       · `@bubble:角色|情绪|台词` —— 消费方是插件自建的 dcRoot iframe，Palink 渲染不了。
 
-    旧行为是"渲染不了 @bubble"就整条丢弃，把前者一并砍掉，导致卡框凭空消失
-    （2026-10-02 取证于露缇雅1.2 a36680d6：开场白有框、AI 回复全裸）。
+    [BUBBLE-STRIP-BY-CONTENT 2026-10-02] 旧判据用段落标题字面量（[对话渲染格式规范] /
+    [情绪词约束]）做整段跳过，假设「这两段只讲 @bubble」。该假设在**运行时上报的
+    真实文本**上不成立——两段里都装着非 @bubble 的格式规则。实测（露缇雅1.2，
+    `extension_prompts` 真实行 1796 字符）：
+      旧判据 → 413 字符 → 单层降级后 385，到场率仅 21.4%，
+      写着「整体输出结构/示例」的主段整段消失 → 模型不包 <now_plot> →
+      卡「正文美化」正则无可匹配 → AI 回复没有排版框（只有写死在 first_mes 的开场白有框）。
+    （此前一轮之所以误判为「降级链不吞规范」，是因为口径选错：拿 `plugin_scripts` 里
+    242KB 的脚本源码全文跑剥离函数，而不是运行时上报的那份文本。）
+
+    新判据：先按 `^\\s*\\[` 切段；**只有某段的全部非空正文行都含 @bubble** 才允许
+    整段丢弃（标题行本身不参与该判定，否则 `[X]\\n@bubble:…` 这种纯 @bubble 段
+    永远丢不掉）。否则保留该段（含标题行），仅逐行剔除含 @bubble 的行。
+    标题字符串不再作为任何丢弃条件。
+
+    [BUBBLE-LEGACY-STRIP] `PALINK_BUBBLE_LEGACY_SECTION_STRIP=1` 时走旧「按标题整段丢」
+    逻辑，仅用于复现残本做 A/B 对照（B 组）。默认关闭。
     """
-    kept: list[str] = []
-    skipping = False
-    for line in (content or "").split("\n"):
-        if _BUBBLE_SECTION_HEADING_RE.match(line):
-            skipping = True
-            continue
-        if skipping:
-            if _SECTION_HEADING_RE.match(line):
-                skipping = False  # 进入下一个段落，本行继续按常规判定
-            else:
+    legacy = str(os.environ.get("PALINK_BUBBLE_LEGACY_SECTION_STRIP") or "").strip().lower()
+    if legacy in {"1", "true", "on", "yes"}:
+        kept_legacy: list[str] = []
+        dropped_legacy: list[str] = []
+        skipping = False
+        for line in (content or "").split("\n"):
+            if _BUBBLE_SECTION_HEADING_RE.match(line):
+                skipping = True
+                dropped_legacy.append((line or "").strip())
                 continue
-        if _BUBBLE_MARKER_RE.search(line):
+            if skipping:
+                if _SECTION_HEADING_RE.match(line):
+                    skipping = False  # 进入下一个段落，本行继续按常规判定
+                else:
+                    continue
+            if _BUBBLE_MARKER_RE.search(line):
+                continue
+            kept_legacy.append(line)
+        return (
+            re.sub(r"\n{3,}", "\n\n", "\n".join(kept_legacy)).strip(),
+            dropped_legacy,
+        )
+
+    kept: list[str] = []
+    dropped_titles: list[str] = []
+    for heading, body in _split_bubble_sections(content):
+        non_empty = [line for line in body if line.strip()]
+        if (
+            heading is not None
+            and non_empty
+            and all(_BUBBLE_MARKER_RE.search(line) for line in non_empty)
+        ):
+            dropped_titles.append(heading)
             continue
-        kept.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+        if heading is not None:
+            kept.append(heading)
+        kept.extend(line for line in body if not _BUBBLE_MARKER_RE.search(line))
+    return (
+        re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip(),
+        dropped_titles,
+    )
 
 
-def _downgrade_bubble_injections(merged: dict, entries: list[dict]) -> tuple[int, int]:
+def _strip_bubble_marker_instructions(content: str) -> str:
+    """只摘掉注入文本里的 @bubble 相关部分，保留其余格式规则（薄壳，判据见上）。"""
+    return _strip_bubble_marker_instructions_detailed(content)[0]
+
+
+def _downgrade_bubble_injections(
+    merged: dict, entries: list[dict], stats: Optional[dict] = None
+) -> tuple[int, int]:
     """无 @bubble 渲染能力时的处置：逐条摘掉 @bubble 段落，其余格式规则保留。
 
     摘完什么都不剩的条目才整体丢弃。返回 (摘除后保留的条数, 整条丢弃的条数)。
@@ -1650,17 +1716,35 @@ def _downgrade_bubble_injections(merged: dict, entries: list[dict]) -> tuple[int
     而卡「正文美化」正则用单层反向引用 `/<(story|…|now_plot|content|正文)>([\\s\\S]*?)<\\/\\1>/gi`
     ——配外层时内层 <content> 标签原样漏进渲染框（消息 2466 实测上下各露一对
     content 记号）；模型只写一半时配不上、整块不出框（消息 2468）。
+
+    [PROMPT-STRIP-EVIDENCE 2026-10-02] 可选 stats 出参，供 `extra.ext_prompts.applied`
+    记录双计数与被丢段落标题（见 `_collect_extension_prompts`）。结构：
+      {"entries": {identifier: {"reported": N, "injected": M}}, "dropped_sections": [标题, …]}
     """
     stripped_and_kept = 0
     dropped = 0
     for entry in entries:
-        stripped = _strip_bubble_marker_instructions(entry.get("content") or "")
+        raw = entry.get("content") or ""
+        stripped, dropped_titles = _strip_bubble_marker_instructions_detailed(raw)
+        if stats is not None:
+            stats.setdefault("dropped_sections", []).extend(dropped_titles)
         if stripped:
-            entry["content"] = _downgrade_two_layer_shell_to_single(stripped)
+            single = _downgrade_two_layer_shell_to_single(stripped)
+            entry["content"] = single
             stripped_and_kept += 1
+            if stats is not None:
+                stats.setdefault("entries", {})[entry["identifier"]] = {
+                    "reported": len(raw),
+                    "injected": len(single),
+                }
         else:
             merged.pop(entry["identifier"], None)
             dropped += 1
+            if stats is not None:
+                stats.setdefault("entries", {})[entry["identifier"]] = {
+                    "reported": len(raw),
+                    "injected": 0,
+                }
     return stripped_and_kept, dropped
 
 
@@ -1766,6 +1850,7 @@ def _character_plugin_scope_mode(character) -> str:
 
 def _collect_extension_prompts(
     req: "PromptAssemblyRequest",
+    stats: Optional[dict] = None,
 ) -> list[dict[str, Any]]:
     """合并请求中的 extension_prompts 与 DB 中的 ExtensionPrompt 记录。
 
@@ -1777,6 +1862,11 @@ def _collect_extension_prompts(
     4. 跳过 position == NONE(-1) 或 content 为空的条目。
     返回最终待注入的条目列表（dict 形式，含 identifier/content/position/
     depth/role/filter 字段）。
+
+    [PROMPT-STRIP-EVIDENCE 2026-10-02] 可选 stats 出参：@bubble 降级路径（若有）
+    会把「每条被降级条目的原始/注入字符数」与「被整段丢弃的段落标题」写进去，
+    供装配层算 `extra.ext_prompts.applied` 的 chars_reported / chars_injected /
+    dropped_sections。不传则零副作用（既有调用方/单测行为逐字节不变）。
     """
     merged: dict[str, dict[str, Any]] = {}
 
@@ -1898,7 +1988,9 @@ def _collect_extension_prompts(
                     getattr(char_obj, "id", None), len(bubble_entries),
                 )
             else:
-                kept, dropped = _downgrade_bubble_injections(merged, bubble_entries)
+                kept, dropped = _downgrade_bubble_injections(
+                    merged, bubble_entries, stats=stats
+                )
                 logger.info(
                     "[PLUGIN-ON-DEMAND] character %s is allowlist but has NO bubble render support "
                     "(card declares none; dcRoot iframe host unavailable): "
@@ -1911,7 +2003,9 @@ def _collect_extension_prompts(
                 getattr(char_obj, "extensions", None),
             )
             if not has_support:
-                kept, dropped = _downgrade_bubble_injections(merged, bubble_entries)
+                kept, dropped = _downgrade_bubble_injections(
+                    merged, bubble_entries, stats=stats
+                )
                 logger.info(
                     "[PLUGIN-ON-DEMAND] character has no companion bubble renderer: "
                     "stripped @bubble from %d injection(s), dropped %d entirely",
@@ -3508,17 +3602,45 @@ async def _assemble_roleplay_prompt_impl(
             "count": len(req.extension_prompts or []),
             "total_chars": sum(len(_ext_entry_content(raw)) for raw in (req.extension_prompts or [])),
         },
-        "applied": {"count": 0, "total_chars": 0, "identifiers": []},
+        "applied": {
+            "count": 0,
+            "total_chars": 0,
+            "chars_reported": 0,
+            "chars_injected": 0,
+            "dropped_sections": [],
+            "identifiers": [],
+        },
     }
     try:
-        ext_prompts = _collect_extension_prompts(req)
+        # [PROMPT-STRIP-EVIDENCE 2026-10-02] 降级路径的双计数出参。单一个 chars 是
+        # 上一轮吞段问题拖了一整轮的直接原因：注入 385 字符看着"有内容"，没人发现
+        # 原始上报是 1796、被自家逻辑啃掉了 79%。
+        _degrade_stats: dict = {}
+        ext_prompts = _collect_extension_prompts(req, stats=_degrade_stats)
+        _entry_stats: dict = _degrade_stats.get("entries") or {}
+        _injected_chars = sum(len((entry.get("content") or "")) for entry in ext_prompts)
+        _applied_ids = {entry.get("identifier") for entry in ext_prompts}
+        # 未进降级路径的条目 reported == injected；被降级/被整条丢弃的按快照回填。
+        _degraded_injected = sum(
+            st.get("injected", 0)
+            for ident, st in _entry_stats.items()
+            if ident in _applied_ids
+        )
+        _degraded_reported = sum(st.get("reported", 0) for st in _entry_stats.values())
+        _reported_chars = _injected_chars - _degraded_injected + _degraded_reported
         _ext_evidence["applied"] = {
             "count": len(ext_prompts),
-            "total_chars": sum(len((entry.get("content") or "")) for entry in ext_prompts),
+            "total_chars": _injected_chars,
+            "chars_reported": _reported_chars,
+            "chars_injected": _injected_chars,
+            "dropped_sections": list(_degrade_stats.get("dropped_sections") or []),
             "identifiers": [
                 {
                     "identifier": entry.get("identifier"),
                     "chars": len(entry.get("content") or ""),
+                    "chars_reported": (
+                        _entry_stats.get(entry.get("identifier")) or {}
+                    ).get("reported", len(entry.get("content") or "")),
                     "position": entry.get("position"),
                 }
                 for entry in ext_prompts

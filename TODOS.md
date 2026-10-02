@@ -7,6 +7,74 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已施工·门禁全绿·A/B 结论已出] 格式规范注入残本修复 + A/B 重测（本 agent，2026-10-02）
+
+- **文档**：`docs/PROMPT_接手批_格式规范残本与A_B重测_2026-10-02.md`。备份
+  `_BACKUPS/2026-10-02_格式规范残本修复/`（`pre/` 3 文件 + `BACKUP_INFO.md` 逐文件 sha256；原始采样日志 `ab_raw.log`）。
+  改动文件：`backend/app/services/roleplay_prompt_assembly.py`、`backend/tests/test_bubble_injection_gate.py`、
+  `backend/tests/test_bubble_single_layer_downgrade.py`，新增 `backend/scripts/_experiment_bubble_ab.py`。
+- **⚠️ 文档口径已过期（一手核实，照抄会把 A/B 基线算错）**：`extension_prompts` 现存行实为
+  `source_key='fnv1a-pggfwp'`（非 `fnv1a-v71-selftest`）、`content` **1796** 字符（非 752）。
+  即上一条目预测的「dist 重建后中继以真实 bundle 哈希自动摘旧挂新」**已经发生**，自测行已被真实行替换。
+  故文档中 `752→265→237`（31.5%）全部作废；容器内在真实 DB 行上实跑为 **1796 → 413 → 385（到场 21.4%）**。
+- **已落地修复（`roleplay_prompt_assembly.py`）**：
+  - `_strip_bubble_marker_instructions` 判据由「命中标题字面量即整段跳」改为**按内容**：先按 `^\s*\[` 切段，
+    **仅当某段全部非空正文行都含 `@bubble`** 才允许整段丢弃（标题行不参与该判定，否则 `[X]\n@bubble:…`
+    这种纯 bubble 段永远丢不掉）；否则保留整段（含标题）并逐行剔除 @bubble 行。标题常量降级为日志归类。
+  - 新增 `_strip_bubble_marker_instructions_detailed() -> (text, dropped_titles)`，原函数退化为薄壳（签名兼容）。
+  - `PALINK_BUBBLE_LEGACY_SECTION_STRIP=1` 走旧「按标题整段吞」——A/B 的 B 组逃生门，默认关闭。
+  - `_downgrade_bubble_injections(..., stats=None)` / `_collect_extension_prompts(req, stats=None)` 可选出参；
+    `extra.ext_prompts.applied` 扩为 **`chars_reported` / `chars_injected` / `dropped_sections`**（保留 `total_chars`），
+    identifier 级增 `chars_reported`（前端零消费者，已 grep 确认）。
+  - 修好后真实文本终态：**4 段全存活、注入 1125 字符、字面 `<content>` = 0**（到场率 62.6%）。
+- **门禁**：容器内 `python -m pytest tests/ -q` = **1673 passed / 42 skipped / 0 failed**（4m33s，需先
+  `docker compose build backend && up -d`，因 `backend/app` 不在挂载内）；`npx tsc --noEmit` 退出码 0；
+  `npx vitest run` = 45 文件 **605 passed / 3 skipped / 0 failed**。**本批未重建前端 dist**（与本批无关，时机另议）。
+- **A/B 实测**（`backend/scripts/_experiment_bubble_ab.py`；机器断言 = 卡 `characters.extensions.regex_scripts`
+  里 `scriptName='正文美化'` 的真实 findRegex，命中 ≥1 记「出框」；只输出长度/命中数/布尔，**不打印任何正文**；
+  `n=5`/格；「第 k 轮」语境用**零 DB 写入**的历史前缀截断造（`prefix = 2k-1`）；空响应重试 2 次并单列）：
+
+  | 条件 | 注入 | turn1（0 条裸文参照） | turn2（1 条） | turn3（2 条） |
+  |---|---|---|---|---|
+  | A 修好吞段 | 1125 字符 | 4/5（80%） | 1/5（20%） | 0/5（0%） |
+  | B 旧残本 | 385 字符 | 5/5（100%） | 2/5（40%） | 0/5（0%） |
+
+  全部样本 `@bubble` 与字面 `<content>` 均为 0，空响应 0 次（重试计数亦为 0）。
+- **结论（与文档预设的两个分支都不同）**：
+  1. **规范强度不是裸框症状的成因**。turn1 两组都出框（A 80% / B **100%**）→「残本导致首轮失框」不成立；
+     turn2/turn3 两组同步塌陷（A 20%→0%，B 40%→0%）→「残本太弱」也被否掉（B 每一轮都不低于 A）。
+  2. 崩塌随**历史里无壳 assistant 回复的条数**单调出现：0 条 → 80~100% 出框，1 条 → 20~40%，
+     2 条 → **0/10（A+B 合计）**。⇒ 归因落在**历史近因**上，文档 §5 否掉的那条结论在补做对照实验后成立。
+  3. 因此命中文档 §6 的**第二分支**：**A 也跳壳 → 提 P3（预填 `<now_plot>` 开头 + 输出侧闭合校验）**。
+     是否立项待用户拍板（用户口径「到时看数据再定」）。
+- **保留意见（须用户知情）**：本批修复是**正确性**修复（装配层不该按标题把插件规范删掉 79%），
+  但 A/B **未测到用户可见收益**，代价是每轮多注入 **+740 字符**（385→1125）。建议保留；
+  若用户更看重 token 成本，可考虑只回填 `[对话渲染格式规范]` 而不回填 `[情绪词约束]`（后者正文 10 行无 @bubble
+  却全在讲情绪池，唯一消费方已死）——但文档 §4.1 明确禁止再用标题作丢弃条件，故未擅自实现。
+- **未动的红线**：真实记录 `character_chat_messages.id=2468` 未做任何重生成；`frontend/dist`、`backend/data` 未碰；
+  克隆会话 `295039f9-…` 未新增任何行（前缀截断方案零 DB 写入），仍留档待授权清理。
+
+### [已施工·后端已上线·前端中继待 dist 重建] 格式规范每轮必到（持久化主方案）+ 历史擦标签白名单放行变量块（本 agent，2026-10-02）
+
+- **文档**：`docs/PROMPT_格式规范每轮必到与历史擦标签例外_2026-10-02.md`（用户逐条拍板：主方案=持久化落库、
+  驳回保活/休眠、驳回 toast、⑤ 只挂降级路径、克隆会话自测）。备份 `_BACKUPS/2026-10-02_prompt每轮必到与擦标签例外/`
+  （stash `7eb3dd0` + tag `pre-prompt-every-turn-20261002`）。**提交 `d84a758`**。
+- **已落地**：帧上报中继→`POST /api/extension-prompts/persist`（按 user+identifier+source_key 幂等，
+  source_key=脚本包内容哈希，重导入不失效/同名卡不串；归属卡由 filter.character_ids 维护）→装配层每轮无条件带上
+  （既有合并语义零改动，live 快照按 identifier 高优覆盖）；alembic 0066 + compat 列；P2 历史清洗白名单化
+  （变量块/状态栏占位符存活、外壳类继续擦、自闭合通吃）；⑤ 两层→单层改写只挂无 @bubble 支持降级路径；
+  第 0 步证据字段 extra.ext_prompts（received/applied，0 条显式写，WS/SSE 四入口）。
+- **门禁**：pytest 宿主全量 **1656/51/0**；tsc 0 错；vitest 45 文件 **602/3skip/0fail**。
+- **克隆会话自测（同 char id 4af0c6d3，真实记录 2468 未动）**：验收#1 **通过**——3 轮请求体不带
+  extension_prompts（模拟帧死亡），每轮 extra.ext_prompts 均 received=0/applied=1；实际注入规范 237 字符
+  （@bubble 剥净、单层坍缩正确，容器内进程取证）。验收#2 **未达**——deepseek-v4-flash 多轮裸文历史下
+  确定性跳壳（新会话首轮遵从；turn2+ 与注入位置无关，IN_CHAT depth1 实验同样跳壳）。
+- **待办**：① 前端 dist 重建（中继上线；**工作区有并行会话未提交前端改动，重建会一并烤入，须用户拍板时机**；
+  后端镜像已重建上线）；② P3 预填获实弹数据支撑——规范到场≠deepseek-v4-flash 必然套壳，预填+闭合校验
+  是否立项待用户拍板；③ 克隆会话 `295039f9-99b6-4150-a40f-5e381246ca5d`（4 assistant 消息+5 swipe）留档
+  待授权清理；④ 持久化行 source_key=`fnv1a-v71-selftest` 已对卡 4af0c6d3 生效（dist 重建后中继会以真实
+  bundle 哈希自动摘旧挂新，自愈）。
+
 ### [已完成·待实机验收] MVU 初始变量断链（过度思考根因）+ 输出 tag 裸显修复（本 agent，2026-09-30）
 
 - **文档**：SPEC `docs/SPEC_MVU初始变量断链与输出tag裸显修复_2026-09-30.md`（**施工以「修订记录」节为准**，
@@ -640,6 +708,15 @@
   ③ 若日后有人「优化」掉 `assetContentHashPlugin`，CSS 改动会立刻重新变成送不到 iOS —— 见插件头部长注释。
 - **待真机复验**：PWA 冷启动（需 `index.html` 生效；实测 iPhone 侧 index.html 曾持旧版，若仍未见效请杀 PWA 重开），
   看底部 64pt 空白是否消除；未消除则按 K20 兜底路径取 `?vpdebug=1` 读数。
+- **K21（2026-10-01，诊断轮）**：用户删 PWA+隐私模式复测底部空白依旧 ⇒ 先后排除：客户端缓存（新装应取新）、SW（`vite-plugin-pwa` 仅依赖未注册，dist 无 sw.js/注册代码，bootstrap.js 为渲染兜底）、index.html 服务端缓存头（no-cache+must-revalidate 合规）；nginx 容器实证在发新 CSS（index.html 7225B 引 `index-DAHj4yWK-18f17586.css`，内含 standalone height:100% 规则）。「WebApp 内无浮层」非旧版本证据：manifest `start_url:"./"` 吞掉 `?vpdebug=1` + Safari/WebApp sessionStorage 不互通 ⇒ 原浮层机制在 WebApp 内永不可达。浮层已改「触屏设备恒显示」+ 加 `css=` 加载指纹行（K21 标记，判定 WebApp 实际加载的新旧构建）；`docker logs` stdout 捕获在 Docker Desktop 重启后失效（restart 容器不恢复），本轮全靠 curl 直验产物。
+- **K21 读数定论（2026-10-01 真机浮层截图）**：WebApp 内 css=新 hash、mode=PWA(standalone)、shellRect h=793=clientHeight=docHeight、dockRect bottom=793 ⇒ **新构建已到位、standalone 匹配、K20 修复生效，App 侧零 bug**。真凶=布局视口本身 793pt vs screen 852pt，差 59pt=envTop——**iOS 27.2 PWA 把状态栏 inset 从布局视口扣掉却把页面锚在屏顶 ⇒ 屏底 59pt 系统预留带，文档内容画不进**（K18 假设/K20 兜底预判的场景坐实）；旁证 `100svh=852`/`100lvh=852` > `100dvh=793`（svh>真实视口，WebKit 上报错乱，且 09-30→10-01 上报值持续漂移：788→852/793，任何 svh/env 公式不可靠，**K20 的 100% 口径确认保留勿回退**）。常规 CSS 无解（html overflow:hidden 裁切在 ICB 底边）；唯一缝隙=fixed+负偏移不受 html 裁切盒约束 ⇒ **K21b 探针**（viewportDebug.ts：strip=screen−clientHeight>2 时挂 fixed 红条 `bottom:-strip`，读数行 `strip=`）已部署——屏底见红条=可突破（下一步才动 dock/composer，涉 K 系列定位链需用户拍板+键盘回归）；无红条=系统不渲染该区，Apple bug 铁案，只能接受/报 WebKit。vitest 未跑（两轮均仅动临时诊断文件，tsc+build 绿；闭环时随文件删除）。
+- **K21b 终审（2026-10-01 真机复测）**：探针在服务（served JS 含 probe）+ 读数行 `strip=59px` 在浮层 ⇒ 代码路径确实执行，但**屏底无红条** ⇒ fixed+负偏移也画不进 ⇒ **webview 渲染表面本身就只有 793pt（顶部锚定），屏底 59pt 是系统区，网页任何手段不可达——Apple bug 铁案，Web 侧结案**。预留带颜色=manifest theme_color（K19 双 manifest 歪打正着给系统区上了色，视觉不突兀）。App 侧（shell/dock/文档=793 自洽）无可修项；**K20 的 100% 口径保留**——若未来 iOS 修正上报值（clientHeight 回到 852）自动恢复满屏。**官方在册回归=WebKit Bug 301994**（https://bugs.webkit.org/show_bug.cgi?id=301994 ，iOS 26.1 首报/26.2 修/26.5.2 复发/iOS 27 仍坏，2026-08 REOPENED P2 + rdar://184081721；bug 内 iOS 26.5.2 读数 874 vs 812、62px 系统带 DOM 不可达、svh/dvh 缩水而 vh/lvh 全屏——与我们 27.2 读数同族镜像，Apple 各版本带子留侧不同）；bug 评论多人验证无任何 meta/manifest/CSS 可解。待拍板收尾：①清理诊断代码（浮层退回删除，K18 约定）②化妆补丁（检测预留带+standalone 时 dock paddingBottom 34→8，药丸下移贴系统区上沿）③去 301994 补 27.2 读数。
+- **K21c 实验（2026-10-01，外部分析触发，已部署待真机验收）**：删 `apple-mobile-web-app-status-bar-style: black-translucent`（index.html，回滚行留注释内）——前提=WebKit **Bug 316008**（NEW P2，rdar://179009964）实证无此 meta 时 standalone 的 body 不再画到状态栏背后（webview 下移 ⇒ 底部应齐屏），是唯一未试杠杆；其「无 meta 时 vh/lvh 仍报全屏致页面可滚」病理对 K20 的 shell=100%（吃 clientHeight）免疫；**meta 只在「添加主屏幕」瞬间读取（316008 明文），验收必须删 PWA 重添**。探针同步改版（viewportDebug.ts K21c）：K21b 的 fixed 负偏移已证死，改为**视口内 bottom:0 画 10px 红线**标出页面底边物理位置——红线贴屏幕底=成功；悬在屏底上方 59pt=旧几何未变。**纠正外部分析的验收线：strip=screen−clientHeight 在新旧两种几何下恒为 59（clientHeight 都=793），strip→0 不会发生**；真验收=①红线贴屏底 ②envTop 59→0 ③底部空隙肉眼消失。代价=顶部变不透明系统条（不再沉浸），颜色仍由 manifest theme_color 快照（K19）。回滚=恢复 meta 行重建+重添。已验证：tsc+build 绿、curl 剥注释活 meta=0、新探针（index-D8JvfxWT.js）在服务。vitest 未跑（仅临时诊断文件+meta 删除）。
+- **K21c 真机验收（2026-10-01 10:50 截图）**：红线在 ~793pt、下方仍有 ~59pt 深带；clientHeight/dockRect/envTop 逐项未变（793/793/59）⇒ **删 black-translucent 未能恢复满屏，底部条带的最后一条杠杆也灭**；意外收获=`100svh` 852→**793**（从谎报全屏变诚实，316008 语义变化实锤、证明重添快照生效）；顶部零变化（envTop 仍 59，「顶部变不透明条」未发生）。**决策：meta 保持删除**——strip 两态相同、svh 诚实严格更优、沉浸已被 Apple 破坏；Apple 日后修复 301994 时再评估恢复 meta 以重获画到状态栏背后能力。至此三条独立证据（K20 像素反推 / K21b 探针 / K21c meta 实验）钉死：屏底 59pt 系统区网页侧无解，等 Apple。
+- **K21d 化妆补丁（2026-10-01 已部署）**：`Sidebar.tsx` dock 增加 phantomStrip 探测（standalone+iOS 且 strip=screen−clientHeight>2 ⇒ Home Indicator 已在系统带内、34pt env 规避=纯悬空）⇒ dock paddingBottom 34→**8px**，pill 贴预留带上沿（视觉间隙 93→67pt）；其余环境（浏览器模式/正常 iOS/Apple 修复后 strip→0）走原 `min(max(env,8),34)` 行为不变。门禁：tsc 0 + vitest **41 文件/529 passed/3 skipped**（动了生产代码补跑全量）+ build ✓（index-Cr_hsyUc.js，curl 验证 iP(hone|od|ad) 正则在产物）。
+- **K21f 滚动跟手修复批（2026-10-01，已部署待真机体感）**：用户报「滑动不太跟手，怀疑 60Hz 锁定+组件不跟手」→ 两个怀疑各命中一个真凶。①**平台层实锤**：Safari 功能开关 "Prefer Page Rendering Updates near 60fps" **默认开=所有网页内容（含主屏 WebApp）锁 60Hz**，且 **iOS 大版本更新会重置此开关**（刚更 27.2，时间线吻合；用户侧解除=设置→Apps→Safari→高级→Feature Flags 关掉它；网页侧无法强制，WebKit bug 294338 还开着 120Hz 支持请求）。②**全局滚动税删除**：useVirtualKeyboard 的手势级滚动阻断（document **非 passive** touchmove 捕获监听 + touchstart 祖先链 getComputedStyle 遍历）整体移除——非 passive document 监听使 iOS 放弃合成器直接滚动（每帧回主线程）=全 App 滚动发肉主因；其防御目标「拖到 shell 之下空白」已随 K21e 几何物理消失（docHeight==clientHeight + overscroll-behavior none/contain 原生接管），移除备注留原处、回滚看 git 历史。③**CharacterList 每帧全量重渲止血**：scrollProgress setState（帧率级）让未 memo 的卡片网格每帧全量重渲 ⇒ CharacterCard 包 React.memo + toggleSelect useCallback 化 + onClick 内联箭头改为直接传 onViewProfile（props 契约小改，两处 map 同步）；备忘：日后给卡片新增 props 勿传内联闭包否则 memo 静默失效。ChatViewMobile 的 handleScroll 仅写 ref 无害；dock 擦洗 300ms 过渡=与侧栏同步的设计取舍非 bug。门禁：tsc 0 + vitest **41 文件/529 passed/3 skipped** + build ✓（index-GIljVhVK.js；CharacterView 分包验证 onViewProfile 在、主 chunk touchmove 仅剩 React 内部映射）。**真机回归清单**：正常滚动跟手度、聊天页边界拖动、键盘弹起时拖动（旧行为复发则回滚②）、角色列表滑动、dock 擦洗。
+- **K21g 页面切换 60Hz 修复（2026-10-01，已部署待真机体感）**：用户实测「四页切换 60Hz、其他 120」⇒ 根因=切换动画是 framer-motion **JS 弹簧（rAF 驱动，WebApp 内 rAF 实测 60Hz）**逐帧写 4 槽位+滑块，而原生滚动走合成器 120——割裂正源于此（mobilePagerBridge 旧注释自己写着「弹簧动画 60fps」）。**手术：吸附动画全部改 CSS transition（合成器，跟随面板 120Hz）**——①mobilePagerBridge.emit(animate=true) 携带过渡标记；②MobilePager 槽位 animate 时挂 `transform 300ms cubic-bezier(0.4,0,0.2,1)`（PAGE_SNAP_TRANSITION）再直写最终 transform；③Sidebar springTo/snapPillTo 弃 framer 弹簧改同曲线同长的 CSS 过渡（滑块 transform+width / 页面 transform，K 不变量「同曲线同时长防先后脚」保持）；④拖动 1:1 跟手直写逻辑不变（applyFrame 直写自带禁过渡），在途过渡被拖动接管时滑块即跳跟手指（同旧行为）；⑤**取舍**：出手速度不再注入动画（贝塞尔无初速度参数），仅保留速度决定落点偏置；在途切换时再抓滑块，页面改为走完到目标（旧实现冻在半路，观感更差）；⑥framer `animate` 导入、PILL_SPRING、springRef/pageSpringRef 及卸载 stop 全清。门禁：tsc 0 + vitest **41 文件/529 passed/3 skipped** + build ✓（index-1P0pz-de.js，产物 `type:"spring"` 残留 0）。真机体感：四页切换应与其他 120 动作一致；嫌 300ms 匀速感可再调曲线/时长。
+- **K21e 验收通过 + K21 收工（2026-10-01）**：用户真机确认「已经算是见底了」（dock 贴 Home Indicator 区上沿）——**删 viewport-fit=cover 成功**：iOS 27.2 按默认规则把 webview 放到状态栏与 Home Indicator 之间，底部系统条带不再是「悬空空白」而是正常的 Home Indicator 区。**终态配置**：①无 black-translucent + 无 viewport-fit=cover（两行回滚均保留在 index.html HTML 注释内，meta 只认安装时快照、改动须删 PWA 重添）；②K20 shell=100% 保留（100% of 系统实授高度，任何几何下自洽）；③K21d phantomStrip 补丁保留（现 strip=852−759=93>2 ⇒ dock paddingBottom 8px 贴系统区上沿；几何再变自动跟随）；④K19 双 manifest theme_color 继续给上下两条系统区染色。**诊断代码已按 K18 约定整体删除**：`src/lib/viewportDebug.ts` 删除 + `main.tsx` 挂载摘除，产物残留终验 0（node fetch 抓线上 JS grep palink-vpdebug/palink-phantom=0）。门禁：tsc 0 + vitest **41 文件/529 passed/3 skipped** + build ✓（index-B-Yl-Idz.js）。**遗留提醒**：①Apple 日后修复 301994 时，可评估恢复 cover+black-translucent 重获「画到状态栏背后」的沉浸式顶部（恢复动作=index.html 注释里两行+重建+用户重添）；②本轮改动未提交 git（frontend/index.html、src/components/ui/custom/Sidebar.tsx、src/main.tsx、删除 src/lib/viewportDebug.ts、TODOS.md），多 agent 合仓按 pathspec 逐项提交，等用户发话。
 
 ### [进行中·待真机验证] K19 iOS 27 PWA 底部空白根因实锤 + composer 不随故事线右移修复 + 按主题双 manifest（2026-09-03）
 - **承接 K18**。第二轮真机截图（暗色，393×852pt）+ 桌面移动视口（393×852）活体复验，三案齐破：
