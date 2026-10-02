@@ -153,6 +153,62 @@
   `character_message_builder.py` / `test_display_markup_whitelist.py`，其"施工前"状态即提交
   `fcc1933`（已入库、git 可回溯），故**未另建物理备份**；按 AGENTS.md §4「禁止动存量备份」，
   既有 `BACKUP_INFO.md` 未作任何改写。
+
+### [本批收尾] 回滚锚点 / 真机验收 / dist 复查项（2026-10-02 追加）
+
+- **回滚锚点已打**：`pre-history-keep-shell-20261002` → `7afce4c`（即"擦外壳仍在、开关存在且默认关闭"的
+  最后状态）。线上镜像已带新码且 `_SHELL_TAG_STRIP_RE` 已删除，需要回退行为时用：
+  `git checkout pre-history-keep-shell-20261002 -- backend/app/services/character_message_builder.py`
+  （镜像需 `docker compose build backend && up -d` 才生效）。
+- **⚠️ 真机口径重大纠正（推翻此前 A/B/C/稳态 的结构假设）**：`is_init = req.message.strip() == "__INIT__"`
+  （`character_ext.py:4324`）。真机新会话的开场白是**静态渲染 `characters.first_mes`**（过
+  `_replace_placeholders` + 显示正则），**不过模型**，并作为 assistant 消息落库。推论：
+  1. 用户所述「会话首轮有框」= **开场白自带框**，不是模型的合规输出；
+  2. 开场白是**历史里第一条 assistant 范例**，参与"第一次生成"——旧行为把它的外壳擦掉，模型从
+     **第一次生成**起看到的就是裸文范例，与"之后每一轮无框"完全吻合；
+  3. 此前的 A/B/C/稳态都没走 `__INIT__`（历史里缺这条正例），**结构上不等于真机**，只能作为
+     近因定位的证据，不能作为验收；
+  4. 克隆会话 `295039f9-…` 首行是 user（30 字），也说明它**不是**真机新会话流程的产物
+     （真机首行应为开场白 assistant）。
+- **真机验收驱动已就绪但本轮被阻断**：新增 `backend/scripts/_drive_real_acceptance.py`，走真实 HTTP
+  入口（`POST /api/character-chat` 的 `__INIT__` 建会话 + 每轮生成；`POST /api/character-sessions/{sid}/swipe`），
+  Bearer 头（**Bearer 豁免 CSRF**，已验证），token 由容器内 `security.create_access_token({"sub":"admin"})` 现签。
+  冒烟已通（`__INIT__` 落库开场白 len=2385 / 生成 + swipe 200）。
+  **阻断原因 = 模型网关余额不足**（非代码问题）：
+  `openai.PermissionDeniedError: 403 new_api_error insufficient_user_quota — 用户剩余额度 ¥11.545023，
+  需要预扣费额度 ¥17.743380`（每次按 `max_tokens=16384` 预扣）。14:34 起所有生成秒回 `Error:` 存根
+  （23 字），故**本轮真机零有效样本**。
+  ⇒ 复跑前置：网关充值（或把 `max_tokens` 降到能容纳其推理量的档位）。复跑命令：
+  `docker exec palink-ai-backend-1 python /app/scripts/_drive_real_acceptance.py --character 4af0c6d3-… --model deepseek-v4-flash --turns 1,3 --n 8`
+  断言：`--audit-stored --audit-session <sid> --with-swipes`（出框率 + 框内 leak 两条一起看）。
+  **不要**把 `max_tokens` 压得太低：推理 token 计入 completion，截断会切掉闭合标签 → 误判"无框"。
+- **异卡对照口径纠正（我先前报错）**：
+  - `170af4f2` / `81f45de1` **不属于 admin**（user 42 / user 41）→ 驱动按 `user_id` 过滤，404 是必然。
+    admin 名下只有 3 张卡：`4af0c6d3`（本卡）、`676367a4`、`7b064410`。
+  - 全库 assistant 73 条中 21 条含外壳记号；按 `m.content` 统计，**admin 另外两张卡都是 0 条**
+    （`676367a4` 1 条消息全无、`7b064410` 8 条消息全无）。⇒ 本次「历史不擦外壳」对它们
+    **是可证明的 no-op**（历史里本就没有记号可擦），这比跑 8 次采样更强的对照结论。
+  - 我先前"两张异卡只用 `<background>`"是**错的**（源自一条不可靠的 `regexp_matches` 聚合）。可靠口径：
+    活跃 `content` 里 `170af4f2` background=3、`81f45de1` background=4，now_plot/content 均为 0；
+    但它们的 **swipes 变体**含 `<now_plot>`/`<content>`（2 层）。
+- **前端 dist 重建（用户指出未做）** —— 零成本预判结论：**本次改动不会触发"按新 bundle 哈希摘旧挂新"**。
+  依据：① `computeSmartCardBundleSourceKey` 的哈希输入是 `getSmartCardPluginScriptBundle()` 返回的
+  **插件 JS 资源**（`primitives.ts:131`，来自后端下发的 runtime config），并行会话改的是
+  **iframe runtime shim**（`SillyTavernCompatRuntime.ts`，走 `vite-plugins/smart-card-runtime-asset`
+  独立 asset），不进 bundle；②   中继调用点 `CharacterCardRenderer.tsx:1093` 与
+  `extensionPromptPersistence.ts` / `primitives.ts` **均未在并行改动集内**；③ 重建后页面重载
+  只会以**同一个 source_key** 重新 upsert（`(user, identifier, source_key)` 幂等），不会摘旧挂新。
+  ⚠️ 但仍需在重建后复查一次（并行批次可能后续碰到哈希或 bundle 组装）：
+  `SELECT identifier, source_key, length(content), filter::text FROM extension_prompts;`
+  **期望**：仍 1 行、`identifier='bubble-dialogue-format'`、`source_key='fnv1a-pggfwp'`、
+  `length(content)=1796`、`filter.character_ids` 含 `4af0c6d3`。若被摘掉/换键，规范即再次缺席。
+  重建时机仍待用户拍板（并行会话前端改动压着）。
+- **本轮新增会话（供清理，均为 admin 在 4af0c6d3 上的测试会话）**：
+  `721962fe`（冒烟1，2 条）、`0f597e2b`（冒烟2，3 条）、`a6a4021b`（无 `__INIT__` 的作废跑，2 条）、
+  `8ad8eca3`（被杀任务残留跑完的，7 条）、`23df180b`（`__INIT__` 跑但生成全为 Error 存根，7 条）。
+  原克隆会话 `295039f9` 不计入验收、留档待授权清理。**未按三步清理流程动任何一条。**
+- **成本提示**：本轮真机尝试共发出约 40 次生成请求，其中 14:34 之后全部因余额不足失败；
+  失败请求是否已释放预扣额度需在网关上核对。
 - **P3 未立项前不动输出侧闭合校验**（用户明令）。
 - **未动的红线**：真实记录 `character_chat_messages.id=2468` 未做任何重生成（本轮仅只读审计）；
   `frontend/dist`、`backend/data` 未碰；克隆会话 `295039f9-…` 未新增任何行（前缀截断 + 内存替身方案，零 DB 写入）。

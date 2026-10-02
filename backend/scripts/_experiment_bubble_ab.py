@@ -269,18 +269,25 @@ async def _sample_cell(label: str, messages: list, pat: re.Pattern, n: int) -> l
     return texts
 
 
-async def _audit_stored(pat: re.Pattern, ids=None) -> None:
+async def _audit_stored(pat: re.Pattern, ids=None, session_id: str = "", with_swipes: bool = False) -> None:
     """零成本：对**库内既有真实输出**跑同一套断言（不发任何模型请求）。
 
-    素材取该卡克隆会话的 assistant 行（也可指定 id，只读、不重生成）。
-    自 2026-10-02「改默认」起装配层不再擦历史外壳，故这里只需 raw / 清洗后 两个口径，
-    用来回答「历史里到底有没有正例、它自身的框内漏标记是多少」。
+    素材：指定 `--audit-session <sid>` 的会话，或指定 id，或默认该卡克隆会话。
+    `--with-swipes` 时把每条 assistant 消息的 swipes 数组也逐条判一遍
+    （真机验收的「每格 n 次 swipe」正是存在这里）。
+    自 2026-10-02「改默认」起装配层不再擦历史外壳，故只出 raw / cleaned 两个口径。
     """
     db = SessionLocal()
     try:
         q = db.query(CharacterChatMessage)
         if ids:
             rows = q.filter(CharacterChatMessage.id.in_(ids)).all()
+        elif session_id:
+            rows = (
+                q.filter(CharacterChatMessage.session_id == session_id)
+                .order_by(CharacterChatMessage.id)
+                .all()
+            )
         else:
             rows = (
                 q.filter(CharacterChatMessage.session_id.like("295039f9%"))
@@ -288,6 +295,7 @@ async def _audit_stored(pat: re.Pattern, ids=None) -> None:
                 .all()
             )
         print("[AUDIT] 行数=%d（只统计角色/长度/命中/漏标记，不打印正文）" % len(rows))
+        tot_frames = tot_leak = tot_boxed = tot_n = 0
         for r in rows:
             if r.role != "assistant":
                 continue
@@ -299,6 +307,27 @@ async def _audit_stored(pat: re.Pattern, ids=None) -> None:
                     "[AUDIT] id=%s mode=%-8s len=%5d shell=%2d frames=%d leak=%d"
                     % (r.id, mode, j["len"], len(SHELL_TAG_RE.findall(text)), j["frames"], j["frame_leak"])
                 )
+            if with_swipes and r.swipes:
+                try:
+                    swipes = json.loads(r.swipes)
+                except (TypeError, ValueError):
+                    swipes = []
+                for k, s in enumerate(swipes):
+                    text = s if isinstance(s, str) else str(s)
+                    j = _judge(text, pat)
+                    tot_n += 1
+                    tot_boxed += 1 if j["boxed"] else 0
+                    tot_frames += j["frames"]
+                    tot_leak += j["frame_leak"]
+                    print(
+                        "[SWIPE] msg=%s k=%d len=%5d shell=%2d frames=%d leak=%d"
+                        % (r.id, k, j["len"], len(SHELL_TAG_RE.findall(text)), j["frames"], j["frame_leak"])
+                    )
+        if with_swipes and tot_n:
+            print(
+                "[SWIPE-SUM] n=%d 出框 %d/%d (%.0f%%) | 框内漏 content %d/%d"
+                % (tot_n, tot_boxed, tot_n, 100.0 * tot_boxed / max(1, tot_n), tot_leak, tot_boxed)
+            )
     finally:
         db.close()
 
@@ -388,6 +417,59 @@ async def _history_cell(pat: re.Pattern, ids) -> None:
         )
 
 
+async def _tag_skeleton(session_id: str, with_swipes: bool = True) -> None:
+    """零成本：只出「长度 + 空否 + 各外壳标签出现条数」的骨架，**不依赖卡正则**。
+
+    用途：异卡对照卡没有自己的显示正则，无法套「出框率」；改看标签分布是否漂移
+    （模型有没有凭空开始写它以前不写的标签），以及有没有空响应。
+    对照组 = 该卡**旧会话**（在"擦外壳"旧行为下生成）的骨架。
+    """
+    TAG_NAMES = ("now_plot", "content", "story", "Lnterleaving", "正文", "cg", "background")
+    pats = {t: re.compile(r"</?%s\b[^>]*/?>" % re.escape(t), re.IGNORECASE) for t in TAG_NAMES}
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(CharacterChatMessage)
+            .filter(CharacterChatMessage.session_id == session_id)
+            .order_by(CharacterChatMessage.id)
+            .all()
+        )
+    finally:
+        db.close()
+
+    agg = {t: 0 for t in TAG_NAMES}
+    n_out = n_empty = 0
+    print("[SKEL] session=%s 行数=%d" % (session_id, len(rows)))
+    for r in rows:
+        if r.role != "assistant":
+            continue
+        texts = [r.content or ""]
+        if with_swipes and r.swipes:
+            try:
+                texts += [s if isinstance(s, str) else str(s) for s in json.loads(r.swipes)]
+            except (TypeError, ValueError):
+                pass
+        for text in texts:
+            n_out += 1
+            empty = not text.strip()
+            n_empty += 1 if empty else 0
+            counts = {t: len(p.findall(text)) for t, p in pats.items()}
+            for t, c in counts.items():
+                agg[t] += c
+            print(
+                "[SKEL] msg=%s len=%5d empty=%d %s"
+                % (
+                    r.id, len(text), int(empty),
+                    " ".join("%s=%d" % (t, counts[t]) for t in TAG_NAMES if counts[t]),
+                )
+            )
+    print(
+        "[SKEL-SUM] session=%s 样本=%d 空响应=%d | 标签合计 %s"
+        % (session_id, n_out, n_empty, " ".join("%s=%d" % (t, agg[t]) for t in TAG_NAMES))
+    )
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--turns", default="1,3", help="历史前缀语境，逗号分隔（1=首轮 3=第3轮）")
@@ -395,6 +477,9 @@ async def main() -> None:
     ap.add_argument("--dry", action="store_true", help="只装配不采样（零成本）")
     ap.add_argument("--audit-stored", action="store_true", help="零成本：审计库内既有输出（不发请求）")
     ap.add_argument("--audit-ids", default="", help="配合 --audit-stored，指定消息 id（逗号分隔，只读）")
+    ap.add_argument("--audit-session", default="", help="配合 --audit-stored，审计指定会话（真机验收用）")
+    ap.add_argument("--with-swipes", action="store_true", help="配合 --audit-stored，把 swipes 数组逐条判一遍")
+    ap.add_argument("--tag-skeleton", default="", help="零成本：只出指定会话的标签骨架（不依赖卡正则）")
     ap.add_argument("--steady", action="store_true", help="稳态链路：历史全带壳（零 DB 写入）")
     ap.add_argument(
         "--history-cell",
@@ -413,9 +498,13 @@ async def main() -> None:
     print("[ENV] condition=%s legacy_strip=%s n=%d" % (cond, legacy, args.n))
     print("[ENV] card_regex_len=%d" % len(pat_src))
 
+    if args.tag_skeleton:
+        await _tag_skeleton(args.tag_skeleton)
+        return
+
     if args.audit_stored:
         ids = [int(x) for x in args.audit_ids.split(",") if x.strip().isdigit()] or None
-        await _audit_stored(pat, ids)
+        await _audit_stored(pat, ids, session_id=args.audit_session, with_swipes=args.with_swipes)
         return
 
     if args.history_cell:
