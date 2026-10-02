@@ -1,9 +1,13 @@
-"""[PROMPT-EVERY-TURN 2026-10-02] 历史擦标签白名单化回归。
+"""[PROMPT-EVERY-TURN 2026-10-02 + HISTORY-KEEP-SHELL 2026-10-02] 历史清洗白名单回归。
 
 SPEC：docs/PROMPT_格式规范每轮必到与历史擦标签例外_2026-10-02.md P2。
 旧兜底正则 `<[^>]+>` 把 <UpdateVariable>/<initvar> 一并吃掉，模型后续轮次
-失去变量模式参照。改白名单后双向断言（验收线 #3）：
-变量块/状态栏占位符存活 + 外壳记号擦净，两个方向都不许过头。
+失去变量模式参照。改白名单后的双向断言（验收线 #3）：
+**变量块/状态栏占位符/外壳记号存活** + **显示标签擦净**，两个方向都不许过头。
+
+[HISTORY-KEEP-SHELL] 外壳记号原属"擦净"那一侧，2026-10-02 由 A/B/C + 稳态四组实测
+推翻（用户拍板改默认）：擦除会把上一轮唯一正例改写成裸文范例，模型随后照抄裸文
+（turn3 出框率 0% → 88%）。现外壳与变量块同列"必须存活"。
 
 夹板形态取证自真实落库消息 2464（露缇雅1.2 开场白）：
 标签族 = story, cg, initvar, UpdateVariable, StatusPlaceHolderImpl（自闭合），
@@ -11,6 +15,7 @@ SPEC：docs/PROMPT_格式规范每轮必到与历史擦标签例外_2026-10-02.m
 """
 
 import os
+import re
 import sys
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +24,17 @@ if _BACKEND_DIR not in sys.path:
 
 import app.services.character_message_builder as builder  # noqa: E402
 from app.services.character_message_builder import clean_display_markup_for_prompt  # noqa: E402
+
+# 卡「正文美化」正则的 Python 移植（与 characters.extensions.regex_scripts 逐字同源）
+CARD_REGEX = re.compile(
+    r"<(story|Lnterleaving|now_plot|content|正文)>([\s\S]*?)<\/\1>", re.IGNORECASE
+)
+# 两层范例（消息 2466 实测形态：外层 now_plot + 内层 content）
+TWO_LAYER_ENTRY = (
+    "<now_plot>\n<content>\n叙述正文。\n</content>\n</now_plot>"
+)
+# 单层范例（消息 2497 实测形态）
+SINGLE_LAYER_ENTRY = "<now_plot>\n叙述正文。\n</now_plot>"
 
 
 GREETING_LIKE = (
@@ -51,52 +67,65 @@ class TestVariableBlockSurvives:
         assert "<自定义标记>" in out and "</自定义标记>" in out
 
 
-class TestShellStripped:
-    def test_shell_tags_all_removed(self):
+class TestShellKeptInHistory:
+    """[HISTORY-KEEP-SHELL 2026-10-02] 外壳记号必须随历史存活（推翻旧「擦净」方向）。"""
+
+    def test_shell_tags_all_kept(self):
         out = clean_display_markup_for_prompt(GREETING_LIKE)
         for tag in ("story", "cg", "now_plot", "content", "background", "Lnterleaving", "正文"):
-            assert f"<{tag}>" not in out, tag
-            assert f"</{tag}>" not in out, tag
-        assert "露出魔纹1" in out  # cg 内容保留，只擦标记
+            if f"<{tag}>" in GREETING_LIKE:
+                assert f"<{tag}>" in out, tag
+        assert "<story>" in out and "</story>" in out
+        assert "<cg>露出魔纹1</cg>" in out  # 标记与内容一并保住
+        assert "露出魔纹1" in out
 
-    def test_unclosed_shell_still_stripped(self):
-        # 2468 swipe0 形态：只开不闭
+    def test_unclosed_shell_kept(self):
+        # 2468 swipe0 形态：只开不闭 —— 原样保留，本层不做归一
         out = clean_display_markup_for_prompt('<now_plot>\n<content>\n<background scene="哥哥的卧室" />\n正文')
-        assert "<now_plot>" not in out and "<content>" not in out
-        assert '<background scene="哥哥的卧室" />' not in out
+        assert "<now_plot>" in out and "<content>" in out
+        assert '<background scene="哥哥的卧室" />' in out
         assert "正文" in out
 
-    def test_shell_with_attributes_self_closing(self):
+    def test_shell_with_attributes_self_closing_kept(self):
         out = clean_display_markup_for_prompt('<background scene="庭院" />\n叙述')
-        assert "background" not in out
+        assert '<background scene="庭院" />' in out
         assert "叙述" in out
 
 
-class TestCExperimentSwitch:
-    """[C-EXPERIMENT 2026-10-02] 历史外壳保留开关（默认关闭 = 「决定②」不变）。
+class TestTwoLayerHistoryBoundary:
+    """[HISTORY-KEEP-SHELL] 已知边界的固化断言（零成本实测于库内 2466/2497）。
 
-    用途：验证「历史里的裸文参照」是否为多轮跳壳的近因（A/B/C 对照的 C 组）。
-    装配层每轮把历史 assistant 回复的 <now_plot>/<content>/story 擦掉，等于把
-    上一轮的正例主动改写成裸文，模型随后照抄裸文——本开关就是关掉这一步。
+    本层**故意不兜底**：历史里的两层范例原样进 prompt。这里把两侧指纹钉住，
+    避免将来有人误以为装配层会做归一 —— 真需要归一应另立议题在生成/显示侧解决。
+
+    实测口径（`--history-cell 2466,2497`，卡真实正则，零模型请求）：
+      两层范例（2466）→ frames=1, **leak=1**（内层 <content> 落进捕获组）
+      单层范例（2497）→ frames=1, leak=0
     """
 
-    def test_default_off_keeps_decision_two(self, monkeypatch):
-        monkeypatch.delenv("PALINK_HISTORY_KEEP_SHELL_TAGS", raising=False)
-        out = clean_display_markup_for_prompt(GREETING_LIKE)
-        assert "<story>" not in out and "</story>" not in out
+    @staticmethod
+    def _leak(text: str) -> tuple[int, int]:
+        matches = CARD_REGEX.findall(text)
+        leaks = sum(
+            1 for _tag, cap in matches if re.search(r"</?content>", cap, re.IGNORECASE)
+        )
+        return len(matches), leaks
 
-    def test_switch_on_keeps_shell_tags(self, monkeypatch):
-        monkeypatch.setenv("PALINK_HISTORY_KEEP_SHELL_TAGS", "1")
-        out = clean_display_markup_for_prompt(GREETING_LIKE)
-        assert "<story>" in out and "</story>" in out
-        assert "<cg>露出魔纹1</cg>" in out  # 标记与内容一并保住
-        assert "<UpdateVariable>" in out  # 变量块与开关无关，两模式都存活
+    def test_two_layer_entry_passes_through_and_leaks_inner_tag(self):
+        out = clean_display_markup_for_prompt(TWO_LAYER_ENTRY)
+        assert "<now_plot>" in out and "<content>" in out  # 未归一
+        frames, leaks = self._leak(out)
+        assert frames == 1 and leaks == 1
 
-    def test_switch_on_still_strips_display_html(self, monkeypatch):
-        monkeypatch.setenv("PALINK_HISTORY_KEEP_SHELL_TAGS", "1")
+    def test_single_layer_entry_is_clean(self):
+        out = clean_display_markup_for_prompt(SINGLE_LAYER_ENTRY)
+        frames, leaks = self._leak(out)
+        assert frames == 1 and leaks == 0
+
+    def test_display_html_still_stripped_alongside_shell(self):
         out = clean_display_markup_for_prompt('<div>x</div><story>y</story>')
         assert "<div>" not in out and "x" in out  # 显示标签照旧擦
-        assert "<story>" in out
+        assert "<story>" in out  # 外壳照旧留
 
 
 class TestDisplayHtmlStillStripped:
@@ -132,11 +161,12 @@ class TestBidirectionalGuard:
 
     def test_real_shape_both_directions(self):
         out = clean_display_markup_for_prompt(GREETING_LIKE)
-        # 方向一：变量块与占位符必须在
+        # 方向一：变量块、占位符、外壳记号都必须在（HISTORY-KEEP-SHELL 后同列）
         assert "<UpdateVariable>" in out and "<initvar>" in out and "<StatusPlaceHolderImpl/>" in out
-        # 方向二：外壳与显示标签必须净
-        assert "<" + "story>" not in out and "<cg>" not in out
+        assert "<story>" in out and "<cg>露出魔纹1</cg>" in out
+        # 方向二：正文零变化 + 空行已折叠（防止改过头回到旧「全删」）
         assert "露缇雅睁开眼" in out and "帮帮我" in out
+        assert "\n\n\n" not in out
 
     def test_whitespace_normalized(self):
         out = clean_display_markup_for_prompt("a\n\n\n\n\nb")
@@ -150,8 +180,9 @@ class TestBidirectionalGuard:
 
 
 def test_builder_module_exposes_compiled_patterns():
-    # 防回归：白名单/外壳正则必须存在且已预编译（性能口径）
+    # 防回归：白名单正则必须存在且已预编译（性能口径）
     assert builder._DISPLAY_TAG_WHITELIST_RE is not None
-    assert builder._SHELL_TAG_STRIP_RE is not None
-    assert builder._SHELL_TAG_STRIP_RE.search("<now_plot>") is not None
     assert builder._DISPLAY_TAG_WHITELIST_RE.search("<StatusPlaceHolderImpl/>") is None
+    # [HISTORY-KEEP-SHELL] 外壳擦除常量已随「改默认」一并删除，别再长回来
+    assert not hasattr(builder, "_SHELL_TAG_STRIP_RE")
+    assert not hasattr(builder, "_history_keep_shell_tags")

@@ -6,7 +6,6 @@
 """
 import json
 import logging
-import os
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -69,9 +68,9 @@ def is_smart_card_trigger_message(text: str) -> bool:
 # [PROMPT-EVERY-TURN 2026-10-02] 历史擦标签从「全删」改「白名单删」。
 # 旧兜底正则 `<[^>]+>` 把卡协议的自定义记号一并吃掉：<UpdateVariable>/<initvar>
 # 随历史蒸发，模型在后续轮次失去变量输出模式的参照（与 2026-09-30「MVU 初始变量
-# 断链」修复同源的显示层半边）。现改为只删已知显示标签与外壳记号，其余自定义
-# 标签原样保留。注意 `\b[^>]*/?>` 必须兼容自闭合形态——露缇雅1.2 开场白（消息
-# 2464）实测标签族含 <background scene="…" /> 与 <StatusPlaceHolderImpl/>。
+# 断链」修复同源的显示层半边）。现改为只删已知显示标签，其余自定义标签原样保留。
+# 注意 `\b[^>]*/?>` 必须兼容自闭合形态——露缇雅1.2 开场白（消息 2464）实测标签族
+# 含 <background scene="…" /> 与 <StatusPlaceHolderImpl/>。
 _DISPLAY_TAG_WHITELIST_RE = re.compile(
     r"</?(?:style|script|br|p|div|span|section|article|li|tr|h[1-6]"
     r"|ul|ol|table|thead|tbody|tfoot|td|th|font|b|i|u|s|em|strong"
@@ -79,39 +78,30 @@ _DISPLAY_TAG_WHITELIST_RE = re.compile(
     r"|img|a|video|audio|iframe|palink-html)\b[^>]*/?>",
     re.IGNORECASE,
 )
-# 外壳记号（now_plot/content/story 等排版指令）在历史里继续擦——用户拍板
-# （决定②）：只放行变量块，外壳不恢复原样。
-_SHELL_TAG_STRIP_RE = re.compile(
-    r"</?(?:now_plot|content|story|Lnterleaving|正文|cg|background)\b[^>]*/?>",
-    re.IGNORECASE,
-)
+# [HISTORY-KEEP-SHELL 2026-10-02] 外壳记号（now_plot/content/story/Lnterleaving/正文/
+# cg/background）**不再从历史里擦掉** —— 推翻 2026-10-02 早先的「决定②：只放行变量块，
+# 外壳不恢复原样」。
+#
+# 理由（A/B/C + 稳态四组实测，卡 4af0c6d3，机器断言取卡内「正文美化」真实正则）：
+#   · 擦除会把上一轮**唯一**的正例主动改写成裸文范例，模型随后照抄裸文——
+#     turn2 出框率 20% vs 放开后 75%，turn3 0% vs 88%，且衰减消失（turn3 不再低于 turn2）。
+#   · 证据形态：克隆会话里只有首轮那条真出框（frames=1/leak=0），擦除后历史帧数归零。
+#   · 已知边界（本层不做归一，故意不兜底）：历史里若存在**两层**范例
+#     （`<now_plot><content>…</content></now_plot>`，如消息 2466），它原样进 prompt，
+#     其自身显示指纹为 frames=1/**leak=1**（卡正则是单层反向引用，捕到外层时内层
+#     标签落进捕获组）；单层范例为 frames=1/leak=0。稳态采样里模型自身输出
+#     0/13 无漏标记，故当前风险被约束在"范例文本"层面，未扩散到生成侧。
+#     ⚠️ 因此本层**不得**被当成"历史清洗兜底"，需要归一应另立议题在生成/显示侧解决。
 _HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 
 
-def _history_keep_shell_tags() -> bool:
-    """[C-EXPERIMENT 2026-10-02] `PALINK_HISTORY_KEEP_SHELL_TAGS=1` 时不擦历史外壳记号。
-
-    仅供实验：验证「历史里的裸文参照」是否为多轮跳壳的近因（A/B/C 对照的 C 组）。
-    默认关闭 —— 关闭时行为与上一批「决定②：只放行变量块，外壳不恢复原样」逐字一致。
-
-    ⚠️ 终点约定（用户 2026-10-02 拍板）：本开关**保留**，但必须一次了结 ——
-    「改默认（即长期保留外壳）」与「删掉本开关」必须落在**同一笔提交**里，
-    不允许出现「开关还在、默认已翻」的中间态。
-    """
-    try:
-        raw = (os.environ.get("PALINK_HISTORY_KEEP_SHELL_TAGS") or "").strip().lower()
-    except Exception:
-        return False
-    return raw in {"1", "true", "on", "yes"}
-
-
 def clean_display_markup_for_prompt(text: str) -> str:
-    """Remove display-only HTML and 外壳记号 from stored assistant history.
+    """Remove display-only HTML from stored assistant history.
 
-    [PROMPT-EVERY-TURN 2026-10-02] 只删白名单内的显示标签与外壳记号；
+    [PROMPT-EVERY-TURN 2026-10-02 + HISTORY-KEEP-SHELL] 只删白名单内的显示标签；
     自定义变量块（<UpdateVariable>/<initvar>）、状态栏占位符
-    （<StatusPlaceHolderImpl/>）等卡协议标签保留，模型在后续轮次仍能
-    从历史读到变量模式。不扩大为格式治理，也不新增其他清洗。
+    （<StatusPlaceHolderImpl/>）与**外壳记号**（<now_plot> 等）都保留，模型在后续
+    轮次能从历史读到变量模式与输出结构正例。不扩大为格式治理，也不新增其他清洗。
     """
     value = str(text or "")
     value = re.sub(r"<style\b[^>]*>[\s\S]*?</style\s*>", "\n", value, flags=re.IGNORECASE)
@@ -122,8 +112,6 @@ def clean_display_markup_for_prompt(text: str) -> str:
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"</(?:p|div|section|article|li|tr|h[1-6])\s*>", "\n", value, flags=re.IGNORECASE)
     value = _DISPLAY_TAG_WHITELIST_RE.sub("", value)
-    if not _history_keep_shell_tags():
-        value = _SHELL_TAG_STRIP_RE.sub("", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     return value.strip()
