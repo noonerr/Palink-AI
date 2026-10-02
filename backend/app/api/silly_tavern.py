@@ -5860,11 +5860,11 @@ async def st_themes_save(
     """
     if not isinstance(payload, dict) or not payload.get("name"):
         return JSONResponse({"ok": False, "error": "theme name required"}, status_code=400)
-    from ..models.user_setting import UserSetting
-    setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
-    if setting is None:
-        setting = UserSetting(user_id=user.id)
-        db.add(setting)
+    # 2026-10-03：此处原本是 `from ..models.user_setting import UserSetting` +
+    # 手写 get-or-create。UserSetting 已在模块顶层导入（见文件头 models 导入块），
+    # 那个模块路径并不存在，会在请求时直接 500；手写段也没有 _get_or_create_user_setting
+    # 的并发首建竞态防护。改为复用现成助手。
+    setting = _get_or_create_user_setting(user, db)
     pu: dict = {}
     if setting.power_user:
         try:
@@ -5896,7 +5896,8 @@ async def st_stats_get(
     non_user_word_count, total_swipe_count, date_first_chat, date_last_chat,
     total_gen_time}}。total_gen_time Palink 无计费耗时数据，恒为 0。
     """
-    from ..models.user_setting import UserSetting
+    # 2026-10-03：删掉此处 `from ..models.user_setting import UserSetting`——
+    # 该模块不存在（UserSetting 在 ..models.system，已在文件头导入），会直接 500。
     import sqlalchemy as _sa
 
     stats_rows = (

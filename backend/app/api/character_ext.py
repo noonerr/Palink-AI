@@ -1527,7 +1527,6 @@ def _load_extension_settings_regex_scripts(db, user_id: int) -> list:
      markdownOnly, promptOnly, runOnEdit, substituteRegex, minDepth, maxDepth, order}
     """
     try:
-        from ..models.user_setting import UserSetting
         setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
         if not setting or not setting.silly_tavern_settings:
             return []
@@ -1571,7 +1570,16 @@ def _load_extension_settings_regex_scripts(db, user_id: int) -> list:
                 "order": s.get("order", 0),
             })
         return result
-    except Exception:
+    except Exception as exc:
+        # 「读不出来」与「那里本来就没有」必须可区分 —— 调用方（含 @bubble 能力判定
+        # _has_bubble_render_support）会把返回的 [] 一律当成「用户没配正则」。
+        # 2026-10-03 修：这段 try 里原本有一句 `from ..models.user_setting import
+        # UserSetting`，而该模块并不存在（UserSetting 定义在 ..models.system，且已在
+        # 本文件第 35 行顶层导入）—— 它恒抛 ModuleNotFoundError 并被这个 except 吞成
+        # []，使该判定源永久失效且全程零日志。局部重新导入一个顶层已有的名字永远没有
+        # 意义，故直接删除；这里保留宽 except 是因为装配链路不得因设置读取失败而崩，
+        # 但改为留痕，让下次真出问题查得到。
+        logger.warning("[ext-settings-regex] 读取用户设置失败，按「无正则」处理: %s", exc)
         return []
 
 
