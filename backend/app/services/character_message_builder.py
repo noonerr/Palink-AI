@@ -6,6 +6,7 @@
 """
 import json
 import logging
+import os
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -87,6 +88,19 @@ _SHELL_TAG_STRIP_RE = re.compile(
 _HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 
 
+def _history_keep_shell_tags() -> bool:
+    """[C-EXPERIMENT 2026-10-02] `PALINK_HISTORY_KEEP_SHELL_TAGS=1` 时不擦历史外壳记号。
+
+    仅供实验：验证「历史里的裸文参照」是否为多轮跳壳的近因（A/B/C 对照的 C 组）。
+    默认关闭 —— 关闭时行为与上一批「决定②：只放行变量块，外壳不恢复原样」逐字一致。
+    """
+    try:
+        raw = (os.environ.get("PALINK_HISTORY_KEEP_SHELL_TAGS") or "").strip().lower()
+    except Exception:
+        return False
+    return raw in {"1", "true", "on", "yes"}
+
+
 def clean_display_markup_for_prompt(text: str) -> str:
     """Remove display-only HTML and 外壳记号 from stored assistant history.
 
@@ -104,7 +118,8 @@ def clean_display_markup_for_prompt(text: str) -> str:
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"</(?:p|div|section|article|li|tr|h[1-6])\s*>", "\n", value, flags=re.IGNORECASE)
     value = _DISPLAY_TAG_WHITELIST_RE.sub("", value)
-    value = _SHELL_TAG_STRIP_RE.sub("", value)
+    if not _history_keep_shell_tags():
+        value = _SHELL_TAG_STRIP_RE.sub("", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     return value.strip()

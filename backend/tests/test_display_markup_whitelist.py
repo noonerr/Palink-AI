@@ -72,6 +72,33 @@ class TestShellStripped:
         assert "叙述" in out
 
 
+class TestCExperimentSwitch:
+    """[C-EXPERIMENT 2026-10-02] 历史外壳保留开关（默认关闭 = 「决定②」不变）。
+
+    用途：验证「历史里的裸文参照」是否为多轮跳壳的近因（A/B/C 对照的 C 组）。
+    装配层每轮把历史 assistant 回复的 <now_plot>/<content>/story 擦掉，等于把
+    上一轮的正例主动改写成裸文，模型随后照抄裸文——本开关就是关掉这一步。
+    """
+
+    def test_default_off_keeps_decision_two(self, monkeypatch):
+        monkeypatch.delenv("PALINK_HISTORY_KEEP_SHELL_TAGS", raising=False)
+        out = clean_display_markup_for_prompt(GREETING_LIKE)
+        assert "<story>" not in out and "</story>" not in out
+
+    def test_switch_on_keeps_shell_tags(self, monkeypatch):
+        monkeypatch.setenv("PALINK_HISTORY_KEEP_SHELL_TAGS", "1")
+        out = clean_display_markup_for_prompt(GREETING_LIKE)
+        assert "<story>" in out and "</story>" in out
+        assert "<cg>露出魔纹1</cg>" in out  # 标记与内容一并保住
+        assert "<UpdateVariable>" in out  # 变量块与开关无关，两模式都存活
+
+    def test_switch_on_still_strips_display_html(self, monkeypatch):
+        monkeypatch.setenv("PALINK_HISTORY_KEEP_SHELL_TAGS", "1")
+        out = clean_display_markup_for_prompt('<div>x</div><story>y</story>')
+        assert "<div>" not in out and "x" in out  # 显示标签照旧擦
+        assert "<story>" in out
+
+
 class TestDisplayHtmlStillStripped:
     def test_display_tags_removed(self):
         text = '<div style="x"><span class="y">段落</span><br>下一行<img src="a.png"><table><tr><td>格</td></tr></table></div>'
