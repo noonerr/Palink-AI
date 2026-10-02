@@ -45,10 +45,36 @@
 | 2026-10-02 | [`2026-10-02_prompt每轮必到与擦标签例外`](./2026-10-02_prompt每轮必到与擦标签例外) | 全工作区在途态，以 git stash 快照保存（sha `7eb3dd0`，tag `pre-prompt-every-turn-20261002`；恢复命令在 BACKUP_INFO） | 「格式规范每轮必到 + 历史擦标签变量块例外」批次（主方案：规范持久化 extension_prompts 表 + 每轮装配无条件带；P2 白名单清洗；⑤ 降级路径单层改写）动工前备份。对应 `docs/PROMPT_格式规范每轮必到与历史擦标签例外_2026-10-02.md`。同因 Mimosa 钩子禁 Bash 直写 .py/.tsx，走 stash create+store。 |
 | 2026-10-02 | [`2026-10-02_dist正式重建前`](./2026-10-02_dist正式重建前) | `D:\项目\Palink-AI\frontend\dist\` **整目录全量拷贝**（1892 文件 / 111M，入口 `assets/index-1P0pz-de.js`，三处计数与原目录逐项一致） | 正式上线「卡脚本本地存储按角色与账号隔离」批次而**重建前端产物**前的回滚点。需要物理备份的理由：`npm run build` 第一步 `clean-dist.cjs` 会先清空 `./dist`，而 `frontend/dist` 被 `.gitignore` 排除（`git ls-files` = 0 条）→ **git 不是回滚路径**。重建前已用 `VITE_OUT_DIR=dist_audit` 零风险预验（构建成功 + 三处新标记均在产物中）。BACKUP_INFO 记了回滚命令、"不要 mv dist 本身否则 bind mount 失效"、以及止血开关 `localStorage.palink_idb_namespace='0'`（免重构建即关）。⚠️ 本次重建会把三批在途代码一起上线（存储隔离 / 移动端 / 扩展提示词持久化），其中移动端批次仅能证明不破坏构建与测试，功能完成度不在本次验证范围。 |
 
+| 2026-10-02 | [`2026-10-02_dist重建前_卡脚本隔离P0返工`](./2026-10-02_dist重建前_卡脚本隔离P0返工) | `D:\项目\Palink-AI\frontend\dist\` **整目录全量拷贝**（280 文件 / 14M / 0 字节文件 0 个，入口 `assets/index-Bx3kP9zq.js`，与原目录逐项一致） | 「卡脚本存储隔离 P0 未生效」返工批次替换在用产物前的回滚点。返工改了 `card-script-runner.ts`（链式宿主覆盖 + 逐处回退 + 降级唤痕），而 `frontend/dist` 不入 git → git 不是回滚路径。本次**刻意不跑 `npm run build`**（其 `clean-dist.cjs` 会清空在用 dist 并删掉历史 hashed 资源），改走 `VITE_OUT_DIR=dist_new_2` → 校验 → `cp -r` 原地覆盖 → `gzip-dist`。对应文档 `docs/提测_卡脚本存储隔离P0未生效_2026-10-02.md`（本次按复核结果改写）。⚠️ BACKUP_INFO 记了 4 条待办：删两个暂存目录、真机验收未做（docker 未启动）、pytest 基线 1621/1612 两处冲突待统一、禁用 `npm run build` 上线。 |
+
+| 2026-10-03 | [`2026-10-03_报错提示模板落地`](./2026-10-03_报错提示模板落地) | `D:\项目\Palink-AI\` 下 23 个待改文件（`pre/` 按原相对路径摆放，附 `_manifest.tsv` sha256 校验 23/23 一致）+ 工作区 git stash 快照 sha `b570f14`（tag `snapshot-pre-error-notify-20261003`，基线 HEAD `d153009`） | 「报错提示模板落地」批次动工前备份，对应 `docs/PROMPT_报错提示模板落地_2026-10-03.md`（上游权威件 `docs/PROMPT_报错提示系统重写_2026-09-30.md`）。改前端提示通道（App.tsx Toaster / ErrorToast / NetworkStatus / CharacterChat / useCharacterChat / useChatView / 两套 errorHandler）与后端 SSE 落库守卫（`character_ext.py` `persist_snapshot` / `websocket.py` / `character_message_builder.py`）。⚠️ BACKUP_INFO 记了两处**待用户拍板的文档冲突**：① 10-03 落地文档 §1 K1「报错卡内联、不许浮层」 vs 09-30 权威件 §3 D2 推荐 (b) 顶部常驻（且 `报错提示系统UI设计原型_2026-10-03.html` 已按 (b) 出图）；② 后端 1.6(c) 动装配层前需先在容器内跑 SQL 量影响面，本机不直连生产库。红线区（dist / backend/data / 素材）未碰。 |
+
+| 2026-10-03 | [`2026-10-03_dist重建前_报错批上线`](./2026-10-03_dist重建前_报错批上线) | `D:\项目\Palink-AI\frontend\dist\` **整目录全量拷贝**（404 文件 / 22M，0 字节文件 0 个，入口 `assets/index-DMlQT9yx.js` + `assets/index-DAHj4yWK-18f17586.css`）+ 逐文件 `dist_manifest.sha256`（404 行，与文件数一致） | 源码比产物新约 3.5 小时（源码最新 mtime 10-03 02:08 / 产物 10-02 22:20），且 `dist/assets` 内同时存在多组指纹而 `index.html` 只引用旧的那组 —— 10-02 那次构建中途断过，新产物已落盘但入口未切换。致多条「已完成」实际未上线：卡脚本本地存储隔离 P0（`319d6d4`）、可用高度解锁（`cb89a1d`）、格式规范前端中继、报错提示模板落地批（8 文件 +245/-62）。`frontend/dist` 是容器 nginx bind mount 在用产物且不入 git（`git ls-files` = 0）→ git 不是回滚路径，故必须物理备份。同 10-02 两批口径：**禁用 `npm run build`**，改走 `VITE_OUT_DIR=dist_new_3` → 校验 → 原地覆盖 → `gzip-dist`（`clean-dist.cjs` 会在第一步清空在用 dist）。⚠️ BACKUP_INFO 记了 6 条待办，其中两条易被忽略：① `assetContentHashPlugin` 曾在 commit `8005394` 被补回过（曾「引用了但从未入库」），丢失即 iOS 侧 CSS 改动重新送不到手机、且无测试护栏；② 构建后须复查 `extension_prompts` 持久化行未被摘（期望 `source_key=fnv1a-pggfwp` / `length=1796` / `identifier=bubble-dialogue-format`），被摘即格式规范再次缺席。 |
+
+### 2026-10-03 补登记（4 份此前漏登记 + 漏说明书者）
+
+> 这 4 份备份**一直在磁盘上，但既未登记台账、也无 `BACKUP_INFO.md`** —— 按 AGENTS.md 第 2 条
+> 属「无效备份」、按第 3 条属「台账缺口」。2026-10-03 核查发现并补齐。
+> **补写说明时未改动各目录内任何原有文件**（内容零改动，仅新增 `BACKUP_INFO.md`），
+> 符合第 4 条「禁止改写存量备份」——补的是新增文件，不是改写。
+> ⚠️ 四份的「原始来源路径」**均为据内容推断，原记录已佚**，已在各自 BACKUP_INFO 首屏显著标注，
+> 引用时不得当权威来源。
+
+| 备份日期 | 目录名 | 原始来源 | 备份原因 |
+|---|---|---|---|
+| 2026-09-30 | [`2026-09-30_MVU会话变量重置`](./2026-09-30_MVU会话变量重置) | `D:\项目\Palink-AI\backend\data\`（**推断**；MVU 变量 chat metadata 导出，对象形态 `{会话UUID: {variables: {stat_data: {...}}}}`） | MVU 会话变量重置前的整份导出留档（1 文件 / 3.3KB）。⚠️ 与 09-30 MVU 初始变量断链批的关联**未证实**（该 SPEC 未提及本备份）。 |
+| 2026-09-30 | [`2026-09-30_plugininject-csp改前`](./2026-09-30_plugininject-csp改前) | `D:\项目\Palink-AI\frontend\security-headers.conf`（**推断**） | nginx 安全响应头（CSP）改动前留档（1 文件）。夹在 `plugininject-注入断点修复前` / `plugininject-dist重build前` 两个已登记备份之间，属同批中间留档。⚠️ **`TODOS.md` 全文检索 `csp改前` 零命中**，该批施工记录未写进待办文件，追溯需靠 git 历史 + 另两个同批备份。 |
+| 2026-10-01 | [`2026-10-01_hist-cleanup`](./2026-10-01_hist-cleanup) | 由 `pg_dump` 从 Palink 生产库直接导出，**不经文件系统路径** | 历史消息 `@bubble` 标记与正文包裹标签清洗前的整表留档（932KB SQL + 1.9KB 清洗脚本 + 0 字节 `dump.err`）。⚠️ **该清洗方向已被 10-02 决策推翻**（改为保留历史外壳），故本备份是「推翻后」状态，**恢复会倒退决策**。0 字节 `dump.err` 是无 stderr 的正常产物，勿当坏文件清理。 |
+| 2026-10-01 | [`2026-10-01_pre-bubble-render-fix`](./2026-10-01_pre-bubble-render-fix) | 3 个前端文件（`Message.tsx` 路径可确证，另两个**目录层级已摆平不可确证**）+ `backend/app/services/roleplay_prompt_assembly.py` + 卡内 TavernHelper 脚本原文（DB 字段导出，非文件系统文件） | @bubble 渲染断链修复批次动工前留档，横跨前端渲染层 / 后端装配层 / 卡内脚本三处。⚠️ `roleplay_prompt_assembly.py` 在 10-02 批又被大改，**回捞应优先用 `2026-10-02_格式规范残本修复`**；`src/` 内路径已摆平，回捞须按文件名定位勿直接覆盖。含卡内脚本原文，引用时只取结构/长度/键名。 |
+
 > **本次归置的 28 份**（2026-04-06 起至 2026-09-30_probe）由 2026-09-30 统一搬迁，原始来源见上表「原始来源」列。
 > 表中 `2026-09-30_plugininject-注入断点修复前` 一行由**另一个 agent 在归置完成后**按新规范新建，原位置即仓库内，**未参与本次搬迁**（它的来源列是仓库文件路径而非外部目录，据此可区分）。
 
 ## 隔离区（待确认后删除，尚未删除）
+
+`_QUARANTINE_2026-10-03/frontend__dist_new_3/` — 2026-10-03「报错批上线」dist 重建的**试构建产物**（`VITE_OUT_DIR=dist_new_3` 产出，195 文件 / 12M，入口 `index-BCg8tP2l.js` + `index-ZklcfZSV-dff66ed5.css`）。**其内容已完整覆盖进在用 `dist`**，故移入隔离区而非删除；若线上无异常，可整份删除。
+
+`_QUARANTINE_2026-10-02/frontend__dist_new/` — 原 `frontend/dist_new/`，「卡脚本存储隔离 P0 返工」批次的**中间版试构建产物**（入口 `index-C59-QM1Y.js`，195 文件 / 12M）。移入而非删除的理由：其中 **70 个 chunk 在线上 `dist` 里不存在**（旧哈希版本），而产出它们的源码状态未提交、已往前走，这版产物不可再生。同批的 `frontend/dist_new_2/` 经比对**独有文件数 = 0**（纯冗余副本，入口与线上一致），已直接删除。确认无需回捞后，此目录可整份删除。
 
 `_QUARANTINE_2026-09-30/` — 2026-09-30 清理行动中识别出的临时/废弃文件，**只移入未删除**，确认系统运行无异常后可自行删除。内含：根级 `.tmp_build_*.log` ×10、frontend 旧构建日志与 `.next`、4 个 `dist_old_*` + 1 个 `dist_prebuild_*`（约 48MB）、`frontend/frontend`、`frontend/dev`、一次性调试脚本（backend `tmp_*.py` ×4、scripts 探针 js ×10）、空备份壳目录 ×4。
 
