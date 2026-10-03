@@ -106,7 +106,7 @@ export function ChatViewDesktop({
           sidebarCollapsed={sidebarCollapsed}
           setSidebarCollapsed={setSidebarCollapsed}
           input={chat.input}
-          setInput={chat.setInput}
+          setInput={chat.setInputSilent}
           handleSend={handleSend}
           handleUpload={chat.handleUpload}
           attachments={chat.attachments}
@@ -230,7 +230,7 @@ export function ChatViewDesktop({
           <div className="max-w-3xl mx-auto">
             <ChatInput
               value={chat.input}
-              onChange={chat.setInput}
+              onChange={chat.setInputSilent}
               onSend={handleSend}
               onUpload={chat.handleUpload}
               attachments={chat.attachments}

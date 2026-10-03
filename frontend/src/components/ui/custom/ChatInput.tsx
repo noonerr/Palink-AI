@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowUp, Paperclip, X, Square, Loader2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Model, Attachment } from '@/types';
@@ -68,6 +68,61 @@ export function ChatInput({
   const controlsDisabled = disabled || uploading;
   const interactiveControlsDisabled = visualOnly ? false : controlsDisabled;
 
+  // ── 输入状态下移（2026-10 卡顿修复）──────────────────────────────────────
+  // 草稿文本由本组件内部持有，打字只重渲染 ChatInput 自身；外部 `value` 降级为
+  // 「外部写入通道」（智能卡 setInputDraft / 发送后清空 / 外部会话恢复）。
+  //
+  // 为什么不是简单的 useState('')：外部仍持有权威副本（useChatView.handleSend 读
+  // chatMessages.input 拼 display_content；useCharacterChat.handleSendMessage 的
+  // `content || inputValue` 兜底），所以这里必须做「内部快写 + 外部同步」，而不是
+  // 彻底断开外部。
+  //
+  // 为什么不会读到空值：`draftRef` 与 `onChange` 的实参是同一个同步赋值，发送回调
+  // 里读 `draftRef.current`（或上层 ref）一定拿得到用户刚敲的最后一个字符；
+  // 外部 `value` 的异步回灌若与本地输入撞上，lastLocalEditRef 的「同值判定」会把
+  // 「外部只是在追平我刚敲的内容」识别出来并跳过，不会把刚敲的字覆盖掉。
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  // 本地最后一次编辑的值，用于识别「外部回灌的其实是用户自己刚敲的内容」并跳过
+  // 一次无意义的 setState（外部父组件往往在同一批 state 更新里把同一串字回传）。
+  const lastLocalEditRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // 外部写入（setInputDraft / 发送后清空）：以内部为准地同步下来。
+    if (value === draftRef.current) return;
+    if (lastLocalEditRef.current !== null && value === lastLocalEditRef.current) {
+      // 这串值是本地刚编辑出去的同一批，外部只是把它追平了 —— 忽略，避免抖动。
+      lastLocalEditRef.current = null;
+      return;
+    }
+    lastLocalEditRef.current = null;
+    draftRef.current = value;
+    setDraft(value);
+  }, [value]);
+
+  const handleValueChange = useCallback((next: string) => {
+    draftRef.current = next;
+    lastLocalEditRef.current = next;
+    setDraft(next);
+    onChange(next);
+  }, [onChange]);
+
+  // 发送时以内部草稿为准（draftRef 永远是最新的），再交回上层。
+  //
+  // 【关键】发送后**主动清空本地草稿**。不能指望上层把 value 置空来触发上面的
+  // effect 同步：修复后打字不再走 setState，上层的 value 从头到尾都是 ''，
+  // 「发送后清空」对它来说不是一次状态变化，effect 根本不会触发 ——
+  // 结果就是已发送的文字留在框里（用户会接着误发第二遍）。
+  const submit = useCallback(() => {
+    // ① 先把草稿同步给上层（上层的 ref / state 由此拿到完整内容），**再**清本地。
+    //    顺序不能反：反了上层读到的就是空串，即用户报的「发空消息」。
+    onChange(draftRef.current);
+    draftRef.current = '';
+    lastLocalEditRef.current = null;
+    setDraft('');
+    onSend();
+  }, [onChange, onSend]);
+
   const validateFile = (file: File): string | null => {
     const isImage = file.type.startsWith('image/');
     if (isImage) {
@@ -95,7 +150,7 @@ export function ChatInput({
       if (visualOnly || disabled || uploading || streaming) {
         return;
       }
-      onSend();
+      submit();
     }
   };
 
@@ -169,17 +224,67 @@ export function ChatInput({
 
   const MAX_TEXTAREA_HEIGHT = 120;
 
-  const autoResize = () => {
+  // 【2026-10 卡顿修复】原 autoResize 每次按键都做「两次强制同步布局」：
+  //   textarea.style.height = 'auto'    // 写样式
+  //   读 textarea.scrollHeight           // 同步读回布局
+  //   textarea.style.height = `${...}px` // 再写样式
+  // 这两个读写把本可推迟到帧末的重算钉死在每个按键的微任务里；消息多时再叠上整棵
+  // 聊天树重渲染，就是「一个字符等几秒」。
+  //
+  // 改法要点：
+  // 1) 只在高度**真的**需要变时才碰 style.height。
+  // 2) 收缩（删字）路径必须先 height='auto' 才能量到真实内容高度 —— 这是原写法
+  //    存在的唯一理由，不能省。但它很贵，所以用「内容变短了才走」来兜住：
+  //    变长时 scrollHeight 单调不减，直接量即可，不必重置；只有变短时才重置。
+  // 3) 用 requestAnimationFrame 把一帧内的多次调用合并成一次量高。
+  const lastMeasuredTextRef = useRef<string>(draft);
+
+  const autoResize = (text: string) => {
     const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    if (!textarea) return;
+
+    const isShrinking = text.length < lastMeasuredTextRef.current.length;
+    // 未变短且当前高度已顶到上限：内容还在继续溢出，高度钉死即可，不必量。
+    if (!isShrinking
+      && textarea.clientHeight >= MAX_TEXTAREA_HEIGHT
+      && textarea.scrollHeight >= MAX_TEXTAREA_HEIGHT) {
+      lastMeasuredTextRef.current = text;
+      return;
     }
+    // 只在变短时重置（变长时 scrollHeight 已能反映新内容，重置纯属多一次布局）。
+    if (isShrinking) {
+      textarea.style.height = 'auto';
+    }
+    const next = Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT);
+    if (textarea.clientHeight !== next) {
+      textarea.style.height = `${next}px`;
+    }
+    lastMeasuredTextRef.current = text;
   };
 
+  // 把同一帧内的多次 autoResize 合并成一次（连打一串字符时只量一次高度）。
+  const resizeRafRef = useRef<number | null>(null);
+  const scheduleAutoResize = useCallback((text: string) => {
+    if (resizeRafRef.current !== null) return;
+    resizeRafRef.current = window.requestAnimationFrame(() => {
+      resizeRafRef.current = null;
+      autoResize(text);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (resizeRafRef.current !== null) {
+        window.cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+    };
+  }, []);
+
   useLayoutEffect(() => {
-    autoResize();
-  }, [value]);
+    // 外部写入 / 发送清空：走同步版，把高度立刻摆正（不能等下一帧，否则会跳一下）。
+    autoResize(draft);
+  }, [draft]);
 
   return (
     <div
@@ -282,10 +387,9 @@ export function ChatInput({
 
         <textarea
           ref={textareaRef}
-          value={value}
+          value={draft}
           onChange={(e) => {
-            onChange(e.target.value);
-            autoResize();
+            handleValueChange(e.target.value);
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
@@ -325,9 +429,9 @@ export function ChatInput({
           <button
             type="button"
             onClick={() => {
-              if (!visualOnly) onSend();
+              if (!visualOnly) submit();
             }}
-            disabled={!visualOnly && (disabled || uploading || (!value.trim() && attachments.length === 0))}
+            disabled={!visualOnly && (disabled || uploading || (!draft.trim() && attachments.length === 0))}
             tabIndex={visualOnly ? -1 : undefined}
             className={cn(
               'flex items-center justify-center transition-all',

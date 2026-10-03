@@ -11,6 +11,7 @@ interface WelcomeContentProps {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (value: boolean) => void;
   input: string;
+  /** 【2026-10 卡顿修复】打字热路径：只写 ref，不触发本组件重渲染。 */
   setInput: (value: string) => void;
   handleSend: (overrideText?: string) => void;
   handleUpload: (file: File, type: 'image' | 'file') => Promise<void>;

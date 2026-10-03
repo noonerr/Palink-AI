@@ -16,6 +16,10 @@ import { formatMessage } from '../sillytavern/formatting';
 import { regex_placement } from '../sillytavern/regex/engine';
 import { regexPipeline } from '../regex-pipeline';
 import { SlashCommandEngine } from '../slash-engine';
+// 模块解析失败的降级登记：与 card-script-runner.ts 同口径，console.warn 会被生产
+// 产物的 terser drop_console 剥掉，只有登记进 window.__palinkCompatStats 才能
+// 在插件管理页降级统计面板被看见。
+import { recordStubHit } from './compat-stub-registry';
 import {
   globalExtensionSettings,
   getExtensionSettingsNs,
@@ -2375,17 +2379,43 @@ function mapSandboxPopupType(type?: string | number): PopupType {
 // ============================================================
 
 /**
- * 规范化模块路径：移除相对路径前缀，统一为 ST scripts 目录下的相对路径
+ * 规范化模块路径：移除相对路径前缀 / 别名前缀，统一为 ST scripts 目录下的相对路径
  * 例：'../../../script.js' → 'script.js'
  *     '../../extensions.js' → 'extensions.js'
  *     '../../slash-commands/SlashCommand.js' → 'slash-commands/SlashCommand.js'
  *     '/scripts/macros.js' → 'macros.js'
+ *
+ * ST 官方还提供了 `@sillytavern/` 打包别名（ST 自己的 vite.config 就是
+ * `@sillytavern/xxx` → `public/scripts/xxx.js`），插件源码里大量使用。此前沙箱
+ * 不认这个别名 → 查表落空 → 返回 `{}` → 具名导入全是 undefined，插件**静默**
+ * 失效（只有一行 warn，生产构建还被 terser drop_console 剥掉）。现按 ST 同一口径
+ * 剥前缀：先剥 `@sillytavern/`，再剥 `scripts/`。
+ * 例（新增规则）：
+ *     '@sillytavern/script' → 'script.js'（别名根 = ST 主脚本，不是 scripts/ 下的文件）
+ *     '@sillytavern/scripts/utils' → 'utils.js'
+ *     '@sillytavern/scripts/extensions' → 'extensions.js'
+ *     '@sillytavern/scripts/world-info' → 'world-info.js'
+ *     '@sillytavern/scripts/power-user' → 'power-user.js'
+ *     '@sillytavern/scripts/slash-commands/SlashCommandParser' → 'slash-commands/SlashCommandParser.js'
+ *     '@sillytavern/scripts/slash-commands' → 'slash-commands.js'（不带子路径 = 根模块）
+ *
+ * 规则细节：
+ * - 无扩展名的路径按 ST 的 vite 口径补 `.js`（已带 `.js`/`.json`/其他扩展的保持原样）。
+ * - 只做**纯字符串规范化**，不校验 moduleMap 是否真有该键；查表与查不到的留痕
+ *   仍由 makeRequire 负责（未命中会 recordStubHit 上报降级统计）。
  */
 function normalizeModulePath(importPath: string): string {
   let p = String(importPath || '');
   p = p.replace(/^\.?\/+/, '');      // 移除 ./ 或 /
   p = p.replace(/^(\.\.\/)+/, '');    // 移除 ../ 序列
+  p = p.replace(/^@sillytavern\//, ''); // 移除 @sillytavern/ 别名前缀
   p = p.replace(/^scripts\//, '');     // 移除 scripts/ 前缀
+  // @sillytavern/script 是 ST 主脚本（public/script.js），不在 scripts/ 下，
+  // 剥完前缀后需特判回到 moduleMap 实际使用的 'script.js' 键。
+  if (p === 'script') p = 'script.js';
+  // 目录形式补 .js（ST vite 别名同样补）：'utils' → 'utils.js'、
+  // 'slash-commands/SlashCommandParser' → 'slash-commands/SlashCommandParser.js'
+  if (p && !/\.[a-zA-Z0-9]+$/.test(p)) p = `${p}.js`;
   return p;
 }
 
@@ -5408,6 +5438,14 @@ export class PluginSandbox {
           return exports;
         }
 
+        // ⚠️ 留痕必须走降级登记，不能只靠 console：生产产物 terser 的
+        // `drop_console: true` 会把全部 console.*（含 warn）剥掉，只 warn 等于没报。
+        // recordStubHit 写入 window.__palinkCompatStats，插件管理页降级统计面板读它。
+        // name 统一用 'module:<规范化路径>' 前缀，与 API 桩区分开，便于按前缀筛。
+        recordStubHit(
+          `module:${normalized || importPath}`,
+          `未找到 ST 模块 ${importPath} → ${localKey}（plugin=${pluginId}），返回空对象：具名导入将全部为 undefined`,
+        );
         console.warn(
           `[PluginSandbox] 未找到模块: ${importPath} → ${localKey} (plugin=${pluginId})，返回空对象`,
         );

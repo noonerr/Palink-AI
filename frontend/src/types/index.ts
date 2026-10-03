@@ -50,7 +50,7 @@ export interface Model {
   is_test_model?: boolean;
   // 新增字段：思考模式和输出 token 控制
   enable_thinking?: boolean;
-  /** 思考强度（off/auto/low/medium/high），模型级全局默认；后端 provider_registry 会自动补 auto */
+  /** 思考强度（off/auto/min/low/medium/high/max），模型级全局默认；后端 provider_registry 会自动补 auto */
   reasoning_effort?: string;
 }
 

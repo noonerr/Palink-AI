@@ -5,10 +5,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, BookOpen, FileJson, X, Layers } from 'lucide-react';
 import { GlassCard } from './GlassCard';
-import type { WorldBook, WorldBookDetail, WorldBookStage } from '@/types';
+import type { WorldBook, WorldBookDetail, WorldBookStage, Character } from '@/types';
 import type { Translations } from '@/types';
 import type { Blueprint } from '@/lib/worldbook/types';
 import { worldbookApi } from '@/services/worldbookApi';
+import { api } from '@/services/api';
 
 interface WorldBookManagerProps {
   worldBooks: WorldBook[];
@@ -16,10 +17,14 @@ interface WorldBookManagerProps {
   loading: boolean;
   t: Translations;
   onLoad: (characterId?: string, type?: string) => void | Promise<void>;
-  onCreate: (data: { name: string; description?: string; raw_content?: string }) => Promise<WorldBook>;
-  onUpdate: (id: string, data: { name?: string; description?: string; raw_content?: string }) => Promise<void>;
+  onCreate: (data: { name: string; description?: string; raw_content?: string; character_id?: string | null }) => Promise<WorldBook>;
+  onUpdate: (id: string, data: { name?: string; description?: string; raw_content?: string; character_id?: string | null }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onImport: (file: File) => Promise<WorldBook>;
+  /**
+   * [WB-CHAR-BIND-IMPORT 2026-10-04] characterId：导入前在界面上选好的归属角色；
+   * 不传 = 未绑定（不注入任何对话，2026-10-04 起）。
+   */
+  onImport: (file: File, characterId?: string | null) => Promise<WorldBook>;
   onSelect: (id: string) => void;
   onClose: () => void;
   onBackToList?: () => void;
@@ -32,7 +37,7 @@ interface WorldBookManagerProps {
 
 export function WorldBookManager({
   worldBooks, selectedWorldBook, loading: _loading,
-  t: _t, onLoad, onCreate, onUpdate: _onUpdate, onDelete, onImport, onSelect, onClose,
+  t: _t, onLoad, onCreate, onUpdate, onDelete, onImport, onSelect, onClose,
   onBackToList, characterId, selectedForProfileId, onSelectForProfile,
   typeFilter: typeFilterProp, onTypeFilterChange: onTypeFilterChangeProp,
 }: WorldBookManagerProps) {
@@ -45,6 +50,55 @@ export function WorldBookManager({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [internalTypeFilter, setInternalTypeFilter] = useState<'character_book' | 'world_book' | null>(null);
+
+  // [WB-CHAR-ISOLATION 2026-10-03] 角色绑定控件状态。
+  // 绑定维度 = 这本书只对哪个角色生效（对齐 ST world_info.charLore）。
+  // 不绑 = 未绑定（不注入任何对话）。世界书都该随角色卡走。
+  const [bindableChars, setBindableChars] = useState<Character[]>([]);
+  const [bindSaving, setBindSaving] = useState(false);
+  const [bindError, setBindError] = useState('');
+  const [createBindCharId, setCreateBindCharId] = useState<string>('');
+
+  // 角色下拉只拉 id/name（fields=basic），不要把整卡正文拖进来。
+  const loadBindableChars = useCallback(async () => {
+    try {
+      const list = await api.get('/api/characters?fields=basic', { cacheTtlMs: 60_000 });
+      if (Array.isArray(list)) setBindableChars(list as Character[]);
+    } catch (e) {
+      console.error('Failed to load characters for world book binding:', e);
+      setBindError('角色列表加载失败，暂时改不了绑定');
+    }
+  }, []);
+
+  useEffect(() => { void loadBindableChars(); }, [loadBindableChars]);
+
+  // 换书时清空绑定错误态，避免上一本书的报错串到新书
+  useEffect(() => { setBindError(''); }, [selectedWorldBook?.id]);
+
+  // [WB-CHAR-BIND-IMPORT 2026-10-04] 导入归属预选当前对话角色。
+  // 只在用户**还没自己选过**时跟随（``importBindCharDirty`` 标记）—— 否则切一次卡
+  // 就把用户明确选好的目标改回去，那是更糟的静默行为。
+  const [importBindCharDirty, setImportBindCharDirty] = useState(false);
+  useEffect(() => {
+    if (importBindCharDirty) return;
+    setImportBindCharId(characterId || '');
+  }, [characterId, importBindCharDirty]);
+
+  const handleChangeBinding = useCallback(async (nextCharId: string) => {
+    if (!selectedWorldBook || bindSaving) return;
+    setBindSaving(true);
+    setBindError('');
+    // 空串 = 解绑（传 null，后端 model_fields_set 判定为"显式解绑"）
+    const payload = { character_id: nextCharId || null };
+    try {
+      await onUpdate(selectedWorldBook.id, payload);
+    } catch (e) {
+      setBindError('保存失败，绑定没有改');
+      console.error('Failed to update world book character binding:', e);
+    } finally {
+      setBindSaving(false);
+    }
+  }, [selectedWorldBook, bindSaving, onUpdate]);
 
   // 语义召回勾选（SPEC §11 D）：本组件此前无任何写通道（展开区全 readOnly），
   // 勾选走 worldbookApi.updateStage 单独落库；本地乐观更新 + 失败回滚，
@@ -103,16 +157,44 @@ export function WorldBookManager({
 
   const handleCreate = useCallback(async () => {
     if (!formName.trim()) return;
-    await onCreate({ name: formName.trim(), description: formDesc.trim() || undefined, raw_content: formContent.trim() || undefined });
-    setFormName(''); setFormDesc(''); setFormContent(''); setShowCreate(false);
-  }, [formName, formDesc, formContent, onCreate]);
+    await onCreate({
+      name: formName.trim(),
+      description: formDesc.trim() || undefined,
+      raw_content: formContent.trim() || undefined,
+      // [WB-CHAR-ISOLATION 2026-10-03 / 修订 2026-10-04] 建书时绑角色；留空 = 未绑定（不生效）
+      character_id: createBindCharId || null,
+    });
+    setFormName(''); setFormDesc(''); setFormContent(''); setCreateBindCharId(''); setShowCreate(false);
+  }, [formName, formDesc, formContent, createBindCharId, onCreate]);
+
+  // [WB-CHAR-BIND-IMPORT 2026-10-04] 导入前的归属选择。
+  // 默认预选**当前对话角色**（characterId prop）：从某个角色的对话里点导入，
+  // 用户主观上就是要导入给这张卡用，预选可免去一次选择动作；
+  // 不想要就下拉选「未绑定」（空串），那本书不会注入任何对话。
+  // ⚠️ 预选只是默认值，**用户可改**。不预选的后果已从「串味」降级为
+  // 「这本书不生效」，且有 [WB-UNBOUND] 告警暴露。
+  const [importBindCharId, setImportBindCharId] = useState<string>('');
+  // 导入完的提示：没选角色 → 这本未绑定（不生效），明确告诉用户「要不要绑」
+  const [importNotice, setImportNotice] = useState<{ name: string; id: string } | null>(null);
 
   const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    await onImport(file);
-    e.target.value = '';
-  }, [onImport]);
+    // 与建书走同一个 selector 语义：空串 = 未绑定（不生效）
+    const targetCharId = importBindCharId || null;
+    try {
+      const wb = await onImport(file, targetCharId);
+      // [WB-CHAR-BIND-IMPORT] 没指定归属 → 这本未绑定（不生效），明说。
+      // 不静默：用户以为「导入的这本会生效」而实际不生效，需要他知道。
+      if (!targetCharId) {
+        setImportNotice({ name: wb?.name || file.name, id: wb?.id });
+      } else {
+        setImportNotice(null);
+      }
+    } finally {
+      e.target.value = '';
+    }
+  }, [importBindCharId, onImport]);
 
   const handleLoadBlueprints = useCallback(async () => {
     if (blueprints.length > 0) return;
@@ -219,6 +301,29 @@ export function WorldBookManager({
         {selectedWorldBook.description && (
           <p className="px-4 pt-3 text-sm text-muted-foreground">{selectedWorldBook.description}</p>
         )}
+
+        {/* [WB-CHAR-ISOLATION 2026-10-03] 绑定角色选择器（只加控件，不改布局结构） */}
+        <div className="px-4 pt-3">
+          <label className="text-[11px] text-muted-foreground mb-1 block">这本书对哪个角色生效</label>
+          <select
+            value={selectedWorldBook.character_id || ''}
+            disabled={bindSaving}
+            onChange={(e) => void handleChangeBinding(e.target.value)}
+            className="w-full px-2 py-1.5 rounded-lg bg-muted/20 border border-border/50 text-xs focus:outline-none focus:border-primary/50 disabled:opacity-50"
+          >
+            <option value="">未绑定（不生效）</option>
+            {bindableChars.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+            {selectedWorldBook.character_id
+              ? '只跟着这个角色走，换角色就不会带这本书。'
+              : '没绑角色的书不注入任何对话（2026-10-04 起）—— 世界书都该随角色卡走。挑一个角色就能启用它。'}
+          </p>
+          {bindSaving && <p className="text-[11px] text-muted-foreground">保存中…</p>}
+          {bindError && <p className="text-[11px] text-red-500 dark:text-red-400">{bindError}</p>}
+        </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {selectedWorldBook.stages.length === 0 ? (
@@ -347,6 +452,19 @@ export function WorldBookManager({
             </h3>
           </div>
         <div className="flex items-center gap-2">
+          {/* [WB-CHAR-BIND-IMPORT 2026-10-04] 导入归属选择：放在「导入」按钮旁边，
+              让用户在点之前就看清「这本书会进谁名下」。默认预选当前对话角色。 */}
+          <select
+            value={importBindCharId}
+            onChange={(e) => { setImportBindCharDirty(true); setImportBindCharId(e.target.value); }}
+            title="导入的这本书对哪个角色生效"
+            className="max-w-[9rem] px-2 py-1.5 rounded-lg bg-muted/20 border border-border/50 text-xs focus:outline-none focus:border-primary/50"
+          >
+            <option value="">导入为未绑定（不生效）</option>
+            {bindableChars.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
           <label className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-muted/20 hover:bg-muted/30 transition-colors text-sm cursor-pointer">
             <FileJson className="w-3.5 h-3.5" />
             导入
@@ -363,6 +481,33 @@ export function WorldBookManager({
           )}
         </div>
       </div>
+
+      {/* [WB-CHAR-BIND-IMPORT 2026-10-04] 导入了「未绑定」书后的明说提示。
+          直接给出「点这里绑定到当前角色」的入口 —— 后端 PUT 的 character_id 绑定
+          早已存在（详情页有选择器），这里只是把入口前移到刚导入完的那一刻。 */}
+      {importNotice && (
+        <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-700 dark:text-amber-300 flex items-center justify-between gap-2">
+          <span className="leading-relaxed">
+            「{importNotice.name}」现在是<b>未绑定</b> —— 不会注入任何对话。要绑到当前这张卡吗？
+          </span>
+          <span className="flex items-center gap-2 shrink-0">
+            {characterId && (
+              <button
+                onClick={() => {
+                  void onUpdate(importNotice.id, { character_id: characterId });
+                  setImportNotice(null);
+                }}
+                className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 transition-colors"
+              >
+                绑到当前角色
+              </button>
+            )}
+            <button onClick={() => setImportNotice(null)} className="px-1 text-amber-600/70 hover:text-amber-500" title="关闭">
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* Type filter tabs */}
       <div className="flex gap-1 px-4 py-2 border-b border-border/30">
@@ -409,9 +554,26 @@ export function WorldBookManager({
               rows={6}
               className="w-full px-3 py-2 rounded-lg bg-muted/20 border border-border/50 text-sm focus:outline-none focus:border-primary/50 resize-none"
             />
+            {/* [WB-CHAR-ISOLATION 2026-10-03 / 修订 2026-10-04] 建书时选角色；不选 = 未绑定 */}
+            <div>
+              <label className="text-[11px] text-muted-foreground mb-1 block">这本书对哪个角色生效（可选）</label>
+              <select
+                value={createBindCharId}
+                onChange={e => setCreateBindCharId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-muted/20 border border-border/50 text-sm focus:outline-none focus:border-primary/50"
+              >
+                <option value="">未绑定（不生效）</option>
+                {bindableChars.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                绑了角色就只有那个角色会带上它；不绑则这本书不注入任何对话。
+              </p>
+            </div>
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => { setShowCreate(false); setFormName(''); setFormDesc(''); setFormContent(''); }}
+                onClick={() => { setShowCreate(false); setFormName(''); setFormDesc(''); setFormContent(''); setCreateBindCharId(''); }}
                 className="px-3 py-1.5 rounded-lg bg-muted/20 hover:bg-muted/30 text-sm transition-colors"
               >
                 取消
@@ -477,6 +639,13 @@ export function WorldBookManager({
                       {isCharacterBook && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/15 dark:bg-purple-500/20 text-purple-500 dark:text-purple-400">角色书</span>
                       )}
+                      {/* [WB-CHAR-ISOLATION 2026-10-03] 来源徽标：绑了角色 = 只给它；
+                          没绑 = 不生效（不注入任何对话）。 */}
+                      {!isCharacterBook && (wb.character_id ? (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-sky-500/15 dark:bg-sky-500/20 text-sky-600 dark:text-sky-300">已绑角色</span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 dark:bg-amber-500/20 text-amber-600 dark:text-amber-300">未绑定</span>
+                      ))}
                     </div>
                     {wb.description && (
                       <p className="text-xs text-muted-foreground mt-1 ml-6 line-clamp-1">{wb.description}</p>

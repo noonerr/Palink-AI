@@ -2,6 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { AppError } from '@/lib/error-handler';
+// 【报错提示 1.5】失败占位消息统一构造（Error: 前缀 + extra.ignore=true）
+import { buildSystemNoteContent, SYSTEM_NOTE_EXTRA } from '@/lib/systemMessage';
 import { StreamEngine } from '@/lib/stream-engine';
 import { generateMessageId } from '@/lib/utils/messageUtils';
 import { useChatWebSocket } from '@/hooks/useChatWebSocket';
@@ -222,7 +224,36 @@ export function useCharacterChat({
   onAfterWrite,
 }: UseCharacterChatOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  // 【2026-10 卡顿修复】输入草稿不再用 useState。
+  //
+  // 原先用 useState 的根因（吞字 + 一个字符等几秒）：每敲一键 setInputValue 就让
+  // CharacterView → CharacterChat → 几百个 Message 的整棵树重渲染，而
+  // CharacterChat:814 的 wrappedHandleSendWithInput 依赖数组里带着 inputValue，
+  // 于是每键都会重建该回调及其全部下游消费者。
+  //
+  // 改用 ref：打字只重渲染 ChatInput 自己（草稿已下移到那里），
+  // CharacterChat 一行都不会因为打字而重渲染。
+  //
+  // 为什么 ref 够用：inputValue 在角色页**没有任何渲染消费方**，
+  // 只有三处读它 —— CharacterChat:817（发送时）、useCharacterChat:1105（发送兜底）、
+  // 以及传给 ChatInputArea。发送时读 ref 永远是最新值，不存在过期闭包。
+  // 外部写入（智能卡 setInputDraft）走 setInputValue 仍然有效。
+  const inputValueRef = useRef('');
+  const [, forceInputMirror] = useState(0);
+  // 外部写入（setInputDraft 等）需要真正触发一次渲染，把草稿灌进 ChatInput；
+  // 用户自己打字**不**走这里 —— 所以这个计数器几乎永远不动。
+  const setInputValue = useCallback((v: string) => {
+    inputValueRef.current = v;
+    forceInputMirror((n) => n + 1);
+  }, []);
+  const inputValue = inputValueRef.current;
+  // 【打字热路径专用】只更新 ref、不触发任何渲染。
+  // 供 ChatInput 的 onChange 使用：草稿显示由 ChatInput 内部 state 负责，
+  // 这里只需要让「发送时读到的值」保持正确即可。
+  // 绝不能在这里 setState —— 那就等于把打字重新接回整棵聊天树的重渲染。
+  const setInputValueSilent = useCallback((v: string) => {
+    inputValueRef.current = v;
+  }, []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
@@ -542,8 +573,13 @@ export function useCharacterChat({
           const newMessages = [...prev];
           const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantId);
           if (assistantIdx >= 0) {
-            newMessages[assistantIdx].content =
-              `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
+            newMessages[assistantIdx] = {
+              ...newMessages[assistantIdx],
+              // 【报错提示 1.5】失败占位统一走 buildSystemNoteContent（Error: 前缀）
+              // + extra.ignore=true：可见、可重发、不回喂模型、不被 TTS 朗读。
+              content: buildSystemNoteContent(errorInfo),
+              extra: { ...newMessages[assistantIdx].extra, ...SYSTEM_NOTE_EXTRA },
+            };
           }
           return newMessages;
         });
@@ -1093,9 +1129,10 @@ export function useCharacterChat({
     if (!selectedCharacter) return null;
 
     const isSmartCardTrigger = options.smartCardTrigger === true;
+    // 兜底读 ref 而非 inputValue：ref 永远最新，且不会让本回调因打字而重建。
     const text = isSmartCardTrigger
       ? (options.useEmptyContext ? '' : cleanSmartCardTriggerContext(options.smartCardContext ?? content))
-      : (content || inputValue);
+      : (content || inputValueRef.current);
     if ((!text.trim() && attachments.length === 0 && !isSmartCardTrigger) || isGenerating || uploading) return null;
 
     const effectiveSession = options.sessionOverride !== undefined ? options.sessionOverride : selectedSession;
@@ -1209,7 +1246,10 @@ export function useCharacterChat({
     // 同时过滤掉 filter 函数（无法序列化）和空 content 条目。
     // [EP-BRIDGE] 提前到 WebSocket 分支前构造，使 WS 请求体同样注入 extension_prompts
     // （修复前 WS 模式完全不注入扩展提示词）。
-    const extensionPromptsRecord = promptInjection.getPromptsForGeneration();
+    // [XCHAR-PROMPT-BLEED 2026-10-03] 按**本轮角色**取聚合视图（不是全量）：修复前
+    // 此处取的是全局单池聚合，切到 B 卡后 A 卡残留的沙箱注册项仍会跟着发出去 ——
+    // 后端按 filter 过滤也拦不住（插件来源的 filter 常为空 = 旧语义放行所有卡）。
+    const extensionPromptsRecord = promptInjection.getPromptsForGeneration(selectedCharacter?.id);
     const extensionPrompts = Object.entries(extensionPromptsRecord)
       .filter(([, entry]: [string, any]) => entry && (entry.content ?? '').length > 0)
       .map(([identifier, entry]: [string, any]) => ({
@@ -1464,8 +1504,12 @@ export function useCharacterChat({
           const newMessages = [...prev];
           const assistantIdx = newMessages.findIndex((msg) => msg.id === assistantMessageId);
           if (assistantIdx >= 0) {
-            newMessages[assistantIdx].content =
-              `⚠️ **${errorInfo.title}**\n\n${errorInfo.description}\n\n💡 ${errorInfo.suggestion}`;
+            newMessages[assistantIdx] = {
+              ...newMessages[assistantIdx],
+              // 【报错提示 1.5】同上：Error: 前缀 + extra.ignore=true（SSE catch 轨）
+              content: buildSystemNoteContent(errorInfo),
+              extra: { ...newMessages[assistantIdx].extra, ...SYSTEM_NOTE_EXTRA },
+            };
           }
           return newMessages;
         });
@@ -1497,7 +1541,7 @@ export function useCharacterChat({
         window.clearTimeout(timeoutRef.current);
       }
     }
-  }, [selectedCharacter, selectedSession, selectedModel, selectedBranch, currentPreset, inputValue, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated, useWebSocket, wsConnected, wsSendCharacterChatRequest, responseLength, scheduleStreamUpdate]);
+  }, [selectedCharacter, selectedSession, selectedModel, selectedBranch, currentPreset, attachments, isGenerating, uploading, getDisplayName, setMessages, setSelectedSession, loadSessions, loadMemoryStats, forkPoint, onForkCreated, onBranchCreated, useWebSocket, wsConnected, wsSendCharacterChatRequest, responseLength, scheduleStreamUpdate]);
 
   const handleStopGeneration = useCallback(() => {
     if (useWebSocket && wsConnected && wsAssistantMessageIdRef.current) {
@@ -1518,10 +1562,12 @@ export function useCharacterChat({
   }, [clearGenerationTimers, useWebSocket, wsConnected, wsSendCancel]);
 
   const handleSendWithInput = useCallback(async () => {
-    if (inputValue.trim() || attachments.length > 0) {
-      await handleSendMessage(inputValue, attachments.filter(a => a.type === 'image').map(a => a.url));
+    // 读 ref：ref 永远是用户刚敲的最后一串字，不存在「state 还没提交就发送」的空值竞态。
+    const current = inputValueRef.current;
+    if (current.trim() || attachments.length > 0) {
+      await handleSendMessage(current, attachments.filter(a => a.type === 'image').map(a => a.url));
     }
-  }, [inputValue, attachments, handleSendMessage]);
+  }, [attachments, handleSendMessage]);
 
   const handleSmartCardTrigger = useCallback(async (
     content: string,
@@ -1807,7 +1853,9 @@ export function useCharacterChat({
     // State
     isGenerating,
     inputValue,
+    inputValueRef,
     setInputValue,
+    setInputValueSilent,
     attachments,
     setAttachments,
     uploading,
@@ -1816,6 +1864,7 @@ export function useCharacterChat({
     currentError,
     retryMessageContent,
     timeoutWarning,
+    setTimeoutWarning,
     requestStartTime,
 
     // Handlers

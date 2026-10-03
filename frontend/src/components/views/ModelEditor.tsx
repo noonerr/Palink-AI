@@ -550,9 +550,11 @@ export function ModelEditor({
                       >
                         <option value="off">关</option>
                         <option value="auto">自动</option>
+                        <option value="min">最低</option>
                         <option value="low">低</option>
                         <option value="medium">中</option>
                         <option value="high">高</option>
+                        <option value="max">最高</option>
                       </select>
                     </div>
                     <span className="text-xs text-muted-foreground">

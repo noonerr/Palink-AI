@@ -31,6 +31,11 @@ export const worldbookApi = {
     raw_content?: string;
     format?: string;
     tags?: string[];
+    /**
+     * [WB-CHAR-BIND 2026-10-03] 绑定角色（对齐 ST world_info.charLore）。
+     * 不传 = 全局书（对所有卡生效）；传角色 id = 只对该角色注入。
+     */
+    character_id?: string | null;
   }) => api.post<WorldBook>('/api/worldbooks', data).then((res) => {
     invalidateCache('/api/worldbooks');
     return res;
@@ -45,6 +50,11 @@ export const worldbookApi = {
     description?: string;
     raw_content?: string;
     tags?: string[];
+    /**
+     * [WB-CHAR-BIND 2026-10-03] 传 null = 解绑（回到全局）。
+     * 不传该键 = 不改（后端用 model_fields_set 区分二者）。
+     */
+    character_id?: string | null;
   }) => api.put<WorldBook>(`/api/worldbooks/${id}`, data).then((res) => {
     invalidateCache('/api/worldbooks');
     return res;
@@ -56,10 +66,21 @@ export const worldbookApi = {
     return res;
   }),
 
-  /** 导入 SillyTavern V2 JSON 世界书 */
-  import: (file: File) => {
+  /**
+   * 导入 SillyTavern V2 JSON 世界书
+   *
+   * [WB-CHAR-BIND-IMPORT 2026-10-04] 可选 `characterId`：导入时就指定这本书记到
+   * 哪张卡名下。**不传 = 全局书**（与修复前逐字一致）。
+   * ⚠️ 必须走 FormData 追加字段（后端是 `Form(None)`，不是 query 参数）——
+   * 传查询参数会被 FastAPI 静默忽略，书照样落成全局书，用户以为隔离了其实没有。
+   */
+  import: (file: File, characterId?: string | null) => {
     const formData = new FormData();
     formData.append('file', file);
+    // 空串/空值一律不追加：与「不传」同义 = 全局书（后端 Form(None) 默认值）
+    if (characterId) {
+      formData.append('character_id', String(characterId));
+    }
     return api.post<WorldBook>('/api/worldbooks/import', formData).then((res) => {
       invalidateCache('/api/worldbooks');
       return res;

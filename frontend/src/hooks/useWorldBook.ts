@@ -18,10 +18,18 @@ interface UseWorldBookReturn {
 
   // World book CRUD
   loadWorldBooks: (characterId?: string, type?: string) => Promise<void>;
-  createWorldBook: (data: { name: string; description?: string; raw_content?: string; tags?: string[] }) => Promise<WorldBook>;
-  updateWorldBook: (id: string, data: { name?: string; description?: string; raw_content?: string; tags?: string[] }) => Promise<void>;
+  /**
+   * [WB-CHAR-ISOLATION 2026-10-03] character_id：绑定角色（只对该角色注入），
+   * null/undefined = 全局书。不传 = 兼容旧调用（后端默认 None → 全局）。
+   */
+  createWorldBook: (data: { name: string; description?: string; raw_content?: string; tags?: string[]; character_id?: string | null }) => Promise<WorldBook>;
+  updateWorldBook: (id: string, data: { name?: string; description?: string; raw_content?: string; tags?: string[]; character_id?: string | null }) => Promise<void>;
   deleteWorldBook: (id: string) => Promise<void>;
-  importWorldBook: (file: File) => Promise<WorldBook>;
+  /**
+   * [WB-CHAR-BIND-IMPORT 2026-10-04] characterId：导入时就把书记到某张卡名下。
+   * 不传/空 = 全局书（与修复前逐字一致）。
+   */
+  importWorldBook: (file: File, characterId?: string | null) => Promise<WorldBook>;
   loadWorldBookDetail: (id: string) => Promise<void>;
 
   // Session association
@@ -63,16 +71,19 @@ export function useWorldBook(): UseWorldBookReturn {
     }
   }, []);
 
-  const createWorldBook = useCallback(async (data: { name: string; description?: string; raw_content?: string; tags?: string[] }) => {
+  const createWorldBook = useCallback(async (data: { name: string; description?: string; raw_content?: string; tags?: string[]; character_id?: string | null }) => {
     const wb = await worldbookApi.create(data);
     if (mountedRef.current) setWorldBooks(prev => [wb, ...prev]);
     return wb;
   }, []);
 
-  const updateWorldBook = useCallback(async (id: string, data: { name?: string; description?: string; raw_content?: string; tags?: string[] }) => {
+  const updateWorldBook = useCallback(async (id: string, data: { name?: string; description?: string; raw_content?: string; tags?: string[]; character_id?: string | null }) => {
     const updated = await worldbookApi.update(id, data);
     if (mountedRef.current) {
       setWorldBooks(prev => prev.map(wb => wb.id === id ? { ...wb, ...updated } : wb));
+      // 详情态同步：绑定角色后详情页的选择器要立刻反映新值，
+      // 否则重新打开详情仍看到旧绑定（列表与详情不一致）。
+      setSelectedWorldBook(prev => (prev && prev.id === id ? { ...prev, ...updated } : prev));
     }
   }, []);
 
@@ -84,8 +95,8 @@ export function useWorldBook(): UseWorldBookReturn {
     }
   }, [selectedWorldBook]);
 
-  const importWorldBook = useCallback(async (file: File) => {
-    const wb = await worldbookApi.import(file);
+  const importWorldBook = useCallback(async (file: File, characterId?: string | null) => {
+    const wb = await worldbookApi.import(file, characterId);
     if (mountedRef.current) setWorldBooks(prev => [wb, ...prev]);
     return wb;
   }, []);

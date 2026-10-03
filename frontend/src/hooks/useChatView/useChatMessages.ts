@@ -16,7 +16,20 @@ export interface UseChatMessagesParams {
 
 export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
   const [messages, setMessages] = useState<MessageType[]>([]);
-  const [input, setInput] = useState('');
+  // 【2026-10 卡顿修复】草稿权威副本是 inputRef；input 只是它的渲染快照。
+  // setInputSilent 供 ChatInput 的打字热路径使用：只写 ref，不触发 setState，
+  // 于是 ChatViewMobile/ChatViewDesktop 不会因为每敲一键就重渲染整页。
+  const inputRef = useRef('');
+  const [input, setInputState] = useState('');
+  // 外部写入 / 发送清空：写 ref + 触发渲染，让输入框真正显示出来。
+  const setInput = useCallback((v: string) => {
+    inputRef.current = v;
+    setInputState(v);
+  }, []);
+  // 打字：只写 ref，不渲染。
+  const setInputSilent = useCallback((v: string) => {
+    inputRef.current = v;
+  }, []);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showMessageSelect, setShowMessageSelect] = useState(false);
   const [regeneratingMessageIndex, setRegeneratingMessageIndex] = useState<number | null>(null);
@@ -199,7 +212,9 @@ export function useChatMessages({ activeSessionId, t }: UseChatMessagesParams) {
     messages,
     setMessages,
     input,
+    inputRef,
     setInput,
+    setInputSilent,
     selectedMessages,
     showMessageSelect,
     regeneratingMessageIndex,

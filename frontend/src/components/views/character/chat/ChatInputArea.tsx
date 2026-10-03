@@ -21,6 +21,9 @@ export interface ChatInputAreaProps {
   // 输入
   inputValue: string;
   setInputValue: (v: string) => void;
+  /** 【2026-10 卡顿修复】打字热路径专用：只写 ref、不触发 CharacterView 重渲染。
+   *  可选 —— 未传时退回 setInputValue（行为退化但仍正确）。 */
+  setInputValueSilent?: (v: string) => void;
   attachments: any[];
   onRemoveAttachment: (idx: number) => void;
   uploading: boolean;
@@ -44,6 +47,7 @@ export function ChatInputArea({
   keyboardHeight,
   inputValue,
   setInputValue,
+  setInputValueSilent,
   attachments,
   onRemoveAttachment,
   uploading,
@@ -83,7 +87,10 @@ export function ChatInputArea({
 
   const chatInputProps = {
     value: inputValue,
-    onChange: setInputValue,
+    // 【2026-10 卡顿修复】打字走 silent 通道：ChatInput 自己重渲染显示这串字，
+    // 上层只把值同步进 ref 供「发送时读取」，不触发整棵聊天树重渲染。
+    // setInputValue 保留给外部写入（智能卡 setInputDraft）与发送后清空。
+    onChange: setInputValueSilent ?? setInputValue,
     onSend: onSend,
     onUpload: onUpload,
     attachments,

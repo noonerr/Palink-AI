@@ -13,7 +13,7 @@
 import { getGlobalSillyTavernRuntime, stWorldBookManagerSingleton, type StContext, type StCharacter, type StChatMessage, type StEventSource } from './runtime';
 import { messageManager, type ChatMessage } from '@/services/message-manager';
 import { generationEngine, type GenerationOptions } from '@/services/generation-engine';
-import { promptInjection } from '@/services/prompt-injection';
+import { promptInjection, getActivePromptCharacter } from '@/services/prompt-injection';
 import { variableManager } from '@/lib/variables/manager';
 import { SlashCommandEngine, ARGUMENT_TYPE } from '@/lib/slash-engine';
 import { MacroRegistry, evaluateMacros } from '@/lib/macro-engine';
@@ -1570,7 +1570,11 @@ export function getContext(): StGetContext {
   // ST 1.18.0 extension_prompts: 暴露给 ST 插件时同时包含 value 和 content 字段
   // ST 原生存储用 value（script.js:8905），Palink 内部用 content。为兼容 ST 插件
   // 读取 prompt.value 的代码，这里为每条 entry 添加 value 别名。
-  const _rawExtPrompts = promptInjection.getPromptsForGeneration?.() ?? {};
+  // [XCHAR-PROMPT-BLEED 2026-10-03] 按当前角色取（串味修复）：此处**不能**用上面的
+  // rawCharacterId —— 它是 ST 语义的 characters 数组下标，非 Palink 角色 id，
+  // 拿它当分区键会取到空分区。取 CharacterChat 设置的活动角色（真实 characters.id）。
+  const _rawExtPrompts =
+    promptInjection.getPromptsForGeneration?.(getActivePromptCharacter()) ?? {};
   const extensionPrompts: Record<string, any> = {};
   for (const [key, entry] of Object.entries(_rawExtPrompts)) {
     extensionPrompts[key] = {

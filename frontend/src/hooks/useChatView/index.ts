@@ -8,6 +8,8 @@ import { toast } from 'sonner';
 import { api } from '@/services/api';
 import { emitEvent } from '@/lib/event-bus';
 import { generateMessageId, buildDisplayContent, stripAttachmentMarkdown } from '@/lib/utils/messageUtils';
+// 【报错提示 1.5】失败占位消息统一构造（Error: 前缀 + extra.ignore=true）
+import { buildSystemNoteContent, SYSTEM_NOTE_EXTRA } from '@/lib/systemMessage';
 import {
   applyMediaEvent,
   buildPendingMediaItem,
@@ -100,16 +102,20 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
 
   // 发送消息（向后兼容：接受额外参数但忽略）
   const handleSend = useCallback(async (overrideText?: string, _webSearch?: boolean, _options?: any) => {
-    const { input, setInput, setMessages } = chatMessages;
+    const { setInput, setMessages } = chatMessages;
     const { attachments: currentAttachments, clearAttachments } = attachments;
     const { activeSessionId } = sessionManager;
 
-    const text = overrideText ?? input;
+    // 【2026-10 卡顿修复】用解析后的 text，而不是 chatMessages.input 快照。
+    // 草稿已下移到 ChatInput 内部 state，这里 input 不再随打字实时更新；
+    // 顺带修掉一个既有不一致：overrideText 存在时 display_content 之前仍用
+    // 旧 input 拼（override 形同只影响 messageContent，不影响展示文本）。
+    const text = overrideText ?? chatMessages.inputRef.current;
     if (!text.trim() || isSendingMessage) return;
 
     // 构建显示内容
-    const displayContent = buildDisplayContent(input, currentAttachments);
-    const messageContent = stripAttachmentMarkdown(input);
+    const displayContent = buildDisplayContent(text, currentAttachments);
+    const messageContent = stripAttachmentMarkdown(text);
 
     // 乐观更新UI
     setInput('');
@@ -167,9 +173,13 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
           const next = [...prev];
           const idx = next.findIndex(msg => msg.id === assistantMessageId);
           if (idx >= 0) {
-            next[idx] = { 
-              ...next[idx], 
-              content: `⚠️ **错误**\n\n${userMessage}`,
+            next[idx] = {
+              ...next[idx],
+              // 【报错提示 1.5】失败占位统一走 buildSystemNoteContent（Error: 前缀）
+              // + extra.ignore=true，与角色页同一套模板（此前这里是独立的
+              // 「⚠️ **错误**」模板且不触发 ErrorToast，同一失败两种表现）。
+              content: buildSystemNoteContent({ title: '错误', description: userMessage }),
+              extra: { ...next[idx].extra, ...SYSTEM_NOTE_EXTRA },
             };
           }
           return next;
@@ -294,9 +304,13 @@ export function useChatView({ currentModel, t }: UseChatViewParams) {
           const next = [...prev];
           const idx = next.findIndex(msg => msg.id === assistantMessageId);
           if (idx >= 0) {
-            next[idx] = { 
-              ...next[idx], 
-              content: `⚠️ **错误**\n\n${userMessage}`,
+            next[idx] = {
+              ...next[idx],
+              // 【报错提示 1.5】失败占位统一走 buildSystemNoteContent（Error: 前缀）
+              // + extra.ignore=true，与角色页同一套模板（此前这里是独立的
+              // 「⚠️ **错误**」模板且不触发 ErrorToast，同一失败两种表现）。
+              content: buildSystemNoteContent({ title: '错误', description: userMessage }),
+              extra: { ...next[idx].extra, ...SYSTEM_NOTE_EXTRA },
             };
           }
           return next;

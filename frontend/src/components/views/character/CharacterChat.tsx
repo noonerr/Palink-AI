@@ -17,7 +17,7 @@
  * - 管理器对话框 UI 提取到 ChatManagerDialogs 组件
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Clock, GitBranch } from 'lucide-react';
+import { Clock, GitBranch, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api, invalidateCache } from '@/services/api';
 import { generationEngine } from '@/services/generation-engine';
@@ -37,7 +37,11 @@ import {
   removeCardTavernHelperScripts,
   runCardTavernHelperScripts,
 } from '@/lib/sillytavern/card-script-runner';
-import { ErrorToast } from '@/components/ui/custom/ErrorToast';
+// 插件侧角色身份派生（2026-10-02 P1：名字哈希 → UUID 派生）
+import { pluginCharacterIdFromUuid } from '@/lib/sillytavern/plugin-character-id';
+// 卡脚本存档的服务端写穿同步（P2）；失败静默降级为纯本地
+import { installCardScriptStorageSync } from '@/lib/sillytavern/card-script-storage-sync';
+import { ErrorToast, ErrorToastPortalContainer } from '@/components/ui/custom/ErrorToast';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
 // 重构后提取的子组件
 import { ChatSidebar } from '@/components/views/character/chat/ChatSidebar';
@@ -63,7 +67,7 @@ import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { extractReasoningTags } from '@/lib/sillytavern/formatting';
 import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
-import { promptInjection } from '@/services/prompt-injection';
+import { promptInjection, setActivePromptCharacter, getActivePromptCharacter } from '@/services/prompt-injection';
 import { PluginManager } from '@/components/roleplay/PluginManager';
 import {
   createSillyTavernRuntime,
@@ -211,7 +215,13 @@ export interface CharacterChatProps {
   // chat hook
   isGenerating: boolean;
   inputValue: string;
+  /** 草稿权威副本（ref）。发送路径必须读它而不是 inputValue 快照 ——
+   *  快照在打字时不变，会让 useCallback 依赖失效并重建整条下游回调链。 */
+  inputValueRef: React.MutableRefObject<string>;
   setInputValue: (v: string) => void;
+  /** 【2026-10 卡顿修复】打字热路径专用：只写 ref、不触发渲染。
+   *  可选 —— 未传时 ChatInputArea 退回 setInputValue（行为退化但仍正确）。 */
+  setInputValueSilent?: (v: string) => void;
   attachments: any[];
   setAttachments: React.Dispatch<React.SetStateAction<any[]>>;
   uploading: boolean;
@@ -220,6 +230,9 @@ export interface CharacterChatProps {
   currentError: any;
   retryMessageContent: string | null;
   timeoutWarning: boolean;
+  /** 【报错提示 1.4】关闭超时提醒用。可选：CharacterView 等旧调用方未传时，
+   *  超时条仍照常展示，只是关闭按钮退化为隐藏（点击等同 no-op）。 */
+  setTimeoutWarning?: React.Dispatch<React.SetStateAction<boolean>>;
   handleSendMessage: (msg: string, attachments: any[], options?: HandleSendMessageOptions) => Promise<string | null | void>;
   handleSmartCardTrigger: (content: string, options?: SmartCardTriggerOptions) => Promise<string | null>;
   handleSendWithInput: () => Promise<void>;
@@ -398,12 +411,15 @@ export function CharacterChat(props: CharacterChatProps) {
     // （插件 generate/generateQuietPrompt 路径）读取 promptInjection 聚合视图（含 sandbox
     // 插件条目与 smart-card iframe 上报条目），输出对齐后端 ExtensionPromptInput 数组形状。
     // 幂等：仅当未注册时设置，避免覆盖其他来源。
+    // [XCHAR-PROMPT-BLEED 2026-10-03] 改按**当前角色**取（generation-engine 侧拿不到
+    // selectedCharacter，这里通过 promptInjection 的活动角色闭包取值）。
     if (typeof window !== 'undefined') {
       const w = window as any;
       if (!w.SillyTavern) w.SillyTavern = {};
       if (typeof w.SillyTavern.getExtensionPrompts !== 'function') {
         w.SillyTavern.getExtensionPrompts = () => {
-          const merged = promptInjection.getPromptsForGeneration() || {};
+          const merged =
+            promptInjection.getPromptsForGeneration(getActivePromptCharacter()) || {};
           return Object.entries(merged).map(([identifier, entry]: any) => ({
             identifier,
             content: entry?.content ?? '',
@@ -426,10 +442,10 @@ export function CharacterChat(props: CharacterChatProps) {
     showDeleteConfirm, setShowDeleteConfirm, pendingDelete, confirmDelete,
     messages, setMessages, loadMessages, hasMoreMessages, loadOlderMessages, isLoadingOlderMessages, messagesEndRef,
     isAtBottomRef,
-    isGenerating, inputValue, setInputValue,
+    isGenerating, inputValue, inputValueRef, setInputValue, setInputValueSilent,
     attachments, setAttachments, uploading,
     regeneratingMessageIndex, generatingImageMessageIds,
-    currentError, retryMessageContent, timeoutWarning,
+    currentError, retryMessageContent, timeoutWarning, setTimeoutWarning,
     handleSendMessage, handleSmartCardTrigger, handleSendWithInput, handleRegenerate, handleContinue: propsHandleContinue,
     handleRetry, handleCloseError, handleUpload, handleDeleteMessage, handleEditMessage, handleGenerateImage,
     handleStopGeneration, showModelReasoning,
@@ -807,7 +823,12 @@ export function CharacterChat(props: CharacterChatProps) {
   const wrappedHandleSendWithInput = useCallback(async () => {
     isAtBottomRef.current = true;
     activePausedAutoScrollRef.current = false;
-    const processedInput = getRegexedStringForMessage(inputValue, regex_placement.USER_INPUT, {
+    // 【2026-10 卡顿修复】读 inputValueRef 而不是 inputValue。
+    // inputValue 现在是 ref 的快照（打字时不变），直接读它会让本回调的依赖数组
+    // 在每次按键后失效 → 每键重建该回调 → 所有消费它的子组件跟着重建（吞字主因）。
+    // ref 的值永远是最新的，不存在过期闭包，也不需要把 inputValue 放进依赖。
+    const rawInput = inputValueRef.current;
+    const processedInput = getRegexedStringForMessage(rawInput, regex_placement.USER_INPUT, {
       characterName: selectedCharacter.name,
       userName: user.username,
       characterAvatar: selectedCharacter.avatar || '',
@@ -824,7 +845,7 @@ export function CharacterChat(props: CharacterChatProps) {
     try {
       getGlobalSillyTavernRuntime()?.getEventSource().emit('message_sent', displayedMessages.length - 1, { name: user.username, mes: processedInput, is_user: true });
     } catch {}
-  }, [handleSendMessage, isAtBottomRef, activePausedAutoScrollRef, inputValue, user.username, attachments, selectedCharacter.name, selectedCharacter.avatar, compatCharacterExtensions, compatCharacterPresetData, globalRegexScripts, setInputValue, setAttachments]);
+  }, [handleSendMessage, isAtBottomRef, activePausedAutoScrollRef, user.username, attachments, selectedCharacter.name, selectedCharacter.avatar, compatCharacterExtensions, compatCharacterPresetData, globalRegexScripts, setInputValue, setAttachments]);
 
   const wrappedHandleSendMessage = useCallback(async (msg: string, attachments: any[]) => {
     isAtBottomRef.current = true;
@@ -1536,6 +1557,33 @@ export function CharacterChat(props: CharacterChatProps) {
     };
   }, [wrappedHandleSendMessage, wrappedHandleRegenerate, displayedMessages]);
 
+  // [XCHAR-PROMPT-BLEED 2026-10-03] 切卡清理 + 活动角色切换（串味修复的前端一半）。
+  //
+  // 为什么挂在这里而不是别处：
+  //  - messageManager.setCurrentCharacterId 全仓零调用方，getCurrentCharacterId()
+  //    恒返回 ''，挂在它上面永远不会触发（已核实）；
+  //  - CharacterUIProvider.setActiveCharacter 零调用方，那个 Provider 没挂到应用树；
+  //  - CharacterView.tsx 本轮冻结，且它的 5 个 setSelectedCharacter 只是「发事件」的一侧。
+  // 这里是唯一同时满足「有真的 selectedCharacter」「先于插件注册执行」「本轮已解冻」的位置。
+  //
+  // 为什么必须声明在下面那两个 effect **之前**：切卡那一帧 React 先跑本 effect 的
+  // body（切活动角色 + 清掉旧角色分区），再跑插件注入 / 卡脚本的 body。新角色的
+  // 插件注册因此写进新分区，不会被旧分区的残留顶掉（merged[identifier] 后写覆盖先写）。
+  const prevPromptCharacterIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const characterId = selectedCharacter?.id;
+    const nextId = characterId == null ? '' : String(characterId);
+    const prevId = prevPromptCharacterIdRef.current;
+    if (prevId && prevId !== nextId) {
+      // 旧角色的沙箱分区切卡后永不再用，直接删（frame 分区另由 iframe 卸载清理）
+      // ⚠️ 走 detach 而非 clear：共用插件的注册项要留给随后的插件注入 effect 搬运
+      //    （注入是异步的，等它跑时旧分区已消失，实时读必然读不到）。
+      promptInjection.detachSandbox(prevId);
+    }
+    setActivePromptCharacter(nextId || null);
+    prevPromptCharacterIdRef.current = nextId;
+  }, [selectedCharacter?.id]);
+
   useEffect(() => {
     // 插件 runtime 注入到容器（保留 ST 逆向接口）
     // [PLUGIN-ON-DEMAND] 依赖角色 ID：切换角色卡时按新角色重新拉取配置并注入 ——
@@ -1571,6 +1619,15 @@ export function CharacterChat(props: CharacterChatProps) {
     };
   }, [selectedCharacter?.id]);
 
+  // [PLUGIN-STORAGE] 挂上服务端写穿同步 + 进入角色页时拉一次（P2）。
+  // 必须在卡脚本执行之前装载：先 hydrate 再让脚本读写，脚本才不会用空气 positions
+  // 跑完一轮、随后又被服务端的值覆盖掉（覆盖发生在卡脚本挂载 UI 之后 = 图鉴位置跳变）。
+  useEffect(() => {
+    const characterId = selectedCharacter?.id;
+    if (!characterId) return;
+    return installCardScriptStorageSync(characterId);
+  }, [selectedCharacter?.id]);
+
   // [CARD-SCRIPT] 执行卡自带 tavern_helper 脚本（CG 图库悬浮按钮、图鉴、状态栏特效等）。
   // 必须在插件 runtime 注入之后跑：脚本依赖 setup 挂上来的 getChatMessages /
   // window.__palinkChatMessages。失败按条隔离，一条坏脚本不得拖垮其余（当天事故教训）。
@@ -1593,7 +1650,9 @@ export function CharacterChat(props: CharacterChatProps) {
         return Array.isArray(msgs) && msgs.length > 0 ? msgs.length - 1 : -1;
       },
     });
-    const res = runCardTavernHelperScripts(ext, host);
+    // 传 UUID 给执行器：卡脚本里的 localStorage / sessionStorage 会被改写为按这张卡
+    // 隔离的视图（P0）。拿不到 id 时执行器会保持原文不动 —— 隔离失效，但不会引入改写风险。
+    const res = runCardTavernHelperScripts(ext, host, { characterId: selectedCharacter?.id });
     if (res.failed.length > 0) {
       console.warn('[card-script] 卡内脚本有失败项（已隔离，不影响其余）:', res.failed);
     }
@@ -1643,10 +1702,11 @@ export function CharacterChat(props: CharacterChatProps) {
       stat_data: (sessionVariables && sessionVariables.stat_data) || {},
       // ST 插件（如 Galgame 界面插件）通过 characterId / name2 / this_chid 识别当前角色，
       // 缺失时回退到 "default" 键，导致 localStorage 中 default=true 时误启用 overlay。
-      // 使用角色名 charCode 哈希作为非零数字 ID，确保不同角色有不同键。
-      characterId: selectedCharacter.name
-        ? Array.from(selectedCharacter.name).reduce((acc, c) => acc + c.charCodeAt(0), 0) || 1
-        : 1,
+      // 2026-10-02 P1：改用 **角色 UUID 派生** 的非零数字 ID。
+      // 此前用角色名 charCode 求和 → 同名必然同键，库里 4 张「露缇雅1.2」共用一份插件状态，
+      // 删卡重导后仍能看见上一张卡的解锁立绘（SPEC §2.5/§2.6）。
+      // 唯一实现收敛在 lib/sillytavern/plugin-character-id.ts，此处只做调用。
+      characterId: pluginCharacterIdFromUuid(selectedCharacter.id),
       characterUuid: selectedCharacter.id,
       name2: selectedCharacter.name,
       chat: smartCardChatMessages.map((m) => ({
@@ -1668,7 +1728,7 @@ export function CharacterChat(props: CharacterChatProps) {
     if (globalRuntime) {
       globalRuntime.setContext(stContext);
     }
-  }, [selectedCharacter.name, selectedCharacter.description, selectedCharacter.personality, selectedCharacter.scenario, selectedCharacter.first_mes, selectedCharacter.mes_example, selectedCharacter.creator_notes, selectedCharacter.tags, selectedCharacter.avatar, selectedCharacter.extensions, compatCharacterExtensions, sessionVariables, smartCardChatMessages, selectedSession?.id, user.username]);
+  }, [selectedCharacter.id, selectedCharacter.name, selectedCharacter.description, selectedCharacter.personality, selectedCharacter.scenario, selectedCharacter.first_mes, selectedCharacter.mes_example, selectedCharacter.creator_notes, selectedCharacter.tags, selectedCharacter.avatar, selectedCharacter.extensions, compatCharacterExtensions, sessionVariables, smartCardChatMessages, selectedSession?.id, user.username]);
 
   useEffect(() => {
     // 创建全局 ST runtime（st-native iframe 线已删除）
@@ -2076,6 +2136,7 @@ export function CharacterChat(props: CharacterChatProps) {
             keyboardHeight={keyboardHeight}
             inputValue={inputValue}
             setInputValue={setInputValue}
+            setInputValueSilent={setInputValueSilent}
             attachments={attachments}
             onRemoveAttachment={handleRemoveAttachment}
             uploading={uploading}
@@ -2107,31 +2168,46 @@ export function CharacterChat(props: CharacterChatProps) {
         dialogText={dialogText}
       />
 
-      {/* ──── Error Toast ──── */}
-      {currentError && (
-        <ErrorToast
-          errorInfo={currentError}
-          onClose={handleCloseError}
-          onRetry={handleRetry}
-          showRetry={!!retryMessageContent}
-        />
-      )}
-
-      {/* ──── Timeout Warning ──── */}
-      {timeoutWarning && isGenerating && (
-        <div className="fixed bottom-4 right-4 z-50 max-w-sm w-full">
-          <div className="bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 shadow-lg">
-            <div className="flex items-start gap-3">
-              <Clock className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h4 className="font-semibold text-yellow-800 dark:text-yellow-200">{t.request_taking_long || '请求时间较长'}</h4>
-                <p className="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
-                  {t.ai_processing || 'AI模型正在处理您的请求，这可能需要一些时间。请耐心等待，或尝试切换到其他模型。'}
-                </p>
+      {/* ──── Error / Timeout：统一 Portal 容器【报错提示 1.3 + 1.4】────
+          旧实现是两个互不相干的浮层：ErrorToast 锚 bottom-24/sm:bottom-4，
+          超时条锚 bottom-4 right-4 z-50 —— 在 sm 断点以上像素级重叠、同 z，
+          且超时条完全没有关闭按钮。现在合并进同一个 data-palink-error-overlay
+          容器（Portal 已在 ErrorToast 内部做，键盘抬升规则在 index.css），
+          二者互斥渲染，坐标冲突消失，超时条补上关闭能力。
+          ⚠「按钮被 dock 压住」是已被实测推翻的旧结论（只咬 7.7px），
+          真凶是键盘，已由 index.css 的 palink-kb-open 规则处理。 */}
+      {(currentError || (timeoutWarning && isGenerating)) && (
+        <ErrorToastPortalContainer>
+          {currentError ? (
+            <ErrorToast
+              errorInfo={currentError}
+              onClose={handleCloseError}
+              onRetry={handleRetry}
+              showRetry={!!retryMessageContent}
+              inline
+            />
+          ) : (
+            <div className="w-full max-w-md rounded-lg border border-yellow-300/60 dark:border-yellow-800/60 bg-card p-3 shadow-lg">
+              <div className="flex items-start gap-3">
+                <Clock className="h-5 w-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-semibold text-foreground">{t.request_taking_long || '请求时间较长'}</h4>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {t.ai_processing || 'AI模型正在处理您的请求，这可能需要一些时间。请耐心等待，或尝试切换到其他模型。'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="关闭超时提醒"
+                  onClick={() => setTimeoutWarning?.(false)}
+                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
             </div>
-          </div>
-        </div>
+          )}
+        </ErrorToastPortalContainer>
       )}
 
       {/* ──── Manager Dialogs ──── */}

@@ -376,7 +376,9 @@ export function CharacterView({
   const {
     isGenerating,
     inputValue,
+    inputValueRef,
     setInputValue,
+    setInputValueSilent,
     attachments,
     setAttachments,
     uploading,
@@ -1850,7 +1852,9 @@ export function CharacterView({
           userPausedAutoScrollRef={userPausedAutoScrollRef}
           isGenerating={isGenerating}
           inputValue={inputValue}
+          inputValueRef={inputValueRef}
           setInputValue={setInputValue}
+          setInputValueSilent={setInputValueSilent}
           attachments={attachments}
           setAttachments={setAttachments}
           uploading={uploading}

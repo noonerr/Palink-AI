@@ -110,7 +110,10 @@ export function ChatViewMobile({
   };
 
   const handleSend = async (overrideText?: string) => {
-    const text = typeof overrideText === 'string' ? overrideText : chat.input;
+    // 【2026-10 卡顿修复】读 inputRef 而不是 chat.input 快照。
+    // 草稿已下移到 ChatInput 内部 state，chat.input 不再随打字实时更新 ——
+    // 继续读它会让「刚敲完立刻回车」拿到空串（即用户报的吞字/发空消息）。
+    const text = typeof overrideText === 'string' ? overrideText : chat.inputRef.current;
     if ((!text.trim() && chat.attachments.length === 0) || chat.streaming || chat.uploading) return;
 
     const isFromWelcome = !chat.activeSessionId && chat.messages.length === 0 && !anim.welcomeDropping;
@@ -471,7 +474,7 @@ export function ChatViewMobile({
                 <div ref={anim.welcomeComposerRef} className={cn('mx-auto mt-8 w-full', anim.welcomeDropAnimating && 'invisible')}>
                   <ChatInput
                     value={chat.input}
-                    onChange={chat.setInput}
+                    onChange={chat.setInputSilent}
                     onSend={handleSend}
                     onUpload={chat.handleUpload}
                     attachments={chat.attachments}
@@ -582,7 +585,7 @@ export function ChatViewMobile({
               <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput
                   value={chat.input}
-                  onChange={chat.setInput}
+                  onChange={chat.setInputSilent}
                   onSend={handleSend}
                   onUpload={chat.handleUpload}
                   attachments={chat.attachments}
@@ -706,7 +709,7 @@ export function ChatViewMobile({
               <div ref={kb.mobileComposerRef} className="mx-auto w-[92%] max-w-[560px]">
                 <ChatInput
                   value={chat.input}
-                  onChange={chat.setInput}
+                  onChange={chat.setInputSilent}
                   onSend={handleSend}
                   onUpload={chat.handleUpload}
                   attachments={chat.attachments}

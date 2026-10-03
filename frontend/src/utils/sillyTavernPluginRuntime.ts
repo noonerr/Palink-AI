@@ -7,7 +7,7 @@ import { sanitizePluginCss, isUrlAllowedByPluginWhitelist } from '@/lib/plugin-s
 import { generationEngine } from '@/services/generation-engine';
 import { getContext as getStContext } from '@/lib/sillytavern/getContext';
 import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
-import { promptInjection } from '@/services/prompt-injection';
+import { promptInjection, activeSandboxPartitionKey } from '@/services/prompt-injection';
 import { eventBus } from '@/lib/event-bus';
 
 interface RuntimePluginResource {
@@ -230,6 +230,45 @@ export class SillyTavernPluginRuntime {
    * 保持不动（面板状态与已绑事件不丢、肉眼无闪烁）。
    */
   private injectedPluginIds = new Set<string>();
+  /**
+   * [B4-SHARED-PARTITION 2026-10-04] 共用插件「注册归属」账本：plugin id → 写入
+   * ``setExtensionPrompt`` 时所处的沙箱分区键（``sandbox:<characterId>``）。
+   *
+   * 为什么需要它（差集跳过 + 角色分区这两个设计单独看都对，合起来是错的）：
+   *  1. ``prompt-injection`` 在 10-03 起把扩展提示词改成**按角色分区**，
+   *     切卡时 CharacterChat 会 ``clearCharacterSandbox(旧卡)`` 删掉旧卡那一格；
+   *  2. ``injectIntoContainer({diffOnly:true})`` 对**共用插件整个跳过**
+   *     （``injectedPluginIds.has(id)`` → continue），script 节点不重建，
+   *     浏览器自然不会重跑它 → 它的 ``setExtensionPrompt`` 也就不会重跑；
+   *  于是 A 卡清空后，B 卡拿不到这个共用插件的注入 → 「格式规范丢失 / 卡正则在
+   *  extensions JSON」这类症状的近亲（用户报过同款历史问题）。
+   *
+   * ⚠️ 为什么**不**改成「切卡时把共用插件从 injectedPluginIds 里摘掉重跑」：
+   *  节点重建 = 已绑事件丢失 + 插件面板 DOM 重置 + 用户侧可见闪烁，
+   *  正是 diffOnly 当初要避免的（见 computePluginDiff 上方注释）。脚本重跑还有
+   *  副作用（重复注册监听器、重复 setInterval）。所以走下面的 rebind 通道：
+   *  **脚本不重跑，只把它的注册条目搬到新分区**。
+   */
+  private sharedPartitionOwner = new Map<string, string>();
+
+  /**
+   * [B4-SHARED-PARTITION] identifier 粒度的归属账本（替代 sharedPartitionOwner）。
+   * identifier → { pluginId, partitionKey }。
+   */
+  private sharedEntryOwner = new Map<string, { pluginId: string; partitionKey: string }>();
+  /**
+   * [B4-SHARED-PARTITION] 正在注入中的插件 id（null = 不在注入流程里）。
+   *
+   * 为什么需要它：``setExtensionPrompt`` 的 identifier 在 ST 生态里是**自由字符串**
+   * （BubbleDialogue 用自己的名字，JS-Slash-Runner 用带前缀的 key），
+   * 无法从 identifier 反查「这条注册属于哪个插件」。而 rebind 需要按插件粒度搬运，
+   * 所以在 ``container.appendChild(scriptEl)`` 同步执行的那一帧前后把它设上，
+   * 让 bridge 知道「当前正在执行的是哪个插件」。
+   *
+   * 依赖 ``appendChild(script)`` **同步执行**这一浏览器语义（append 返回时脚本已跑完），
+   * 故用 try/finally 复原，绝不跨 await。
+   */
+  private registeringPluginId: string | null = null;
   context: SillyTavernContext = {
     name: '',
     character: { name: '', description: '' },
@@ -675,6 +714,19 @@ export class SillyTavernPluginRuntime {
     ) => {
       try {
         promptInjection.setExtensionPrompt(identifier, content, position as any, depth, scan, role, filter);
+        // [B4-SHARED-PARTITION] 逐条记「这个 identifier 是哪个插件、在哪个角色分区下
+        // 写的」。记 **owner 插件**：identifier 在 ST 生态里是自由字符串，无法从名字
+        // 反查插件 → 改为「执行期间登记当前插件」。
+        //
+        // ⚠️ 必须记到 **identifier 粒度**而非「插件→分区」：切卡时只搬*仍在场的*
+        // 那些插件的条目。若只记分区，整格搬过去会把上一张卡独有插件的条目也带过来
+        // （回归测试实测到了这个：onlyA-fmt 混进了 B 卡）。
+        if (this.registeringPluginId) {
+          this.sharedEntryOwner.set(identifier, {
+            pluginId: this.registeringPluginId,
+            partitionKey: activeSandboxPartitionKey(),
+          });
+        }
       } catch (e) {
         console.warn('[SillyTavernPluginRuntime] __palinkSetExtensionPrompt 失败:', e);
       }
@@ -1466,6 +1518,11 @@ export class SillyTavernPluginRuntime {
         scriptEl.setAttribute('data-palink-st-plugin-id', plugin.id);
         scriptEl.setAttribute('nonce', 'palink-smart-card');
         scriptEl.textContent = jsItem.content;
+        // [B4-SHARED-PARTITION] 标出「正在执行哪个插件」，让 bridge 能把
+        // setExtensionPrompt 的注册记到该插件名下（identifier 反查不出插件）。
+        // appendChild 同步执行脚本 → 返回时注册已完成，故 try/finally 立即复原。
+        const prevRegistering = this.registeringPluginId;
+        this.registeringPluginId = plugin.id;
         try {
           container.appendChild(scriptEl);
           this.injectedPluginIds.add(plugin.id);
@@ -1474,11 +1531,68 @@ export class SillyTavernPluginRuntime {
             `[SillyTavernPluginRuntime] 注入插件脚本失败 (${plugin.name || plugin.id}):`,
             e,
           );
+        } finally {
+          this.registeringPluginId = prevRegistering;
         }
       }
     }
 
+    // [B4-SHARED-PARTITION] 差集模式收尾：把本次「继续在场」的共用插件注册项
+    // 搬到当前活动角色分区。**这是共用插件注入丢失的唯一修复点**，
+    // 见 rebindRetainedEntries 的注释。
+    if (canDiff) {
+      this.rebindRetainedEntries();
+    }
+
     this.emit('EXTENSIONS_LOADED');
+  }
+
+  /**
+   * [B4-SHARED-PARTITION 2026-10-04] diffOnly 收尾：把共用插件的注册项搬到新卡分区。
+   *
+   * 机制：``sharedPartitionOwner`` 记着「每个插件的 setExtensionPrompt 注册写在哪个
+   * 沙箱分区」。差集注入时共用插件整个被跳过（``injectedPluginIds.has(id)`` →
+   * continue），script 节点不重建 → 浏览器不重跑脚本 → 注册不重跑；而切卡时
+   * ``clearCharacterSandbox(旧卡)`` 已把旧卡那一格删掉 → 新卡拿不到条目。
+   * 这里在差集收尾处把仍在场的插件条目**搬**到当前活动分区。
+   *
+   * 为什么搬而不是重跑（不闪烁、不重复注入的依据）：
+   *  - **不重跑** → script/style 节点不重建 → 已绑事件、面板 DOM、插件内部状态
+   *    全都保持原样，用户侧零闪烁；也不会重复注册监听器/定时器（重跑会）。
+   *  - **搬运是纯账本操作**：只往 ``_sources`` 里写一行，不碰 DOM。
+   *  - **同名覆盖语义与脚本重跑一致**：``rebindSandboxEntries`` 后写覆盖，
+   *    等价于「这个插件又登记了一遍同样的内容」，与重跑所得完全同构。
+   *  - **不会重复注入**：同一分区同 identifier 只有一条（后写覆盖先写），
+   *    所以反复搬运也不会堆出多份。
+   *
+   * 前置条件：活动角色必须**已经**切到新卡（``setActivePromptCharacter`` 先于
+   * ``injectIntoContainer``）—— CharacterChat 的切卡 effect 顺序保证了这点。
+   */
+  private rebindRetainedEntries(): void {
+    const plugins = this.config?.plugins;
+    if (!Array.isArray(plugins)) return;
+    const activeKey = activeSandboxPartitionKey();
+    const activeCharId = activeKey.startsWith('sandbox:') ? activeKey.slice('sandbox:'.length) : '';
+    for (const [identifier, owner] of this.sharedEntryOwner) {
+      if (owner.partitionKey === activeKey) continue;  // 已在当前分区
+      // 只搬**本次仍在场**的插件：已卸载的不搬，避免把上一张卡独有插件的
+      // 条目带进新卡（那正是跨卡串味的形态）。
+      if (!this.injectedPluginIds.has(owner.pluginId)) continue;
+      const ownerCharId = owner.partitionKey.startsWith('sandbox:')
+        ? owner.partitionKey.slice('sandbox:'.length)
+        : '';
+      // 优先读 detachSandbox 留下的快照：切卡清理在插件注入**之前**就删掉了旧
+      // 分区，等这里再实时读必然是空 —— 那正是条目丢失的原因。
+      const detached = promptInjection.peekDetachedSandbox(ownerCharId);
+      const src = Object.keys(detached).length > 0
+        ? detached
+        : promptInjection.snapshotSandbox(ownerCharId);
+      const entry = src[identifier];
+      if (!entry) continue;
+      promptInjection.rebindSandboxEntries(activeCharId, { [identifier]: entry });
+      // 归属更新到新分区，避免下次切卡又从已删除的旧分区取
+      this.sharedEntryOwner.set(identifier, { pluginId: owner.pluginId, partitionKey: activeKey });
+    }
   }
 
   /**
@@ -1549,6 +1663,9 @@ export class SillyTavernPluginRuntime {
     ).filter((el) => el.getAttribute('data-palink-st-plugin-id') === pluginId);
     for (const el of nodes) el.remove();
     this.injectedPluginIds.delete(pluginId);
+    // [B4-SHARED-PARTITION] 插件没了，它的分区归属也作废：
+    // 留着会让它以后重新出现时从**已被删除的旧分区**取条目（取空）或误搬别人的条目。
+    this.sharedPartitionOwner.delete(pluginId);
 
     if (nodes.length > 0) {
       const remaining = Array.from(
@@ -1577,6 +1694,8 @@ export class SillyTavernPluginRuntime {
     this.cleanupExternalPluginUi();
     restoreGlobalFetchGuard();
     this.injectedPluginIds.clear();
+    // [B4-SHARED-PARTITION] 账本随之作废（全量卸载后没有任何插件还「在场」）
+    this.sharedPartitionOwner.clear();
     this.injected = false;
     this.container = null;
     delete (window as any).__palinkStRuntime;
