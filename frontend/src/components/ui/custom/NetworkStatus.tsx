@@ -29,7 +29,7 @@ export function NetworkStatus() {
   return (
     <div
       className={cn(
-        "fixed top-0 left-0 right-0 z-[100] flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition-all duration-300",
+        "fixed top-[env(safe-area-inset-top)] left-0 right-0 z-[100] flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition-all duration-300",
         !isOnline
           ? "bg-red-500 text-white"
           : wasOffline

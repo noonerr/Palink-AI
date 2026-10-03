@@ -7,6 +7,70 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已施工·待真机验收] 报错提示模板落地 阶段一改皮 + 批1止血（本 agent，2026-10-03）
+
+- **文档**：`docs/PROMPT_报错提示模板落地_2026-10-03.md`（上游权威件 `docs/PROMPT_报错提示系统重写_2026-09-30.md`）。
+  备份 `_BACKUPS/2026-10-03_报错提示模板落地/`（`pre/` 24 文件 + `_manifest.tsv` sha256 + `BACKUP_INFO.md`；
+  工作区 stash 快照 sha `b570f14`，tag `snapshot-pre-error-notify-20261003`，基线 HEAD `d153009`）。
+- **三处用户已拍板的决策**（原两份文档互相冲突，不拍板不能动工）：
+  ① 报错卡形态 = **双轨**（内联 `extra.ignore` 节点 + ErrorToast 浮层保留但做 Portal+键盘变量）；
+  ② 范围 = 批1 前端 1.1–1.5 + 后端 1.6(a)(b)；1.6(c) 装配层过滤与批2 另立议题；
+  ③ 阶段一改皮**补做**，严格按 PROMPT 文件名。
+- **阶段一（改皮，已交付）**：`docs/报错提示系统重写_手机端UI原型_Palink风格_2026-10-03.html`
+  （原件未动）+ `docs/改皮交付_报错提示原型Palink风格_2026-10-03.md`（变量级 diff 表 + 对比度算式）
+  + `docs/_原型改皮截图_2026-10-03/`（8 张无头 Edge 实渲染：新旧 × 主题 × 5 个状态，已逐张看过）。
+  自检结论：中性色色相全部落 200–250°/无彩色；正文/辅助/动作文字对比度 19.90/4.83/5.17（亮）、17.10/6.97/8.86（暗）全过 AA；
+  语义色只用于底/描边/图标（≥3.0）；无 10–11px 中文；blur 只剩 dock 一处；圆角全走 token；图标全换 lucide。
+- **批1 前端已落地**：
+  - 1.1 `App.tsx` `<Toaster>` 加 `mobileOffset="calc(env(safe-area-inset-top,0px)+8px)"` + `closeButton`；
+    `index.css` 用 `[data-sonner-toaster]{--offset-top/--mobile-offset-top:... !important}` 兜底
+    （sonner 把 offset 写进内联 CSS 变量，env() 在该链路的展开未经真机证实）。
+  - 1.2 `NetworkStatus.tsx:32` `top-0` → `top-[env(safe-area-inset-top)]`。
+  - 1.3 `ErrorToast.tsx` 重写：`createPortal(document.body)` 逃离 MobilePager 槽位 transform 包含块
+    （对齐 ChatInputArea.tsx:102-127 既有方案）+ `data-palink-error-overlay` + 键盘抬升
+    （`index.css`：`html.palink-kb-open [data-palink-error-overlay]{bottom:calc(100% - var(--palink-kb-vh)) !important}`）；
+    顺带修掉旧 `w-full max-w-md right-4` 把左边缘裁到 −16px 的问题。**两步都做了**（只 Portal 无效）。
+  - 1.4 超时条降级：`CharacterChat.tsx` 的 `bottom-4 right-4 z-50` 独立浮层删除，
+    与错误卡合并进同一 `ErrorToastPortalContainer`（互斥渲染，坐标冲突消失），并补上原本没有的关闭按钮
+    （`setTimeoutWarning` 从 hook 透出，CharacterView 未传时按钮退化隐藏，prop 设为可选以免炸旧调用方）。
+  - 1.5 新建 `lib/systemMessage.ts` 唯一构造入口：`buildSystemNoteContent()`（**`Error:` 统一前缀**，
+    弃用 `⚠️`——旧前缀正是绕开后端所有错误守卫的原因）+ `SYSTEM_NOTE_EXTRA`（`{ignore:true}`）+ `isSystemNoteMessage()`。
+    四处写入点全部收敛：`useCharacterChat.ts` WS onError / SSE catch、`useChatView/index.ts` 两处。
+    `Message.tsx` 对 `extra.ignore===true` 的消息走独立「系统提示」外观（红条 + 前景文字 + lucide 图标，
+    保留 `.mes`/`mes_block`/`data-mesid`/`is_user` 属性不破坏 ST 插件选择器）；TTS 按钮随早退分支自然不渲染。
+- **批1 后端已落地（1.6(a)(b)）**：
+  - (a) `character_ext.py` SSE `persist_snapshot` 开头加 `if result.is_error_only(): return`
+    （**必须用 is_error_only 而非 has_content**——错误分支先赋值再落库，has_content 被赋值动作自己满足）；
+    `websocket.py` 3 处手写 `startswith("Error:")` 换成同一谓词（语义逐字符等价，含 `.strip()`）。
+  - (b) `character_ext.py` 两处（主 SSE 轨 + action 轨）停止把报错 `+=` 拼进真回复正文，
+    改存 `StreamResult.stream_error`（`stream_builder.py` 新增 slot）→ `extra.stream_error` 落库。
+  - 新增 `backend/tests/test_error_persist_guard.py`（14 例：谓词行为 / has_content 陷阱锁死 /
+    stream_error 不污染正文 / WS 旧手写判断与新谓词逐参等价）。
+- **门禁（自证部分）**：`npx tsc --noEmit` = **0 error**；`npx vitest run` = **46 文件 / 635 passed / 3 skipped / failed=0**
+  （含新增 `system-message-contract.test.ts` 8 例）；`npx eslint src` = 74 errors / 51 warnings，
+  **本次改动文件 0 新增**（Message.tsx 的 2 个 error 在 106/524 行，属未触碰的既有代码，已用 `git show HEAD:` 原件核对行号）。
+  ⚠ `npm run lint`（`eslint .`）会扫到 `dist`/`node_modules` 等目录报 **98386 errors** —— 这不是本次引入，
+  是 lint 范围未收敛，建议另立议题把脚本改成 `eslint src`。
+- **⚠️ 待办 / 未做**：
+  - **1.6(c) 未做**：`character_message_builder.py:174-183` 无分支回退查询补 `Error:` 过滤。
+    按权威件要求需**先跑 SQL 量影响面**（`branch_id IS NULL` 占比 / 现存 `Error:` 行数 / 正文尾部带 `[...]` 后缀行数），
+    SQL 须由用户在容器内执行（本机不直连生产库）。若决定连历史脏数据一起清，**必须先备份**。
+  - **后端容器 pytest 已跑通**：`docker compose build backend && up -d` 后整条跑，
+    `docker exec palink-ai-backend-1 sh -c "cd /app && python -m pytest tests/ -q"` =
+    **1688 passed / 42 skipped / 0 failed**（182s）。本批新增 `test_error_persist_guard.py` 12 例；
+    相对 2026-10-02 基线 1673 多 15 例，差额含并行 agent 同期新增用例。
+    ⚠️ 基线口径已从 1599 → 1673 → 1688 三连跳，引用旧数字前先重跑。
+  - **`frontend/dist` 未重建**：本批只改了 `src/`，线上产物仍是旧版。上线需走
+    `VITE_OUT_DIR=dist_new` → `cp -r dist_new/. dist/` → `gzip-dist.cjs` 流程（禁 `npm run build`，会清空在用 dist）。
+  - **批2（notify.ts / 错误模型合并 / toastr 归一 / 红字对比度）与 1.6(c)、3.x 全部未动**，另立议题。
+- **待用户真机验收（只有用户能验，未替他声称已验）**：
+  ① 断网时顶部 toast 第一行是否完整可读（灵动岛避让是否生效，含 env() 在 sonner 内联变量里的展开）；
+  ② **键盘开着时触发失败**能否看到错误卡并点到「关闭」——这是唯一能证伪「键盘元凶」假设的测试；
+  ③ 浏览器模式（非 PWA）同一场景（dock 上沿两种模式差约 26px）；
+  ④ 失败后的消息是否以「系统提示」卡呈现、点重发能走通、且下一轮提示词里**没有**这段错误文案。
+- **⚠️ 环境问题（本会话实测，与本任务无关但急需处理）**：**C: 盘 100% 满（199G 用满，仅剩 1.3G）**，
+  会直接导致无头浏览器截图等临时文件写入间歇性失败；本会话的 Edge 截图因此只能落到 D 盘 `--user-data-dir` 才稳定。
+
 ### [已施工·门禁全绿·A/B 结论已出] 格式规范注入残本修复 + A/B 重测（本 agent，2026-10-02）
 
 - **文档**：`docs/PROMPT_接手批_格式规范残本与A_B重测_2026-10-02.md`。备份
@@ -174,12 +238,13 @@
   入口（`POST /api/character-chat` 的 `__INIT__` 建会话 + 每轮生成；`POST /api/character-sessions/{sid}/swipe`），
   Bearer 头（**Bearer 豁免 CSRF**，已验证），token 由容器内 `security.create_access_token({"sub":"admin"})` 现签。
   冒烟已通（`__INIT__` 落库开场白 len=2385 / 生成 + swipe 200）。
-  **阻断原因 = 模型网关余额不足**（非代码问题）：
+  **阻断原因 = 模型网关余额不足**（非代码问题，**只有用户能处理，agent 无法代办**）：
   `openai.PermissionDeniedError: 403 new_api_error insufficient_user_quota — 用户剩余额度 ¥11.545023，
   需要预扣费额度 ¥17.743380`（每次按 `max_tokens=16384` 预扣）。14:34 起所有生成秒回 `Error:` 存根
   （23 字），故**本轮真机零有效样本**。
-  ⇒ 复跑前置：网关充值（或把 `max_tokens` 降到能容纳其推理量的档位）。复跑命令：
-  `docker exec palink-ai-backend-1 python /app/scripts/_drive_real_acceptance.py --character 4af0c6d3-… --model deepseek-v4-flash --turns 1,3 --n 8`
+  ⚠️ **另有一笔账没结**：本轮共发出约 40 次生成请求，14:34 后全部因 403 失败，
+  **失败请求是否已释放预扣额度需去网关核对**（见下方「成本提示」条）。
+  ⇒ 复跑前置：网关充值（或把 `max_tokens` 降到能容纳其推理量的档位）。复跑命令：  `docker exec palink-ai-backend-1 python /app/scripts/_drive_real_acceptance.py --character 4af0c6d3-… --model deepseek-v4-flash --turns 1,3 --n 8`
   断言：`--audit-stored --audit-session <sid> --with-swipes`（出框率 + 框内 leak 两条一起看）。
   **不要**把 `max_tokens` 压得太低：推理 token 计入 completion，截断会切掉闭合标签 → 误判"无框"。
 - **异卡对照口径纠正（我先前报错）**：
@@ -768,6 +833,12 @@
 - 本轮改动**未提交 git**（工作树 8 删除 + 1 修改），分支 `st-plugin-compat-20260727`。
 
 ### [已完成·待容器验证] 注入体系与 ST 1.18 对齐审计 + 四个 P0 修复：记忆封存接线 / MVU 回滚 / persona 枚举对齐 / 插件最小可用集（2026-09-08）
+> **验收判据已于 2026-10-03 补齐** → `docs/待验收项判据补齐_2026-10-03.md §一`（逐项给了可读数与判定分支）。
+> 补判据时**一手核实**：代码已入库（commit `79efad7`）；`maybe_auto_compress` 接线真实存在
+> （`chat.py:436` + `websocket.py:515` 两处调用方）。
+> ⚠️ 本条原记门禁证据为 `py_compile` 全过，**而 `py_compile` 只验语法不验行为**，
+> 不能当验收通过。另新增一条原文档未列的隐患：AI 摘要在无 key 时静默降级为规则压缩，
+> **「压缩成功」与「AI 摘要被跳过」当前无法区分**（缺埋点），判据中已列为必查项。
 - **审计报告**：`docs/AUDIT_注入体系与ST对齐_2026-09-08.md`（四路并行源码审计 + 关键 P0 人工复核；含逐项 Palink 文件:行号 / ST 对照 / 差距 / 代码方案）。对齐度：prompt_order 95 / 提示词注入 88 / 正则状态栏 85 / persona 75 / 记忆注入 70 / 插件 50 / MVU 40 / 记忆封存 20。
 - **结论**：**主干已对齐 ST 1.18，无需动**——世界书 8 position、主次键 selectiveLogic、递归扫描与防递归、constant/sticky/delay/cooldown、AN 三位置+frequency 取模、depth prompt role 0/1/2、Instruct 模板、宏主体约 60 个、正则 placement 枚举、角色卡全字段。短板集中在记忆生命周期闭环与插件生态。
 - **⚠ 避免重复踩（初判被复核推翻）**：曾判定「缺 ST 的 promptConstructionStrategy（P0）」实为**误判**——Palink 有更完整的 **prompt_order 全量重排**（`roleplay_prompt_assembly.py:717-730` PROMPT_ID_* + `_apply_full_prompt_order` + `_extract_char_field_messages_for_order` :786-800/:3507-3515 角色卡字段拆分 + `_apply_dynamic_trimming` 优先级裁剪），强于 ST 的二选一 strategy，**本项不需要补**。
@@ -786,6 +857,13 @@
 - **仍未做（第三批+）**：插件更新机制（`update_url`/`auto_update`/版本比对/市场）、`injectPrompts` 真实现、`updateChatMetadata`/`getThumbnailUrl`、`chat_deleted`/`generation_after_commands` 接线、manifest `excludes`；三轨架构性分裂未根治（本批只做 API 面拉齐）。P1：长期记忆文件导入、`user_profiles` 接线或删表、embedding provider 扩展、`persona_description_depth` 可配、世界书条目级 budget。
 
 ### [P0已施工·待体感验收] 移动端 UI 精致度提升三档方案（2026-09-06 调研+施工）
+> **验收判据已于 2026-10-03 补齐** → `docs/待验收项判据补齐_2026-10-03.md §二`。
+> 机器侧断言（393×852 数值 / computed 值 / 零溢出）**已成立且可复跑，不需要补**；
+> 本次补的是**真机三条**（聚焦不放大 / toast 居中 / 压感反馈）的判据。
+> ⚠️ 本批最大的一次视觉变更是**毛玻璃全退役**（移除 100+ `backdrop-filter` 层），
+> 属纯主观项，**必须由用户明确给出「保留」或「回滚」结论**——
+> 已做完 11 批却连要不要保留都没定，这是本条最该收口的地方。
+> 回滚锚点：`stash a9f9071` / `3b6523f` 两级快照。
 - **报告**：`docs/REPORT_移动端UI精致度调研_2026-09-06.md`（§一~七调研，§八 P0 施工记录；仅移动端，桌面零波及）。三层欠账：①移动端基本功缺口（主输入框 14px 触发 iOS 聚焦自动放大 / duration-400 死类×15 动画根本没生效 / 触控反馈全项目仅 23 处 active: / toast 桌面位 top-right）②设计基线缺失（画布三色打架 #F8FAFC/#f5f5f5/#FFFAFA / 圆角 794 处 9 种混用 / Manrope·Sora 声明从未加载 / 图标 8~28px 十几档 / text-[10px]×95）③状态设计缺口（43 spinner vs 1 skeleton / 空态裸文本 / 无侧滑返回·长按菜单·下拉刷新）。
 - **P0 已施工（2026-09-06，备份 stash 11f4008 + 源码归档）**：16px 输入框 / duration-400 token 复活 15 处 / `.palink-press`(+`-keep`) 触控反馈 13 处（@media 触屏守卫，桌面零波及）/ toast 移动端 top-center / 无效渐变×2 + 顶栏死 CSS 删除 / 附件删除钮 44px 命中区。**验证**：tsc 0 + build ✓ + IAB 393×852 数值断言全绿（16px computed、0.4s computed×15、press DOM 4+8、bundle top-center 三元）+ 截图无布局破坏。**调研修正**：TopBar.tsx 实为零引用死组件（blur「配方分裂」不存在，线上只有 16px/160% 一套），删除归 P1；ChatSessionList 移动端删除钮 hover-only 隐藏（有删除模式兜底，登记观察）。未提交 git（验收后按报告 §八清单单独提交）。**待真机**：压感反馈（触屏才激活）/ iOS 聚焦不放大 / toast 居中。
 - **追加批（同日，用户报「设置选项+子菜单难看」）**：①设置主菜单 7 个渐变胶囊（箭头还是 rotate 出来的反向「返回」箭头）→ iOS 风格分组列表（账号/角色扮演/通用+admin 管理组，bg-card 容器+发丝分隔线+图标座+ChevronRight+背景色压感，SettingsView mobileMenuGroups）；②角色扮演引擎子 tab 条窄屏断词换行 → grid-cols-4 等分单行 + 恒挂 border-b-2 修 2px 基线跳动（RoleplayEngineTab）。`.settings-menu-btn` CSS 实锤零引用死代码归 P1。tsc 0 + build ✓ 35.33s + IAB 截图（移动三组白卡/子 tab 单行/桌面 1280 零波及）。报告 §九。
@@ -811,7 +889,12 @@
 ### [已完成·已实测] 角色聊天三修复：删除 422 守卫 + 选择删除可用性 + dock 隐藏改键盘真检测（2026-09-05）
 - **① 删除消息 422**：前端临时 id（乐观消息未落库）撞后端 int 类型声明 → 422。修复=非纯数字 id 仅本地移除不调 API。**② 选择删除「没有用」**：实测定案——全链路（进模式/点消息选中/确认框/执行）本来就是通的，坏在可用性：header 删除模式按钮文字换行叠标题（右侧容器 shrink-0 + 按钮 nowrap 修复）、选择框深色下几乎不可见（对比度提升）。**③ dock 无键盘也消失**：K13 的 :has(:focus) 纯 CSS 只认焦点——「键盘已收起但焦点仍在」（Android 返回键/iOS 收起键）时 dock 藏着不回来（K 系列注释里记录过的取舍缺陷被真机命中）。修复=dock 隐藏改由 useVirtualKeyboard 检测链驱动（聚焦+视口实测收缩>60px 挂 `palink-dock-kb-hide` 类）；**类名刻意避开 palink-kb-open**（其休眠的 K9/K12 布局规则依赖已停写的 --palink-kb-vh，激活会跳版）。**这是对 K13「纯 CSS 基线」的一次用户报障驱动的定向修正**：composer 落底仍走 :has(:focus)，仅 dock 改检测驱动；tsc 干净、build 部署、IAB 实测聚焦不误隐+点选可用。commit 438a555。
 
-### [待拍板·保留意见] ST 插件「全兼容」评估结论与 P1 垫片批 / extension-market 去留（2026-09-05）
+### [已关闭·部分保留意见] ST 插件「全兼容」评估结论与 P1 垫片批 / extension-market 去留（2026-09-05）
+> **状态已于 2026-10-03 订正**：原标题「待拍板·保留意见」是 2026-09-05 的状态。
+> 其中 **extension-market 部分已关闭**：后续盘点（见本文件 L823）确认 `lib/extension-market/`
+> 为双向死功能（调用的 `/api/extensions/*` 实弹全 404 且后端无端点），
+> 09-05 登记的「去留待拍板」**就地关闭为删除**。⚠️ 该死模块**至今未物理删除**，仅关闭了决策。
+> **P1 垫片批部分仍是「保留意见、暂不立项」**，这一半口径有效、维持不变。
 - **评估报告**：`docs/REPORT_ST插件全兼容可行性评估_2026-09-05.md`——结论：100% 全插件兼容是伪命题（server plugins/外部服务未配置/深度绑定 ST 内部三类架构性出界），但常用插件面已完成约八成，剩余缺口是有界清单（power_user 别名、/api/sprites、向量嵌入映射、translate/{provider}、caption/classify 薄代理等，合计 2-3 天）。
 - **用户拍板（2026-09-05）**：P1 垫片批与 extension-market 去留**均保留意见、暂不立项**；extension-market 当前维持死代码现状（无 UI 入口、后端零端点、无功能影响）。后续若实装新插件遇到缺口，按评估报告 §五 的按需适配口径逐项补，再顺势重启该批。
 
@@ -1101,7 +1184,11 @@
 - **影响面确认**: 存量外发的旧附件 URL 部署后即 401（scope 强制）=修复目的；前端渲染链路动态重构造不受影响
 - ⏸ 前端 dist 统一构建待性能批落地后执行（避免构建竞态）
 
-### [进行中] 测试归零批次（三契约漂移甄别 + U-3 端点级回归，2026-08-24 spec 就绪）
+### [已完成·已验收·本条为 2026-08-24 spec 阶段的旧版副本] 测试归零批次（三契约漂移甄别 + U-3 端点级回归）
+> **状态已于 2026-10-03 订正**：本条是当天的 spec 就绪版记录，标题「进行中」为**遗留未更新**。
+> 实际成果见下方 L1229「[已完成·已验收] 测试归零批次（2026-08-24 施工 + 当日达成全绿）」——
+> 宿主全量 pytest **952 passed / 0 failed 历史性全绿**，F1/F2/F3 + U-3 全部落地。
+> **下方 T-1/T-2/目标三行是施工前的计划，已全部完成，勿据此重做。** 保留本条仅为留档当时的决策树与鉴别过程。
 - **spec**: `docs/SPEC_测试归零批次_三契约漂移与U3_2026-08-24.md`——与安全批/性能批**三线并行**（禁改清单九文件互斥），主战场 backend/tests/
 - **T-1**: 三失败 A/B/C 决策树甄别——F1 p1_fixes（倾向断言未跟随 _p1-split.mjs 机械拆分）/ F2 st_contract（倾向 bridge.js 白名单真缺 20 端点，补前抽查端点存在性）/ F3 st_plugin_import（需 git 历史对照甄别）
 - **T-2**: U-3 封存端点级回归——PUT 落库重定向 / GET 报告不回写两场景 DB fixture 测试
@@ -1281,7 +1368,17 @@
 - **验证**: 后端全量 pytest 898 过/4 存量失败零新增（基线逐一对应 mvu_engine/p1_fixes/st_contract/st_plugin_import）；前端 tsc 零错误 + npm run test:contract 扩至 7 文件 119 用例全过；docker compose up -d --build backend 后容器 healthy
 - **勘误记录**: spec §12 的「分离存储进行中」已过时（当日完工）；§11 #3 为误报（见上）；交接文件行号漂移不影响结论
 
-### [进行中] ST 1.18.0 对比分析的后续实施（2026-08-20）
+### [仅剩 1 项纯调研未做] ST 1.18.0 对比分析的后续实施（2026-08-20）
+> **状态已于 2026-10-03 订正**：原标题「进行中」是 2026-08-20 的状态。
+> 待办 1~4 已于 2026-08-22~08-25 全部完成（条内已划删除线）。
+> **真正没做的只剩「待办 5」**——纯调研对比（`memory_module/`、`worldbook_vector_service.py`、
+> 前端 regex、`sillyTavernPluginRuntime.ts`、`st-plugins/`、`plugins.py`），
+> 其中「与 ST vectors 对比」本身从未开工。**该项无代码产出、无人承接，已挂 6 周。**
+>
+> ⚠️ **条内「仍开放·需拍板或按需做」那份清单已过期，勿照它去重做**（订正于 2026-10-03）：
+> 该行列出的 A-5 / A-7 / C-4 后半 / D-9 四项，**其后各自条目均已记载完工**
+> （D-9 于 08-27 修；A-5/A-6/A-7/C-4b 属「P2 剩余六项」于 08-27 一次施工完毕）。
+> 该清单是 08-25 审计时的快照，未随 08-26/08-27 两批施工回填。
 - **状态**: 分析已完成（报告落盘）；待办 3（depth 队列排序权重）已于 2026-08-22 实施 ✅，其余待办未开始
 - **交付**: `PALINK_VS_SILLYTAVERN_COMPARISON.md`（完整对比）+ `HANDOFF_ST对比分析_2026-08-20.md`（交接）
 - **待办**（按优先级）:
@@ -1316,7 +1413,14 @@
 - **待办**: 修复/重启 `backend/scripts/_monitor_backend.py` 监控脚本，复现并抓线程栈定位内存来源
 - **详见**: `HANDOFF_Ollama部署与无限加载排查_2026-08-19.md`
 
-### [进行中] 统一向量引擎 / 换库（跨两个项目）
+### [Palink 侧已完成·仅剩跨仓库验收] 统一向量引擎 / 换库（跨两个项目）
+> **状态已于 2026-10-03 订正**：原标题「进行中」是 2026-08-19 的状态，Palink 这半边**已全部做完**
+> （`OllamaEmbedder` + compose 服务 + bge-m3 1024 维 + 容器内实测 dim=1024）。
+> 待办 1「存量记忆重算」已取消，待办 2「奈酱侧无需改动」已自然消解，**都不是活**。
+> **真正剩下的只有最后一行「验收」**，且必须在**另一个仓库（奈酱/hemers）**跑语义基准，
+> Palink 仓库内做不了 → 长期挂「进行中」属误导。
+> 另注：2026-08-29 反向验证轮修掉的 P0「backend 全局冻结」与本条 2026-08-19「内存飙升卡死」
+> **同机制**（当时未定位到），可作本条的历史背景。
 - **状态**: Ollama 已 Docker 部署并激活（2026-08-19），存量记忆已全部清除（用户决策，不再重算）
 - **来源**: 与用户讨论第二轮对话思维链死循环时由用户提出
 - **目标**: 统一 Palink-AI 与另一个项目（奈酱/hemers 助手）的向量引擎

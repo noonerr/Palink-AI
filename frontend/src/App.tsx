@@ -391,20 +391,26 @@ const RouteFallback = () => (
 // ─── 移动端主页面轨道（pager）───
 // 四个主 tab 的页面常驻并排（各自独立 transform 层），位移由 mobilePager 桥的
 // 连续位置 p 驱动。注意：拖动 dock 时只移动滑块（Sidebar.applyFrame），页面
-// 停在当前 tab；只有松手判定 / 点击 / 路由切换时（Sidebar.springTo）才由弹簧
-// 把页面从当前页滑到目标页（不擦洗页面）。
+// 停在当前 tab；只有松手判定 / 点击 / 路由切换时（Sidebar.springTo）才 emit
+// animate=true，槽位挂 CSS transition 滑到目标页（不擦洗页面）——K21g：吸附
+// 动画在合成器上跑（跟随面板 120Hz），不再走 rAF JS 弹簧（WebApp 内 rAF=60Hz）。
 // 槽位只动 transform（GPU 合成，不触发 layout/paint）；fixed 子元素会以槽位为
 // 包含块，恰好等于整屏区域，几何与原先一致。
 const MOBILE_PAGE_TABS = ['/chat', '/workspace', '/characters', '/settings'];
+const PAGE_SNAP_TRANSITION = 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1)';
 
 function MobilePager({ renderSlot, dark = false }: { renderSlot: (tabId: string, location: Location) => ReactNode; dark?: boolean }) {
   const location = useLocation();
   const slotRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  const applyTransforms = useCallback(() => {
+  const applyTransforms = useCallback((animate = false) => {
     const p = mobilePager.p;
     slotRefs.current.forEach((el, i) => {
-      if (el) el.style.transform = `translate3d(${(i - p) * 100}%, 0, 0)`;
+      if (!el) return;
+      // K21g：吸附 emit(animate=true) 时挂 CSS transition（合成器 120Hz）；
+      // 初始对齐 / resize / 拖动期直写一律禁过渡
+      el.style.transition = animate ? PAGE_SNAP_TRANSITION : 'none';
+      el.style.transform = `translate3d(${(i - p) * 100}%, 0, 0)`;
     });
   }, []);
 
@@ -1147,7 +1153,17 @@ function App() {
         } />
       </Routes>
       {/* P0-4：移动端 toast 居中——top-right 是桌面位，窄屏贴灵动岛且遮顶栏内容 */}
-      <Toaster richColors position={isMobile ? 'top-center' : 'top-right'} />
+      {/* 【报错提示 1.1】移动端顶部避让灵动岛：viewport-fit=cover（index.html:12）把页面铺到
+          状态栏/灵动岛背后，sonner 默认 top:0 会把气泡标题行盖进灵动岛带（实测 68px 中 43px 在带内）。
+          offset 用 env(safe-area-inset-top)+8px；同时在 index.css 用 [data-sonner-toaster] !important
+          兜底覆盖 sonner 的 --offset-top/--mobile-offset-top（env() 写进 CSS 变量的展开链路未经真机证实）。 */}
+      <Toaster
+        richColors
+        position={isMobile ? 'top-center' : 'top-right'}
+        offset={isMobile ? undefined : 16}
+        mobileOffset="calc(env(safe-area-inset-top, 0px) + 8px)"
+        closeButton
+      />
       <Popup />
     </BrowserRouter>
     </ErrorBoundary>

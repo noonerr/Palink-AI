@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye, Volume2, Pause, Play, Loader2, ImagePlus } from 'lucide-react';
+import { Copy, Check, Zap, Database, RefreshCw, Trash2, Globe, ExternalLink, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, X, Pencil, EyeOff, Eye, Volume2, Pause, Play, Loader2, ImagePlus, AlertCircle } from 'lucide-react';
 import { cn, parseThinkingContent } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import ReactMarkdown from 'react-markdown';
@@ -23,6 +23,8 @@ import { shouldUseInlineCardRendering } from './smart-card-runtime/inline/inline
 import { StatusBarPanel, type CharacterStatusBar } from './StatusBarPanel';
 import TavernHelperPanel from './TavernHelperPanel';
 import { extractCharacterStatusBars } from '@/lib/statusBar';
+// 【报错提示 1.5】识别 extra.ignore=true 的失败占位节点
+import { isSystemNoteMessage } from '@/lib/systemMessage';
 import { ttsService } from '@/services/tts';
 import { useTtsMessageStatus } from '@/hooks/useTtsMessageStatus';
 import { messageFormatter, applySillyTavernDisplayPipeline, stripVoiceDescriptionMarkers, downgradeUnconsumedBubbleMarkers, stripUnrenderedSemanticTags } from '@/utils/sillyTavernDisplayPipeline';
@@ -1310,6 +1312,43 @@ function MessageInner({
     && !hasStatusBarScript
     && statusBars.length === 0
     && !cardAllowsImmersive;
+
+  // 【报错提示 1.5】extra.ignore === true 的失败占位节点：
+  // 不再伪装成 AI 回复，改用「系统提示」外观（左侧红条 + 前景文字 + 图标）。
+  // 装配层已忽略该类消息（character_message_builder.py:205-216，对齐 ST IGNORE_SYMBOL），
+  // 因此它可见、可重发、但不会回喂模型；TTS 亦跳过（见下方 ttsTarget 计算）。
+  // 保留 .mes / mes_block / data-mesid / is_user 属性，ST 插件的选择器不受影响。
+  const isSystemNote = !isUser && isSystemNoteMessage(message.extra);
+  if (isSystemNote) {
+    const noteLines = String(message.content ?? '').split('\n').filter(Boolean);
+    const noteTitle = noteLines[0]?.replace(/^Error:\s*/, '') || '生成失败';
+    const noteBody = noteLines.slice(1).join(' ');
+    return (
+      <div
+        className={cn(
+          "mes flex gap-3 items-start group",
+          isInDeleteMode && "cursor-pointer",
+          isItemSelected && "bg-primary/5 rounded-lg p-1 -m-1"
+        )}
+        data-mesid={messageIndex}
+        {...{
+          mesid: messageIndex !== undefined ? String(messageIndex) : undefined,
+          is_user: 'false',
+          is_system: 'true',
+        } as Record<string, string | undefined>}
+      >
+        <div className="flex items-start gap-3 w-full max-w-[90%] md:max-w-[75%] lg:max-w-[65%] rounded-xl border border-border border-l-4 border-l-red-500 bg-card px-4 py-3">
+          <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 text-red-500" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[15px] font-semibold text-foreground">{noteTitle}</div>
+            {noteBody && (
+              <div className="text-sm text-muted-foreground mt-1 break-words">{noteBody}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
