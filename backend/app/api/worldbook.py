@@ -486,7 +486,7 @@ async def import_worldbook(
 ):
     """导入 SillyTavern V2 JSON 世界书文件
 
-    [WB-CHAR-BIND-IMPORT 2026-10-04] 新增可选表单字段 ``character_id``：
+    [WB-CHAR-BIND-IMPORT 2026-10-03] 新增可选表单字段 ``character_id``：
     导入时就能指定这本书记到哪张卡名下（与建书接口 POST "" 的 ``character_id``
     语义完全一致，走同一个 ``_resolve_bindable_character_id`` 校验）。
 
@@ -544,7 +544,7 @@ async def import_worldbook(
     except ValueError:
         description = ""
 
-    # [WB-CHAR-BIND-IMPORT 2026-10-04] 归属校验在建行之前，与建书接口 POST "" 共用
+    # [WB-CHAR-BIND-IMPORT 2026-10-03] 归属校验在建行之前，与建书接口 POST "" 共用
     # 同一个 ``_resolve_bindable_character_id``：绑到别的用户的角色 → 400 点名报错，
     # 不静默落成全局书（静默落全局 = 用户以为隔离了其实没隔离）。
     character_id = _resolve_bindable_character_id(db, user.id, character_id)

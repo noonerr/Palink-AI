@@ -1,3 +1,8 @@
+> ⚠️ **口径已作废（2026-09-23 起）**：本文提及的 `npm run test:contract` 契约测试入口已删除，
+> 契约测试全部迁入 vitest（浏览器环境由 `vitest.config.ts` 的 `jsdom` 提供）。
+> 回归门禁请改跑 `cd frontend && npx vitest run`（只认 `failed = 0`）；详见 `AGENTS.md` §验证。
+> 本文其余内容为历史记录，未改动。
+
 # SPEC — palink-new 合并回主区 + 未修完问题收尾（2026-10-03）
 
 > **✅ 施工完成（2026-10-03 19:40）**。9 批提交 `555ac9b` → `e44e063`，
@@ -101,6 +106,10 @@ frontend/src/services/prompt-injection.ts                   ← T3 角色分区
 2. **目录名日期订正**为 `2026-10-03`（改目录名 = 重命名，不是改写存量内容，允许）
 3. 台账登记进主区 `_BACKUPS/_INDEX.md`
 4. **验收判据**：`git ls-files _BACKUPS/` 能查到该 `BACKUP_INFO.md`
+
+> **执行状态（2026-10-03 22:13 订正）**：✅ 全部完成 —— 目录已重命名为
+> `2026-10-03_清理未绑定世界书`（新增 `_RENAME_NOTE.md` 说明改名，**未改写**存量 `BACKUP_INFO.md`）；
+> palink-new 已补建独立 `_BACKUPS/_INDEX.md`；主区台账引用已同步。
 
 ### R3【高收益·插件兼容】Z5 宏求值恒等函数
 
@@ -295,4 +304,4 @@ alembic 0067_add_memory_character_id
   `[WB-UNBOUND]` 告警，需你去世界书管理页补绑角色
 - **结构性欠账**（另立 spec）：上帝文件 5525 行、四份 MessageFormatter、services→api 环、
   P1-12 前端宏展开空串、P1-13 slash command 只写不读、P1-5 LLM 无故障转移
-- `2026-10-04_清理未绑定世界书` 目录名日期仍错（实际 10-03），已在其 `BACKUP_INFO.md` 标注待订正
+- ~~`2026-10-04_清理未绑定世界书` 目录名日期仍错（实际 10-03）~~ → **已订正（2026-10-03 22:13）**：重命名为 `2026-10-03_清理未绑定世界书`，见其 `_RENAME_NOTE.md`

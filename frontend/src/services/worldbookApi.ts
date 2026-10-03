@@ -69,7 +69,7 @@ export const worldbookApi = {
   /**
    * 导入 SillyTavern V2 JSON 世界书
    *
-   * [WB-CHAR-BIND-IMPORT 2026-10-04] 可选 `characterId`：导入时就指定这本书记到
+   * [WB-CHAR-BIND-IMPORT 2026-10-03] 可选 `characterId`：导入时就指定这本书记到
    * 哪张卡名下。**不传 = 全局书**（与修复前逐字一致）。
    * ⚠️ 必须走 FormData 追加字段（后端是 `Form(None)`，不是 query 参数）——
    * 传查询参数会被 FastAPI 静默忽略，书照样落成全局书，用户以为隔离了其实没有。

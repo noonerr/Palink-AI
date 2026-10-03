@@ -1926,7 +1926,7 @@ def build_worldbook_context(
                 world_book_ids.append(wb_id)
                 book_lore_source[wb_id] = "character"
 
-    # 源 3 已删除（2026-10-04，用户裁定）：**不注入「未绑定角色」的书**。
+    # 源 3 已删除（2026-10-03，用户裁定）：**不注入「未绑定角色」的书**。
     #
     # 用户实际用法：所有世界书都是随角色卡导入的，每本都该绑定到具体角色。
     # 此前把 `character_id IS NULL` 当作「全局书」无条件注入，是方向反了 ——

@@ -88,7 +88,7 @@ REASONING_BUDGET_MIN = 1024
 # ST 1.18 prompt-converters.js:1165 非流式上限（一次性请求时思考额度封顶）
 REASONING_BUDGET_NON_STREAM_MAX = 21333
 
-# [B2-AUTO-THINK 2026-10-04] ``auto`` 档的思考额度近似值。
+# [B2-AUTO-THINK 2026-10-03] ``auto`` 档的思考额度近似值。
 #
 # ST 1.18 的 ``auto`` 语义是 calculateClaudeBudgetTokens 直接 ``return null``：
 #   不下发独立思考额度，把分配权**交还模型自适应**（Claude 会在 max_tokens 内

@@ -26,7 +26,7 @@ interface UseWorldBookReturn {
   updateWorldBook: (id: string, data: { name?: string; description?: string; raw_content?: string; tags?: string[]; character_id?: string | null }) => Promise<void>;
   deleteWorldBook: (id: string) => Promise<void>;
   /**
-   * [WB-CHAR-BIND-IMPORT 2026-10-04] characterId：导入时就把书记到某张卡名下。
+   * [WB-CHAR-BIND-IMPORT 2026-10-03] characterId：导入时就把书记到某张卡名下。
    * 不传/空 = 全局书（与修复前逐字一致）。
    */
   importWorldBook: (file: File, characterId?: string | null) => Promise<WorldBook>;

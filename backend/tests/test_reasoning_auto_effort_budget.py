@@ -1,4 +1,4 @@
-"""[B2-AUTO-THINK 2026-10-04] auto 档思考预算回归守卫。
+"""[B2-AUTO-THINK 2026-10-03] auto 档思考预算回归守卫。
 
 缺陷：``calculate_reasoning_budget`` 对 ``auto`` 返回 **0**，而下游
 ``reasoning_on`` 只判「effort 非 None 且非 off」→ ``auto`` 照样进推理分支，

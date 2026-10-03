@@ -80,8 +80,8 @@ def _mk_parents(db: Session, sess_id: str, book_id: str | None = None):
         id=sess_id, user_id=user.id, character_id=char.id, title="batch-c",
     ))
     if book_id:
-        # [WB-CHAR-ISOLATION 修订 2026-10-04] 必须绑到本会话角色：未绑定的书
-        # 自 2026-10-04 起不再注入任何对话（不再当"全局书"）。本文件测的是预算/
+        # [WB-CHAR-ISOLATION 修订 2026-10-03] 必须绑到本会话角色：未绑定的书
+        # 自 2026-10-03 起不再注入任何对话（不再当"全局书"）。本文件测的是预算/
         # 分组/向量召回逻辑，不是绑定语义，所以补上绑定即可让用例继续有效。
         db.add(WorldBook(id=book_id, user_id=user.id, name="batch-c-book", character_id=char.id))
     db.commit()

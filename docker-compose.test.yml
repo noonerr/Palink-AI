@@ -1,4 +1,4 @@
-# ⚠️ palink-new 真机验收栈（独立编排，2026-10-04）
+# ⚠️ palink-new 真机验收栈（独立编排，2026-10-03）
 #
 # 与 `docker-compose.yml` 的关系：**互不干扰**，但复用原栈的 ollama / new-api 容器。
 # 原因：ollama 里的 bge-m3 模型（~1.2GB）下载耗时且占盘，新栈重复拉一份纯属浪费；

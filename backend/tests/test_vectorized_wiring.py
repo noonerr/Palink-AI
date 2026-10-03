@@ -59,7 +59,7 @@ def _mk_parents(db_session: Session, sess_id: str, book_id: str):
     db_session.add(CharacterChatSession(
         id=sess_id, user_id=user.id, character_id=char.id, title="vec",
     ))
-        # [WB-CHAR-ISOLATION 修订 2026-10-04] 绑到本会话角色：未绑定的书自该日起
+        # [WB-CHAR-ISOLATION 修订 2026-10-03] 绑到本会话角色：未绑定的书自该日起
     # 不再注入任何对话（不再当"全局书"）。本文件测的是向量/预算逻辑，
     # 不是绑定语义，补上绑定让用例继续有效。
     db_session.add(WorldBook(id=book_id, user_id=user.id, name="vec-book", character_id=char.id))
@@ -193,7 +193,7 @@ class TestSyncTriggerWiring:
         from app.main import app
 
         user = _mk_user(db_session)
-        # [WB-CHAR-ISOLATION 修订 2026-10-04] 这条触发测试没有会话/角色上下文，
+        # [WB-CHAR-ISOLATION 修订 2026-10-03] 这条触发测试没有会话/角色上下文，
         # 但未绑定的书不再注入 → 补一个角色给 wb-trig 绑上，否则触发链路无从测起。
         _trig_char = Character(id="char-trig", user_id=user.id, name="TrigChar")
         db_session.add(_trig_char)

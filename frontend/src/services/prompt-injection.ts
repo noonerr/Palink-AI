@@ -71,7 +71,7 @@ export interface ExtensionPromptEntry {
 type PromptSource = Record<string, ExtensionPromptEntry>;
 
 /**
- * [B4-SHARED-PARTITION 2026-10-04] 对外暴露的「一个分区的条目映射」类型。
+ * [B4-SHARED-PARTITION 2026-10-03] 对外暴露的「一个分区的条目映射」类型。
  * snapshotSandbox / rebindSandboxEntries 往返搬运用，与内部 PromptSource 同构。
  */
 export type ExtensionPromptEntryMap = Record<string, ExtensionPromptEntry>;
@@ -303,7 +303,7 @@ export const promptInjection = {
   },
 
   /**
-   * [B4-SHARED-PARTITION 2026-10-04] 读某个沙箱分区的条目快照。
+   * [B4-SHARED-PARTITION 2026-10-03] 读某个沙箱分区的条目快照。
    *
    * 与 clearCharacterSandbox 成对使用：切卡时旧卡分区被删掉之前，插件 runtime
    * 先用它把「本插件登记过、且仍需在本卡生效」的条目取出来，rebind 到新分区。
@@ -344,7 +344,7 @@ export const promptInjection = {
   },
 
   /**
-   * [B4-SHARED-PARTITION 2026-10-04] 把快照里的条目写进**当前角色**的沙箱分区。
+   * [B4-SHARED-PARTITION 2026-10-03] 把快照里的条目写进**当前角色**的沙箱分区。
    *
    * 与 getPromptsForGeneration 的取用口径对称：写进去的新卡立刻就能取到。
    * 刻意做成「显式搬运注册项」而不是「重跑插件脚本」—— 脚本重跑会重建 DOM 节点

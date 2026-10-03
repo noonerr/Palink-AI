@@ -1,4 +1,4 @@
-"""[WB-CHAR-ISOLATION 2026-10-03 / 修订 2026-10-04] 世界书角色隔离 — 三源判定回归测试。
+"""[WB-CHAR-ISOLATION 2026-10-03 / 同日修订] 世界书角色隔离 — 三源判定回归测试。
 
 修复的真实 bug：``build_worldbook_context`` 把 ``character_id IS NULL`` 的书
 **无条件注入任何角色**，导致角色 A 的会话提示词里混进角色 B 的世界书内容。
@@ -15,7 +15,7 @@ Palink 侧映射：``character_id`` 是唯一的绑定维度——
   - ``character_id == 本会话角色`` → source="character"（覆盖 ST 的卡内嵌 + 角色附加）
   - 会话显式关联的（``SessionWorldBook``）→ source="chat"
 
-⚠️ **2026-10-04 修订（用户裁定）**：删掉「``character_id IS NULL`` 也注入」这一路。
+⚠️ **2026-10-03 修订（用户裁定）**：删掉「``character_id IS NULL`` 也注入」这一路。
    先前把它当"全局书"保留是**方向反了** —— 用户的实际用法是所有世界书都随角色卡导入、
    每本都该绑定到具体角色；把未绑定的书继续注入所有卡，等于让**漏网的那几本继续散播**。
    ST 的 ``globalSelect`` 是用户**手动勾选**的集，不是「未绑定」的代名词。
@@ -165,7 +165,7 @@ class TestCharacterIsolation:
 
     def test_unbound_book_is_not_injected(self, db_session: Session):
         """
-        未绑定角色的书**不注入**（2026-10-04 用户裁定，取代原「全局书生效」契约）。
+        未绑定角色的书**不注入**（2026-10-03 用户裁定，取代原「全局书生效」契约）。
 
         用户的实际用法：所有世界书都随角色卡导入、每本都该绑定到具体角色。
         把未绑定的书继续注入所有卡 = 让漏网的那几本继续散播，方向反了。
@@ -253,7 +253,7 @@ class TestThreeSourceAttribution:
         srcs = {m["name"]: m["source"] for m in r.book_sources.values()}
         assert srcs["CHAT-BOUND"] == "chat", f"会话书来源判错: {srcs}"
         assert srcs["CHAR-BOUND"] == "character", f"角色书来源判错: {srcs}"
-        # wb_unbound 未绑定且未被会话关联 → 不注入（2026-10-04 修订）
+        # wb_unbound 未绑定且未被会话关联 → 不注入（2026-10-03 修订）
         assert "UNBOUND-ONE" not in srcs, f"未绑定的书不应注入: {srcs}"
         # 只注入两本：会话关联的 + 绑了本角色的
         assert len(r.book_sources) == 2
@@ -310,7 +310,7 @@ class TestEntryReportObservability:
 
 class TestLegacyGlobalBooksNoLongerInjected:
     """
-    取代原 `TestLegacyGlobalBooksZeroRegression`（2026-10-04 用户裁定后整条废弃）。
+    取代原 `TestLegacyGlobalBooksZeroRegression`（2026-10-03 用户裁定后整条废弃）。
 
     原契约是「存量书（character_id IS NULL）仍按 global 注入，零回归」。
     用户裁定**推翻**了它：实际用法是世界书全部随卡导入、每本都该绑角色，

@@ -1,4 +1,4 @@
-"""[WB-CHAR-BIND-IMPORT 2026-10-04] 世界书导入必须能绑角色。
+"""[WB-CHAR-BIND-IMPORT 2026-10-03] 世界书导入必须能绑角色。
 
 缺陷：``POST /api/worldbooks/import`` 的 handler 构造 ``WorldBook(...)`` 时
 **根本没有 character_id 形参** → 用户导入的每一本世界书都落成全局书

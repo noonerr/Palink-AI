@@ -1,3 +1,8 @@
+> ⚠️ **口径已作废（2026-09-23 起）**：本文提及的 `npm run test:contract` 契约测试入口已删除，
+> 契约测试全部迁入 vitest（浏览器环境由 `vitest.config.ts` 的 `jsdom` 提供）。
+> 回归门禁请改跑 `cd frontend && npx vitest run`（只认 `failed = 0`）；详见 `AGENTS.md` §验证。
+> 本文其余内容为历史记录，未改动。
+
 # ST 兼容层 fork 改动路线记录与正确性审查
 
 > 日期：2026-08-17

@@ -231,7 +231,7 @@ export class SillyTavernPluginRuntime {
    */
   private injectedPluginIds = new Set<string>();
   /**
-   * [B4-SHARED-PARTITION 2026-10-04] 共用插件「注册归属」账本：plugin id → 写入
+   * [B4-SHARED-PARTITION 2026-10-03] 共用插件「注册归属」账本：plugin id → 写入
    * ``setExtensionPrompt`` 时所处的沙箱分区键（``sandbox:<characterId>``）。
    *
    * 为什么需要它（差集跳过 + 角色分区这两个设计单独看都对，合起来是错的）：
@@ -1551,7 +1551,7 @@ export class SillyTavernPluginRuntime {
   }
 
   /**
-   * [B4-SHARED-PARTITION 2026-10-04] diffOnly 收尾：把共用插件的注册项搬到新卡分区。
+   * [B4-SHARED-PARTITION 2026-10-03] diffOnly 收尾：把共用插件的注册项搬到新卡分区。
    *
    * 机制：``sharedPartitionOwner`` 记着「每个插件的 setExtensionPrompt 注册写在哪个
    * 沙箱分区」。差集注入时共用插件整个被跳过（``injectedPluginIds.has(id)`` →

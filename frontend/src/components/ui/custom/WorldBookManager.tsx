@@ -21,8 +21,8 @@ interface WorldBookManagerProps {
   onUpdate: (id: string, data: { name?: string; description?: string; raw_content?: string; character_id?: string | null }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   /**
-   * [WB-CHAR-BIND-IMPORT 2026-10-04] characterId：导入前在界面上选好的归属角色；
-   * 不传 = 未绑定（不注入任何对话，2026-10-04 起）。
+   * [WB-CHAR-BIND-IMPORT 2026-10-03] characterId：导入前在界面上选好的归属角色；
+   * 不传 = 未绑定（不注入任何对话，2026-10-03 起）。
    */
   onImport: (file: File, characterId?: string | null) => Promise<WorldBook>;
   onSelect: (id: string) => void;
@@ -75,7 +75,7 @@ export function WorldBookManager({
   // 换书时清空绑定错误态，避免上一本书的报错串到新书
   useEffect(() => { setBindError(''); }, [selectedWorldBook?.id]);
 
-  // [WB-CHAR-BIND-IMPORT 2026-10-04] 导入归属预选当前对话角色。
+  // [WB-CHAR-BIND-IMPORT 2026-10-03] 导入归属预选当前对话角色。
   // 只在用户**还没自己选过**时跟随（``importBindCharDirty`` 标记）—— 否则切一次卡
   // 就把用户明确选好的目标改回去，那是更糟的静默行为。
   const [importBindCharDirty, setImportBindCharDirty] = useState(false);
@@ -161,13 +161,13 @@ export function WorldBookManager({
       name: formName.trim(),
       description: formDesc.trim() || undefined,
       raw_content: formContent.trim() || undefined,
-      // [WB-CHAR-ISOLATION 2026-10-03 / 修订 2026-10-04] 建书时绑角色；留空 = 未绑定（不生效）
+      // [WB-CHAR-ISOLATION 2026-10-03 / 同日修订] 建书时绑角色；留空 = 未绑定（不生效）
       character_id: createBindCharId || null,
     });
     setFormName(''); setFormDesc(''); setFormContent(''); setCreateBindCharId(''); setShowCreate(false);
   }, [formName, formDesc, formContent, createBindCharId, onCreate]);
 
-  // [WB-CHAR-BIND-IMPORT 2026-10-04] 导入前的归属选择。
+  // [WB-CHAR-BIND-IMPORT 2026-10-03] 导入前的归属选择。
   // 默认预选**当前对话角色**（characterId prop）：从某个角色的对话里点导入，
   // 用户主观上就是要导入给这张卡用，预选可免去一次选择动作；
   // 不想要就下拉选「未绑定」（空串），那本书不会注入任何对话。
@@ -319,7 +319,7 @@ export function WorldBookManager({
           <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
             {selectedWorldBook.character_id
               ? '只跟着这个角色走，换角色就不会带这本书。'
-              : '没绑角色的书不注入任何对话（2026-10-04 起）—— 世界书都该随角色卡走。挑一个角色就能启用它。'}
+              : '没绑角色的书不注入任何对话（2026-10-03 起）—— 世界书都该随角色卡走。挑一个角色就能启用它。'}
           </p>
           {bindSaving && <p className="text-[11px] text-muted-foreground">保存中…</p>}
           {bindError && <p className="text-[11px] text-red-500 dark:text-red-400">{bindError}</p>}
@@ -452,7 +452,7 @@ export function WorldBookManager({
             </h3>
           </div>
         <div className="flex items-center gap-2">
-          {/* [WB-CHAR-BIND-IMPORT 2026-10-04] 导入归属选择：放在「导入」按钮旁边，
+          {/* [WB-CHAR-BIND-IMPORT 2026-10-03] 导入归属选择：放在「导入」按钮旁边，
               让用户在点之前就看清「这本书会进谁名下」。默认预选当前对话角色。 */}
           <select
             value={importBindCharId}
@@ -482,7 +482,7 @@ export function WorldBookManager({
         </div>
       </div>
 
-      {/* [WB-CHAR-BIND-IMPORT 2026-10-04] 导入了「未绑定」书后的明说提示。
+      {/* [WB-CHAR-BIND-IMPORT 2026-10-03] 导入了「未绑定」书后的明说提示。
           直接给出「点这里绑定到当前角色」的入口 —— 后端 PUT 的 character_id 绑定
           早已存在（详情页有选择器），这里只是把入口前移到刚导入完的那一刻。 */}
       {importNotice && (
@@ -554,7 +554,7 @@ export function WorldBookManager({
               rows={6}
               className="w-full px-3 py-2 rounded-lg bg-muted/20 border border-border/50 text-sm focus:outline-none focus:border-primary/50 resize-none"
             />
-            {/* [WB-CHAR-ISOLATION 2026-10-03 / 修订 2026-10-04] 建书时选角色；不选 = 未绑定 */}
+            {/* [WB-CHAR-ISOLATION 2026-10-03 / 同日修订] 建书时选角色；不选 = 未绑定 */}
             <div>
               <label className="text-[11px] text-muted-foreground mb-1 block">这本书对哪个角色生效（可选）</label>
               <select
