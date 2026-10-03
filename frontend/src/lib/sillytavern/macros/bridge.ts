@@ -27,6 +27,24 @@ export interface MacroEnv {
   characterName?: string;
   charName?: string;
   modelName?: string;
+  /** 角色卡字段：{{charDescription}} / {{charPersonality}} / {{charScenario}} 等宏的取值来源。
+   *  此前此接口没有这一项，而 convertToNewEnv 也从不产出 `character`，
+   *  导致 env-macros.ts 的处理器读 `ctx.env.character.description` 时拿到 undefined
+   *  → 63 个宏（含卡内最常用的三个）全部展开成空串，且不报错。 */
+  character?: {
+    description?: string;
+    personality?: string;
+    scenario?: string;
+    persona?: string;
+    charPrompt?: string;
+    charInstruction?: string;
+    mesExamplesRaw?: string;
+    charDepthPrompt?: string;
+    firstMessage?: string;
+    alternateGreetings?: string[];
+    creatorNotes?: string;
+    version?: string;
+  };
   dynamicMacros?: Record<string, string | (() => string)>;
   postProcessFn?: (text: string) => string;
 }
@@ -36,7 +54,7 @@ export interface MacroEnv {
  */
 function convertToNewEnv(env?: MacroEnv): Partial<NewMacroEnv> {
   if (!env) return {};
-  
+
   return {
     names: {
       user: env.userName || 'User',
@@ -44,6 +62,22 @@ function convertToNewEnv(env?: MacroEnv): Partial<NewMacroEnv> {
       group: '',
       groupNotMuted: '',
       notChar: env.userName || 'User',
+    },
+    // 缺这一整块会让所有 env.* 系列宏拿到 undefined（表现为展开成空串）。
+    // 不设可选子字段，让处理器各自的 `?? ''` 兜底生效。
+    character: {
+      description: env.character?.description ?? '',
+      personality: env.character?.personality ?? '',
+      scenario: env.character?.scenario ?? '',
+      persona: env.character?.persona ?? '',
+      charPrompt: env.character?.charPrompt ?? '',
+      charInstruction: env.character?.charInstruction ?? '',
+      mesExamplesRaw: env.character?.mesExamplesRaw ?? '',
+      charDepthPrompt: env.character?.charDepthPrompt ?? '',
+      firstMessage: env.character?.firstMessage ?? '',
+      alternateGreetings: env.character?.alternateGreetings ?? [],
+      creatorNotes: env.character?.creatorNotes ?? '',
+      version: env.character?.version ?? '',
     },
     system: {
       model: env.modelName || '',

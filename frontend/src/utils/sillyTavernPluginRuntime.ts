@@ -992,9 +992,12 @@ export class SillyTavernPluginRuntime {
           window.eventSource.on(event, callback);
         };
 
+        // 本轨（sillyTavernPluginRuntime）没有 PluginContext，接不到沙箱的 SlashCommandEngine，
+        // 而 window.__palinkSlashCommands 全仓无任何读取方 —— 插件以为命令注册成功了，
+        // 实际永远不会被执行。沙箱轨的 registerSlashCommand 已接真实引擎，两轨不要混用。
+        // 这里登记一次降级统计，让插件管理页看得见，而不是静默失效。
         window.registerSlashCommand = function(name, callback, aliases, helpString) {
-          if (!window.__palinkSlashCommands) window.__palinkSlashCommands = {};
-          window.__palinkSlashCommands[name] = { callback: callback, aliases: aliases || [], help: helpString || '' };
+          recordStubHit('registerSlashCommand', '命令未在本轨执行：sillyTavernPluginRuntime 无 SlashCommandEngine，消费入口在沙箱轨');
         };
 
         window.toastr = {
