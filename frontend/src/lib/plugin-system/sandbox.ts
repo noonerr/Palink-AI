@@ -5246,24 +5246,60 @@ export class PluginSandbox {
       // macros.js (绝对路径 /scripts/macros.js)
       // N16 修复（批次 F）: 此前 parse() 恒空壳 → memory 等扩展的
       // MacrosParser.registerMacro 路径静默断。补最小注册表（register/
-      // unregister/parse），evaluate 不参与求值（沙箱宏求值走 substituteParams）。
+      // unregister/parse）。
+      //
+      // 2026-10-03 Z5 修复：此前 registerMacro 只认 `{ macroName }` 对象形态，
+      // 而 ST 官方与全部真实消费方（st-plugins/memory `registerMacro('summary', fn)`、
+      // stable-diffusion 的 charPrefix/charNegativePrefix）用的是
+      // `registerMacro(key, value, description?)` 三参签名 → 注册被静默丢弃，
+      // 插件的宏永远不参与求值。evaluate 此前亦是恒等函数 `return String(text)`。
+      // 现按 ST macros.js:183 的签名实现，并让 evaluate 真正走 substituteParams。
       'macros.js': {
         MacrosParser: class {
           static _macros = new Map<string, any>();
           static parse() {
             return Array.from(this._macros.values());
           }
-          static registerMacro(macro: any) {
-            if (macro && typeof macro.macroName === 'string') {
-              this._macros.set(macro.macroName, macro);
+          /**
+           * ST 签名 registerMacro(key, value, description='')；
+           * 兼容旧的 Palink 对象形态 registerMacro({ macroName, ... })。
+           * value 可以是字符串或返回字符串的函数（ST 允许二者）。
+           */
+          static registerMacro(key: any, value?: any, description = '') {
+            if (typeof key === 'object' && key !== null) {
+              const obj = key;
+              if (typeof obj.macroName === 'string') {
+                this._macros.set(obj.macroName, obj);
+              }
+              return;
             }
+            if (typeof key !== 'string' || !key) return;
+            if (typeof value !== 'string' && typeof value !== 'function') return;
+            this._macros.set(key, { macroName: key, value, description });
           }
           static unregisterMacro(name: string | { macroName?: string }) {
             const key = typeof name === 'string' ? name : name?.macroName;
             if (key) this._macros.delete(key);
           }
+          /**
+           * 先用注册宏替换 `{{key}}`，再交给沙箱宏引擎处理其余内建宏。
+           * 注册值可以是函数（ST 语义：每次求值时调用取最新值）。
+           */
           static evaluate(text: string) {
-            return String(text ?? '');
+            const src = String(text ?? '');
+            if (!this._macros.size) return substituteParamsExtended(src);
+            const replaced = src.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (match, name) => {
+              const macro = this._macros.get(name);
+              if (!macro) return match;
+              try {
+                const raw = typeof macro.value === 'function' ? macro.value() : macro.value;
+                return raw === undefined || raw === null ? '' : String(raw);
+              } catch (e) {
+                console.warn(`[macros.js] Macro "${name}" function threw an error.`, e);
+                return '';
+              }
+            });
+            return substituteParamsExtended(replaced);
           }
         },
       },
