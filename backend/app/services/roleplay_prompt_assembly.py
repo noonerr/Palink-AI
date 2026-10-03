@@ -1459,12 +1459,51 @@ def _ext_filter_allows(
     filter_dict: dict,
     character_id: str,
     session_id: str,
+    source_key: Optional[str] = None,
 ) -> bool:
     """检查 filter 字段是否允许在当前 character_id / session_id 注入。
+
     - character_ids 非空时，character_id 必须在列表中
     - session_ids 非空时，session_id 必须在列表中
     - 任一字段为空 / 缺失表示不限制
+
+    [XCHAR-PROMPT-BLEED 2026-10-03] source_key 分流（跨角色提示词串味修复）：
+
+    `extension_prompts.source_key` 的既有语义是「非 NULL = 插件/卡脚本运行时
+    上报的快照行，NULL = 用户手写或历史行」（见 models/extension_prompt.py:49-54
+    与 alembic/0066）。本参数据此把"空 filter"的含义按来源一分为二：
+
+    - source_key **非 NULL**（插件来源）：空 filter **不再放行**。插件注册却没绑卡
+      = 配置错误，让它暴露，不要静默放行到所有卡的提示词里 —— 那正是「在角色 A
+      的卡上生成、提示词里混进角色 B 的内容」的根因：两张卡共用一个池子
+      （api/extension_prompts.py:83 查 session_id IS NULL 的全局行），
+      合并点 merged[row.identifier] 后写顶掉先写。
+      已有 character_ids 且命中 → 放行。
+    - source_key 为 **NULL**（用户手写/历史）：保持「空 filter = 全局」原语义，
+      **逐字节不变**（存量行全为 NULL → 零回归）。
+
+    请求侧条目（来自前端运行时聚合）本身就没有 source_key，一律按插件来源处理：
+    它们要么由当前角色的插件/卡脚本当场注册，要么已在本层按当前角色重新绑定。
     """
+    if source_key:
+        # 插件来源：必须显式命中 character_ids，空/缺失一律拒绝。
+        char_ids = filter_dict.get("character_ids") if isinstance(filter_dict, dict) else None
+        if not (isinstance(char_ids, list) and char_ids):
+            logger.info(
+                "[XCHAR-PROMPT-BLEED] 拒绝未绑定角色的插件注入 (identifier 归属 source_key=%s, char_id=%s): "
+                "source_key 非 NULL 的行必须在 filter.character_ids 中绑定角色",
+                source_key,
+                character_id,
+            )
+            return False
+        if str(character_id) not in [str(c) for c in char_ids]:
+            return False
+        sess_ids = filter_dict.get("session_ids")
+        if isinstance(sess_ids, list) and sess_ids:
+            if str(session_id) not in [str(s) for s in sess_ids]:
+                return False
+        return True
+
     if not isinstance(filter_dict, dict) or not filter_dict:
         return True
     char_ids = filter_dict.get("character_ids")
@@ -1476,6 +1515,11 @@ def _ext_filter_allows(
         if str(session_id) not in [str(s) for s in sess_ids]:
             return False
     return True
+
+
+# [XCHAR-PROMPT-BLEED 2026-10-03] 请求侧（前端运行时现场注册）条目的来源键哨兵。
+# 这些条目没有 DB 行的 source_key，但来源语义与「插件注册」一致，故复用非 NULL 分支。
+_REQUEST_SIDE_SOURCE_KEY = "__request_side__"
 
 
 def _normalize_ep_role(role_val) -> str:
@@ -1908,6 +1952,9 @@ def _collect_extension_prompts(
                 # P2-7 修复: 透传 scan 字段（DB 中默认 False）
                 "scan": bool(getattr(row, "scan", False)),
                 "filter": row.get_filter() if hasattr(row, "get_filter") else {},
+                # [XCHAR-PROMPT-BLEED 2026-10-03] 透传来源键：非 NULL 走「必须绑卡」
+                # 判定（见 _ext_filter_allows），NULL 保持「空 filter = 全局」原语义。
+                "source_key": getattr(row, "source_key", None),
             }
     except Exception as exc:
         logger.warning("ExtensionPrompt DB load failed (user_id=%s): %s", req.user.id, exc)
@@ -1953,6 +2000,10 @@ def _collect_extension_prompts(
             # P2-7 修复: 透传 scan 字段（请求侧 ExtensionPromptInput 已添加）
             "scan": bool(entry.get("scan", False)),
             "filter": _normalize_ext_filter(entry.get("filter")),
+            # [XCHAR-PROMPT-BLEED 2026-10-03] 请求侧条目 = 前端运行时聚合的插件/卡脚本
+            # 现场注册，无 source_key 概念 → 一律标记为插件来源（见 _ext_filter_allows），
+            # 下方统一按当前角色重新绑定 character_ids，使其只能作用于本轮这张卡。
+            "source_key": entry.get("source_key") or _REQUEST_SIDE_SOURCE_KEY,
         }
 
     # 3. [PLUGIN-ON-DEMAND] @bubble 类注入按角色生效：内容带 @bubble 的注入
@@ -2017,7 +2068,23 @@ def _collect_extension_prompts(
     sess_id = str(req.session_id) if req.session_id else ""
     result: list[dict[str, Any]] = []
     for entry in merged.values():
-        if not _ext_filter_allows(entry.get("filter") or {}, char_id, sess_id):
+        # [XCHAR-PROMPT-BLEED 2026-10-03] 请求侧条目（插件来源）在此按**当前角色**重新
+        # 绑定 character_ids：前端聚合的是「此刻这个角色的插件注册了什么」，来源天然
+        # 属于本轮这张卡。绑定后即使前端传来的 filter 为空/缺失，也能通过「必须命中
+        # character_ids」的判定，而不会因空 filter 被放行到所有卡。
+        if entry.get("source_key") == _REQUEST_SIDE_SOURCE_KEY and char_id:
+            flt = _normalize_ext_filter(entry.get("filter"))
+            ids = [str(x) for x in (flt.get("character_ids") or [])]
+            if char_id not in ids:
+                ids.append(char_id)
+            flt["character_ids"] = ids
+            entry = {**entry, "filter": flt}
+        if not _ext_filter_allows(
+            entry.get("filter") or {},
+            char_id,
+            sess_id,
+            entry.get("source_key"),
+        ):
             continue
         # [INJ-CLOSE-TAG-GUARD] in_chat depth=0 注入的空响应防护（2026-08-19 实证）：
         # depth=0 会把注入放到 messages 最末尾（紧贴模型续写位置）。deepseek-v4-flash
@@ -4654,11 +4721,26 @@ def _append_worldbook_context(
             )
             wb_text = deps.replace_placeholders(wb_text, user_nickname, req.char.name or "")
             dynamic_context_parts.append(wb_text)
+            # [WB-CHAR-ISOLATION 2026-10-03] 三源可见性：先出一条书级行
+            # （每本被注入的书 + 它是 chat/character/global 哪一源），再出条目级行。
+            # 用户据此一眼看出"这书为什么进来了"——global 源的书需要手动改绑角色，
+            # 否则它对所有卡生效（这正是本次修复的串味来源）。
+            by_source: dict[str, list[str]] = {}
+            for _meta in (wb_result.book_sources or {}).values():
+                by_source.setdefault(_meta.get("source") or "global", []).append(
+                    _meta.get("name") or "(未命名)",
+                )
+            detail_parts = [
+                f"entries={len([r for r in wb_result.debug_report if r.status == 'activated'])}"
+            ]
+            for _src in ("chat", "character", "global"):
+                if by_source.get(_src):
+                    detail_parts.append(f"{_src}:{','.join(by_source[_src])}")
             report.append(
                 PromptAssemblyReportItem(
                     "worldbook",
                     "included",
-                    detail=f"entries={len([r for r in wb_result.debug_report if r.status == 'activated'])}",
+                    detail="; ".join(detail_parts),
                     tokens_estimate=wb_result.total_tokens,
                 )
             )
@@ -4668,7 +4750,10 @@ def _append_worldbook_context(
                     PromptAssemblyReportItem(
                         f"worldbook_entry_{r.entry_id}",
                         r.status,
-                        detail=f"title={r.title}; reason={r.reason}; keywords={r.matched_keywords}",
+                        detail=(
+                            f"book={r.book_name}; source={r.lore_source}; "
+                            f"title={r.title}; reason={r.reason}; keywords={r.matched_keywords}"
+                        ),
                         tokens_estimate=r.tokens_estimate,
                     )
                 )
@@ -5035,8 +5120,14 @@ def _load_effective_stat_data(
             stat = variables.get("stat_data")
             if isinstance(stat, dict) and stat:
                 return stat
-    except Exception:
-        pass
+    except Exception as _stat_exc:
+        # 宁缺勿错：任何异常都回落到 session 级 stat_data（控制流不变）。
+        # 但此前整段静默，出问题时只能看到「变量没跟着 swipe 回退」而无从定位。
+        logger.warning(
+            "Failed to load message-level stat_data, falling back to session level "
+            "(session_id=%r, branch_id=%r): %s",
+            session_id, branch_id, _stat_exc,
+        )
 
     return _load_session_stat_data(db, session_id, group_id)
 
@@ -5281,6 +5372,14 @@ async def _append_memory_context(
             except Exception as mem_recent_err:
                 logger.debug("memory exclude-recent lookup failed: %s", mem_recent_err)
                 exclude_message_ids = []
+            # [T-跨卡串味修复 2026-10-03] 传角色维度：记忆表原先只有
+            # user_id/session_id，session_id 为空时（分支3）退化成用户级全量
+            # 召回 → A 卡的会话被塞 B 卡的记忆。req.char 即当前会话所属角色
+            # （PromptAssemblyRequest.char），群聊发言人也属该会话。
+            # 防御取 id：char 为 None 或轻量替身（无 id）时降级为 None（旧行为）。
+            _mem_char = getattr(req, "char", None)
+            _mem_char_id = getattr(_mem_char, "id", None) if _mem_char is not None else None
+            memory_character_id = str(_mem_char_id) if _mem_char_id else None
             mem_ctx = await mem_svc.get_context(
                 user_id=req.user.id,
                 query=req.smart_card_context if req.smart_card_trigger else req.message,
@@ -5289,6 +5388,7 @@ async def _append_memory_context(
                 branch_ids=ancestor_branch_ids if ancestor_branch_ids else None,
                 memory_mode=memory_mode,
                 exclude_message_ids=exclude_message_ids or None,
+                character_id=memory_character_id,
             )
             if mem_ctx and mem_ctx.memories:
                 memory_text = build_memory_context(mem_ctx, max_tokens=memory_max_tokens)
@@ -5299,7 +5399,9 @@ async def _append_memory_context(
                         PromptAssemblyReportItem(
                             "memory",
                             "included",
-                            detail=f"mode={memory_mode}",
+                            # [T-跨卡串味修复] scope 显式回传：scope=user 表示
+                            # 降级到用户级召回（跨角色串味风险面），可观测。
+                            detail=f"mode={memory_mode},scope={getattr(mem_ctx, 'scope', 'session')}",
                             tokens_estimate=_estimate_tokens(memory_text),
                         )
                     )

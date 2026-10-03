@@ -18,7 +18,12 @@ class ConversationMemoryORM:
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     session_id = Column(String, ForeignKey("sessions.id"), index=True)
-    
+    # [T-跨卡串味修复 2026-10-03] 角色维度。NULL=无角色归属（普通聊天 /
+    # ST 向量集合 / 存量行），行为不变；非 NULL=该记忆归属的角色会话。
+    # 存在原因见 storage.semantic_search 分支3：session_id 为空时若无此列
+    # 只能按 user_id 召回，会把 A 卡的记忆塞给 B 卡。
+    character_id = Column(String, nullable=True)
+
     # 内容
     role = Column(String)  # 'user' | 'assistant' | 'system'
     content = Column(Text)
@@ -113,6 +118,11 @@ class ContextRequest(BaseModel):
     # D3 修复: ST protect 语义 —— 最近 N 条消息的 id 集合，其记忆镜像不注入
     # （对话历史窗口已含原文，重复召回浪费 token）；None/空 = 行为不变。
     exclude_message_ids: Optional[List[int]] = None
+    # [T-跨卡串味修复 2026-10-03] 角色维度。记忆表原先只有 user_id/session_id，
+    # session_id 一旦传空（分支3）就退化成用户级全量召回 → A 卡注入 B 卡记忆。
+    # 调用方（角色扮演装配链）传当前会话的 character_id，把过滤落到 SQL。
+    # None = 调用方不掌握角色（如普通聊天 / ST 向量集合），行为与修复前一致。
+    character_id: Optional[str] = None
 
 
 class ContextResponse(BaseModel):
@@ -121,3 +131,10 @@ class ContextResponse(BaseModel):
     user_profile: Optional[UserProfile] = None
     total_tokens: int = 0
     strategy_used: str = "hybrid"
+    # [T-跨卡串味修复 2026-10-03] 实际生效的召回作用域（可观测性，非行为）。
+    # "session"    = 有 session_id 约束（最窄，正常路径）
+    # "character"  = 无 session_id 但有 character_id，按 user+character 过滤
+    # "user"       = 两者都无 —— **降级**（用户级全量召回，跨角色串味风险面）
+    # 静默降级是本项目既往教训，故显式回传供调用方判断。
+    scope: str = "session"
+

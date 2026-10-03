@@ -69,6 +69,104 @@ def _resolve_model_output_cap(model_id: str) -> Optional[int]:
         return None
 
 
+# ── ST 1.18.0 思考预算（对齐 prompt-converters.js calculateClaudeBudgetTokens）───
+# ST 的 maxTokens 语义是「正文额度」，思考预算是**额外独立额度**，两者相加才是
+# 请求实际下发值。本项目此前把 max_completion_tokens 直接顶格到正文额度
+# （max(effective_max_tokens, 8192)），导致「详细」档 = 3.2 万 token 全给思考，
+# 且无独立旋钮 —— 这是「模型思考特别长」的直接根因。
+
+# ST 1.18 prompt-converters.js:1142-1159 的分档比例表
+REASONING_BUDGET_RATIOS = {
+    "min": None,       # 固定 1024（不按比例）
+    "low": 0.10,
+    "medium": 0.25,
+    "high": 0.50,
+    "max": 0.95,
+}
+# ST 1.18 prompt-converters.js:1162 思考预算下限
+REASONING_BUDGET_MIN = 1024
+# ST 1.18 prompt-converters.js:1165 非流式上限（一次性请求时思考额度封顶）
+REASONING_BUDGET_NON_STREAM_MAX = 21333
+
+# [B2-AUTO-THINK 2026-10-04] ``auto`` 档的思考额度近似值。
+#
+# ST 1.18 的 ``auto`` 语义是 calculateClaudeBudgetTokens 直接 ``return null``：
+#   不下发独立思考额度，把分配权**交还模型自适应**（Claude 会在 max_tokens 内
+#   自行决定思考与正文的切分）。本项目此前照抄成 0，而下游
+#   ``reasoning_on`` 只判「effort 非 None 且非 off」——``auto`` 照样进推理分支，
+#   于是 deepseek 拿到 max_completion_tokens = body_budget + 0，
+#   **思考额度被压到 0**：用户报「思考异常长」被修成了「根本不思考」，方向反了
+#   （实测 max_tokens=2048：修复前 total=8192，修复后 total=2048）。
+#
+# 为什么不能照抄成 0：ST 的 auto 之所以可以是 0，是因为 Claude 端点接受
+# 「无独立思考预算 + 总量上限」就自带自适应。Palink 走的是 **OpenAI 兼容面**，
+# deepseek 这类模型靠 max_completion_tokens 这一对 (正文, 思考) 的**硬切分**拿到额度，
+# 给 0 就是明确禁止思考；这里不存在可下发的 "adaptive" 独立字段来表达自适应。
+#
+# 故取 medium 档比例作为等价近似（25%）：有真实思考额度可分配（不再归零），
+# 又远低于修复前那种「顶格到 max(正文, 8192)」的无节制额度 —— 用户的原投诉
+# （思考过长）仍被这层比例约束住，不会回到旧行为。
+REASONING_BUDGET_AUTO_EFFORT = "medium"
+
+
+def _normalize_effort(raw: Optional[str]) -> str:
+    """归一 reasoning_effort（大小写/空白容错），返回小写裸值。
+
+    下游判定（``reasoning_on``）此前用的是**未归一的原值**精确比 ``"off"``，
+    前端 ModelEditor 下拉给出的是 ``off``/``auto``/``min``/… 的裸小写值，
+    但 websocket 侧模型级默认值来自 provider JSON（人可手写 "OFF"/"Off"）。
+    那样的大小写变体会让 ``reasoning_on`` 判 True 而预算函数判 off → 归零，
+    或反之。两个地方都必须走同一个归一化，否则又是一处静默分叉。
+    """
+    return (raw or "").strip().lower()
+
+
+def calculate_reasoning_budget(body_budget: int, reasoning_effort: Optional[str], stream: bool = True) -> int:
+    """按 reasoning_effort 分档算思考预算（ST 1.18 calculateClaudeBudgetTokens 口径）。
+
+    语义与 ST 一致：``body_budget`` 是**正文额度**，返回的思考预算是**额外独立额度**。
+    调用方需下发 ``body_budget + 思考预算``。
+
+    - off / 未指定 / 未知值 → 0（off 走 disabled 分支；未指定/未知值无档位可算）
+    - auto → **medium 档比例（25%）**：ST 原文是 ``return null``（交给模型自适应），
+      但 OpenAI 兼容面没有可下发的 adaptive 字段，deepseek 只能吃
+      (正文, 思考) 硬切分，给 0 等于禁思考 → 取 medium 作等价近似，详见
+      ``REASONING_BUDGET_AUTO_EFFORT`` 上方注释
+    - min  → 固定 1024
+    - low  → 10% / medium → 25% / high → 50% / max → 95%
+    - 一律不低于 1024（ST 硬下限）
+    """
+    effort = _normalize_effort(reasoning_effort)
+    if effort in ("", "off"):
+        return 0
+    if effort == "auto":
+        # 不新增 auto 比例常量：直接复用 medium 档，保证 auto 与 medium 下发值恒等
+        # （可断言、可核对），日后调档只需改 REASONING_BUDGET_RATIOS 一处。
+        effort = REASONING_BUDGET_AUTO_EFFORT
+    if effort == "min":
+        budget = REASONING_BUDGET_MIN
+    else:
+        ratio = REASONING_BUDGET_RATIOS.get(effort)
+        if ratio is None:
+            return 0
+        budget = int(body_budget * ratio)
+    budget = max(budget, REASONING_BUDGET_MIN)
+    if not stream:
+        budget = min(budget, REASONING_BUDGET_NON_STREAM_MAX)
+    return budget
+
+
+def ensure_body_budget_min(body_budget: int) -> int:
+    """ST 1.18 chat-completions.js:341-347：思考开启时正文额度至少要有 1024。
+
+    原文："Claude thinking requires a minimum of 1024 response tokens."
+    正文额度被压到 1024 及以下时抬高，避免思考把正文挤成空。
+    """
+    if body_budget <= REASONING_BUDGET_MIN:
+        return body_budget + REASONING_BUDGET_MIN
+    return body_budget
+
+
 def _usage_nested_int(usage: Any, parent: str, name: str) -> int:
     if not usage:
         return 0
@@ -362,7 +460,7 @@ async def complete_text_completion(
             "json_schema": json_schema,
         }
     
-    # 思考/推理强度（ST 式多挡位：off/auto/low/medium/high/min/max）
+    # 思考/推理强度（ST 式多挡位：off/auto/min/low/medium/high/max）
     # 全接管：思考的开关与强度完全由 reasoning_effort 控制，模型级 enable_thinking 不再参与激活判定。
     # 优先级：用户显式选强度/auto → 开（openai-compat 模型透传 reasoning_effort，含 auto 由模型自决思考强度）；
     #         用户选 off → 关（压过 deepseek 默认）；
@@ -370,14 +468,26 @@ async def complete_text_completion(
     extra_body = {}
     is_deepseek = bool(actual_model_id and "deepseek" in actual_model_id.lower())
     is_gemini = bool(actual_model_id and ("gemini" in actual_model_id.lower() or "gemma" in actual_model_id.lower()))
-    reasoning_off = (reasoning_effort == "off")
-    reasoning_on = (reasoning_effort is not None and reasoning_effort != "off") or (is_deepseek and reasoning_effort is None)
+    # [B2-AUTO-THINK] 判定值与 calculate_reasoning_budget 走同一个归一化：
+    # 此前这里是「原值精确比 "off"」，而预算函数内部会 strip/lower，"OFF"/"Off"
+    # 这类（provider JSON 里人手写的模型级默认值）会让「开关判开、预算判 0」
+    # 静默分叉。归一后两者恒一致。
+    # ⚠️ 「是否指定」仍按**原值**判（``is not None``），与修复前逐字一致 ——
+    # 空串是「配了但没填」，此前算「已指定」，不能借归一化顺手改成未指定。
+    _effort_norm = _normalize_effort(reasoning_effort)
+    reasoning_off = (_effort_norm == "off")
+    reasoning_on = (reasoning_effort is not None and not reasoning_off) or (is_deepseek and reasoning_effort is None)
+    # 可观测：思考预算与正文额度分开记账（与流式路径同格式）
+    reasoning_budget = 0
+    body_budget = effective_max_tokens
     if reasoning_on:
         if is_deepseek:
             # opencode 的 deepseek 默认走推理；用 max_completion_tokens 覆盖
-            # thinking+answer 合计额度（OpenAI 规范），避免 content 被挤占为空
-            budget = max(effective_max_tokens, 8192)
-            kwargs["max_completion_tokens"] = budget
+            # thinking+answer 合计额度（OpenAI 规范），避免 content 被挤占为空。
+            # ST 1.18 口径：maxTokens 是**正文额度**，思考预算是**额外独立额度**，两者相加下发。
+            body_budget = ensure_body_budget_min(effective_max_tokens)
+            reasoning_budget = calculate_reasoning_budget(body_budget, reasoning_effort, stream=False)
+            kwargs["max_completion_tokens"] = body_budget + reasoning_budget
             kwargs.pop("max_tokens", None)
             kwargs.pop("frequency_penalty", None)
             kwargs.pop("presence_penalty", None)
@@ -396,6 +506,13 @@ async def complete_text_completion(
             extra_body["thinking"] = {"type": "disabled"}
         elif is_gemini:
             extra_body["thinking"] = {"type": "disabled"}
+
+    logger.info(
+        "[COMPLETION-CALL] model=%s max_tokens=%d temperature=%.2f enable_thinking=%s reasoning_effort=%s "
+        "reasoning_budget=%d body_budget=%d reasoning_total=%d logit_bias=%d",
+        actual_model_id, effective_max_tokens, temperature, str(enable_thinking), str(reasoning_effort),
+        reasoning_budget, body_budget, reasoning_budget + body_budget, len(logit_bias or {}),
+    )
 
     create_kwargs = dict(kwargs)
     if extra_body:
@@ -691,12 +808,10 @@ async def stream_text_completion(
             "json_schema": json_schema,
         }
 
-    logger.info("[STREAM-CALL] model=%s max_tokens=%d temperature=%.2f enable_thinking=%s reasoning_effort=%s logit_bias=%d", actual_model_id, effective_max_tokens, temperature, str(enable_thinking), str(reasoning_effort), len(logit_bias or {}))
-
     if tools:
         stream_kwargs["tools"] = tools
     
-    # 思考/推理强度（ST 式多挡位：off/auto/low/medium/high/min/max）
+    # 思考/推理强度（ST 式多挡位：off/auto/min/low/medium/high/max）
     # 全接管：思考的开关与强度完全由 reasoning_effort 控制，模型级 enable_thinking 不再参与激活判定。
     # 优先级：用户显式选强度/auto → 开（openai-compat 模型透传 reasoning_effort，含 auto 由模型自决思考强度）；
     #         用户选 off → 关（压过 deepseek 默认）；
@@ -704,14 +819,23 @@ async def stream_text_completion(
     extra_body = {}
     is_deepseek = bool(actual_model_id and "deepseek" in actual_model_id.lower())
     is_gemini = bool(actual_model_id and ("gemini" in actual_model_id.lower() or "gemma" in actual_model_id.lower()))
-    reasoning_off = (reasoning_effort == "off")
-    reasoning_on = (reasoning_effort is not None and reasoning_effort != "off") or (is_deepseek and reasoning_effort is None)
+    # [B2-AUTO-THINK] 与非流式路径同一归一化（"OFF"/"Off" 不得让开关与预算分叉）
+    # 「是否指定」按原值判（is not None），与修复前逐字一致
+    _effort_norm = _normalize_effort(reasoning_effort)
+    reasoning_off = (_effort_norm == "off")
+    reasoning_on = (reasoning_effort is not None and not reasoning_off) or (is_deepseek and reasoning_effort is None)
+    # 可观测：思考预算与正文额度分开记账（reasoning_budget=0 表示本次未额外分配思考额度）
+    reasoning_budget = 0
+    body_budget = effective_max_tokens
     if reasoning_on:
         if is_deepseek:
             # opencode 的 deepseek 默认走推理；用 max_completion_tokens 覆盖
-            # thinking+answer 合计额度（OpenAI 规范），避免 content 被挤占为空
-            budget = max(effective_max_tokens, 8192)
-            stream_kwargs["max_completion_tokens"] = budget
+            # thinking+answer 合计额度（OpenAI 规范），避免 content 被挤占为空。
+            # ST 1.18 口径：maxTokens 是**正文额度**，思考预算是**额外独立额度**，
+            # 两者相加下发（此前直接顶格到正文额度 → 「详细」档思考可用 3.2 万 token）。
+            body_budget = ensure_body_budget_min(effective_max_tokens)
+            reasoning_budget = calculate_reasoning_budget(body_budget, reasoning_effort, stream=True)
+            stream_kwargs["max_completion_tokens"] = body_budget + reasoning_budget
             stream_kwargs.pop("max_tokens", None)
             stream_kwargs.pop("frequency_penalty", None)
             stream_kwargs.pop("presence_penalty", None)
@@ -729,6 +853,14 @@ async def stream_text_completion(
             extra_body["thinking"] = {"type": "disabled"}
         elif is_gemini:
             extra_body["thinking"] = {"type": "disabled"}
+
+    # 思考/正文额度分开打，用户可直接 grep 本行核对思考占比（reasoning_budget/(reasoning_budget+body_budget)）
+    logger.info(
+        "[STREAM-CALL] model=%s max_tokens=%d temperature=%.2f enable_thinking=%s reasoning_effort=%s "
+        "reasoning_budget=%d body_budget=%d reasoning_total=%d logit_bias=%d",
+        actual_model_id, effective_max_tokens, temperature, str(enable_thinking), str(reasoning_effort),
+        reasoning_budget, body_budget, reasoning_budget + body_budget, len(logit_bias or {}),
+    )
 
     if extra_body:
         stream_kwargs["extra_body"] = extra_body

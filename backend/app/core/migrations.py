@@ -129,6 +129,12 @@ _RUNTIME_COMPAT_COLUMNS = (
     # NULL=手动/历史行；非 NULL=插件脚本包内容哈希，按 (user, identifier, source_key)
     # 幂等，归属卡由 filter.character_ids 维护。
     ("extension_prompts", "source_key", sa.String()),
+    # [T-跨卡串味修复 2026-10-03] conversation_memories 补角色维度（alembic 0067）：
+    # NULL=无角色归属（普通聊天 / ST 向量集合 / 存量行），行为不变；
+    # 非 NULL=该条记忆归属的角色会话。检索侧 session_id 传空时靠它避免
+    # 退化成用户级全量召回（A 卡召回 B 卡记忆）。表由 memory_module 自建
+    # （_init_postgres_tables），此处仅列级兼容兜底。
+    ("conversation_memories", "character_id", sa.String()),
 )
 
 

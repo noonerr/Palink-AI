@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session, selectinload
 
 from ..core import get_db
@@ -178,6 +178,33 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+def _resolve_bindable_character_id(db: Session, user_id: int, character_id: Optional[str]) -> Optional[str]:
+    """[WB-CHAR-BIND 2026-10-03] 校验世界书要绑的角色是否属于当前用户。
+
+    绑定维度必须真实存在且同用户，否则这条书会绑到一个**别的用户**的角色上
+    （FK 只校验 characters.id 存在性，不校验归属）→ 世界书内容跨用户注入。
+    故此处显式校验归属，不做静默兜底。
+
+    - ``None``/空串 → 解绑/全局书（返回 None）
+    - 角色不存在或不属于该用户 → 400，错误信息点名（不掩盖）
+    """
+    if character_id is None:
+        return None
+    cid = str(character_id).strip()
+    if not cid:
+        return None
+    from ..models.character import Character
+
+    owner = (
+        db.query(Character.id)
+        .filter(Character.id == cid, Character.user_id == user_id)
+        .first()
+    )
+    if owner is None:
+        raise HTTPException(400, f"character_id={cid} 不存在或不属于当前用户")
+    return cid
+
+
 def _wb_to_response(wb: WorldBook, stage_count: int = 0) -> dict:
     tags = None
     if wb.tags:
@@ -287,10 +314,16 @@ async def create_worldbook(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """创建世界书（在线编写或标记为上传来源）"""
+    """创建世界书（在线编写或标记为上传来源）
+
+    [WB-CHAR-BIND 2026-10-03] 新增可选 ``character_id``：绑定角色后该书
+    只对该角色的会话注入（对齐 ST ``world_info.charLore`` 语义）。不传 → 全局书。
+    """
+    character_id = _resolve_bindable_character_id(db, user.id, req.character_id)
     wb = WorldBook(
         id=str(uuid.uuid4()),
         user_id=user.id,
+        character_id=character_id,
         name=req.name,
         description=req.description,
         source_type=req.source_type,
@@ -347,6 +380,9 @@ async def get_worldbook(
         "type": wb.type or "world_book",
         "tags": tags,
         "is_parsed": wb.is_parsed,
+        # [WB-CHAR-BIND 2026-10-03] 详情也要带 character_id——前端"绑定角色"
+        # 选择器靠它回填；缺失时前端永远显示"未绑定"，回填无从谈起。
+        "character_id": wb.character_id,
         "stages": [_stage_to_response(s) for s in wb.entries],
         "created_at": str(wb.created_at) if wb.created_at else "",
         "updated_at": str(wb.updated_at) if wb.updated_at else "",
@@ -373,6 +409,11 @@ async def update_worldbook(
         wb.is_parsed = False  # Content changed, need re-parse
     if req.tags is not None:
         wb.tags = json.dumps(req.tags)
+    # [WB-CHAR-BIND 2026-10-03] 角色绑定可改可解绑。``model_fields_set`` 区分
+    # "请求体没带该键"（不改）与"显式传 null"（解绑）——否则前端只想改名字
+    # 就会把已有绑定悄悄抹掉。
+    if "character_id" in req.model_fields_set:
+        wb.character_id = _resolve_bindable_character_id(db, user.id, req.character_id)
     wb.updated_at = _utc_now()
     db.commit()
     db.refresh(wb)
@@ -439,10 +480,27 @@ async def delete_worldbook(
 @router.post("/import")
 async def import_worldbook(
     file: UploadFile = File(...),
+    character_id: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """导入 SillyTavern V2 JSON 世界书文件"""
+    """导入 SillyTavern V2 JSON 世界书文件
+
+    [WB-CHAR-BIND-IMPORT 2026-10-04] 新增可选表单字段 ``character_id``：
+    导入时就能指定这本书记到哪张卡名下（与建书接口 POST "" 的 ``character_id``
+    语义完全一致，走同一个 ``_resolve_bindable_character_id`` 校验）。
+
+    为什么必须补：此前 import handler 构造 ``WorldBook(...)`` 时**根本没有**
+    character_id 参数 → 用户导入的每一本世界书都落成全局书（character_id=None）。
+    卡内嵌路径（``character_import_service``:845）一直是绑角色的，于是出现了
+    报告口径能标 ``source=global``（可见性做到了）但**隔离没做到**的矛盾状态：
+    用户的串味投诉在世界书维度没被解决。
+
+    解析方式说明：本 handler 全程用 ``Form``/``File``，所以可选文本字段也用
+    ``Form(None)`` 而不是查询参数 —— FastAPI 在同时声明了 File 的 endpoint 里
+    用 Query 会触发「Form 与 Body 不能混用」的断言错误。**不传 / 空串 → 全局书**，
+    与修复前行为逐字相同（不破坏既有调用方）。
+    """
     if not file.filename or not file.filename.endswith(".json"):
         raise HTTPException(400, "Only .json files are supported")
 
@@ -486,9 +544,15 @@ async def import_worldbook(
     except ValueError:
         description = ""
 
+    # [WB-CHAR-BIND-IMPORT 2026-10-04] 归属校验在建行之前，与建书接口 POST "" 共用
+    # 同一个 ``_resolve_bindable_character_id``：绑到别的用户的角色 → 400 点名报错，
+    # 不静默落成全局书（静默落全局 = 用户以为隔离了其实没隔离）。
+    character_id = _resolve_bindable_character_id(db, user.id, character_id)
+
     wb = WorldBook(
         id=str(uuid.uuid4()),
         user_id=user.id,
+        character_id=character_id,
         name=name,
         description=description,
         source_type="upload",

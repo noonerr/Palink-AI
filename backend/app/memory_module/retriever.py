@@ -9,7 +9,7 @@ import logging
 import hashlib
 import numpy as np
 
-from .storage import MemoryStorage
+from .storage import MemoryStorage, _resolve_search_scope
 from .models import MemoryEntry, ContextRequest, ContextResponse
 from .embedder import embed_text
 from .config import memory_config
@@ -36,7 +36,15 @@ class MemoryRetriever:
           1. 强制包含最近的 N 条记忆（短期记忆 STM）
           2. 用剩余的 token 空间填充语义相关的旧记忆（长期记忆 LTM）
           3. 对 LTM 进行上下文邻近度 + 语义相似度加权排序
+
+        [T-跨卡串味修复 2026-10-03] 角色维度：``request.character_id`` 非空且
+        ``session_id`` 为空时，STM/LTM 两条路都按 user+character 过滤，
+        避免退化成用户级全量召回（修复前 A 卡会召回 B 卡的记忆）。
+        实际作用域通过 ``ContextResponse.scope`` 回传（"session" /
+        "character" / "user"），"user" = 降级，调用方可据此判断。
         """
+        # [T-跨卡串味修复] 本次召回作用域，三条返回路径共用（可观测性）。
+        scope = _resolve_search_scope(request.session_id, request.character_id)
         try:
             # 1. 获取短期记忆 (STM) - 最近 5 条
             recent_limit = 5
@@ -48,7 +56,8 @@ class MemoryRetriever:
                 user_id=request.user_id,
                 session_id=request.session_id,
                 limit=recent_limit + len(exclude_ids),
-                branch_ids=request.branch_ids
+                branch_ids=request.branch_ids,
+                character_id=request.character_id,
             )
 
             # 去重，保留最新
@@ -81,7 +90,8 @@ class MemoryRetriever:
                     memories=stm_memories,
                     user_profile=user_profile,
                     total_tokens=current_tokens,
-                    strategy_used="rule_stm_only"
+                    strategy_used="rule_stm_only",
+                    scope=scope,
                 )
             
             # ── vector 模式：STM + LTM 语义检索 ──
@@ -95,7 +105,8 @@ class MemoryRetriever:
                     memories=stm_memories,
                     user_profile=self.storage.get_user_profile(request.user_id) if request.include_profile else None,
                     total_tokens=current_tokens,
-                    strategy_used="stm_only"
+                    strategy_used="stm_only",
+                    scope=scope,
                 )
 
             # 2. 获取长期记忆 (LTM)
@@ -111,7 +122,8 @@ class MemoryRetriever:
                     limit=50,
                     min_similarity=memory_config.MIN_SIMILARITY,
                     session_id=request.session_id,
-                    branch_ids=request.branch_ids
+                    branch_ids=request.branch_ids,
+                    character_id=request.character_id,
                 )
                 
                 if semantic_candidates:
@@ -160,7 +172,8 @@ class MemoryRetriever:
                 memories=final_memories,
                 user_profile=user_profile,
                 total_tokens=total_tokens,
-                strategy_used="dual_path_stm_ltm"
+                strategy_used="dual_path_stm_ltm",
+                scope=scope,
             )
             
         except Exception as e:
@@ -170,7 +183,8 @@ class MemoryRetriever:
                 memories=[],
                 user_profile=None,
                 total_tokens=0,
-                strategy_used="error"
+                strategy_used="error",
+                scope=scope,
             )
     
     def _score_candidates(

@@ -46,6 +46,11 @@ class VectorRetrieveRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
     user_id: Optional[int] = None
     filter: Dict[str, Any] = Field(default_factory=dict)
+    # [XCHAR-MEM-SCOPE 2026-10-03] 检索范围限定。不传 = 保持原行为（用户级全量），
+    # 但那会跨角色召回 —— 见 semantic_search 的 scope 回传与 [MEM-SCOPE] 告警。
+    # 角色链路应至少传 character_id。
+    session_id: Optional[str] = None
+    character_id: Optional[str] = None
 
 
 # ============================================================
@@ -196,6 +201,8 @@ async def vector_retrieve(
             user_id=current_user.id,
             query_embedding=embedding_list,
             limit=body.top_k,
+            session_id=body.session_id,
+            character_id=body.character_id,
         )
 
         memories: List[Dict[str, Any]] = []

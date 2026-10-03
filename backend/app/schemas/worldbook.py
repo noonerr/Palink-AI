@@ -13,6 +13,12 @@ class WorldBookCreate(BaseModel):
     raw_content: Optional[str] = None
     format: str = "custom"
     tags: Optional[List[str]] = None
+    # [WB-CHAR-BIND 2026-10-03] 角色绑定（对齐 ST ``world_info.charLore``）。
+    # 建书时可选绑定一个角色：绑了 → 该书只对这个角色的会话注入；
+    # 不绑（None）→ 走全局源（见 worldbook_service 的三源判定）。
+    # ⚠ 显式传 ``None`` 与"不传"同义——pydantic 无法区分二者，
+    # 解绑请走 PUT（WorldBookUpdate，绑 null 表示解绑）。
+    character_id: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -40,6 +46,9 @@ class WorldBookUpdate(BaseModel):
     description: Optional[str] = None
     raw_content: Optional[str] = None
     tags: Optional[List[str]] = None
+    # [WB-CHAR-BIND 2026-10-03] 角色绑定。传 null = 解绑（回到全局源）。
+    # 用 ``model_fields_set`` 区分"没传"与"显式传 null"（见 api/worldbook.py）。
+    character_id: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -149,6 +158,8 @@ class WorldBookDetailResponse(BaseModel):
     tags: Optional[List[str]] = None
     is_parsed: bool
     stages: List[WorldBookStageResponse] = []
+    # [WB-CHAR-BIND 2026-10-03] 角色绑定——详情页"绑定角色"选择器的回填依据。
+    character_id: Optional[str] = None
     created_at: str
     updated_at: str
 

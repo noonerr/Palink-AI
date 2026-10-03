@@ -62,6 +62,7 @@ class MemoryService:
         content: str,
         branch_id: Optional[str] = None,
         message_id: Optional[int] = None,
+        character_id: Optional[str] = None,
         **metadata
     ) -> Optional[int]:
         """
@@ -77,6 +78,8 @@ class MemoryService:
             content: 内容
             message_id: 关联消息主键（[MEM-UPSERT] 记忆=消息当前内容的镜像；
                 切分多块共享同一 id；None 表示无关联——存量兼容路径）
+            character_id: 角色维度（[T-跨卡串味修复]）；None = 无角色归属
+                （普通聊天 / ST 向量集合），行为不变
             **metadata: 额外元数据 (importance_score, topics等)
 
         Returns:
@@ -106,6 +109,7 @@ class MemoryService:
                             branch_id=branch_id,
                             importance_score=metadata.get('importance_score', 0.5),
                             message_id=message_id,
+                            character_id=character_id,
                         )
                         if ids:
                             return ids[0]
@@ -121,7 +125,8 @@ class MemoryService:
                 importance_score=metadata.get('importance_score', 0.5),
                 topics=metadata.get('topics', []),
                 branch_id=branch_id,
-                message_id=message_id
+                message_id=message_id,
+                character_id=character_id,
             )
         except Exception as e:
             logger.error(f"存储记忆失败: {e}")
@@ -136,19 +141,26 @@ class MemoryService:
         include_profile: bool = True,
         branch_ids: Optional[List[str]] = None,
         memory_mode: str = "vector",
-        exclude_message_ids: Optional[List[int]] = None
+        exclude_message_ids: Optional[List[int]] = None,
+        character_id: Optional[str] = None,
     ) -> ContextResponse:
         """
         获取增强上下文
 
-        这是主要接口，用于在聊天前获取相关记忆
+        这是主要接口，用于在聊天前获取相关记忆。
+
+        Args:
+            character_id: [T-跨卡串味修复] 角色维度。与 session_id 一起决定
+                召回作用域：见 ``ContextResponse.scope``
+                （"session" 正常 / "character" 按角色过滤 / "user" 降级）。
         """
         if not self.is_available():
             return ContextResponse(
                 memories=[],
                 user_profile=None,
                 total_tokens=0,
-                strategy_used="disabled"
+                strategy_used="disabled",
+                scope=self.storage.resolve_search_scope(session_id, character_id),
             )
 
         if self.enable_cache:
@@ -161,7 +173,14 @@ class MemoryService:
                 ).hexdigest()[:12]
                 if exclude_message_ids else "none"
             )
-            cache_key = f"context:{user_id}:{session_id or ''}:{branch_key}:{query_hash}:{exclude_key}"
+            # [T-跨卡串味修复] character_id 必须进缓存键：同一 session_id 传空
+            # 召回（scope=user/character）时，不同角色拿到的结果集不同，共用
+            # 键会把 A 卡的召回结果喂给 B 卡 —— 正是本次要修的串味。
+            char_key = character_id or ""
+            cache_key = (
+                f"context:{user_id}:{session_id or ''}:{char_key}:"
+                f"{branch_key}:{query_hash}:{exclude_key}"
+            )
             cached = await self._get_cache(cache_key)
             if cached is not None:
                 return cached
@@ -175,7 +194,8 @@ class MemoryService:
                 max_tokens=max_tokens,
                 include_profile=include_profile,
                 memory_mode=memory_mode,
-                exclude_message_ids=exclude_message_ids
+                exclude_message_ids=exclude_message_ids,
+                character_id=character_id,
             )
 
             result = await asyncio.to_thread(self.retriever.retrieve, request)
@@ -196,7 +216,8 @@ class MemoryService:
                 memories=[],
                 user_profile=None,
                 total_tokens=0,
-                strategy_used="error"
+                strategy_used="error",
+                scope=self.storage.resolve_search_scope(session_id, character_id),
             )
 
     def _expand_chunk_neighbors(self, result: ContextResponse, max_tokens: int) -> ContextResponse:
@@ -240,6 +261,7 @@ class MemoryService:
                 user_profile=result.user_profile,
                 total_tokens=total,
                 strategy_used=result.strategy_used + "+neighbors",
+                scope=result.scope,
             )
         except Exception as e:
             logger.warning(f"邻居扩展失败（忽略，返回原结果）: {e}")

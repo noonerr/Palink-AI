@@ -69,6 +69,44 @@ def _dim_mismatch_reason(emb_list) -> Optional[str]:
     return f"维度 {actual} ≠ 契约 {baseline}"
 
 
+def _resolve_search_scope(
+    session_id: Optional[str], character_id: Optional[str]
+) -> str:
+    """[T-跨卡串味修复 2026-10-03] 判定本次召回的实际作用域。
+
+    返回 "session" / "character" / "user"：
+    - ``session``   有 session_id → 现有行为，最窄，零风险。
+    - ``character`` 无 session_id 但有 character_id → 按 user+character 过滤，
+      这正是修复前退化成用户级全量召回（跨角色串味）的场景。
+    - ``user``      两者都无 → **降级**，用户级全量召回，串味风险面。
+      调用方须能从 ContextResponse.scope 看出自己落在这一档。
+    """
+    if session_id:
+        return "session"
+    if character_id:
+        return "character"
+    return "user"
+
+
+def _warn_if_unscoped_write(
+    session_id: Optional[str], character_id: Optional[str], role: str
+) -> None:
+    """[T-跨卡串味修复 2026-10-03] 写入侧防御：两个维度都空的记忆行告警。
+
+    session_id 与 character_id 同空的行，在 session_id 传空的检索分支里
+    与任何用户级召回都不可区分——存量脏数据正是这样悄悄积累的。
+    写入不阻断（普通聊天 / ST 向量集合本就没有角色维度，属合法形态），
+    但必须留痕，否则出问题无从排查。
+    """
+    if session_id or character_id:
+        return
+    logger.warning(
+        "[MEM-SCOPE] 写入的记忆缺少 session_id 与 character_id，"
+        "该行在用户级召回（scope=user）中与所有角色互通（role=%s）",
+        role,
+    )
+
+
 def _delete_memories_in(db_session: Session, column: str, values) -> int:
     """[ORPHAN-MEM-FIX] 按列批量删除向量记忆。
 
@@ -126,6 +164,10 @@ class MemoryStorage:
     def __init__(self, db_session: Session):
         global _tables_initialized, _is_postgres_cached, _migration_done
         self.db = db_session
+        # [T-跨卡串味修复] 本次 semantic_search 实际生效的召回作用域
+        # （"session"/"character"/"user"），供 retriever 回填
+        # ContextResponse.scope。默认 "session" = 既有最窄行为。
+        self.last_search_scope: str = "session"
         with _storage_lock:
             if _is_postgres_cached is not None:
                 self.is_postgres = _is_postgres_cached
@@ -178,6 +220,7 @@ class MemoryStorage:
                 user_id INTEGER,
                 session_id TEXT,
                 branch_id TEXT,
+                character_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 content_summary TEXT,
@@ -212,6 +255,7 @@ class MemoryStorage:
                 user_id INTEGER,
                 session_id TEXT,
                 branch_id TEXT,
+                character_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 content_summary TEXT,
@@ -260,6 +304,17 @@ class MemoryStorage:
                 logger.info("迁移: 添加 message_id 列")
             except Exception:
                 nested.rollback()
+            try:
+                nested = self.db.begin_nested()
+                # [T-跨卡串味修复 2026-10-03] 角色维度列（alembic 0067）。
+                # 记忆表原先不记角色，session_id 传空即退化成用户级全量召回。
+                self.db.execute(text("""
+                    ALTER TABLE conversation_memories ADD COLUMN IF NOT EXISTS character_id TEXT
+                """))
+                nested.commit()
+                logger.info("迁移: 添加 character_id 列")
+            except Exception:
+                nested.rollback()
         else:
             # SQLite 无 ADD COLUMN IF NOT EXISTS：先查 table_info 判列存在，
             # 仅缺列时执行 ALTER（避免异常吞咽路径上的 rollback 波及同连接在途数据）
@@ -275,6 +330,11 @@ class MemoryStorage:
                     self.db.execute(text(
                         "ALTER TABLE conversation_memories ADD COLUMN message_id INTEGER"))
                     logger.info("迁移: 添加 message_id 列")
+                if "character_id" not in cols:
+                    # [T-跨卡串味修复 2026-10-03] 角色维度列（alembic 0067）
+                    self.db.execute(text(
+                        "ALTER TABLE conversation_memories ADD COLUMN character_id TEXT"))
+                    logger.info("迁移: 添加 character_id 列")
             except Exception:
                 self.db.rollback()
 
@@ -301,6 +361,13 @@ class MemoryStorage:
         self.db.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_memory_user_session ON conversation_memories(user_id, session_id)
         """))
+        # [T-跨卡串味修复 2026-10-03] 角色维度复合索引，与会话表
+        # idx_ccs_character_user 同序同构 (character_id, user_id)：
+        # 覆盖检索侧分支3 的 user_id + character_id 过滤。
+        self.db.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_memory_character_user
+            ON conversation_memories(character_id, user_id)
+        """))
     
     def store(
         self,
@@ -311,16 +378,22 @@ class MemoryStorage:
         importance_score: float = 0.5,
         topics: List[str] = None,
         branch_id: Optional[str] = None,
-        message_id: Optional[int] = None
+        message_id: Optional[int] = None,
+        character_id: Optional[str] = None,
     ) -> Optional[int]:
         """
         存储单条记忆（先存储 content，embedding 置 NULL，后台异步计算）
+
+        Args:
+            character_id: [T-跨卡串味修复] 角色维度；None = 无角色归属
+                （普通聊天 / ST 向量集合 / 存量兼容路径），行为不变。
 
         Returns:
             memory_id: 记忆ID，失败返回 None
         """
         if len(content) > 10000:
             raise ValueError("Content too long")
+        _warn_if_unscoped_write(session_id, character_id, role)
         try:
             tokens_count = len(content) // 2
             topics_json = json.dumps(topics or [])
@@ -328,9 +401,9 @@ class MemoryStorage:
             if self.is_postgres:
                 sql = text("""
                     INSERT INTO conversation_memories
-                    (user_id, session_id, branch_id, role, content, embedding,
+                    (user_id, session_id, branch_id, character_id, role, content, embedding,
                      importance_score, topics, tokens_count, created_at, message_id)
-                    VALUES (:user_id, :session_id, :branch_id, :role, :content, NULL,
+                    VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, NULL,
                             :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                     RETURNING id
                 """)
@@ -339,6 +412,7 @@ class MemoryStorage:
                     "user_id": user_id,
                     "session_id": session_id,
                     "branch_id": branch_id,
+                    "character_id": character_id,
                     "role": role,
                     "content": content,
                     "importance_score": importance_score,
@@ -351,9 +425,9 @@ class MemoryStorage:
             else:
                 sql = text("""
                     INSERT INTO conversation_memories
-                    (user_id, session_id, branch_id, role, content, embedding,
+                    (user_id, session_id, branch_id, character_id, role, content, embedding,
                      importance_score, topics, tokens_count, created_at, message_id)
-                    VALUES (:user_id, :session_id, :branch_id, :role, :content, NULL,
+                    VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, NULL,
                             :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                 """)
 
@@ -361,6 +435,7 @@ class MemoryStorage:
                     "user_id": user_id,
                     "session_id": session_id,
                     "branch_id": branch_id,
+                    "character_id": character_id,
                     "role": role,
                     "content": content,
                     "importance_score": importance_score,
@@ -395,16 +470,21 @@ class MemoryStorage:
         branch_id: Optional[str] = None,
         importance_score: float = 0.5,
         message_id: Optional[int] = None,
+        character_id: Optional[str] = None,
     ) -> List[int]:
         """批量存储语义块（方案 B）：一次批量嵌入 + 单事务插入，embedding 直写。
 
         同一 turn 的多块共享同一 message_id（[MEM-UPSERT] 编辑时一删全删）。
+
+        Args:
+            character_id: [T-跨卡串味修复] 角色维度，随每块一起写入。
 
         Returns:
             各块 memory_id 列表（顺序与 chunks 一致）；整体失败返回 []
         """
         if not chunks:
             return []
+        _warn_if_unscoped_write(session_id, character_id, role)
         turn_hash = hashlib.blake2b(
             (chunks[0][:64] + datetime.utcnow().isoformat()).encode("utf-8"),
             digest_size=8,
@@ -426,6 +506,7 @@ class MemoryStorage:
                     topics=_chunk_topics(turn_hash, i, total),
                     branch_id=branch_id,
                     message_id=message_id,
+                    character_id=character_id,
                 )
                 if mid is not None:
                     ids.append(mid)
@@ -447,15 +528,16 @@ class MemoryStorage:
                 topics_json = json.dumps(_chunk_topics(turn_hash, i, total))
                 sql = text("""
                     INSERT INTO conversation_memories
-                    (user_id, session_id, branch_id, role, content, embedding,
+                    (user_id, session_id, branch_id, character_id, role, content, embedding,
                      importance_score, topics, tokens_count, created_at, message_id)
-                    VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
+                    VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, :embedding,
                             :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                 """)
                 params = {
                     "user_id": user_id,
                     "session_id": session_id,
                     "branch_id": branch_id,
+                    "character_id": character_id,
                     "role": role,
                     "content": chunk,
                     "embedding": emb_json,
@@ -467,9 +549,9 @@ class MemoryStorage:
                 if self.is_postgres:
                     sql = text("""
                         INSERT INTO conversation_memories
-                        (user_id, session_id, branch_id, role, content, embedding,
+                        (user_id, session_id, branch_id, character_id, role, content, embedding,
                          importance_score, topics, tokens_count, created_at, message_id)
-                        VALUES (:user_id, :session_id, :branch_id, :role, :content, :embedding,
+                        VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, :embedding,
                                 :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                         RETURNING id
                     """)
@@ -596,6 +678,14 @@ class MemoryStorage:
         finally:
             db.close()
     
+    def resolve_search_scope(
+        self,
+        session_id: Optional[str] = None,
+        character_id: Optional[str] = None,
+    ) -> str:
+        """[T-跨卡串味修复] 公开版作用域判定，供调用方/可观测性复用。"""
+        return _resolve_search_scope(session_id, character_id)
+
     def semantic_search(
         self,
         user_id: int,
@@ -603,22 +693,50 @@ class MemoryStorage:
         limit: int = None,
         min_similarity: float = None,
         session_id: Optional[str] = None,
-        branch_ids: Optional[List[str]] = None
+        branch_ids: Optional[List[str]] = None,
+        character_id: Optional[str] = None,
     ) -> List[Tuple[MemoryEntry, float]]:
         """
         语义相似度搜索（SQLite版本，在Python中计算相似度）
-        
-        Returns:
+
+        Args:
+            character_id: [T-跨卡串味修复] 角色维度过滤。
+                - session_id 与 character_id 都传 → 三个条件一起生效（最窄）
+                - 只传 session_id          → 行为与修复前完全一致（不改变）
+                - session_id 为空、传 character_id → 按 user_id + character_id
+                  过滤（这是修复前的串味源头：原先退化成用户级全量召回）
+                - 两者都为空                → 仍退回用户级，但**显式告警**，
+                  见 ``last_search_scope``（静默降级是本项目既往教训）
+
+        返回:
             [(记忆条目, 相似度分数), ...]
         """
         limit = limit or memory_config.MAX_MEMORIES_PER_QUERY
         min_similarity = min_similarity or memory_config.MIN_SIMILARITY
-        
+        scope = _resolve_search_scope(session_id, character_id)
+        self.last_search_scope = scope
+        if scope == "user":
+            # [T-跨卡串味修复] 降级留痕：没有 session_id 也没有 character_id，
+            # 本次召回跨该用户下所有角色。必须显式告警而不是静默跑宽查询。
+            logger.warning(
+                "[MEM-SCOPE] 语义检索降级为用户级（scope=user，无 session_id 且无 "
+                "character_id，user_id=%s）：结果可能包含其他角色的记忆",
+                user_id,
+            )
+
         try:
+            # 角色过滤子句：仅在「有 character_id 且 无 session_id」时追加。
+            # 有 session_id 时会话本身已唯一归属一个角色，再加 character_id
+            # 反而会滤掉存量 NULL 行（既有契约：不改变 session 分支行为）。
+            char_clause = (
+                " AND character_id = :character_id"
+                if (character_id and not session_id) else ""
+            )
+
             if session_id and branch_ids:
                 sql = text("""
                     SELECT 
-                        id, user_id, session_id, branch_id, role, content,
+                        id, user_id, session_id, branch_id, character_id, role, content,
                         importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id
@@ -631,7 +749,7 @@ class MemoryStorage:
             elif session_id:
                 sql = text("""
                     SELECT 
-                        id, user_id, session_id, branch_id, role, content,
+                        id, user_id, session_id, branch_id, character_id, role, content,
                         importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
                     WHERE user_id = :user_id AND session_id = :session_id AND embedding IS NOT NULL
@@ -640,16 +758,22 @@ class MemoryStorage:
                 """)
                 params = {"user_id": user_id, "session_id": session_id}
             else:
-                sql = text("""
+                # [T-跨卡串味修复] 分支3 = 串味源头。character_id 非空时把过滤
+                # 落到 SQL（WHERE user_id AND character_id），只有角色也拿不到
+                # （普通聊天 / ST 向量集合）才退回纯用户级，并由上方 warning
+                # + ContextResponse.scope="user" 双路标明这是降级。
+                sql = text(f"""
                     SELECT 
-                        id, user_id, session_id, branch_id, role, content,
+                        id, user_id, session_id, branch_id, character_id, role, content,
                         importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
                     FROM conversation_memories
-                    WHERE user_id = :user_id AND embedding IS NOT NULL
+                    WHERE user_id = :user_id{char_clause} AND embedding IS NOT NULL
                     ORDER BY created_at DESC
                     LIMIT 200
                 """)
                 params = {"user_id": user_id}
+                if char_clause:
+                    params["character_id"] = character_id
             
             result = self.db.execute(sql, params)
             
@@ -713,9 +837,10 @@ class MemoryStorage:
                 )
 
             logger.info(
-                "语义检索完成: 找到 %d 条记忆，最低相似度: %s",
+                "语义检索完成: 找到 %d 条记忆，最低相似度: %s, 作用域: %s",
                 len(memories_with_similarity),
                 f"{memories_with_similarity[-1][1]}" if memories_with_similarity else "N/A",
+                scope,
             )
             return memories_with_similarity
             
@@ -730,10 +855,22 @@ class MemoryStorage:
         session_id: Optional[str] = None,
         limit: int = 10,
         branch_id: Optional[str] = None,
-        branch_ids: Optional[List[str]] = None
+        branch_ids: Optional[List[str]] = None,
+        character_id: Optional[str] = None,
     ) -> List[MemoryEntry]:
-        """获取最近记忆（时间倒序）"""
+        """获取最近记忆（时间倒序）
+
+        Args:
+            character_id: [T-跨卡串味修复] 与 semantic_search 同口径：仅在
+                「无 session_id 且有 character_id」时作为过滤条件追加，避免
+                STM（最近 N 条）路径同样退化成用户级跨角色召回。传了
+                session_id 时行为完全不变。
+        """
         try:
+            char_clause = (
+                " AND character_id = :character_id"
+                if (character_id and not session_id) else ""
+            )
             if session_id and branch_ids:
                 sql = text("""
                     SELECT
@@ -783,16 +920,18 @@ class MemoryStorage:
                     "limit": limit,
                 }
             else:
-                sql = text("""
+                sql = text(f"""
                     SELECT 
                         id, user_id, session_id, branch_id, role, content,
                         importance_score, topics, tokens_count, created_at, message_id
                     FROM conversation_memories
-                    WHERE user_id = :user_id
+                    WHERE user_id = :user_id{char_clause}
                     ORDER BY created_at DESC
                     LIMIT :limit
                 """)
                 params = {"user_id": user_id, "limit": limit}
+                if char_clause:
+                    params["character_id"] = character_id
             
             result = self.db.execute(sql, params)
             

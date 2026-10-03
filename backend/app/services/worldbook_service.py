@@ -140,6 +140,12 @@ class WorldbookEntryReport:
     probability_roll: Optional[int] = None  # actual probability roll (only set when rolled)
     # A1 修复: 条目级 useProbability 开关状态（None=旧数据/未评估）
     use_probability: Optional[bool] = None
+    # [WB-CHAR-ISOLATION 2026-10-03] 条目所属书的 lore 来源
+    # （chat/character/global）与书名——装配报告据此回答
+    # "这条设定为什么会出现在这次提示词里"。post-process 填充。
+    world_book_id: str = ""
+    lore_source: str = ""
+    book_name: str = ""
 
 
 @dataclass
@@ -155,6 +161,10 @@ class WorldbookContextResult:
     em_top_entries: list[str] = field(default_factory=list)
     em_bottom_entries: list[str] = field(default_factory=list)
     outlet_entries: dict[str, list[str]] = field(default_factory=dict)
+    # [WB-CHAR-ISOLATION 2026-10-03] 可见性：本轮注入了哪些书、每本什么来源。
+    # world_book_id -> {"name": 书名, "source": chat/character/global, "type": 行类型}
+    # 用户据此一眼看出"这书为什么进来了"，并决定是否改绑角色。
+    book_sources: dict[str, dict] = field(default_factory=dict)
 
 
 class TimedEffectsManager:
@@ -1873,9 +1883,23 @@ def build_worldbook_context(
             budget_used=0,
         )
 
-    # Layering: session -> character -> global
-    # Phase G: 跟踪每本书的 lore 来源（chat/character/global），用于
-    # world_info_character_strategy 插入排序（ST getSortedEntries）。
+    # ── [WB-CHAR-ISOLATION 2026-10-03] 三源判定（对齐 ST 1.18.0）────────────
+    # ST 的世界书来自三个**各自独立、都有明确绑定维度**的来源，注入时合并：
+    #   1. 卡内嵌   character.data.extensions.world / data.character_book → 随卡走，天然隔离
+    #   2. 角色附加 world_info.charLore[] = { name: 角色文件名, extraBooks: [书名] }
+    #   3. 全局勾选 world_info.globalSelect ← selected_world_info（用户手动勾的全局书）
+    # ST **没有**「书默认隐式全局」这回事（world-info.js:1132/:4376/:6039-6052）。
+    #
+    # 本函数据此把 Palink 的四类 WorldBook 行映射到上述来源：
+    #   chat       SessionWorldBook 显式关联      → "chat"       （会话源，最高优先）
+    #   character  character_id == 本会话角色      → "character"  （同时覆盖 ST 的
+    #               「卡内嵌 type=character_book」与「角色附加 charLore」两种语义，
+    #               两者都是"绑定到这张卡"，注入后果一致，lore tier 也相同）
+    #   global     character_id IS NULL           → "global"     （ST 的 globalSelect 语义）
+    #
+    # ⚠ 存量书决策（见下方 GLOBAL-SCOPE 块注释）：character_id IS NULL 的书
+    # 仍按 global 注入，**不因"没绑角色"就静默消失**（零回归），但装配报告会
+    # 标出它的来源，用户可据此手动改绑。
     world_book_ids: list[str] = []
     book_lore_source: dict[str, str] = {}
     swb = db.query(SessionWorldBook).filter(SessionWorldBook.session_id == session_id).first()
@@ -1884,25 +1908,66 @@ def build_worldbook_context(
         book_lore_source[swb.world_book_id] = "chat"
 
     if session.character_id:
-        char_wbs = db.query(WorldBook.id).filter(WorldBook.character_id == session.character_id).all()
+        # 源 1 + 源 2：绑了本角色的书。character_id 是唯一的绑定维度
+        # （type="character_book" 只是卡内嵌书的类型标记，不参与筛选——它在
+        # Palink 里同样是 character_id 指向本卡的行，已被此查询覆盖）。
+        # ⚠ 必须带 user_id 过滤：绑定维度的语义是"本用户的这本书给本卡"，
+        # 只按 character_id 匹配会把同一 user 之外的行拖进来（历史脏数据/越权 FK）。
+        char_wbs = (
+            db.query(WorldBook.id)
+            .filter(
+                WorldBook.character_id == session.character_id,
+                WorldBook.user_id == user_id,
+            )
+            .all()
+        )
         for (wb_id,) in char_wbs:
             if wb_id not in world_book_ids:
                 world_book_ids.append(wb_id)
                 book_lore_source[wb_id] = "character"
 
-    global_wbs = db.query(WorldBook.id).filter(
-        WorldBook.character_id.is_(None),
-        WorldBook.user_id == user_id,
-    ).all()
-    for (wb_id,) in global_wbs:
-        if wb_id not in world_book_ids:
-            world_book_ids.append(wb_id)
-            book_lore_source[wb_id] = "global"
+    # 源 3 已删除（2026-10-04，用户裁定）：**不注入「未绑定角色」的书**。
+    #
+    # 用户实际用法：所有世界书都是随角色卡导入的，每本都该绑定到具体角色。
+    # 此前把 `character_id IS NULL` 当作「全局书」无条件注入，是方向反了 ——
+    # 它没让漏网的书少散播，反而把漏网的那些继续散播给所有卡。
+    # ST 1.18 也没有「没绑就算全局」这回事：`globalSelect` 是用户手动勾选集，
+    # 而非「未绑定」的代名词。
+    #
+    # 未绑定的书视为**待归属**：装配层会把它们列进装配报告的 warn 项，
+    # 便于用户去世界书管理页补绑，而不是静默生效或静默消失。
+    unbound_wbs = (
+        db.query(WorldBook.id, WorldBook.name)
+        .filter(
+            WorldBook.character_id.is_(None),
+            WorldBook.user_id == user_id,
+        )
+        .all()
+    )
+    if unbound_wbs:
+        logger.warning(
+            "[WB-UNBOUND %d 本世界书未绑定任何角色，本次未注入"
+            "（请在世界书管理页绑定到对应角色）：%s]",
+            len(unbound_wbs),
+            ", ".join(f"{n or wb}" for wb, n in unbound_wbs),
+        )
 
     # Load WorldBook records to read budget_tokens / budget_cap fields
     loaded_wbs: list[WorldBook] = (
         db.query(WorldBook).filter(WorldBook.id.in_(world_book_ids)).all()
     ) if world_book_ids else []
+
+    # [WB-CHAR-ISOLATION 2026-10-03] 构建 book_sources 可见性表：每本被注入的
+    # 书 → 书名 + lore 来源 + 行类型。与 budget 解析共用同一次查询（零额外 SQL）。
+    book_sources: dict[str, dict] = {}
+    for wb in loaded_wbs:
+        book_sources[wb.id] = {
+            "name": wb.name,
+            "source": book_lore_source.get(wb.id, "global"),
+            "type": wb.type or "world_book",
+            # character_id 非空 = 按角色绑定（ST charLore/卡内嵌）；为空 = 全局源
+            "character_id": wb.character_id,
+        }
 
     if not world_book_ids:
         return WorldbookContextResult(
@@ -1910,6 +1975,7 @@ def build_worldbook_context(
             debug_report=[],
             total_tokens=0,
             budget_used=0,
+            book_sources=book_sources,
         )
 
     entries: list[WorldBookStage] = (
@@ -1923,6 +1989,7 @@ def build_worldbook_context(
             debug_report=[],
             total_tokens=0,
             budget_used=0,
+            book_sources=book_sources,
         )
 
     # Phase G: ST 1.18.0 getSortedEntries (world-info.js:4478-4527) 在扫描前
@@ -2095,6 +2162,20 @@ def build_worldbook_context(
 
     text = "[World Lore]\n" + "\n\n".join(contents) if contents else None
 
+    # [WB-CHAR-ISOLATION 2026-10-03] 给每条 report 打上所属书的来源与书名。
+    # 在此处（而非扫描期）回填：报告会被 _apply_group_scoring / _apply_budget
+    # 改写 status/reason，末态才是用户真正看到的。
+    # entry_id -> world_book_id 由已加载的 entries 反查（零额外 SQL）。
+    # 同样覆盖 _scan_entries 与 _recursive_scan 两条产出路径。
+    _entry_book: dict[str, str] = {e.id: e.world_book_id for e in entries}
+    for r in report:
+        wb_id = r.world_book_id or _entry_book.get(r.entry_id, "")
+        meta = book_sources.get(wb_id)
+        if meta:
+            r.world_book_id = wb_id
+            r.lore_source = meta["source"]
+            r.book_name = meta["name"]
+
     return WorldbookContextResult(
         text=text,
         debug_report=report,
@@ -2105,6 +2186,7 @@ def build_worldbook_context(
         em_top_entries=em_top_entries,
         em_bottom_entries=em_bottom_entries,
         outlet_entries=outlet_entries,
+        book_sources=book_sources,
     )
 
 
