@@ -134,8 +134,11 @@ backend/tests/test_worldbook_character_isolation.py 等 6 个测试文件 · doc
 
 复核命令：
 ```bash
-grep -rIl "2026-10-04" --exclude-dir=node_modules --exclude-dir=_BACKUPS --exclude-dir=dist --exclude-dir=docs .
+grep -rIl "2026-10-04" --exclude-dir=node_modules --exclude-dir=_BACKUPS --exclude-dir=dist \
+  --exclude-dir=docs --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=.workbuddy .
 ```
+⚠️ 必须排除 `.git`（提交信息）、`__pycache__`（陈旧字节码）、`.workbuddy`（本地记忆日志）——
+否则会把**记录该错误本身**的文件算成"仍有错"。
 
 **这类比文件名严重**：注释里的日期标记是**代码身份的一部分**（如
 `[WB-CHAR-ISOLATION 修订 2026-10-04]` 被多个测试文件引用为契约版本标识），
@@ -388,7 +391,7 @@ worker、动态 `import()`、字符串拼出的模块名（如沙箱的 `group-c
 | §一 `.mimosa/` | 隔离到 `_QUARANTINE_2026-10-03/.mimosa` 后删（工具自建） | `ls -d .mimosa` → 无输出 |
 | §一 `test_attack/` | 隔离副本 sha256 校验一致后删主区原件 | `ls -d test_attack` → 无输出 |
 | §二 Z6 | 26 份主仓文档逐份加作废横幅 | 见下「Z6 判据」 |
-| §四 日期 | 16 文件 34 处 `2026-10-04` → `2026-10-03` | `grep -rIl "2026-10-04" --exclude-dir=node_modules --exclude-dir=_BACKUPS --exclude-dir=dist --exclude-dir=docs .` → 0 |
+| §四 日期 | 16 文件 34 处 `2026-10-04` → `2026-10-03` | `grep -rIl "2026-10-04" --exclude-dir=node_modules --exclude-dir=_BACKUPS --exclude-dir=dist --exclude-dir=docs --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=.workbuddy .` → 0 |
 | §五 palink-new | 备份目录改名 + 补独立 `_INDEX.md` | `ls palink-new/_BACKUPS/_INDEX.md` |
 | §五 主库清理 | 「只清一半」已于 20:00 `35ed0a8` 补删 | `_BACKUPS/_INDEX.md` 同批登记行 |
 
