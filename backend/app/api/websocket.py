@@ -1558,17 +1558,19 @@ async def ws_character_chat(websocket: WebSocket):
                 images = raw.get("images", [])
                 temperature = raw.get("temperature", 0.7)
                 top_p = raw.get("top_p", 0.95)
-                max_tokens = raw.get("max_tokens", 2048)
+                max_tokens = raw.get("max_tokens")
                 # 解析模型硬上限（模型管理里设置的 max_output_tokens）；
-                # 若前端未显式指定回复长度，则默认提升到模型上限，使设置真正生效
-                _user_specified_max = "max_tokens" in raw
+                # 用户未指定回复长度时提升到模型上限，使设置真正生效。
+                # 判据是「值为 None」而非「键不存在」—— 前端四个调用点恒传该键
+                # （曾带 `?? 2048` 兜底），按键判会让模型设置对角色扮演永远失效。
+                _user_specified_max = max_tokens is not None
                 try:
                     from ..services.unified_model_registry import get_model_output_cap
                     _model_cap = get_model_output_cap(model) if model else None
                 except Exception:
                     _model_cap = None
-                if not _user_specified_max and _model_cap:
-                    max_tokens = _model_cap
+                if not max_tokens:
+                    max_tokens = _model_cap or 2048
                 reasoning_effort = raw.get("reasoning_effort") or None
                 provider_id = raw.get("provider_id") or None
                 frequency_penalty = raw.get("frequency_penalty", 0.0)

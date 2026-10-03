@@ -1345,7 +1345,7 @@ export function CharacterView({
           model: selectedModel,
           temperature: currentPreset?.temperature ?? 0.7,
           top_p: currentPreset?.top_p ?? 0.9,
-          max_tokens: currentPreset?.max_tokens ?? 2048,
+          max_tokens: currentPreset?.max_tokens ?? undefined,
           frequency_penalty: currentPreset?.frequency_penalty ?? 0,
           presence_penalty: currentPreset?.presence_penalty ?? 0,
           user_nickname: getDisplayName(selectedCharacter)
