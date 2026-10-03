@@ -75,6 +75,9 @@
 > 表中 `2026-09-30_plugininject-注入断点修复前` 一行由**另一个 agent 在归置完成后**按新规范新建，原位置即仓库内，**未参与本次搬迁**（它的来源列是仓库文件路径而非外部目录，据此可区分）。
 | 2026-10-03 | [`2026-10-03_合并palink-new前_主区快照`](./2026-10-03_合并palink-new前_主区快照) | 主区全量 git 历史 `main-repo.bundle`（131M，`--all`）+ 新区全量 git 历史 `palink-new-repo.bundle`（16M，含那 6 笔修复提交）+ 主区 17 个已修改文件的 `worktree-uncommitted.patch`（80K）+ `untracked-list.txt`（63 路径）+ `goal-groupchat/`（4 文档，主区独有含 59 行未提交改动，**新区没有**）+ 主区库 `main-db-dump.sql`（32M / 49 表，`--clean --if-exists`）+ 新区独有未跟踪文件 `new-only-untracked/`（10 个前端构建/容器化文件 + `docker-compose.test.yml`） | 用户裁定**以新代码为主**：把 `D:/项目/palink-new` 的修复成果合并回主工作区 `Palink-AI`，palink-new 降级为回退保险。合并是不可逆覆盖，故先做基线快照。⚠️ 快照时主区 alembic 停在 **0065**，新区已到 **0067**（差 0066/0067 两支迁移，`0067_add_memory_character_id` 加 `conversation_memories.character_id` 列）；主区 1.4G 备份区、`.mimosa/`(1.6G)、`test_attack/` 等新区未复制的东西按用户裁定**原样保留不合并**。恢复演练步骤见 `BACKUP_INFO.md`。 |
 
+| 2026-10-03 | [`2026-10-03_删除未绑定世界书_主库`](./2026-10-03_删除未绑定世界书_主库) | **主库（生产）** 容器 `palink-ai-db-1`/卷 `palinkai_pgdata`，`pg_dump --data-only -t world_books -t world_book_stages` 导出两本待删记录 | 用户裁定「导入角色卡的世界书只在该角色卡内生效」。删两本 `character_id IS NULL` 的残留：① `Magical Fairy / 群星的资料库 v1.0`（用户称"无头"，游戏存档导出的模板）② `galgame界面插件`（用户称"不知从哪来的插件"，其描述的 `<bgm>`/`<pixiPerform>`/`<styled>` 渲染代码全仓零命中）。⚠️ **同批清理此前只在测试栈做过**（见 `palink-new/_BACKUPS/2026-10-04_清理未绑定世界书`），**主库从未执行**，所以旧版本残留至今 —— 属「只清了一半」的遗留，非新代码问题。删后校验 `character_id IS NULL` = 0，剩 10 本全绑定。 |
+
+
 ## 隔离区（待确认后删除，尚未删除）
 
 `_QUARANTINE_2026-10-03/frontend__dist_new_3/` — 2026-10-03「报错批上线」dist 重建的**试构建产物**（`VITE_OUT_DIR=dist_new_3` 产出，195 文件 / 12M，入口 `index-BCg8tP2l.js` + `index-ZklcfZSV-dff66ed5.css`）。**其内容已完整覆盖进在用 `dist`**，故移入隔离区而非删除；若线上无异常，可整份删除。
