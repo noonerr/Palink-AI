@@ -1,5 +1,11 @@
 # 目标设计：群聊后端对 ST 1.18.0 高保真适配 + 1:1 非回归
 
+> ## ⚠️ 2026-10-03 订正
+> 本件的设计前提是 `st-compat` 装配轨存在，该轨已于 2026-09-03 删除（`091023e`）。
+> **本文档的调用图已过期**：`:82` 附近写的「`_build_group_combined_card` 仅 `:3017` 调用」
+> 该调用点随下游 `build_st_compat_messages` 删除而消失 → 合并卡现为零调用方的死代码。
+> 逐条现状见 `goal-overview.md` 顶部订正块与 `.goal-state.md`。
+>
 > 工作区：`D:\项目\Palink-AI\docs\goal-groupchat`
 > 取向（用户确认）：① 严格对齐 ST 1.18.0；② 1:1 验证 = 专项直测 + 全量零回归
 > 修改边界：仅 `backend/app/services/roleplay_prompt_assembly.py` + 新增/调整测试；不涉及模型迁移、前端。

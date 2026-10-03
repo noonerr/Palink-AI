@@ -5,8 +5,8 @@
 | 备份日期 | 目录名 | 原始来源 | 备份原因 |
 |---|---|---|---|
 | 2026-04-06 | [`2026-04-06_全量代码打包zip`](./2026-04-06_全量代码打包zip) | `D:\项目\backup` | 早期（4 月）由 backup_script.ps1 生成的代码+配置全量打包，最后一个包时间点 2026-04-06 19:18。 |
-| 2026-06-08 | [`2026-06-08_source-snapshot`](./2026-06-08_source-snapshot) | `D:\项目\Palink-AI-backups\20260608-001219` | 全仓库源码快照（动大手术前的整树打包），当时工作区有大量改动。 |
-| 2026-08-17 | [`2026-08-17_worktree-safety`](./2026-08-17_worktree-safety) | `D:\项目\Palink-AI-worktree-safety-20260817-1211` | 在一次高风险 git 操作前做的全量目录拷贝备份（同期发生过 .git 损坏事故，此目录即当时的安全网）。 |
+| 2026-06-08 | [`2026-06-08_source-snapshot`](./2026-06-08_source-snapshot) | `D:\项目\Palink-AI-backups\20260608-001219` | 全仓库源码快照（动大手术前的整树打包），当时工作区有大量改动。**⚠️ 2026-10-03 已瘦身 5.2GB → 6.5MB**：原 `source-snapshot.tar.gz`（5268MB）中 402 个源文件里只有 1 个是 `causallm_7b-dpo-alpha.Q5_K_M.gguf`（5.05GB 废弃权重），已抽出删除，源码重打包为 **`source-snapshot-nogguf.tar.gz`（5.29MB / 402 文件，已实测可正常解开）**。⚠️ **本备份不可整份删除**——git 历史最早只到 2026-08-17，**6 月的代码只存在于本包**。原大包已删除，回捞用 `source-snapshot-nogguf.tar.gz`。 |
+| 2026-08-17 | [`2026-08-17_worktree-safety`](./2026-08-17_worktree-safety) | `D:\项目\Palink-AI-worktree-safety-20260817-1211` | 在一次高风险 git 操作前做的全量目录拷贝备份（同期发生过 .git 损坏事故，此目录即当时的安全网）。**⚠️ 2026-10-03 已瘦身 5.3GB → 141MB**：抽出并删除 `backend-app/models/causallm_7b-dpo-alpha.Q5_K_M.gguf`（5.27GB 废弃权重，2026-02 文件）。**该权重已确认无任何引用**：全仓搜 `causallm` 零命中；搜 `gguf` 仅 `admin.py:449` 一处，那是筛 `mmproj` 视觉编码器文件名，与 7B 权重无关；当前 `backend/app/models/` 仅 1MB 纯代码；向量化走 Ollama 容器（权重在 `ollama_data` 卷，不在此路径）。**⚠️ 本备份无对应 git tag（`git tag -l` 零命中），源码为独一份，不可整份删除。** 保留内容：`st-plugins`(59MB) / `frontend-public`(33MB) / `backend-app`(33MB) / `backend-tests`(7MB) / `frontend-src`(5MB) / `tokenizers`(17MB，模型分词器可再下)。 |
 | 2026-09-02 | [`2026-09-02_mimosa-scan-snapshot`](./2026-09-02_mimosa-scan-snapshot) | `D:\mimosa-scan-snapshot-palink-20260902` | 外部扫描工具（mimosa）对项目的一次全量快照，快照内容以根目录 md 文档为主。 |
 | 2026-09-03 | [`2026-09-03_pre-memory`](./2026-09-03_pre-memory) | `D:\项目\Palink-AI-backup-pre-memory-20260903` | 记忆相关改动施工前的工作区 git 状态备份，与 ST 双轨删除（091023e / aeb8348 / 4eadb86）同期。 |
 | 2026-09-06 | [`2026-09-06_pre-ui-p0`](./2026-09-06_pre-ui-p0) | `D:\项目\Palink-AI-backup-pre-ui-p0-20260906` | 前端 UI P0 批次改动前的源码整包备份。 |
@@ -67,8 +67,13 @@
 | 2026-10-01 | [`2026-10-01_hist-cleanup`](./2026-10-01_hist-cleanup) | 由 `pg_dump` 从 Palink 生产库直接导出，**不经文件系统路径** | 历史消息 `@bubble` 标记与正文包裹标签清洗前的整表留档（932KB SQL + 1.9KB 清洗脚本 + 0 字节 `dump.err`）。⚠️ **该清洗方向已被 10-02 决策推翻**（改为保留历史外壳），故本备份是「推翻后」状态，**恢复会倒退决策**。0 字节 `dump.err` 是无 stderr 的正常产物，勿当坏文件清理。 |
 | 2026-10-01 | [`2026-10-01_pre-bubble-render-fix`](./2026-10-01_pre-bubble-render-fix) | 3 个前端文件（`Message.tsx` 路径可确证，另两个**目录层级已摆平不可确证**）+ `backend/app/services/roleplay_prompt_assembly.py` + 卡内 TavernHelper 脚本原文（DB 字段导出，非文件系统文件） | @bubble 渲染断链修复批次动工前留档，横跨前端渲染层 / 后端装配层 / 卡内脚本三处。⚠️ `roleplay_prompt_assembly.py` 在 10-02 批又被大改，**回捞应优先用 `2026-10-02_格式规范残本修复`**；`src/` 内路径已摆平，回捞须按文件名定位勿直接覆盖。含卡内脚本原文，引用时只取结构/长度/键名。 |
 
+| 2026-10-03 | [`2026-10-03_架构审查修复前`](./2026-10-03_架构审查修复前) | 18 个将改动的工作区文件（`pre/` 保留原相对路径）+ `_manifest.tsv`（sha256 前 16 位）+ 本文件 | 五路架构审查 + 提示词串味/思考过长/输入框卡顿三项专项排查完成后、SPEC 动工前的物理快照。基线 HEAD `79969a7`。⚠️ 拷贝的是**含 14 个未提交改动的磁盘真实状态**（非 HEAD 状态），回捞优先用本备份而非 `git checkout`。备份原因：世界书/扩展提示词/前端提示词池三处跨卡串味修复 + 思考额度拆分 + 输入框渲染性能修复，均改现有行为需可回退。 |
+
+| 2026-10-03 | [`2026-10-03_清理未绑定世界书`](./2026-10-03_清理未绑定世界书) | **palink-new 测试栈数据库**（容器 `palink-new-db-1`/卷 `palinknew_pgdata`），`pg_dump --data-only` 导出 `world_books`+`world_book_stages` + 两条待删记录 CSV | 用户裁定「世界书都是角色卡自带的，没有全局世界书」，删两本未绑定的残留：① `Magical Fairy / 群星资料库`（游戏存档导出的模板：姓名"1"、属性全 100、设定未填写）② `galgame界面插件`（Galgame 前端功能规范，但其描述的 `<bgm>`/`<pixiPerform>`/`<styled>` 渲染代码**已全部不存在**，各 grep 命中 0 个文件；与唯一已装插件「酒馆助手」无关）。删后 `character_id IS NULL` = 0 本。⚠️ **原项目 Palink-AI 生产库未动**，同名两条仍在。 |
+
 > **本次归置的 28 份**（2026-04-06 起至 2026-09-30_probe）由 2026-09-30 统一搬迁，原始来源见上表「原始来源」列。
 > 表中 `2026-09-30_plugininject-注入断点修复前` 一行由**另一个 agent 在归置完成后**按新规范新建，原位置即仓库内，**未参与本次搬迁**（它的来源列是仓库文件路径而非外部目录，据此可区分）。
+| 2026-10-03 | [`2026-10-03_合并palink-new前_主区快照`](./2026-10-03_合并palink-new前_主区快照) | 主区全量 git 历史 `main-repo.bundle`（131M，`--all`）+ 新区全量 git 历史 `palink-new-repo.bundle`（16M，含那 6 笔修复提交）+ 主区 17 个已修改文件的 `worktree-uncommitted.patch`（80K）+ `untracked-list.txt`（63 路径）+ `goal-groupchat/`（4 文档，主区独有含 59 行未提交改动，**新区没有**）+ 主区库 `main-db-dump.sql`（32M / 49 表，`--clean --if-exists`）+ 新区独有未跟踪文件 `new-only-untracked/`（10 个前端构建/容器化文件 + `docker-compose.test.yml`） | 用户裁定**以新代码为主**：把 `D:/项目/palink-new` 的修复成果合并回主工作区 `Palink-AI`，palink-new 降级为回退保险。合并是不可逆覆盖，故先做基线快照。⚠️ 快照时主区 alembic 停在 **0065**，新区已到 **0067**（差 0066/0067 两支迁移，`0067_add_memory_character_id` 加 `conversation_memories.character_id` 列）；主区 1.4G 备份区、`.mimosa/`(1.6G)、`test_attack/` 等新区未复制的东西按用户裁定**原样保留不合并**。恢复演练步骤见 `BACKUP_INFO.md`。 |
 
 ## 隔离区（待确认后删除，尚未删除）
 
