@@ -3219,9 +3219,14 @@ class WorldInfoEditRequest(BaseModel):
     """ST 1.18.0 /api/worldinfo/edit 请求体：{name, data}。
 
     ``data`` 为完整的 ST 世界书对象（含 entries dict），由端点整体覆盖保存。
+
+    ``characterId`` 可选：ST 侧世界书是用户手动勾选的全局集，没有角色维度。
+    Palink 的注入是按角色隔离的（未绑定的书不注入任何角色），故这里接受可选绑定，
+    让插件面写入的书也能挂到具体角色上；不传则保持 None = 未绑定（不再注入、记告警）。
     """
     name: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
+    characterId: Optional[str] = None
 
 
 def _nullable_bool(value: Any) -> Optional[bool]:
@@ -3393,19 +3398,25 @@ async def st_edit_worldinfo(
     now = datetime.now(timezone.utc)
     wb = _resolve_worldbook(db, user, world_id=None, name=req.name)
 
+    # 角色绑定校验：越权绑到别人角色上等于把书送到他人会话，等同不绑。
+    char_id = _resolve_owned_character_id(db, user, getattr(req, "characterId", None))
+
     if wb:
         # 整体覆盖：删除旧条目（直接用 query 删除，避免关系缓存陈旧）
         db.query(WorldBookStage).filter(WorldBookStage.world_book_id == wb.id).delete(synchronize_session=False)
         db.flush()
         # 更新描述
         wb.description = str(req.data.get("description") or "")[:5000] or None
+        # 显式传了绑定才改；没传保持原绑定，避免插件整页覆盖时把绑定悄悄抹掉
+        if req.characterId is not None:
+            wb.character_id = char_id
         wb.updated_at = now
     else:
-        # 创建新的全局世界书
+        # 创建：带上了 characterId 就挂到该角色，否则为未绑定（不再注入 + 记告警）
         wb = WorldBook(
             id=str(uuid.uuid4()),
             user_id=user.id,
-            character_id=None,
+            character_id=char_id,
             name=req.name,
             description=str(req.data.get("description") or "")[:5000] or None,
             source_type="online_edit",
@@ -4186,15 +4197,35 @@ def _parse_worldinfo_payload(content: bytes, filename: str) -> dict[str, Any]:
     return data
 
 
+def _resolve_owned_character_id(db: Session, user: User, character_id: Optional[str]) -> Optional[str]:
+    """把外部传入的角色 ID 校成「确属本用户的角色」，否则返回 None。
+
+    绑定语义是「本用户的这本书给这张卡」：不校验归属等于允许把世界书挂到
+    他人角色上，也等于把内容送到别人的会话里。ST 侧无此维度（世界书是全局勾选集），
+    故这一层校验只能由 Palink 自己兜。
+    """
+    cid = (character_id or "").strip() or None
+    if not cid:
+        return None
+    owned = db.query(Character.id).filter(
+        Character.id == cid, Character.user_id == user.id
+    ).first()
+    return cid if owned else None
+
+
 def _persist_worldbook_from_data(
     db: Session,
     user: User,
     data: Any,
     raw_filename: str,
+    character_id: Optional[str] = None,
 ) -> str:
     """从解析后的 ST 世界书 dict 创建 WorldBook + WorldBookStage 并提交。
 
     单文件导入与批量导入共用此逻辑。返回创建的世界书名称。
+
+    ``character_id`` 由调用方传入并自行校验归属（见各调用点）；None = 未绑定。
+    未绑定的书在 Palink 的按角色注入契约下**不注入任何角色**，只会记 [WB-UNBOUND] 告警。
     """
     entries = data.get("entries", {}) if isinstance(data, dict) else {}
     if not entries and isinstance(data, list):
@@ -4214,7 +4245,7 @@ def _persist_worldbook_from_data(
     wb = WorldBook(
         id=str(uuid.uuid4()),
         user_id=user.id,
-        character_id=None,
+        character_id=character_id,
         name=name,
         description=description or None,
         source_type="upload",
@@ -4419,8 +4450,13 @@ async def st_import_worldinfo(
     avatar: Optional[UploadFile] = File(None),
     user: User = Depends(get_st_current_user),
     db: Session = Depends(get_db),
+    characterId: Optional[str] = Form(None),
 ):
-    """ST 世界书导入（JSON 或 PNG 内嵌角色卡）。保留所有高级字段。返回 {name: world_name}。"""
+    """ST 世界书导入（JSON 或 PNG 内嵌角色卡）。保留所有高级字段。返回 {name: world_name}。
+
+    ``characterId``（camelCase，与 ST 请求体字段风格一致）把导入的书挂到指定角色，
+    这样它只在该角色的会话里注入。不传 = 未绑定 → 不注入任何角色，仅记 [WB-UNBOUND] 告警。
+    """
     file = _resolve_upload_field(file, avatar)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -4429,7 +4465,10 @@ async def st_import_worldinfo(
         raise HTTPException(status_code=400, detail="Empty file")
 
     data = _parse_worldinfo_payload(content, file.filename)
-    name = _persist_worldbook_from_data(db, user, data, file.filename)
+    name = _persist_worldbook_from_data(
+        db, user, data, file.filename,
+        character_id=_resolve_owned_character_id(db, user, characterId),
+    )
     return {"name": name}
 
 
@@ -4500,8 +4539,12 @@ async def st_batch_import_worldinfo(
     avatar: Optional[UploadFile] = File(None),
     user: User = Depends(get_st_current_user),
     db: Session = Depends(get_db),
+    characterId: Optional[str] = Form(None),
 ):
-    """ST 世界书批量导入（ZIP 内含多个 JSON 文件）。返回 {imported, failed, errors}。"""
+    """ST 世界书批量导入（ZIP 内含多个 JSON 文件）。返回 {imported, failed, errors}。
+
+    ``characterId`` 语义同单文件导入：把 ZIP 内所有书统一挂到该角色。
+    """
     file = _resolve_upload_field(file, avatar)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -4515,6 +4558,7 @@ async def st_batch_import_worldinfo(
     imported = 0
     failed = 0
     errors: list[str] = []
+    batch_character_id = _resolve_owned_character_id(db, user, characterId)
 
     for info in zf.infolist():
         if info.is_dir():
@@ -4535,7 +4579,10 @@ async def st_batch_import_worldinfo(
         try:
             raw = zf.read(info)
             data = json.loads(raw.decode("utf-8"))
-            _persist_worldbook_from_data(db, user, data, member_name)
+            _persist_worldbook_from_data(
+                db, user, data, member_name,
+                character_id=batch_character_id,
+            )
             imported += 1
         except HTTPException as exc:
             db.rollback()
