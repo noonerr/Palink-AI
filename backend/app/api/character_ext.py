@@ -1488,8 +1488,16 @@ def _apply_plugin_regex_scripts(
             char_name=char_name,
             is_edit=is_edit,
         )
-    except Exception:
-        pass
+    except Exception as _plugin_regex_exc:
+        # 只留痕不改控制流：卡内 regex 应用失败时静默回退为「原文不变」，
+        # 用户侧表现为「正则不生效」且无任何线索。详见 [plugin-regex] 日志。
+        logger.warning(
+            "[plugin-regex] 卡内 regex 应用失败，按原文继续 "
+            "(placement=%s, ephemeral=%s, is_markdown=%s, is_prompt=%s, "
+            "depth=%s, is_edit=%s, user_id=%s): %s",
+            placement, ephemeral, is_markdown, is_prompt,
+            depth, is_edit, user_id, _plugin_regex_exc,
+        )
 
     # P2-9 修复: 同步 extension_settings.regex_scripts — ST 插件通过
     # setExtensionSettings 写入的 regex_scripts 数组（与 Palink Plugin 表隔离）。
@@ -1511,8 +1519,15 @@ def _apply_plugin_regex_scripts(
                 char_name=char_name,
                 is_edit=is_edit,
             )
-        except Exception:
-            pass
+        except Exception as _ext_regex_exc:
+            # 同上：全局 regex 应用失败同样静默回退为「原文不变」，补一条 warning。
+            logger.warning(
+                "[ext-settings-regex] 全局 regex 应用失败，按原文继续 "
+                "(user_id=%s, placement=%s, ephemeral=%s, is_markdown=%s, "
+                "is_prompt=%s, depth=%s, is_edit=%s): %s",
+                user_id, placement, ephemeral, is_markdown, is_prompt,
+                depth, is_edit, _ext_regex_exc,
+            )
 
     text = _convert_html_code_blocks_to_markers(text)
     return text
@@ -3321,6 +3336,8 @@ async def edit_character_message(
                         content=text_for_mem,
                         branch_id=_edit_branch_id,
                         message_id=message_id,
+                        # [T-跨卡串味修复] 会话已查（session.character_id）
+                        character_id=str(session.character_id) if session.character_id else None,
                     )
                     re_db.commit()
             except Exception:
@@ -4661,6 +4678,13 @@ async def _character_chat_impl(
             nonlocal last_flush_ts
             nonlocal mvu_variables_saved, mvu_latest_variables
 
+            # 【报错提示 1.6(a)】错误占位不落库：守卫必须用 is_error_only() 而不是
+            # has_content —— 错误分支是「先 full_content = "Error: ..." 再 persist(force=True)」，
+            # 赋值动作自己就让 has_content 为真，has_content 守卫形同虚设。
+            # 对齐 WS 轨 websocket.py 的既有守卫与 stream_builder.py:26-34 的统一谓词。
+            if result.is_error_only():
+                return
+
             has_content = result.has_content
             if not has_content:
                 return
@@ -4743,6 +4767,10 @@ async def _character_chat_impl(
             # per-swipe 元数据: 捕获生成时的 model/token_count (ST 1.18.0 swipe_info[].extra)
             msg_extra["model"] = req.model
             msg_extra["token_count"] = token_count
+            # 【报错提示 1.6(b)】生成中途出错时，错误说明不再拼进正文，改存 extra
+            # （前端可读；装配层不会把 extra 当提示词投喂模型）。
+            if result.stream_error:
+                msg_extra["stream_error"] = result.stream_error
             # [PROMPT-EVERY-TURN 2026-10-02] 第 0 步铁证：本轮 extension_prompts 的
             # received/applied 摘要随 extra 落库（0 条也显式写，规范缺席不再静默）
             _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
@@ -4973,7 +5001,12 @@ async def _character_chat_impl(
             if not result.has_content:
                 result.full_content = f"Error: {e.message}"
             else:
-                result.full_content += f"\n\n[{e.message}]"
+                # 【报错提示 1.6(b)】不再把报错拼进已生成的真回复正文：
+                # 「真实输出 + 错误后缀」不满足 is_error_only()，会原样落库、
+                # 原样回喂模型（character_message_builder.py 对 assistant 正文
+                # 只做 strip_inline_think 与剥标签清洗，`[...]` 后缀原样通过）。
+                # 错误说明改存 extra.stream_error（见 persist_snapshot）。
+                result.stream_error = e.message
             yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
             persist_snapshot(force=True)
         except Exception as e:
@@ -4982,7 +5015,8 @@ async def _character_chat_impl(
             if not result.has_content:
                 result.full_content = f"Error: {err_msg}"
             else:
-                result.full_content += f"\n\n[推理中断: {err_msg}]"
+                # 【报错提示 1.6(b)】同上，不再把「[推理中断: ...]」拼进真回复正文
+                result.stream_error = err_msg
             yield f"data: {json.dumps({'content': result.full_content, 'error': True}, ensure_ascii=False)}\n\n"
             persist_snapshot(force=True)
         finally:
@@ -5046,6 +5080,8 @@ async def _character_chat_impl(
                                         content=req.message,
                                         branch_id=branch_id,
                                         message_id=sse_user_message_id,
+                                        # [T-跨卡串味修复] char 即本会话归属角色
+                                        character_id=str(char.id),
                                     )
                                 # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
                                 if assistant_message_id is not None:
@@ -5057,6 +5093,7 @@ async def _character_chat_impl(
                                     content=clean_memory_content(result.full_content),
                                     branch_id=branch_id,
                                     message_id=assistant_message_id,
+                                    character_id=str(char.id),
                                 )
                                 save_db.commit()
                     except Exception as e:
@@ -5786,7 +5823,9 @@ async def _run_action_stream(
         if not result.has_content:
             result.full_content = f"Error: {e.message}"
         else:
-            result.full_content += f"\n\n[{e.message}]"
+            # 【报错提示 1.6(b)】同主 SSE 轨：不再把报错拼进真回复正文，
+            # 该串会进记忆服务与 token 统计；错误说明随 type:'error' 载荷下发。
+            result.stream_error = e.message
         # U-5 修复: 统一 N12 error 契约（type:'error' + message），错误文本不再
         # 塞进 content——前端 useCharacterChat action 回调按 type:'error' 消费并
         # toast，content 携带错误文本会被当正文渲染
@@ -5797,7 +5836,8 @@ async def _run_action_stream(
         if not result.has_content:
             result.full_content = f"Error: {err_msg}"
         else:
-            result.full_content += f"\n\n[推理中断: {err_msg}]"
+            # 【报错提示 1.6(b)】同上
+            result.stream_error = err_msg
         # U-5 修复: 同上，统一 type:'error' 载荷契约
         yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': err_msg}, ensure_ascii=False)}\n\n"
     finally:
@@ -5828,6 +5868,8 @@ async def _run_action_stream(
                                 content=clean_memory_content(final_content or ""),
                                 branch_id=branch_id,
                                 message_id=message_id,
+                                # [T-跨卡串味修复] char 形参即本会话归属角色
+                                character_id=str(char.id) if char is not None else None,
                             )
                             save_db.commit()
                     except Exception as mem_err:
@@ -6538,6 +6580,8 @@ async def switch_message_swipe(
                         content=text_for_mem,
                         branch_id=_switch_branch_id,
                         message_id=message_id,
+                        # [T-跨卡串味修复] 会话已查（session.character_id）
+                        character_id=str(session.character_id) if session.character_id else None,
                     )
                     re_db.commit()
             except Exception:

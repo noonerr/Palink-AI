@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class StreamResult:
-    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "ext_prompts_evidence")
+    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "ext_prompts_evidence", "stream_error")
 
     def __init__(self):
         self.full_content = ""
@@ -21,6 +21,10 @@ class StreamResult:
         # [PROMPT-EVERY-TURN 2026-10-02] 本轮 extension_prompts received/applied
         # 摘要（dict），由装配层经调用方传入，persist 时落 extra.ext_prompts。
         self.ext_prompts_evidence = None
+        # [报错提示 1.6(b)] 生成中途出错时的错误说明（None=无错）。
+        # 不再拼进 full_content（真实输出 + 错误后缀不满足 is_error_only，
+        # 会连着正文一起落库并回喂模型），改走 extra.stream_error。
+        self.stream_error: Optional[str] = None
 
     @property
     def has_content(self) -> bool:

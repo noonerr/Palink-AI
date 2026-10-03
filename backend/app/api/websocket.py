@@ -282,7 +282,9 @@ async def run_chat_generation(
     async def maybe_broadcast_image_event():
         if assistant_message_id is None or not result.has_content:
             return
-        if result.full_content.strip().startswith("Error:"):
+        # 【报错提示 1.6(a)】统一走 StreamResult.is_error_only()（stream_builder.py:26-34），
+        # 消掉手写 startswith("Error:") 的重复实现；语义与原判断完全一致。
+        if result.is_error_only():
             return
         try:
             assistant_msg = save_db.query(ChatMessage).filter(ChatMessage.id == assistant_message_id).first()
@@ -492,7 +494,7 @@ async def run_chat_generation(
             persist_snapshot(force=True)
             if memory_mode != "disabled" and result.full_content and not memory_stored:
                 try:
-                    if not result.full_content.strip().startswith("Error:"):
+                    if not result.is_error_only():
                         mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
                             # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id 先删后写（幂等）。
@@ -670,7 +672,9 @@ async def run_character_chat_generation(
         # （2026-08-18 实测：2175/2177/2181 三条 Error 消息入库后该会话连续失败）。
         if not result.full_content:
             return
-        if result.full_content.strip().startswith("Error:"):
+        # 【报错提示 1.6(a)】统一走 StreamResult.is_error_only()（stream_builder.py:26-34），
+        # 消掉手写 startswith("Error:") 的重复实现；语义与原判断完全一致。
+        if result.is_error_only():
             return
 
         content_delta = len(result.full_content) - last_saved_content_len
@@ -908,7 +912,8 @@ async def run_character_chat_generation(
         if assistant_message_id is None or not result.has_content:
             _discard_pending("no persisted assistant content")
             return
-        if result.full_content.strip().startswith("Error:"):
+        # 【报错提示 1.6(a)】同上：统一谓词
+        if result.is_error_only():
             _discard_pending("generation error")
             return
         # 此刻消息已落库：用模型给的 prompt 直接生成，并**替代**本轮的启发式
@@ -1186,7 +1191,7 @@ async def run_character_chat_generation(
 
             if memory_mode != "disabled" and result.full_content:
                 try:
-                    if not result.full_content.strip().startswith("Error:"):
+                    if not result.is_error_only():
                         mem_svc = MemoryService(save_db)
                         if mem_svc.is_available():
                             # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id 先删后写（幂等）。
@@ -1201,6 +1206,9 @@ async def run_character_chat_generation(
                                     content=user_message,
                                     branch_id=branch_id,
                                     message_id=user_message_id,
+                                    # [T-跨卡串味修复] char 即本会话归属角色；
+                                    # 群聊发言人也属该会话（session.character_id）
+                                    character_id=str(char.id) if char is not None else None,
                                 )
                             # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链。
                             # 记忆源取 DB 中消息最终显示内容（persist_snapshot 已含
@@ -1225,6 +1233,8 @@ async def run_character_chat_generation(
                                 content=clean_memory_content(_asst_mem_src),
                                 branch_id=branch_id,
                                 message_id=assistant_message_id,
+                                # [T-跨卡串味修复] char 即本会话归属角色
+                                character_id=str(char.id) if char is not None else None,
                             )
                             save_db.commit()
                 except Exception as e:

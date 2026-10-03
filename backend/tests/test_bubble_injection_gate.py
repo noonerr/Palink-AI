@@ -36,12 +36,17 @@ def _bubble_entry(identifier="bubble-format", content=BUBBLE_SPEC):
     return {"identifier": identifier, "content": content, "position": 1, "depth": 0, "role": "system", "scan": False, "filter": {}}
 
 
-def _make_req(char_extensions=None, extension_prompts=None, plugin_scope_mode=None, char_id=None):
+def _make_req(char_extensions=None, extension_prompts=None, plugin_scope_mode=None, char_id="char-unit-1"):
     """_collect_extension_prompts 的最小请求替身。
 
     db.query 直接抛错 → DB ExtensionPrompt 加载分支被容错跳过（该分支
     有 try/except 包裹），单测聚焦请求侧注入的过滤逻辑。
     plugin_scope_mode=None → 模拟「列不存在 / 未设置」，应等价 inherit。
+
+    [XCHAR-PROMPT-BLEED 2026-10-03] char_id 默认给一个真实 id：请求侧条目一律按
+    「插件来源」处理并按当前角色重新绑定 character_ids（无角色则无插件注入）。
+    本文件用例测的是 bubble 门控、不是 filter 来源分流语义，故给一个正常角色即可；
+    分流语义由 tests/test_ext_prompt_source_key_gate.py 单独锁定。
     """
     return SimpleNamespace(
         db=SimpleNamespace(query=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no db in unit test"))),

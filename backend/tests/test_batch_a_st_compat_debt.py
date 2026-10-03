@@ -364,7 +364,10 @@ class TestA4WorldInfoGlobals:
         db_session.add(CharacterChatSession(
             id=sess_id, user_id=user.id, character_id=char.id, title="a4",
         ))
-        db_session.add(WorldBook(id=book_id, user_id=user.id, name="a4-book"))
+            # [WB-CHAR-ISOLATION 修订 2026-10-04] 绑到本会话角色：未绑定的书自该日起
+    # 不再注入任何对话（不再当"全局书"）。本文件测的是向量/预算逻辑，
+    # 不是绑定语义，补上绑定让用例继续有效。
+        db_session.add(WorldBook(id=book_id, user_id=user.id, name="a4-book", character_id=char.id))
         db_session.commit()
         return user, char
 
@@ -468,7 +471,8 @@ class TestA5BudgetBase:
         db_session.add(CharacterChatSession(
             id="sess-a5", user_id=user.id, character_id=char.id, title="a5",
         ))
-        wb = WorldBook(id="wb-a5", user_id=user.id, name="a5-book", budget_tokens="10%")
+        wb = WorldBook(id="wb-a5", user_id=user.id, name="a5-book", budget_tokens="10%",
+                     character_id=char.id)
         db_session.add(wb)
         stage = _mk_stage("a5s", "dragon", "Dragon lore")
         stage.world_book_id = "wb-a5"

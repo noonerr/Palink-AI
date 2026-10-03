@@ -2319,8 +2319,10 @@ async def st_get_global_variables(
     body = {}
     try:
         body = await request.json()
-    except Exception:
-        pass
+    except Exception as _body_exc:
+        logging.getLogger(__name__).warning(
+            "variables/global/get 请求体解析失败，按无 body 处理 (user_id=%s): %s",
+            user.id, _body_exc)
     var_name = body.get("variableName") if isinstance(body, dict) else None
 
     items = db.query(GlobalVariable).filter(GlobalVariable.user_id == user.id).all()
@@ -2344,8 +2346,10 @@ async def st_set_global_variable(
     body = {}
     try:
         body = await request.json()
-    except Exception:
-        pass
+    except Exception as _body_exc:
+        logging.getLogger(__name__).warning(
+            "variables/global/set 请求体解析失败，按无 body 处理 (user_id=%s): %s",
+            user.id, _body_exc)
     if not isinstance(body, dict) or not body.get("variableName"):
         raise HTTPException(status_code=400, detail="variableName is required")
 
@@ -2377,8 +2381,10 @@ async def st_delete_global_variable(
     body = {}
     try:
         body = await request.json()
-    except Exception:
-        pass
+    except Exception as _body_exc:
+        logging.getLogger(__name__).warning(
+            "variables/global/delete 请求体解析失败，按无 body 处理 (user_id=%s): %s",
+            user.id, _body_exc)
     if not isinstance(body, dict) or not body.get("variableName"):
         raise HTTPException(status_code=400, detail="variableName is required")
 
@@ -5044,6 +5050,10 @@ class VectorQueryRequest(BaseModel):
     searchText: Optional[str] = None
     topK: Optional[int] = Field(default=None, ge=1, le=100)
     threshold: Optional[float] = None
+    # [XCHAR-MEM-SCOPE 2026-10-03] 检索范围（Palink 自有分支用）。不传 = 用户级全量，
+    # 会跨角色召回。插件能拿到就带上。
+    sessionId: Optional[str] = None
+    characterId: Optional[str] = None
 
 
 class VectorInsertItem(BaseModel):
@@ -5271,6 +5281,12 @@ async def st_vector_query(
             user_id=user.id,
             query_embedding=embedding_list,
             limit=body.top_k,
+            # [XCHAR-MEM-SCOPE 2026-10-03] Palink 自有分支（collectionId 为空时走这里）
+            # 原本不传任何范围 → 退化成用户级全量 → 跨角色召回。ST 插件能拿到
+            # sessionId/characterId 的就带上；都没有时保持旧行为，由 semantic_search
+            # 打 [MEM-SCOPE] 告警而不是静默。
+            session_id=getattr(body, "sessionId", None),
+            character_id=getattr(body, "characterId", None),
         )
     except Exception:
         logging.getLogger("palink.st_vector").exception("vector query failed")
