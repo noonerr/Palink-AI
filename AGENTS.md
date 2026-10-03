@@ -52,9 +52,19 @@
 
 - 前端：`cd frontend && npx tsc --noEmit`
 
-- 前端自动检查：`cd frontend && npx vitest run`（2026-09-23 起为唯一入口；2026-10-03 实测基线：**49 文件 / 661 passed + 3 skipped**，其中 3 例是转换前既有的 `it.skip`。⚠️ 文件与用例数随并行会话增长，别把固定数字当验收线，只认 `failed = 0`）
+- 前端自动检查：`cd frontend && npx vitest run`（2026-09-23 起为唯一入口；2026-10-03 实测基线：**50 文件 / 665 passed + 3 skipped**，其中 3 例是转换前既有的 `it.skip`。⚠️ 文件与用例数随并行会话增长，别把固定数字当验收线，只认 `failed = 0`）
 
   > `npm run test:contract` 与 `frontend/src/lib/sillytavern/__tests__/_tsx-loader.mjs` **已删除**：契约测试全部转入 vitest，浏览器环境由 `vitest.config.ts` 的 `environment: 'jsdom'` + `frontend/src/test/setup-browser-globals.ts` 提供。docs/ 下 2026-09-22 及更早的 spec、报告仍把 `test:contract`（162/173 项）写成回归门禁口径，一律按本条作废并改跑 vitest。
+
+- ⚠️ **提交 ≠ 上线**：改了后端必须 `docker compose build backend && up -d backend`，
+  改了前端必须重建 dist 并确认容器在服务新指纹。**提交完不重建容器 = 用户跑的是旧代码**
+  （2026-10-03 踩过：提交了 ST 世界书绑定修复却忘重建，容器内 grep 命中数为 0）。
+
+- ⚠️ **声称「已完成」前必读** `docs/SOP_Agent交付自查清单.md`（2026-10-03 立）。
+  那一轮审查发现：承诺 12 项实测 9 真修 / 2 未做 / 3 假修，另有 4 条记录本身写错、3 次日期写成次日。
+  重点是这几条容易复发的：**①「文件消失」要先回原目录确认，消失≠被删（可能压根没复制）**
+  **② 改数据契约后测试集体红属预期连带成本，先看同批测试在来源工作区是否绿，别急着回退源码**
+  **③ 按清单改完必须再全仓 grep 一次（清单本身会漏）**。
 
 ## 备份与清理规范（强制 · 2026-09-30 起施行）
 
