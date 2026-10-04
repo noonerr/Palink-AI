@@ -41,6 +41,10 @@ import {
 import { pluginCharacterIdFromUuid } from '@/lib/sillytavern/plugin-character-id';
 // 卡脚本存档的服务端写穿同步（P2）；失败静默降级为纯本地
 import { installCardScriptStorageSync } from '@/lib/sillytavern/card-script-storage-sync';
+// 卡脚本依赖的第三方全局（z/Vue/lodash/YAML/showdown）。上游 JS-Slash-Runner 会白送，
+// Palink 此前零提供 → 卡内 mvu_zod.js 报 `z is not defined`、MVVarUpdate 报
+// `Vue is not defined`，变量系统整体失效（2026-10-03 真机复现）。
+import { ensureStThirdPartyGlobals } from '@/lib/sillytavern/st-third-party-globals';
 import { ErrorToast, ErrorToastPortalContainer } from '@/components/ui/custom/ErrorToast';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
 // 重构后提取的子组件
@@ -69,6 +73,7 @@ import { extractReasoningTags } from '@/lib/sillytavern/formatting';
 import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
 import { promptInjection, setActivePromptCharacter, getActivePromptCharacter } from '@/services/prompt-injection';
 import { PluginManager } from '@/components/roleplay/PluginManager';
+import { StPluginSettingsDrawer } from '@/components/st-plugin-ui-host/StPluginSettingsDrawer';
 import {
   createSillyTavernRuntime,
   destroySillyTavernRuntime,
@@ -366,6 +371,8 @@ export function CharacterChat(props: CharacterChatProps) {
   const [showPresetManager, setShowPresetManager] = useState(false);
   // 插件管理器对话框
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  // 插件设置抽屉（ST 插件注入面板的收纳空间）
+  const [pluginSettingsOpen, setPluginSettingsOpen] = useState(false);
   // MVU 会话级变量（后端下发的 stat_data，作为消息级 extra.variables 的兜底）
   const [sessionVariables, setSessionVariables] = useState<{ stat_data?: Record<string, unknown> } | undefined>(undefined);
   // 卡内脚本桥接用：注入 effect 只在切卡时重跑，变量必须走 ref 读最新值，否则脚本读到旧 stat_data
@@ -1632,33 +1639,50 @@ export function CharacterChat(props: CharacterChatProps) {
   // 必须在插件 runtime 注入之后跑：脚本依赖 setup 挂上来的 getChatMessages /
   // window.__palinkChatMessages。失败按条隔离，一条坏脚本不得拖垮其余（当天事故教训）。
   // 止血：localStorage.palink_card_tavern_helper_scripts = '0' 后刷新，整体不执行。
+  //
+  // [ST-GLOBALS 2026-10-03] 先 await 第三方全局（z/Vue/lodash/YAML/showdown）再注入脚本：
+  // 卡脚本是「注入即执行 + 按 id 幂等去重」，晚到的全局不会让已跑过的脚本重跑，
+  // 所以顺序不能反。ensureStThirdPartyGlobals 自带超时（8s）且不抛，CDN 挂掉时
+  // 退回今天的行为，不会把聊天页卡住。
   useEffect(() => {
     const ext = compatCharacterExtensions || (selectedCharacter as any)?.extensions;
     if (!ext) return;
-    // 复用插件容器（display:none）：卡脚本自己会把悬浮按钮挂到 document.body
-    let host = document.getElementById('palink-st-plugin-host');
-    if (!host) {
-      host = document.createElement('div');
-      host.id = 'palink-st-plugin-host';
-      host.style.display = 'none';
-      document.body.appendChild(host);
-    }
-    ensureCardScriptBridge({
-      getVariables: () => (sessionVariablesRef.current as Record<string, unknown>) || {},
-      getCurrentMessageId: () => {
-        const msgs = (window as any).__palinkChatMessages;
-        return Array.isArray(msgs) && msgs.length > 0 ? msgs.length - 1 : -1;
-      },
-    });
-    // 传 UUID 给执行器：卡脚本里的 localStorage / sessionStorage 会被改写为按这张卡
-    // 隔离的视图（P0）。拿不到 id 时执行器会保持原文不动 —— 隔离失效，但不会引入改写风险。
-    const res = runCardTavernHelperScripts(ext, host, { characterId: selectedCharacter?.id });
-    if (res.failed.length > 0) {
-      console.warn('[card-script] 卡内脚本有失败项（已隔离，不影响其余）:', res.failed);
-    }
-    if (res.ran.length > 0) {
-      console.warn('[card-script] 已执行卡内脚本 ' + res.ran.length + ' 条');
-    }
+    let cancelled = false;
+
+    const run = async () => {
+      await ensureStThirdPartyGlobals();
+      if (cancelled) return;
+
+      // 复用插件容器（display:none）：卡脚本自己会把悬浮按钮挂到 document.body
+      let host = document.getElementById('palink-st-plugin-host');
+      if (!host) {
+        host = document.createElement('div');
+        host.id = 'palink-st-plugin-host';
+        host.style.display = 'none';
+        document.body.appendChild(host);
+      }
+      ensureCardScriptBridge({
+        getVariables: () => (sessionVariablesRef.current as Record<string, unknown>) || {},
+        getCurrentMessageId: () => {
+          const msgs = (window as any).__palinkChatMessages;
+          return Array.isArray(msgs) && msgs.length > 0 ? msgs.length - 1 : -1;
+        },
+      });
+      // 传 UUID 给执行器：卡脚本里的 localStorage / sessionStorage 会被改写为按这张卡
+      // 隔离的视图（P0）。拿不到 id 时执行器会保持原文不动 —— 隔离失效，但不会引入改写风险。
+      const res = runCardTavernHelperScripts(ext, host, { characterId: selectedCharacter?.id });
+      if (res.failed.length > 0) {
+        console.warn('[card-script] 卡内脚本有失败项（已隔离，不影响其余）:', res.failed);
+      }
+      if (res.ran.length > 0) {
+        console.warn('[card-script] 已执行卡内脚本 ' + res.ran.length + ' 条');
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCharacter?.id, compatCharacterExtensions]);
 
   useEffect(() => {
@@ -1944,6 +1968,7 @@ export function CharacterChat(props: CharacterChatProps) {
             onToggleAutoGenerateImages: handleToggleAutoGenerateImages,
             onResponseLengthChange: handleResponseLengthChange,
             onShowPluginManager: () => setPluginManagerOpen(true),
+            onShowPluginSettings: () => setPluginSettingsOpen(true),
             onPrevStage: handlePrevStage,
             onNextStage: handleNextStage,
             onShowPlotLineManager: () => setShowPlotLineManager(true),
@@ -2237,6 +2262,12 @@ export function CharacterChat(props: CharacterChatProps) {
       <PluginManager
         open={pluginManagerOpen}
         onClose={() => setPluginManagerOpen(false)}
+      />
+
+      {/* ──── 插件设置抽屉：ST 插件注入面板（MVU 等）的收纳空间，真实节点 move 进出 ──── */}
+      <StPluginSettingsDrawer
+        open={pluginSettingsOpen}
+        onClose={() => setPluginSettingsOpen(false)}
       />
     </div>
   );

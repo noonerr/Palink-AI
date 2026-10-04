@@ -1,0 +1,48 @@
+/*
+ * 插件设置抽屉（StPluginSettingsDrawer）内容区样式。
+ *
+ * [插件设置空间收纳 2026-10-04] Palink 前端原本没有 ST 的 inline-drawer 折叠交互
+ * （ST 由全局点击委托 + 样式实现，Palink 侧全仓零命中）—— 第三方面板（如 MVU
+ * 变量框架）的 inline-drawer 标题点了没反应、内容永远全展开。这里补齐最小兼容：
+ * header 可点、箭头指示、collapsed 时收起 content。
+ * 仅作用于抽屉内容区（.palink-st-plugin-drawer-host），不影响其他注入位置；
+ * 折叠状态切换由 StPluginSettingsDrawer 的事件委托负责（toggle palink-idrawer-collapsed）。
+ */
+
+.palink-st-plugin-drawer-host .inline-drawer {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.palink-st-plugin-drawer-host .inline-drawer > .inline-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.palink-st-plugin-drawer-host .inline-drawer > .inline-drawer-header::after {
+  content: '▾';
+  flex-shrink: 0;
+  color: var(--muted-foreground, #6b7280);
+  transition: transform 0.2s ease;
+}
+
+.palink-st-plugin-drawer-host .inline-drawer.palink-idrawer-collapsed > .inline-drawer-header::after {
+  transform: rotate(-90deg);
+}
+
+.palink-st-plugin-drawer-host .inline-drawer > .inline-drawer-content {
+  padding: 0.125rem 0.875rem 0.75rem;
+}
+
+.palink-st-plugin-drawer-host .inline-drawer.palink-idrawer-collapsed > .inline-drawer-content {
+  display: none;
+}

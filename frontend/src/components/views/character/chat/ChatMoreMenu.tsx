@@ -5,7 +5,7 @@
 import React from 'react';
 import {
   BookOpen, Clock, GitBranch, Image,
-  Puzzle, Sliders, Trash2,
+  Puzzle, Settings, Sliders, Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -48,6 +48,8 @@ export interface ChatMoreMenuProps {
   onToggleAutoGenerateImages: (value: boolean) => Promise<void>;
   onResponseLengthChange: (value: string) => void;
   onShowPluginManager: () => void;
+  /** 打开插件设置抽屉（ST 插件注入面板的收纳空间，见 StPluginSettingsDrawer） */
+  onShowPluginSettings: () => void;
   onPrevStage: () => Promise<void>;
   onNextStage: () => Promise<void>;
   onShowPlotLineManager: () => void;
@@ -77,6 +79,7 @@ export function ChatMoreMenu(props: ChatMoreMenuProps) {
     onToggleAutoGenerateImages,
     onResponseLengthChange,
     onShowPluginManager,
+    onShowPluginSettings,
     onPrevStage,
     onNextStage,
     onShowPlotLineManager,
@@ -167,6 +170,11 @@ export function ChatMoreMenu(props: ChatMoreMenuProps) {
         <DropdownMenuItem onClick={onShowPluginManager}>
           <Puzzle size={14} className="mr-2" />
           插件管理
+        </DropdownMenuItem>
+        {/* 插件设置抽屉（ST 插件注入面板的收纳空间） */}
+        <DropdownMenuItem onClick={onShowPluginSettings}>
+          <Settings size={14} className="mr-2" />
+          插件设置
         </DropdownMenuItem>
 
         {/* Plot line stage navigation */}

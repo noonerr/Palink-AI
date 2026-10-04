@@ -8,7 +8,9 @@ import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
  *
  * 挂载点策略：
  * - `#extensions_settings` / `#extensions_settings2`：插件设置面板容器，含子容器
- *   （tts_container、vectors_container 等），ST 插件通过 `$('#xxx_container').append(html)` 注入
+ *   （tts_container、vectors_container 等），ST 插件通过 `$('#xxx_container').append(html)` 注入。
+ *   [插件设置空间收纳 2026-10-04] 这两个容器改为 ParkedMountPoint 常驻离屏，
+ *   面板展示统一走 StPluginSettingsDrawer（三个点菜单 → 插件设置）。
  * - `#extensions_menu`：扩展下拉菜单容器（ST 动态创建，这里提供占位）
  * - `#movingDivs`：可移动浮动面板容器（gallery、author note 等）
  * - `#top-settings-holder`：顶部设置栏（AI 配置等，ST 插件部分设置项会注入此处）
@@ -84,6 +86,47 @@ const WAND_CONTAINERS = [
   'objective_wand_container',
   'translate_wand_container',
 ] as const;
+
+/**
+ * 常驻隐藏的挂载点容器（离屏 parked，不进页面布局）。
+ *
+ * 与 AutoRevealMountPoint 的 display:none 不同，这里用「离屏定位 + visibility:hidden」：
+ * 部分 ST 插件会用 offsetWidth/offsetHeight 判断可见性（同款考量见
+ * SillyTavernCompatRuntime.ts 的 ensureStExtensionSettingsHostCompat），
+ * display:none 会让测量得 0 导致插件行为异常；离屏 parked 节点仍可被测量与注入。
+ *
+ * 展示入口是 StPluginSettingsDrawer（三个点菜单 → 插件设置）：打开时把整个根节点
+ * move 进抽屉（保留 Vue/jQuery 事件绑定），关闭时按原位 move 回来。
+ *
+ * ⚠️ 本组件必须保持无状态 + 静态 style（memo 父组件 + 无 props/state → 永不重渲染）：
+ * 抽屉打开期间会覆盖根节点的 inline style，若这里重渲染回写 style，会把抽屉里的
+ * 面板再次藏掉。改样式前先核对 StPluginSettingsDrawer 的 move 逻辑。
+ */
+function ParkedMountPoint({
+  id,
+  className,
+  children,
+}: {
+  id: string;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      id={id}
+      className={className}
+      style={{
+        position: 'fixed',
+        top: '-9999px',
+        left: '-9999px',
+        visibility: 'hidden',
+        pointerEvents: 'none',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 /**
  * 单个挂载点容器：初始隐藏，内容非空时自动显示。
@@ -179,8 +222,11 @@ export const StPluginMountPoints = memo(function StPluginMountPoints() {
         className="palink-st-mount-point palink-st-extensions-menu"
       />
 
-      {/* 插件设置面板容器（第一列，含 16 个标准子容器） */}
-      <AutoRevealMountPoint
+      {/* 插件设置面板容器（第一列，含 16 个标准子容器）。
+          [插件设置空间收纳 2026-10-04] 改为常驻离屏 parked：不再「有内容自动显示在
+          页面流」（第三方面板如 MVU 变量框架会直接怼在聊天/角色页上且收不起来），
+          展示入口统一走 StPluginSettingsDrawer。DOM 保留供插件注入与扫描。 */}
+      <ParkedMountPoint
         id="extensions_settings"
         className="palink-st-mount-point palink-st-extensions-settings"
       >
@@ -191,10 +237,10 @@ export const StPluginMountPoints = memo(function StPluginMountPoints() {
             className="extension_container"
           />
         ))}
-      </AutoRevealMountPoint>
+      </ParkedMountPoint>
 
-      {/* 插件设置面板容器（第二列，含 16 个标准子容器） */}
-      <AutoRevealMountPoint
+      {/* 插件设置面板容器（第二列，含 16 个标准子容器），同上常驻离屏 parked */}
+      <ParkedMountPoint
         id="extensions_settings2"
         className="palink-st-mount-point palink-st-extensions-settings2"
       >
@@ -205,7 +251,7 @@ export const StPluginMountPoints = memo(function StPluginMountPoints() {
             className="extension_container"
           />
         ))}
-      </AutoRevealMountPoint>
+      </ParkedMountPoint>
 
       {/* 可移动浮动面板容器（gallery、author note 等，有内容时自动显示） */}
       <AutoRevealMountPoint

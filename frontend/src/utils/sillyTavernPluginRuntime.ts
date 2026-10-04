@@ -219,6 +219,26 @@ export function computePluginDiff(
   };
 }
 
+/**
+ * [EVENT-BRIDGE] 经典轨**自己会 emit** 的事件名（键名与 ST 事件值两种形态都要列）。
+ *
+ * 背景：`SillyTavernPluginRuntime.on()` 除了写本轨的 listeners，还会订阅 eventBus
+ * 以接住 ST runtime 发出的生态事件（generation_* / message_* 等）。但下列几个名字
+ * 本轨已有显式 emit 调用，若再经总线投递就会**同一逻辑事件触发两次**，故排除。
+ *
+ * 来源（全仓 grep 穷举，改这里前先重跑一遍）：
+ *   - `CharacterChat.tsx`：`emit('MESSAGE_SENT')` / `emit('MESSAGE_RECEIVED')` / `emit('CHAT_CHANGED')`
+ *   - `CharacterView.tsx`：`emitClassicPluginEvent('chat_id_changed')`
+ */
+const SELF_EMITTED_EVENTS = new Set<string>([
+  'MESSAGE_SENT',
+  'message_sent',
+  'MESSAGE_RECEIVED',
+  'message_received',
+  'CHAT_CHANGED',
+  'chat_id_changed',
+]);
+
 export class SillyTavernPluginRuntime {
   private config: RuntimeConfig | null = null;
   private container: HTMLElement | null = null;
@@ -350,18 +370,68 @@ export class SillyTavernPluginRuntime {
     return names;
   }
 
+  /**
+   * [EVENT-BRIDGE] eventBus 订阅的包装函数映射：事件名 → (原回调 → 总线回调)。
+   * `off()` 必须退订**同一个**包装函数，故需要留存映射（与 lib/sillytavern/runtime.ts
+   * 的 EventSourceWrapper.wrapCallback / listeners 同款做法）。
+   */
+  private busWrappers = new Map<string, Map<Function, (payload: unknown) => void>>();
+
+  /**
+   * 把总线 payload 还原成 ST 的 (...args) 语义。
+   *
+   * 为什么必须解包：`EventSourceWrapper.emit` 把 `...args` **打包成数组**当单一 payload
+   * 发给 eventBus（`lib/sillytavern/runtime.ts:378`）。插件注册的是 ST 形态的回调
+   * （如 `eventOn(tavern_events.GENERATION_ENDED, (message_id) => …)`），
+   * 不解包就会收到 `[message_id]` 而不是 `message_id`。
+   */
+  private wrapBusCallback(callback: Function): (payload: unknown) => void {
+    return (payload: unknown) => {
+      const args = Array.isArray(payload) ? payload : [payload];
+      try {
+        (callback as (...a: unknown[]) => unknown)(...args);
+      } catch (e) {
+        console.error('SillyTavern plugin bus event handler error:', e);
+      }
+    };
+  }
+
   on(eventName: string, callback: Function) {
     for (const name of this.eventAliases(eventName)) {
       if (!this.listeners.has(name)) {
         this.listeners.set(name, new Set());
       }
       this.listeners.get(name)!.add(callback);
+      // [EVENT-BRIDGE 2026-10-04] 经典轨自己只 emit 少数几个事件（见 SELF_EMITTED_EVENTS），
+      // 其余生态事件（generation_started/ended/stopped、message_updated/deleted/swiped、
+      // character_message_rendered、stream_token_received …）由 ST runtime 经 eventBus 发出，
+      // 此前**完全到不了**经典轨插件的监听器 —— 表现为「AI 说完话面板不刷新」。
+      // 这里按上游 EventSourceWrapper（lib/sillytavern/runtime.ts:360）的同款做法订阅总线。
+      // ⚠️ 必须排除经典轨自己 emit 的名字，否则同一逻辑事件会被投递两次。
+      if (!SELF_EMITTED_EVENTS.has(name)) {
+        let perEvent = this.busWrappers.get(name);
+        if (!perEvent) {
+          perEvent = new Map();
+          this.busWrappers.set(name, perEvent);
+        }
+        if (!perEvent.has(callback)) {
+          const wrapped = this.wrapBusCallback(callback);
+          perEvent.set(callback, wrapped);
+          try { eventBus.on(name as never, wrapped as never); } catch { /* 订阅失败不影响本轨投递 */ }
+        }
+      }
     }
   }
 
   off(eventName: string, callback: Function) {
     for (const name of this.eventAliases(eventName)) {
       this.listeners.get(name)?.delete(callback);
+      const perEvent = this.busWrappers.get(name);
+      const wrapped = perEvent?.get(callback);
+      if (wrapped && perEvent) {
+        try { eventBus.off(name as never, wrapped as never); } catch { /* ignore */ }
+        perEvent.delete(callback);
+      }
     }
   }
 
@@ -445,6 +515,19 @@ export class SillyTavernPluginRuntime {
     // 插件只面向 ST 形状的接口（setChatMessages/triggerSlash/openCharacterChat…），
     // 所有写操作经此桥接层落到 Palink 既有后端 API，保证分支/消息/会话数据模型一致。
     let worldbookNamesCache: string[] = [];
+    // [L1-SETTINGS 2026-10-04] 只读项数据源缓存（同步读取，注入时预取）。
+    // ST 的 getPresetNames / getCharLorebooks 是**同步** API，而真数据要拉后端，
+    // 故沿用 worldbookNamesCache 的既有模式：注入时 fire-and-forget 预取到缓存，
+    // 插件同步调用时读缓存；未就绪时返回安全空值（并在调用点登记降级）。
+    let presetNamesCache: string[] = [];
+    // getPreset（实卡调用 5 次）要的是预设**对象**，不是名字 —— 同一次请求顺手缓存，
+    // 不额外发请求。按 name 建索引，取不到返回 null（插件侧自行降级）。
+    let presetObjectCache: Record<string, any> = {};
+    let charLorebooksCache: { characterId: string; primary: string | null; additional: string[] } = {
+      characterId: '',
+      primary: null,
+      additional: [],
+    };
     const palinkBridge = {
       // P0-1: COT 格式化文本写回 swipe（ST setChatMessages → /api/chats/save）
       // ST 插件传两种形态：(a) 完整消息数组；(b) 部分更新 [{message_id, swipes, swipe_id}]。
@@ -691,10 +774,79 @@ export class SillyTavernPluginRuntime {
         return worldbookNamesCache;
       },
       worldbookNames: (): string[] => worldbookNamesCache,
+
+      // ── [L1-SETTINGS 2026-10-04] 只读项数据源 ──
+      // getPresetNames（缺口清单 A5）：Palink 的 prompt presets 与 ST 的 OpenAI 预设
+      // 不是同一个模型（ST 预设 = 采样参数集；Palink 预设 = 生成参数模板），
+      // 但「名字列表」这层语义是共通的，按名字列表提供即可。
+      refreshPresetNames: async (): Promise<string[]> => {
+        try {
+          const resp = await api.get('/api/roleplay/presets');
+          if (Array.isArray(resp)) {
+            presetNamesCache = resp.map((p: any) => String(p?.name ?? '')).filter(Boolean);
+            const index: Record<string, any> = {};
+            for (const p of resp) {
+              const pname = String((p as any)?.name ?? '').trim();
+              if (pname && !(pname in index)) index[pname] = p;
+            }
+            // 默认档也按 is_default 建一个别名，供 getPreset() 无参调用取
+            const def = resp.find((p: any) => (p as any)?.is_default) || resp[0];
+            if (def) index['__palink_default__'] = def;
+            presetObjectCache = index;
+          }
+        } catch (e) {
+          console.error('[SillyTavernPluginRuntime] refreshPresetNames failed:', e);
+        }
+        return presetNamesCache;
+      },
+      presetNames: (): string[] => presetNamesCache,
+      /** getPreset（缺口清单 A4/A5）：按名取预设对象；无名/未命中 → 默认档 */
+      presetByName: (name?: string): any => {
+        const key = String(name ?? '').trim();
+        return (key && presetObjectCache[key]) || presetObjectCache['__palink_default__'] || null;
+      },
+
+      // getCharLorebooks（缺口清单 A3）：当前角色绑定的世界书。
+      // 后端 GET /api/worldbooks?character_id=..&type=character_book 已带
+      // user_id == 当前用户 过滤（app/api/worldbook.py:290-295），不会跨用户读到。
+      refreshCharLorebooks: async (characterId?: string): Promise<{ primary: string | null; additional: string[] }> => {
+        const cid = String(characterId ?? '').trim();
+        if (!cid) {
+          charLorebooksCache = { characterId: '', primary: null, additional: [] };
+          return charLorebooksCache;
+        }
+        try {
+          const resp = await api.get(
+            `/api/worldbooks?character_id=${encodeURIComponent(cid)}&type=character_book`,
+          );
+          const names = Array.isArray(resp)
+            ? resp.map((w: any) => String(w?.name ?? '')).filter(Boolean)
+            : [];
+          charLorebooksCache = {
+            characterId: cid,
+            primary: names.length > 0 ? names[0] : null,
+            additional: names.slice(1),
+          };
+        } catch (e) {
+          console.error('[SillyTavernPluginRuntime] refreshCharLorebooks failed:', e);
+          charLorebooksCache = { characterId: cid, primary: null, additional: [] };
+        }
+        return charLorebooksCache;
+      },
+      charLorebooks: (): { primary: string | null; additional: string[] } => ({
+        primary: charLorebooksCache.primary,
+        additional: charLorebooksCache.additional.slice(),
+      }),
+      /** 当前缓存是给哪个角色拉的（用于判断缓存是否仍适用于当前卡） */
+      charLorebooksFor: (): string => charLorebooksCache.characterId,
     };
     (window as any).__palinkBridge = palinkBridge;
     // 注入时预取世界书名称缓存（fire-and-forget，供插件同步读取）
     void palinkBridge.worldbookRefreshNames();
+    // [L1-SETTINGS] 同上：预设名 / 角色绑定世界书预取。
+    // 注：角色 id 此刻可能还没进 context（loadRuntimeConfig 与 setContext 时序不定），
+    // 故这里只预取预设名；角色世界书在窗口侧首次调用时按当前 id 惰性拉取。
+    void palinkBridge.refreshPresetNames();
 
     // ── [A-6] 经典轨 window.setExtensionPrompt 全局真实现 ──
     // 桥接到 prompt-injection 服务（与沙箱轨 prompt-injection.ts 同源）。
@@ -801,6 +953,13 @@ export class SillyTavernPluginRuntime {
     // ST 端点 403 CSRF token mismatch（Galgame 插件"获取聊天列表失败"的真因）。
     // 经 window 转交模块内的真实实现，模板内一律走 window.__palinkGetCsrfToken。
     (window as any).__palinkGetCsrfToken = getCsrfToken;
+    // [GAP-VIS 2026-10-04] 同理转交降级登记器。
+    // 此前模板内第 1196 行**裸调** recordStubHit —— 它是本模块的 import，
+    // 注入脚本（页面全局作用域）里根本不存在这个名字。结果不是"登记一次降级"，
+    // 而是每次调用 window.registerSlashCommand 都抛 ReferenceError：
+    // 插件以为命令注册成功，实际既没执行也没留下任何痕迹（缺口不可见）。
+    // 模板内统一走 window.__palinkRecordStubHit。
+    (window as any).__palinkRecordStubHit = recordStubHit;
     setupScript.textContent = `
       (function() {
         var runtime = window.__palinkStRuntime;
@@ -924,6 +1083,144 @@ export class SillyTavernPluginRuntime {
           window.SillyTavern.openCharacterChat = window.openCharacterChat;
         }
 
+        // ── [MVU-UNBLOCK 2026-10-04] 让第三方变量引擎（MagVarUpdate / MVU）能真正加载 ──
+        //
+        // 实测（真机 + 关跨域屏蔽拿到真实堆栈）确认 MVU bundle 在**模块顶层**就调用了
+        // 一批 Palink 缺失的 API，任缺一个都会抛错 → 整个模块死掉 → window.Mvu 永不出现
+        // → 依赖变量引擎的卡（状态栏 / 好感度 / 相册按爱意值解锁）全废。逐层剥出来的链：
+        //
+        //   ① _.debounce(SillyTavern.saveChat, 1e3)      → TypeError: Expected a function
+        //   ② (0,i.Ou)('MVU变量框架').listenPreferenceState → ReferenceError: getScriptId
+        //   ③ 版本门槛检查（要求 TavernHelper >= 3.4.17）   → ReferenceError: getTavernHelperVersion
+        //   ④ 脚本按钮族（appendInexistentScriptButtons…）  → 同上
+        //
+        // 下面按上游语义补齐。**这是模拟，不是等价实现**，边界见各条注释。
+
+        // ① saveChat / saveChatConditional：MVU 用它做「延迟落盘」（实卡调用 8 次）。
+        //    Palink 的真实写入发生在 setChatMessages 那一刻（已接 /api/chats/save），
+        //    所以这里**确实没有额外的活要干** —— 但「没有活」不等于「成功了」：
+        //    2026-10-04 复核发现原实现静默 resolve()，插件以为存上了。现每次调用
+        //    登记一条说明（可见，不抛错，MVU 的 debounce 链照旧走通）。
+        var palinkSaveChatStub = function(apiName) {
+          return function() {
+            var r = window.__palinkRecordStubHit
+              || (runtime && typeof runtime.recordStubHit === 'function'
+                  ? runtime.recordStubHit.bind(runtime) : null);
+            if (typeof r === 'function') {
+              r(apiName, 'Palink 的聊天在 setChatMessages 时即落库，本调用无需再存（不是失败）');
+            }
+            return Promise.resolve();
+          };
+        };
+        if (typeof window.SillyTavern.saveChat !== 'function') {
+          window.SillyTavern.saveChat = palinkSaveChatStub('SillyTavern.saveChat');
+        }
+        if (typeof window.SillyTavern.saveChatConditional !== 'function') {
+          window.SillyTavern.saveChatConditional =
+            palinkSaveChatStub('SillyTavern.saveChatConditional');
+        }
+
+        // ② 脚本身份 + 同名脚本去重登记。
+        //    上游每个脚本跑在独立 iframe 里，靠 frameElement.id 拿身份，再配合
+        //    #tavern_helper 容器里的 div[data-script-id] 选出「同名脚本中生效的那个」。
+        //    Palink 把卡脚本跑在同一个页面里，没有 per-script iframe，故用
+        //    「固定 id + 容器里放一个同 id 条目」模拟 → 脚本恒为「被选中的那个」。
+        //    ⚠️ 代价：同页多个脚本拿到的是同一个 id（上游是每脚本不同）。
+        var PALINK_SCRIPT_ID = '__palink_card_script__';
+        if (typeof window.getScriptId !== 'function') {
+          window.getScriptId = function() { return PALINK_SCRIPT_ID; };
+        }
+        if (typeof window.getScriptName !== 'function') {
+          window.getScriptName = function() { return 'Palink 卡内脚本'; };
+        }
+        if (typeof window.getIframeName !== 'function') {
+          window.getIframeName = function() { return PALINK_SCRIPT_ID; };
+        }
+        if (typeof window.getScriptInfo !== 'function') {
+          window.getScriptInfo = function() {
+            return { id: PALINK_SCRIPT_ID, name: 'Palink 卡内脚本', content: '', enabled: true };
+          };
+        }
+        if (typeof window.reloadIframe !== 'function') {
+          window.reloadIframe = function() { return Promise.resolve(); };
+        }
+        (function ensureTavernHelperScriptHost() {
+          try {
+            if (document.getElementById('tavern_helper')) return;
+            var host = document.createElement('div');
+            host.id = 'tavern_helper';
+            host.style.display = 'none';
+            var entry = document.createElement('div');
+            entry.setAttribute('data-script-id', PALINK_SCRIPT_ID);
+            host.appendChild(entry);
+            (document.body || document.documentElement).appendChild(host);
+          } catch (e) { /* 容器建不出来只是脚本偏好判定失效，不阻断注入 */ }
+        })();
+
+        // ③ 版本号。MVU 有硬门槛：TavernHelper 必须 >= 3.4.17。
+        //    这里如实声明「我们对外宣称的兼容版本」，取刚好过门槛的值 ——
+        //    声明更高不会多出任何真实能力，只会让脚本更晚才失败。
+        if (typeof window.getTavernHelperVersion !== 'function') {
+          window.getTavernHelperVersion = function() { return '3.4.17'; };
+        }
+        if (typeof window.getTavernVersion !== 'function') {
+          window.getTavernVersion = function() { return '1.12.0'; };
+        }
+
+        // ④ 脚本按钮族：MVU / 对话渲染系统都会注册按钮。
+        //    Palink 目前没有「脚本按钮栏」UI（属独立议题），故这里只维护数据模型 +
+        //    getButtonEvent 的事件名约定 —— 目的是让注册动作不再抛错、事件名可预期，
+        //    按钮本身要点得到还需补 UI。
+        var palinkScriptButtons = [];
+        if (typeof window.getButtonEvent !== 'function') {
+          window.getButtonEvent = function(name) { return 'tavern_button_' + String(name); };
+        }
+        if (typeof window.getScriptButtons !== 'function') {
+          window.getScriptButtons = function() { return palinkScriptButtons.slice(); };
+        }
+        if (typeof window.replaceScriptButtons !== 'function') {
+          window.replaceScriptButtons = function(buttons) {
+            palinkScriptButtons = Array.isArray(buttons) ? buttons.slice() : [];
+          };
+        }
+        if (typeof window.updateScriptButtonsWith !== 'function') {
+          window.updateScriptButtonsWith = function(updater) {
+            var next = typeof updater === 'function' ? updater(palinkScriptButtons.slice()) : palinkScriptButtons;
+            palinkScriptButtons = Array.isArray(next) ? next : palinkScriptButtons;
+            return palinkScriptButtons.slice();
+          };
+        }
+        if (typeof window.appendInexistentScriptButtons !== 'function') {
+          window.appendInexistentScriptButtons = function(buttons) {
+            var list = Array.isArray(buttons) ? buttons : [];
+            for (var bi = 0; bi < list.length; bi++) {
+              var item = list[bi];
+              var bname = item && item.name;
+              if (!bname) continue;
+              var exists = false;
+              for (var bj = 0; bj < palinkScriptButtons.length; bj++) {
+                if (palinkScriptButtons[bj] && palinkScriptButtons[bj].name === bname) { exists = true; break; }
+              }
+              if (!exists) palinkScriptButtons.push(item);
+            }
+          };
+        }
+        if (typeof window.eventOnButton !== 'function') {
+          window.eventOnButton = function(event, callback) { return window.eventOn(event, callback); };
+        }
+
+        // ⑤ #extensions_settings2：生态扩展（MVU 设置面板等）的挂载点。
+        //    缺它时 Vue 应用仍能 mount 到游离节点，但面板用户看不见。
+        (function ensureExtensionsSettings2() {
+          try {
+            if (document.getElementById('extensions_settings2')) return;
+            var el = document.createElement('div');
+            el.id = 'extensions_settings2';
+            el.style.display = 'none';
+            (document.body || document.documentElement).appendChild(el);
+          } catch (e) { /* 同上，不阻断 */ }
+        })();
+
         // Tavern Helper 兼容桩：角色卡 schema 脚本（export const Schema = z.object({...})）
         // 通常从 CDN import registerMvuSchema 且本脚本内未直接调用；为兼容任何显式调用
         // registerMvuSchema(...) 的插件，提供捕获桩（仅存全局 + 告警），不影响面板渲染主路径
@@ -997,7 +1294,13 @@ export class SillyTavernPluginRuntime {
         // 实际永远不会被执行。沙箱轨的 registerSlashCommand 已接真实引擎，两轨不要混用。
         // 这里登记一次降级统计，让插件管理页看得见，而不是静默失效。
         window.registerSlashCommand = function(name, callback, aliases, helpString) {
-          recordStubHit('registerSlashCommand', '命令未在本轨执行：sillyTavernPluginRuntime 无 SlashCommandEngine，消费入口在沙箱轨');
+          // [GAP-VIS 2026-10-04] 原为裸调 recordStubHit → ReferenceError（该名是模块
+          // import，注入脚本里不存在）。改走转交入口；无入口时退回 runtime 实例方法。
+          var rec = window.__palinkRecordStubHit
+            || (runtime && runtime.recordStubHit ? runtime.recordStubHit.bind(runtime) : null);
+          if (typeof rec === 'function') {
+            rec('registerSlashCommand', '命令未在本轨执行：sillyTavernPluginRuntime 无 SlashCommandEngine，消费入口在沙箱轨');
+          }
         };
 
         window.toastr = {
@@ -1012,6 +1315,86 @@ export class SillyTavernPluginRuntime {
             runtime.saveExtensionSettings();
           }
         };
+
+        // ── [L1-SETTINGS 2026-10-04] 挂载设置 facade（按 SPEC 批次 1）──
+        //
+        // 背景：插件声明的 SillyTavern facade 有 114 个成员（权威定义见
+        // st-plugins/third-party/JS-Slash-Runner-main/@types/iframe/exported.sillytavern.d.ts），
+        // 而经典轨此前只挂了 7 个，且**没有一个是设置类**。
+        // 实装卡脚本（MVU）正是靠下面这几个读写它的设置：
+        //   _.get(SillyTavern.extensionSettings,'mvu_settings',{})   // 读
+        //   _.set(SillyTavern.extensionSettings,'mvu_settings', v); SillyTavern.saveSettingsDebounced()
+        // 缺失时 lodash 对 undefined 是静默 no-op —— 设置面板恒为默认值、改完刷新即丢，
+        // 且不留任何痕迹。
+        //
+        // ⚠️ 关键一：extensionSettings 必须是**同一对象引用**，不能是拷贝。
+        //    插件是「原地改 + 事后落盘」（_.set → saveSettingsDebounced），
+        //    拷一份出去等于永远写不回去。
+        // ⚠️ 关键二（2026-10-04 复核修复）：**每次注入都要重新指向，不能「已存在就跳过」**。
+        //    切角色卡时 loadRuntimeConfig 会把 runtime 那份整个换成新对象；若 facade 还攥着
+        //    上一张卡的旧对象，插件写进旧对象、落盘发的却是新对象 —— 写入永远进不了请求，
+        //    而且 B 卡的插件会读到 A 卡的值（跨卡串味）。原守卫就是这么写的，实测复现过。
+        (function() {
+          var st = window.SillyTavern;
+          if (!st || typeof st !== 'object') return;
+
+          // ① 扩展设置本体：无条件指向 runtime 当前那份（同一对象引用，非拷贝）
+          st.extensionSettings = (typeof runtime.getExtensionSettings === 'function'
+            ? runtime.getExtensionSettings() : null) || {};
+          // ①-b [L2 放行 2026-10-04] chatCompletionSettings 影子副本。
+          //     实装卡脚本缺它时是直接 throw 'openAiSettingsUnavailable'
+          //     （MVU 的「额外模型解析」面板整块失效，见缺口清单 A4）。
+          //     这里挂的是 extensionSettings 里的**活子对象**：插件原地改完，
+          //     走既有 saveSettingsDebounced 就按 (用户, 卡) 落库，不开第二条通道。
+          //     上面 ① 已把 extensionSettings 重新指向当前这张卡，所以本行天然跟卡。
+          //     ⚠ 后端只消费其中 openai_max_context 一项，且必过闸 3（模型真实窗口）。
+          var l2Shadow = st.extensionSettings.chatCompletionSettings;
+          if (!l2Shadow || typeof l2Shadow !== 'object') {
+            l2Shadow = st.extensionSettings.chatCompletionSettings = {};
+          }
+          st.chatCompletionSettings = l2Shadow;
+
+          // ② 落盘入口（委托，不在赋值时快照 —— window.saveSettingsDebounced 可能被后置覆盖）
+          if (typeof st.saveSettingsDebounced !== 'function') {
+            st.saveSettingsDebounced = function() {
+              if (typeof window.saveSettingsDebounced === 'function') {
+                return window.saveSettingsDebounced();
+              }
+            };
+          }
+
+          // ③ 聊天元数据：经典轨此前完全没有 chat_metadata。
+          //    只在本轨首次创建，绝不覆盖 iframe 轨 / 兼容轨已挂上的实例。
+          if (typeof window.chat_metadata !== 'object' || window.chat_metadata === null) {
+            window.chat_metadata =
+              (runtime.context && typeof runtime.context.chatMetadata === 'object'
+                && runtime.context.chatMetadata !== null)
+                ? runtime.context.chatMetadata : {};
+          }
+          if (typeof st.chatMetadata !== 'object' || st.chatMetadata === null) {
+            st.chatMetadata = window.chat_metadata;
+          }
+          // 保持与 runtime.context 同源，避免两处各改一份
+          if (runtime.context) { runtime.context.chatMetadata = window.chat_metadata; }
+
+          // ④ 元数据落盘：经典轨目前没有 chatId → 后端的桥，落库属下一批。
+          //    这里**不做静默 no-op** —— 显式登记一次降级，让「改了没保存」可见。
+          var metaStub = function(apiName) {
+            return function() {
+              var rec = window.__palinkRecordStubHit
+                || (runtime && typeof runtime.recordStubHit === 'function'
+                    ? runtime.recordStubHit.bind(runtime) : null);
+              if (typeof rec === 'function') {
+                rec(apiName, '经典轨暂无 chatId→后端桥：chat_metadata 仅本次会话有效，刷新后丢失');
+              }
+              return Promise.resolve();
+            };
+          };
+          if (typeof st.saveMetadata !== 'function') { st.saveMetadata = metaStub('SillyTavern.saveMetadata'); }
+          if (typeof window.saveMetadataDebounced !== 'function') {
+            window.saveMetadataDebounced = metaStub('saveMetadataDebounced');
+          }
+        })();
 
         // A-1 修复（2026-08-23）: ST 兼容 renderExtensionTemplateAsync。
         // 模板内容来自插件配置的 resources.templates（后端导入时已抽取）。
@@ -1164,6 +1547,116 @@ export class SillyTavernPluginRuntime {
             }
             return Promise.resolve();
           };
+        }
+
+        // ── [L1-SETTINGS 2026-10-04] 只读项：getLorebookEntries / getCharLorebooks /
+        //    getCurrentCharPrimaryLorebook / getPresetNames / builtin ──
+        // 缺口清单 A1/A3/A4/A5/A6。全部只读或纯常量，零写库风险。
+        // 口径：能取到真数据就取真数据；取不到返回**安全空值并登记降级**
+        // （不做静默 no-op —— 那是上一版最贵的教训：插件以为生效、实际什么都没发生）。
+
+        // A1：世界书条目 —— Palink 已有 getWorldbook（走 /api/worldinfo/get），直接别名。
+        //     ST 语义返回条目数组，与 Palink 一致。
+        if (typeof window.getLorebookEntries !== 'function') {
+          window.getLorebookEntries = function(name) {
+            if (typeof window.getWorldbook === 'function') {
+              return window.getWorldbook(name);
+            }
+            return Promise.resolve([]);
+          };
+        }
+
+        // A3/A4：当前角色绑定的世界书。ST 是同步 API，真数据要拉后端，
+        // 故走「同步读缓存 + 命中不到就惰性拉取」：缓存不是当前角色时先触发一次
+        // 异步刷新（本次仍返回上一次的结果），下次调用即为新值。
+        if (typeof window.getCharLorebooks !== 'function') {
+          window.getCharLorebooks = function(opts) {
+            var bridge = window.__palinkBridge;
+            if (!bridge || typeof bridge.charLorebooks !== 'function') {
+              return { primary: null, additional: [] };
+            }
+            var wanted = (opts && opts.name && opts.name !== 'current')
+              ? String(opts.name)
+              : (runtime.context && runtime.context.characterUuid
+                  ? String(runtime.context.characterUuid) : '');
+            if (wanted && typeof bridge.charLorebooksFor === 'function'
+                && bridge.charLorebooksFor() !== wanted
+                && typeof bridge.refreshCharLorebooks === 'function') {
+              void bridge.refreshCharLorebooks(wanted);
+            }
+            return bridge.charLorebooks();
+          };
+        }
+        if (typeof window.getCurrentCharPrimaryLorebook !== 'function') {
+          window.getCurrentCharPrimaryLorebook = function() {
+            if (typeof window.getCharLorebooks !== 'function') return null;
+            var books = window.getCharLorebooks();
+            return (books && books.primary) ? books.primary : null;
+          };
+        }
+
+        // A5：预设名列表（Palink /api/roleplay/presets，注入时已预取）
+        if (typeof window.getPresetNames !== 'function') {
+          window.getPresetNames = function() {
+            var bridge = window.__palinkBridge;
+            return bridge && typeof bridge.presetNames === 'function' ? bridge.presetNames() : [];
+          };
+        }
+
+        // A4（实卡调用 5 次）：getPreset 取预设**对象**。与 getPresetNames 同一次预取，
+        // 不额外发请求。⚠ 语义差异要如实：ST 的预设=采样参数集，Palink 的预设=生成参数
+        // 模板 —— 这里下发的是 Palink 形状，字段名不伪装成 ST。插件若按 ST 形状读
+        // 具体键，取到 undefined 属预期（不是本层能抹平的模型差异）。
+        if (typeof window.getPreset !== 'function') {
+          window.getPreset = function(name) {
+            var bridge = window.__palinkBridge;
+            if (!bridge || typeof bridge.presetByName !== 'function') return null;
+            return bridge.presetByName(name) || null;
+          };
+        }
+
+        // A6：builtin —— ST 内置工具集。
+        //     实测卡脚本只用 builtin.saveSettings（其余 5 处 builtin 字样是 i18n 文本
+        //     「使用内置破限」，不是 API 调用）。故按真实需要提供：
+        //     saveSettings 真落盘；uuidv4 真实现；其余成员取用时登记降级（不静默）。
+        if (typeof window.builtin !== 'object' || window.builtin === null) {
+          var builtinRec = function(name) {
+            var rec = window.__palinkRecordStubHit
+              || (runtime && typeof runtime.recordStubHit === 'function'
+                  ? runtime.recordStubHit.bind(runtime) : null);
+            if (typeof rec === 'function') {
+              rec('builtin.' + name, 'ST 内置工具，Palink 无对应实现');
+            }
+          };
+          window.builtin = new Proxy({}, {
+            get: function(_t, prop) {
+              if (typeof prop !== 'string') return undefined;
+              if (prop === 'then' || prop === 'constructor') return undefined;
+              if (prop === 'saveSettings') {
+                return function() {
+                  if (typeof window.saveSettingsDebounced === 'function') {
+                    window.saveSettingsDebounced();
+                  }
+                  return Promise.resolve();
+                };
+              }
+              if (prop === 'uuidv4') {
+                return function() {
+                  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                    return window.crypto.randomUUID();
+                  }
+                  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    var r = Math.random() * 16 | 0;
+                    var v = c === 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                  });
+                };
+              }
+              // 其余成员：返回一个记桩函数（调用时登记），保持 typeof === 'function'，
+              // 这样插件的 typeof 守卫不会把它当成缺失而跳过整段逻辑。
+              return function() { builtinRec(prop); return undefined; };
+            }
+          });
         }
 
         // 世界书创建/替换 API：Galgame 插件 injectCOTToWorldbook 维护一张格式规范世界书。
@@ -1439,6 +1932,96 @@ export class SillyTavernPluginRuntime {
             }
           }, true);
         })();
+
+        // ── [GAP-VIS 2026-10-04] 经典轨 TavernHelper 命名空间 + 缺口可见化 ──
+        //
+        // 问题（上位报告 §5.3①）：经典轨**没有** window.TavernHelper 命名空间。
+        // 卡脚本写 TavernHelper.xxx / topWindow.TavernHelper.xxx 一律 undefined，
+        // 且因为没有 Proxy 兜底（对比 iframe 轨 SillyTavernCompatRuntime.ts:5441），
+        // 这些调用**不进 __palinkCompatStats** —— 用户和开发者都看不见缺口在哪。
+        //
+        // 做法：给 TavernHelper 加一层 Proxy。
+        //   · 经典轨真正实现了的 API → 直接转发到同名 window 全局（行为与裸全局一致）
+        //   · 没实现的           → 返回记桩函数：调用后登记进 __palinkCompatStats，
+        //                          返回 undefined（不抛错，插件守卫不会崩，但缺口可见）
+        //
+        // 边界（刻意不做宽）：
+        //   · 只代理 TavernHelper 命名空间，**不**给 window 套 Proxy —— 后者会让
+        //     任意未定义全局变成"假函数"，插件的能力探测全面失真。
+        //   · has trap 只对真能取到的名字返回 true，插件用 in 探测能力时不骗它。
+        //   · Symbol / then / constructor 一律放行 undefined，避免污染 await、
+        //     JSON.stringify、devtools 展开等行为。
+        (function() {
+          if (window.TavernHelper && typeof window.TavernHelper === 'object') {
+            return;                       // iframe 轨 / 沙箱轨先装过则不覆盖
+          }
+          var rec = window.__palinkRecordStubHit ||
+            (window.__palinkStRuntime && typeof window.__palinkStRuntime.recordStubHit === 'function'
+              ? window.__palinkStRuntime.recordStubHit.bind(window.__palinkStRuntime) : null);
+
+          // 经典轨已注入的 ST 兼容全局（TavernHelper 的实际供给面）。
+          // 运行时才判定是否存在 —— 列表里有但本轮没挂上的会被 lookup 过滤掉，
+          // 不会因为名单写多就凭空造出"假实现"。
+          var SUPPLIED = [
+            'getChatMessages', 'setChatMessages', 'deleteChatMessages', 'getLastMessageId',
+            'getCurrentChatId', 'getCurrentMessageId', 'getCharacters', 'getCharacter',
+            'getCharAvatarPath', 'getThumbnailUrl', 'getRequestHeaders',
+            'getWorldbook', 'getWorldbookNames', 'getGlobalWorldbookNames', 'getCharWorldbookNames',
+            'createWorldbookEntries', 'createOrReplaceWorldbook', 'createOrReplaceCharWorldbook',
+            'updateWorldbookWith', 'rebindGlobalWorldbooks',
+            'getLorebookEntries', 'getCharLorebooks', 'getCurrentCharPrimaryLorebook',
+            'openCharacterChat', 'injectPrompts', 'uninjectPrompts',
+            'setExtensionPrompt', 'setExtensionSettings', 'getExtensionSettings',
+            'registerSlashCommand', 'registerMvuSchema', 'registerVariableSchema',
+            'renderExtensionTemplateAsync', 'saveSettingsDebounced', 'saveMetadataDebounced',
+            'substitudeMacros', 'substituteParams', 'triggerSlash', 'generate', 'generateRaw',
+            'getScriptId', 'getScriptName', 'getScriptInfo', 'replaceScriptInfo',
+            'getScriptButtons', 'replaceScriptButtons', 'appendInexistentScriptButtons',
+            'updateScriptButtonsWith', 'reloadIframe', 'getIframeName', 'getButtonEvent',
+            'getTavernHelperVersion', 'getTavernVersion', 'getPresetNames', 'getPreset',
+            'eventOn', 'eventOff', 'eventOnce', 'eventEmit', 'eventEmitAndWait',
+            'eventMakeFirst', 'eventMakeLast', 'eventRemoveListener', 'eventOnButton',
+            'eventClearEvent', 'eventClearListener', 'eventClearAll', 'builtin'
+          ];
+          var IS_SUPPLIED = {};
+          for (var si = 0; si < SUPPLIED.length; si++) { IS_SUPPLIED[SUPPLIED[si]] = true; }
+
+          function lookup(name) {
+            var fn = window[name];
+            return typeof fn === 'function' ? fn : null;
+          }
+          // 记桩函数按名字缓存：同一名字反复取必须拿到同一个引用，
+          // 否则插件做函数比较/去重会拿到不一致的结果。
+          var stubs = {};
+          function missing(name) {
+            if (!stubs[name]) {
+              stubs[name] = function() {
+                if (typeof rec === 'function') {
+                  rec('TavernHelper.' + name,
+                      '经典轨未实现该 API：调用已登记，插件相关功能不生效（不抛错）');
+                }
+                return undefined;
+              };
+            }
+            return stubs[name];
+          }
+
+          window.TavernHelper = new Proxy({}, {
+            get: function(_t, prop) {
+              if (typeof prop !== 'string') return undefined;
+              if (prop === 'then' || prop === 'constructor' || prop === '__esModule') return undefined;
+              if (IS_SUPPLIED[prop]) {
+                var real = lookup(prop);
+                if (real) return real;
+              }
+              return missing(prop);
+            },
+            has: function(_t, prop) {
+              if (typeof prop !== 'string') return false;
+              return IS_SUPPLIED[prop] === true && !!lookup(prop);
+            }
+          });
+        })();
       })();
     `;
     // [PLUGIN-ON-DEMAND L1] setup 脚本幂等：差集模式下容器里已有一份就不重复 append
@@ -1603,16 +2186,38 @@ export class SillyTavernPluginRuntime {
    * 在 injectIntoContainer 开头和 unloadAll 中都调用，确保每次注入前状态干净。
    */
   private cleanupGalgameState() {
-    // 清理 Galgame 插件持久化状态：插件将角色启用状态（_charEnabledMap）保存在
-    // localStorage 的 galgame-ui-plugin_char_enabled 中。Palink 中角色 ID 映射
-    // 与原版 ST 不同，插件回退到 "default" 键；一旦 default=true 被写入，
-    // 每次加载都会自动启用 Galgame overlay（showGlobalOverlay），即使切换角色
-    // 也不会关闭。原版 ST 中角色 ID 正确映射，不会出现 default 键被设为 true
-    // 的问题。清理此键，确保插件以初始状态（未启用）启动，
-    // 用户需手动点击启用按钮才能激活 Galgame 模式（与原版 ST 首次加载行为一致）。
+    // [2026-10-03 收敛] 这里**只清历史脏键 `default`**，不再整键删除。
+    //
+    // 原实现（无条件 removeItem）是「角色身份识别失败」的**症状级 workaround**：
+    // 当时插件在主页面 / iframe 两侧都会把当前角色解析成 "default"，于是出现
+    // 「在 A 卡启用 → 所有卡都启用、切卡也不关」。删掉整键确实压住了这个现象，
+    // 但副作用是**用户永远无法保留启用状态** —— 每次进对话页都被清空，
+    // 表现为「Galgame 面板/按钮永远不出现」（2026-10-03 真机复现确认）。
+    //
+    // 根因已在同批次修好：`legacy-st-sim.ts` 的 `[PARENT-ALIAS]` 白名单补上了
+    // ST 生态全局（SillyTavern / Mvu / TavernHelper / z / …），iframe 侧不再回退
+    // "default"；主页面侧一直是正确的 `<卡名>::slot::<id>`。
+    // 身份按角色区分之后，「跨卡串味」的成因已不存在。
+    //
+    // 因此改成**定向清脏**：只删 `default` 这一条（身份识别失败的产物），
+    // 保留按角色的正常条目。这样即使将来身份解析再回归，"default" 也会被本次清掉，
+    // 不会重新变成「所有卡一起启用」—— 原有防护意图保留，误伤去掉。
     try {
-      localStorage.removeItem('galgame-ui-plugin_char_enabled');
-    } catch {}
+      const raw = localStorage.getItem('galgame-ui-plugin_char_enabled');
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const map = parsed as Record<string, unknown>;
+          if (Object.prototype.hasOwnProperty.call(map, 'default')) {
+            delete map.default;
+            localStorage.setItem('galgame-ui-plugin_char_enabled', JSON.stringify(map));
+          }
+        }
+      }
+    } catch {
+      // 解析失败说明这份数据本来就不可用（脏写 / 半截 JSON）—— 退回整键删除
+      try { localStorage.removeItem('galgame-ui-plugin_char_enabled'); } catch {}
+    }
     // 清理插件运行时全局标志，确保下次注入时初始化流程重新执行
     const galFlags = [
       '__galgame_init_lock__',
@@ -1696,6 +2301,15 @@ export class SillyTavernPluginRuntime {
     elements.forEach((el) => el.remove());
     this.cleanupExternalPluginUi();
     restoreGlobalFetchGuard();
+    // [EVENT-BRIDGE] 退订本实例挂在全局 eventBus 上的回调。
+    // 必须显式退订：eventBus 是全局单例，会一直持有这些回调引用 —— 不退订的话
+    // 实例被替换（切卡/重挂载）后，旧回调仍会被触发，且旧 runtime 无法被回收。
+    this.busWrappers.forEach((perEvent, name) => {
+      perEvent.forEach((wrapped) => {
+        try { eventBus.off(name as never, wrapped as never); } catch { /* ignore */ }
+      });
+    });
+    this.busWrappers.clear();
     this.injectedPluginIds.clear();
     // [B4-SHARED-PARTITION] 账本随之作废（全量卸载后没有任何插件还「在场」）
     this.sharedPartitionOwner.clear();
@@ -1714,10 +2328,40 @@ export class SillyTavernPluginRuntime {
   }
 
   async saveExtensionSettings() {
+    // 2026-10-04 复核修复：落盘作用域是 (当前用户, 这张卡)。
+    // 取不到角色 id 时**不写**并登记可见降级 —— 悄悄写到用户级就是跨卡渗漏，
+    // 而那正是本批要消灭的毛病，不能用一个更宽的落点把它盖过去。
+    const characterId = String(this.context?.characterUuid ?? '').trim();
+    if (!characterId) {
+      recordStubHit('saveSettingsDebounced', '未取到当前角色卡 id：本次设置未落库（仅内存有效，刷新即丢）');
+      return;
+    }
     try {
-      await api.post('/api/plugins/runtime/settings', { extension_settings: this.extensionSettings });
-    } catch (e) {
+      // L2 的边界：影子副本里目前只有 openai_max_context 会被后端消费（且必过闸 3）。
+      // custom_include_body 的语义是「往发给上游模型的请求里塞任意字段」——键名白名单
+      // 尚未裁定，所以它**照存但明确记账不生效**，避免重演「插件以为生效、实际没发生」。
+      const cib = (this.extensionSettings as any)?.chatCompletionSettings?.custom_include_body;
+      const cibWritten = (typeof cib === 'string' && cib.trim() !== '' && cib.trim() !== '{}')
+        || (!!cib && typeof cib === 'object' && Object.keys(cib).length > 0);
+      if (cibWritten) {
+        recordStubHit(
+          'chatCompletionSettings.custom_include_body',
+          '未开放：该内容不会进上游模型请求（键名白名单待定），仅按卡存着',
+        );
+      }
+      const resp: any = await api.post('/api/plugins/runtime/settings', {
+        character_id: characterId,
+        extension_settings: this.extensionSettings,
+      });
+      // 后端把没存下的 namespace 写在响应里。不看响应 = 「看着存上了，其实丢了几项」，
+      // 而插件侧 saveSettingsDebounced 是 fire-and-forget，永远不会自己发现。
+      const skipped = Array.isArray(resp?.skipped) ? resp.skipped : [];
+      for (const ns of skipped) {
+        recordStubHit(`saveSettingsDebounced:${ns}`, '超出限额，该命名空间未落库（本次会话内仍有效，刷新后丢）');
+      }
+    } catch (e: any) {
       console.error('Failed to save extension settings:', e);
+      recordStubHit('saveSettingsDebounced', `设置落盘失败：${String(e?.message ?? e)}`);
     }
   }
 }

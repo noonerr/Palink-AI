@@ -16,9 +16,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..models.plugin import Plugin, PluginScript, CharacterPluginState
 from ..models.character import Character
+from ..models.system import UserSetting
 from ..models.user import User
 from ..api.dependencies import get_admin, get_current_user
 from ..database import get_db
@@ -1198,6 +1199,13 @@ def _build_sillytavern_runtime_config(
         runtime_plugins.append(payload)
         _merge_extension_settings(extension_settings, _safe_dict(payload.get("extension_settings")))
 
+    # ⚠️ 2026-10-04 复核修复：此处**不再**合并用户级 extension_settings。
+    # 上一批（L1-SETTINGS）在这里合并了 UserSetting 的用户级设置，而本函数不接收
+    # character_id —— 结果是一张卡上存的设置会出现在该用户**所有**角色的 runtime 里
+    # （跨卡串味，且与用户底线「按卡片和人物区分」相违）。
+    # 现在改由 _merge_card_extension_settings_from_db() 在路由里、按 (user, character)
+    # 合并 —— 放在缓存之后，因此设置保存无需再失效本函数的缓存。
+
     # P0-1: 按 ST loading_order 语义排序下发（前端须按此顺序注入 JS）。
     runtime_plugins.sort(key=_extension_loading_sort_key)
 
@@ -1499,6 +1507,9 @@ async def get_sillytavern_runtime_config(
         db, user.id, include_disabled=include_disabled_flag
     )
     payload = _filter_runtime_config_for_character(db, payload, character_id)
+    # 按 (用户, 角色卡) 叠加插件自己存过的设置 —— 必须在缓存与按卡过滤之后、
+    # 算 ETag 之前：ETag 要反映新设置，否则存完刷新仍拿 304（等于没生效）。
+    payload = _merge_card_extension_settings_from_db(db, payload, user.id, character_id)
     etag = _runtime_config_etag(payload)
     headers = {
         "Cache-Control": "private, max-age=300",
@@ -1508,6 +1519,205 @@ async def get_sillytavern_runtime_config(
     if _etag_matches(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers=headers)
     return JSONResponse(content=payload, headers=headers)
+
+
+# ── 经典轨扩展设置落盘（2026-10-04）─────────────────────────────────────────
+#
+# 背景：前端 SillyTavernPluginRuntime.saveExtensionSettings() 一直 POST 到
+# /api/plugins/runtime/settings，而本文件**从来没注册过这个路由** —— 请求被文件
+# 末尾的 fallback（/{plugin_id}/{endpoint_path:path}）接住，当成 plugin_id="runtime"
+# 查库，返回 404「插件不存在」。前端 catch 掉只打一行 console.error，
+# 于是「设置保存」从上线起就是**静默死路径**：插件改了设置，刷新即丢。
+# （见 docs/REPORT_插件设置冲突与100%适配可行性_2026-10-04.md §6）
+#
+# 落点选择（2026-10-04 复核修复后）：存进 UserSetting.silly_tavern_settings 的
+# **独立一格** plugin_extension_settings_by_character[character_id]，按 (用户, 角色卡) 作用域。
+#
+# 为什么不与 ST iframe 轨 /api/settings/save 共用 extension_settings 那一格：
+#   1. **跨卡隔离** —— 那一格是用户级的，所有角色卡共用，A 卡存的值会渗进 B 卡；
+#      用户底线是「按卡片和人物区分」。
+#   2. **不触达后端生成管线** —— extension_settings.regex_scripts 会被
+#      character_ext.py 当作正则规则应用到提示词/显示文本上（见该文件 _load_extension_settings_regex_scripts）。
+#      卡脚本若能写那一格，等于能改写宿主送给模型的原文。实测库里 regex_scripts **0 行**，
+#      即该用途无正当存量 —— 直接把插件写入口与那一格隔开，比加名单denylist更干净。
+#   3. **不动存量** —— 现网 user_settings 里有从真 ST 导入的大包（单条 extension_settings
+#      下 37 个键，含 apiKey/apiUrl）。本格完全独立，读写都不会改写它。
+# 合并语义仍对齐 /api/settings/save：namespace 级整体替换。
+
+_RUNTIME_SETTINGS_MAX_NAMESPACES = 64
+_RUNTIME_SETTINGS_MAX_NS_JSON_BYTES = 256 * 1024      # 单个命名空间 256KB
+_RUNTIME_SETTINGS_MAX_TOTAL_BYTES = 2 * 1024 * 1024   # 总量 2MB
+# 按卡设置存放的格子名（与 extension_settings 平级，互不覆盖）
+_PLUGIN_CARD_SETTINGS_KEY = "plugin_extension_settings_by_character"
+
+
+class RuntimeSettingsRequest(BaseModel):
+    # 必填：设置的作用域是 (当前用户, 这张卡)。缺它就没有隔离。
+    character_id: str = Field(min_length=1, max_length=64)
+    extension_settings: dict[str, Any] = {}
+
+
+def _safe_json_loads_local(raw: Any, fallback: Any) -> Any:
+    if raw is None or raw == "":
+        return fallback
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if isinstance(parsed, dict) else fallback
+
+
+def _get_or_create_user_setting_local(db: Session, user_id: int):
+    setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+    if setting is None:
+        setting = UserSetting(user_id=user_id, silly_tavern_settings="{}")
+        db.add(setting)
+        db.flush()
+    return setting
+
+
+@router.post("/runtime/settings")
+async def save_runtime_extension_settings(
+    payload: RuntimeSettingsRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """保存经典轨的扩展设置（``saveSettingsDebounced`` 的落点），**按 (用户, 角色卡) 作用域**。
+
+    归属权：``character_id`` 必须属于当前登录用户，否则 **404**（不用 403 ——
+    403 等于告诉调用方「这个 id 存在但你不配」，可被探测他人角色；口径对齐
+    ``character.py`` 的 plugin-storage 端点）。``user_id`` 一律取自 token，不接受前端传参。
+
+    语义对齐 ``/api/settings/save``：**namespace 级合并**。
+    - 本次带来的 namespace 整体替换旧值（与 ST 自身行为一致）
+    - 未带来的 namespace 原样保留（防止部分保存擦掉别的扩展的设置）
+    - ``value=None`` 视为删除该 namespace
+
+    限额：namespace 数 64 / 单 namespace 256KB / 该卡总量 2MB。超限的键**跳过**
+    （其余照常保存），并在响应里列出，前端会把它登记进降级统计。
+    """
+    char = db.query(Character).filter(
+        Character.id == payload.character_id, Character.user_id == user.id
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    incoming = payload.extension_settings if isinstance(payload.extension_settings, dict) else {}
+    if not incoming:
+        return {"ok": True, "written": 0, "removed": 0, "skipped": [], "character_id": char.id}
+
+    setting = _get_or_create_user_setting_local(db, user.id)
+    stored = _safe_json_loads_local(setting.silly_tavern_settings, {})
+    if not isinstance(stored, dict):
+        stored = {}
+    # 按卡分格：只动这张卡那一格，绝不触碰 extension_settings（存量 ST 大包 / 后端正则消费方都在那格）
+    by_char = stored.get(_PLUGIN_CARD_SETTINGS_KEY)
+    by_char = dict(by_char) if isinstance(by_char, dict) else {}
+    old_bucket = by_char.get(char.id)
+    merged_bucket = dict(old_bucket) if isinstance(old_bucket, dict) else {}
+
+    written = 0
+    removed = 0
+    skipped: list[str] = []
+
+    for key in list(incoming.keys())[:_RUNTIME_SETTINGS_MAX_NAMESPACES]:
+        ns = str(key).strip()
+        if not ns:
+            skipped.append("<empty>")
+            continue
+        value = incoming[key]
+        if value is None:
+            if ns in merged_bucket:
+                del merged_bucket[ns]
+                removed += 1
+            continue
+        if not isinstance(value, (dict, list, str, int, float, bool)):
+            skipped.append(ns)
+            continue
+        try:
+            size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        except (TypeError, ValueError):
+            skipped.append(ns)
+            continue
+        if size > _RUNTIME_SETTINGS_MAX_NS_JSON_BYTES:
+            skipped.append(ns)
+            continue
+        merged_bucket[ns] = value
+        written += 1
+
+    try:
+        total = len(json.dumps(merged_bucket, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "detail": "extension_settings 无法序列化"},
+        )
+    if total > _RUNTIME_SETTINGS_MAX_TOTAL_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "ok": False,
+                "detail": f"该角色卡的 extension_settings 总量超限（{total} > {_RUNTIME_SETTINGS_MAX_TOTAL_BYTES}）",
+                "skipped": skipped,
+            },
+        )
+
+    if merged_bucket:
+        by_char[char.id] = merged_bucket
+    else:
+        by_char.pop(char.id, None)
+    stored[_PLUGIN_CARD_SETTINGS_KEY] = by_char
+    setting.silly_tavern_settings = json.dumps(stored, ensure_ascii=False)
+    try:
+        db.commit()
+    except Exception as exc:  # pragma: no cover - 数据库异常路径
+        db.rollback()
+        logger.error("[runtime/settings] 保存失败: %s", exc)
+        return JSONResponse(status_code=500, content={"ok": False, "detail": "保存失败"})
+
+    # 不失效 runtime/config 缓存：按卡设置是在缓存**之后**合并进响应的
+    # （见 _merge_card_extension_settings_from_db），缓存内容不含它，无需清。
+    return {"ok": True, "written": written, "removed": removed, "skipped": skipped,
+            "character_id": char.id}
+
+
+def _merge_card_extension_settings_from_db(
+    db: Session, payload: dict, user_id: int, character_id: Optional[str]
+) -> dict:
+    """把「这张卡」的插件设置叠进 runtime config 的 extension_settings（用户改过的优先）。
+
+    必须在缓存之后调用：缓存的是「插件 config 聚合」，本函数补的是用户级数据，
+    两者作用域不同（缓存键含 user_id，此处再按 character_id 过滤）。
+
+    ⚠️ **只许返回新字典，禁止就地改 payload**：上游 `_build_sillytavern_runtime_config`
+    是带 TTL 缓存的，缓存命中时返回的是**同一个对象**。就地写入会把这张卡的设置留在
+    缓存里，后续任何角色卡拉 config 都会读到它（跨卡串味 —— 实测踩过）。
+    """
+    if not character_id or not isinstance(payload, dict):
+        return payload
+    try:
+        setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+        if setting is None:
+            return payload
+        stored = _safe_json_loads_local(setting.silly_tavern_settings, {})
+        if not isinstance(stored, dict):
+            return payload
+        by_char = stored.get(_PLUGIN_CARD_SETTINGS_KEY)
+        if not isinstance(by_char, dict):
+            return payload
+        bucket = by_char.get(str(character_id))
+        if not isinstance(bucket, dict) or not bucket:
+            return payload
+        merged_ext = dict(payload.get("extension_settings") or {})
+        _merge_extension_settings(merged_ext, bucket)
+        new_payload = dict(payload)
+        new_payload["extension_settings"] = merged_ext
+        return new_payload
+    except Exception as exc:  # pragma: no cover - 读取失败不该让整个 config 挂掉
+        logger.warning("[runtime/config] 合并按卡 extension_settings 失败: %s", exc)
+        return payload
 
 
 @router.get("/{plugin_id}")

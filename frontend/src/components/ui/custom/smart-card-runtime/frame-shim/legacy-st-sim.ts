@@ -33,6 +33,37 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
         try { realTop = window.top; } catch (e) { realTop = realParent; }
         if (!realParent || realParent === window) return;
         var KNOWN_KEYS = { postMessage: 1, jQuery: 1, '$': 1, document: 1, localStorage: 1, sessionStorage: 1, addEventListener: 1, removeEventListener: 1, dispatchEvent: 1, parent: 1, top: 1, self: 1, window: 1, globalThis: 1, frames: 1, length: 1, location: 1 };
+        // [PARENT-ALIAS-ST 2026-10-03] 上游 JS-Slash-Runner 的脚本 iframe 预置脚本
+        // （src/iframe/predefine.js）会把父页面的这些全局合并进脚本作用域：
+        //   _.pick(window.parent, ['EjsTemplate','TavernHelper','YAML','showdown','toastr','z'])
+        //   + 另外单独接上 SillyTavern / Mvu
+        // 生态脚本因此惯用 topWindow.SillyTavern / topWindow.Mvu / topWindow.TavernHelper
+        // 跨帧读上下文（topWindow = window.parent）。
+        //
+        // 实测后果（2026-10-03 真机复现，露缇雅1.2 卡 + 数据库界面插件）：
+        // 本代理对未列入白名单的属性一律返回 undefined，于是
+        //   const st = topWindow?.SillyTavern || null  ->  null
+        //   resolvedCharacterId = ""  ->  characterName = ""  ->  currentCharId = "default"
+        // 插件把当前角色认成 "default"，所有「按角色」的配置都读不到 →
+        // 面板/按钮整片不出现（主页面日志是 露缇雅1.2::slot::1333400005，iframe 里是 default）。
+        //
+        // 处理策略与上面的 jQuery/$ 一致：**返回 iframe 自己的同名全局**
+        // （这些名字本段后文都挂在 window 上），既让脚本读得到，
+        // 又不把真实父帧对象暴露出去 —— 安全面与原沙箱完全一致。
+        var ST_GLOBAL_KEYS = {
+          SillyTavern: 1, TavernHelper: 1, Mvu: 1, EjsTemplate: 1,
+          YAML: 1, showdown: 1, toastr: 1, z: 1,
+          eventSource: 1, event_types: 1, eventTypes: 1, tavern_events: 1, iframe_events: 1,
+          extension_settings: 1, chat_metadata: 1, power_user: 1,
+          getContext: 1, getVariables: 1, getAllVariables: 1, getChatVariables: 1,
+          getVariable: 1, setVariable: 1, setVariables: 1, replaceVariables: 1,
+          insertOrAssignVariables: 1, deleteVariable: 1,
+          getChatMessages: 1, setChatMessage: 1, setChatMessages: 1,
+          getCurrentMessageId: 1, getLastMessageId: 1,
+          generate: 1, generateRaw: 1, generateQuietPrompt: 1,
+          triggerSlash: 1, substituteParams: 1, substitudeMacros: 1,
+          getButtonEvent: 1, getScriptId: 1, getScriptName: 1,
+        };
         var parentAlias = null;
         var documentAlias = null;
         // 卡片对 parent 的命名空间写入存储（如 parent.LSM = {...} 或链式
@@ -79,6 +110,11 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
               if (prop === 'jQuery' || prop === '$') {
                 return window[prop];
               }
+              // [PARENT-ALIAS-ST] ST 生态全局：返回卡内自身的同名实现（见 ST_GLOBAL_KEYS 注释）。
+              // 惰性读取 —— 这些名字在本段后文才挂到 window，安装时刻可能还是 undefined。
+              if (Object.prototype.hasOwnProperty.call(ST_GLOBAL_KEYS, String(prop))) {
+                try { return window[prop]; } catch (e) { return undefined; }
+              }
               if (prop === 'document') {
                 return getDocumentAlias();
               }
@@ -112,7 +148,11 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
               }
               return true;
             },
-            has: function (_t, prop) { return Object.prototype.hasOwnProperty.call(KNOWN_KEYS, String(prop)); },
+            has: function (_t, prop) {
+              var key = String(prop);
+              return Object.prototype.hasOwnProperty.call(KNOWN_KEYS, key)
+                || Object.prototype.hasOwnProperty.call(ST_GLOBAL_KEYS, key);
+            },
           });
         }
         parentAlias = makeAlias(realParent);

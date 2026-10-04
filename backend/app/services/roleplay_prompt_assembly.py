@@ -645,7 +645,47 @@ def _compute_prompt_token_budget(
     return budget
 
 
-def _get_openai_max_context_override(user_setting: Optional[Any]) -> Optional[int]:
+def _get_model_context_window_strict(model_id: Optional[str]) -> Optional[int]:
+    """与 _get_model_context_window 同源，但**查不到就返回 None**（不回落 8192）。
+
+    存在的理由：硬底只能用「注册表真正知道」的窗口去夹。若拿 8192 这个默认值当底，
+    未收录模型（用户自接的新模型）会被误夹到 8K，那是功能回退不是保护。
+    """
+    if not model_id:
+        return None
+    try:
+        from ..services.unified_model_registry import find_model
+        _, model_data = find_model(model_id)
+        if model_data and isinstance(model_data, dict):
+            ctx = model_data.get("context_length") or model_data.get("context_window")
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+            if isinstance(ctx, str) and ctx.isdigit():
+                return int(ctx)
+    except Exception as exc:
+        logger.debug("Failed to look up context window for model %r: %s", model_id, exc)
+    return None
+
+
+def _read_openai_max_context_from_oai(oai: Any) -> Optional[int]:
+    """从一份 oai_settings 形状的对象里取 openai_max_context（bool 不算数）。"""
+    if not isinstance(oai, dict):
+        return None
+    value = oai.get("openai_max_context")
+    if isinstance(value, bool):            # bool 是 int 子类，显式排除
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _get_openai_max_context_override(
+    user_setting: Optional[Any],
+    model_id: Optional[str] = None,
+    character_id: Optional[str] = None,
+) -> Optional[int]:
     """P1-2 修复: 从 UserSetting.silly_tavern_settings 读取用户配置的
     ``openai_max_context``（对齐 ST 1.18.0 oai_settings.openai_max_context）。
 
@@ -653,6 +693,19 @@ def _get_openai_max_context_override(user_setting: Optional[Any]) -> Optional[in
     （如 8192/16384/32768），优先级高于模型注册表。Palink 默认使用模型
     注册表的 ``context_length``，但当用户显式设置了 ST 兼容配置时，
     应尊重该值以对齐 ST 的 token 预算行为。
+
+    **闸 3（引擎硬底，2026-10-04）**：传入 ``model_id`` 且注册表认识该模型时，
+    结果一律 ``min(声明值, 模型真实窗口)``。此前这里**原样采信**声明值，
+    意味着填 200 万就能把单次请求的提示词预算顶到 200 万 token —— 插件、
+    以及用户自己手滑都越不过这道底。注册表不认识的模型**不夹**（理由见
+    _get_model_context_window_strict）。
+
+    **L2 放行（2026-10-04，用户裁定"放 A 半桶 + 生成参数封顶放"）**：
+    ``character_id`` 传入时，额外读该卡的按卡影子副本
+    ``plugin_extension_settings_by_character[<卡>].chatCompletionSettings``，
+    优先级 **卡影子 > 用户设置 > 模型注册表** —— 三层都要过闸 3。
+    作用域天然受限：那份影子是按 (用户, 卡) 存的，插件改不到别人的卡、
+    也改不到全站默认值；能改到的只有"这张卡自己的窗口请求值"，且被夹住。
 
     返回 None 表示未配置，调用方应回退到模型注册表查询。
     """
@@ -665,17 +718,32 @@ def _get_openai_max_context_override(user_setting: Optional[Any]) -> Optional[in
         st = json.loads(st_raw) if isinstance(st_raw, str) else st_raw
         if not isinstance(st, dict):
             return None
-        oai = st.get("oai_settings", {})
-        if not isinstance(oai, dict):
+        raw: Optional[int] = None
+        if character_id:
+            by_char = st.get("plugin_extension_settings_by_character")
+            bucket = by_char.get(str(character_id)) if isinstance(by_char, dict) else None
+            if isinstance(bucket, dict):
+                raw = _read_openai_max_context_from_oai(bucket.get("chatCompletionSettings"))
+        if raw is None:
+            raw = _read_openai_max_context_from_oai(st.get("oai_settings"))
+        if raw is None:
             return None
-        value = oai.get("openai_max_context")
-        if isinstance(value, int) and value > 0:
-            return value
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
+        return _clamp_context_window(raw, model_id)
     except (json.JSONDecodeError, TypeError, ValueError):
-        pass
-    return None
+        return None
+
+
+def _clamp_context_window(value: int, model_id: Optional[str]) -> int:
+    """把用户/插件声明的上下文窗口夹到模型真实窗口（闸 3）。夹了就留痕。"""
+    real = _get_model_context_window_strict(model_id)
+    if real is not None and value > real:
+        logger.warning(
+            "[CTX-CLAMP] openai_max_context %d → %d（模型 %s 的真实窗口）；"
+            "来源=用户或插件设置，已被引擎硬底夹住",
+            value, real, model_id,
+        )
+        return real
+    return value
 
 
 def _get_history_reserve(user_setting: Optional[Any]) -> int:
@@ -3831,7 +3899,8 @@ async def _assemble_roleplay_prompt_impl(
     # 避免阻塞事件循环（与 persist_snapshot 的 to_thread 模式一致）。
     # A5 修复: 与 _compute_prompt_token_budget 同源取真实上下文上限
     # （用户 openai_max_context 覆盖优先，回退模型注册表 context_length）。
-    _wb_ctx_override = _get_openai_max_context_override(user_setting)
+    _wb_ctx_override = _get_openai_max_context_override(
+        user_setting, req.model, req.char.id if req.char else None)
     _wb_max_context_tokens = (
         _wb_ctx_override
         if isinstance(_wb_ctx_override, int) and _wb_ctx_override > 0
@@ -3880,7 +3949,8 @@ async def _assemble_roleplay_prompt_impl(
     # "历史+已注入是否仍在窗口内"。
     _memory_token_budget = _compute_prompt_token_budget(
         req.model, effective_max_tokens,
-        context_window_override=_get_openai_max_context_override(user_setting),
+        context_window_override=_get_openai_max_context_override(
+            user_setting, req.model, req.char.id if req.char else None),
     )
     await _append_memory_context(
         req, deps, memory_mode, dynamic_context_parts, report,
@@ -3914,7 +3984,8 @@ async def _assemble_roleplay_prompt_impl(
     # the computed budget is non-positive (preserving legacy behavior).
     # P1-2 修复: 优先使用用户配置的 openai_max_context（对齐 ST 1.18.0），
     # 并把可配置的 history_reserve 传给 _apply_token_budget。
-    _context_window_override = _get_openai_max_context_override(user_setting)
+    _context_window_override = _get_openai_max_context_override(
+        user_setting, req.model, req.char.id if req.char else None)
     token_budget = _compute_prompt_token_budget(
         req.model, effective_max_tokens, context_window_override=_context_window_override,
     )
