@@ -169,3 +169,47 @@
   border: 1px solid var(--th-border);
   flex: 0 0 auto;
 }
+
+/* [变量编辑 2026-10-05] 编辑入口与行内输入框。
+   只在传了 sessionId 时才渲染（见 TavernHelperPanel.tsx），
+   故不影响未接线路径的既有观感。 */
+.palink-th-panel__edit-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 10px 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 6px;
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.palink-th-panel__edit-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.palink-th-panel__error {
+  margin: 0 10px 6px;
+  font-size: 11px;
+  color: #e5484d;
+}
+
+.palink-th-panel__row--edit {
+  gap: 6px;
+}
+
+.palink-th-panel__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: inherit;
+}

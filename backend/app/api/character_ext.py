@@ -2725,8 +2725,51 @@ async def update_session_chat_metadata(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    existing = json.loads(session.chat_metadata) if session.chat_metadata else {}
-    existing.update(body)
+    try:
+        existing = json.loads(session.chat_metadata) if session.chat_metadata else {}
+    except (json.JSONDecodeError, TypeError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+
+    # [MVU-SAVE-GATE-A 2026-10-05] 顶层浅合并前先过一遍闸门。
+    # 原实现是裸 existing.update(body) —— 无键白名单、无类型校验、无大小限制，
+    # 而前端送的是**整个** window.chat_metadata（见 lib/sillytavern/getContext.ts
+    # _persistChatMetadata），于是任何让 window.chat_metadata 变成「插件局部视图」
+    # 的路径都会把服务端真源整份换掉。
+    #
+    # ⚠️ 这里**刻意不禁 variables**：实测本端点是会话变量（stat_data）从前端落库的
+    # **唯一**通道（全局量走 /api/variables/global，不是会话量），禁掉会让卡脚本
+    # 的变量写入彻底失效 = 回归。故只对「明显是坏的」输入做防护：
+    #   ① palink_* 是内部路由/注入键，插件不得设置（否则可篡改 palink_injections）
+    #   ② variables 必须是 dict，非 dict 一律忽略（不拿垃圾覆盖真源）
+    #   ③ 传来空 dict 而库里非空 —— 这是「整份被清空」的典型症状，忽略并告警
+    incoming = body if isinstance(body, dict) else {}
+    for key in list(incoming.keys()):
+        if key.startswith("palink_"):
+            incoming.pop(key, None)
+            logger.warning("Rejected palink_* key in session metadata write: %s", key)
+
+    incoming_variables = incoming.get("variables")
+    if "variables" in incoming and not isinstance(incoming_variables, dict):
+        incoming.pop("variables", None)
+        logger.warning(
+            "Ignored non-dict variables in session metadata write: %r",
+            type(incoming_variables).__name__,
+        )
+    elif (
+        isinstance(incoming_variables, dict)
+        and not incoming_variables
+        and isinstance(existing.get("variables"), dict)
+        and existing.get("variables")
+    ):
+        incoming.pop("variables", None)
+        logger.warning(
+            "Ignored empty variables overwrite for session %s (stored is non-empty)",
+            session_id,
+        )
+
+    existing.update(incoming)
     existing["palink_session_id"] = session.id
     session.chat_metadata = json.dumps(existing, ensure_ascii=False)
     db.commit()
@@ -4393,12 +4436,11 @@ async def _character_chat_impl(
                     pass
             # character_book 存在 world_books 表而非 extensions，需合并其 entry content
             # 供 build_initial_stat_data 提取 <initvar>（头像 URL/服饰/内心想法等初始值）。
-            wb_entries = [
-                str(stage.content or "")
-                for wb in (char.world_books or [])
-                if getattr(wb, "type", "") == "character_book"
-                for stage in (wb.entries or [])
-            ]
+            # [P3-a 2026-10-05] 改走 select_character_book_contents：原三重推导式
+            # 不看 stage.enabled，用户点了「禁用」的条目照样参与（明确 bug）。
+            from ..services.mvu_entry_filter import select_character_book_contents
+
+            wb_entries = select_character_book_contents(char.world_books)
             char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
             # [T1 2026-09-30] initvar 常见于卡的 first_mes（含嵌套在 palink_raw_card_data
             # 的结构），而卡编辑器改的是 characters 列 → 列值优先于导入快照。
@@ -6243,12 +6285,12 @@ async def trigger_mvu_secondary(
         except (json.JSONDecodeError, TypeError):
             pass
     from app.services.mvu_engine import merge_character_book_entries
-    wb_entries = [
-        str(stage.content or "")
-        for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
-        if getattr(wb, "type", "") == "character_book"
-        for stage in (wb.entries or [])
-    ]
+    # [P3-a 2026-10-05] 同 ①：走统一筛选，跳过 enabled=False 的条目。
+    from app.services.mvu_entry_filter import select_character_book_contents
+
+    wb_entries = select_character_book_contents(
+        _mvu_char.world_books if _mvu_char is not None else None
+    )
     char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
 
     # 当前会话 stat_data（chat_metadata.variables）

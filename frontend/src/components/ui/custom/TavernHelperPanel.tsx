@@ -24,8 +24,13 @@
  */
 
 import React, { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil } from "lucide-react";
 import { parseMvuSchema } from "../../../utils/mvuSchemaParser";
+import {
+  buildStatDataPath,
+  coerceValueByOriginal,
+  patchSessionVariables,
+} from "../../../services/mvuVariables";
 import "./TavernHelperPanel.css";
 
 interface TavernHelperPanelProps {
@@ -33,6 +38,11 @@ interface TavernHelperPanelProps {
   statData?: Record<string, any> | null;
   /** 初始是否折叠。逐条消息渲染时建议仅最新一条展开（传 !isLast）。 */
   defaultCollapsed?: boolean;
+  /**
+   * 会话 id。**只有传了它才启用编辑** —— 拿不到会话 id 时面板保持纯只读，
+   * 与加这个功能之前逐字节一致（不引入一个恒不生效的假按钮）。
+   */
+  sessionId?: string | null;
 }
 
 function resolveValue(
@@ -97,12 +107,58 @@ function groupAccent(index: number): string {
   return GROUP_ACCENTS[index % GROUP_ACCENTS.length];
 }
 
-export default function TavernHelperPanel({ tavernHelper, statData, defaultCollapsed = false }: TavernHelperPanelProps) {
+export default function TavernHelperPanel({
+  tavernHelper,
+  statData,
+  defaultCollapsed = false,
+  sessionId,
+}: TavernHelperPanelProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const schemaTree = useMemo(() => parseMvuSchema(tavernHelper), [tavernHelper]);
   const groups = schemaTree ? Object.keys(schemaTree) : [];
+  const canEdit = Boolean(sessionId);
 
   if (!groups.length) return null;
+
+  // 用 JSON 数组作键，避免选分隔符（早先误用了字面 NUL 字节，
+  // 会让 git 把整个文件判成二进制）。
+  const draftKey = (group: string, field: string) => JSON.stringify([group, field]);
+
+  const commitEdits = async () => {
+    if (!sessionId) return;
+    const patches = Object.keys(draft).map((key) => {
+      const [group, field] = JSON.parse(key) as [string, string];
+      const fallback = (schemaTree?.[group] as Record<string, any> | undefined)?.[field];
+      const original = resolveValue(statData, group, field, fallback);
+      return {
+        op: "replace" as const,
+        path: buildStatDataPath(group, field),
+        value: coerceValueByOriginal(draft[key], original),
+      };
+    });
+    if (!patches.length) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await patchSessionVariables(sessionId, patches);
+      setDraft({});
+      setEditing(false);
+      // 父组件会在下一轮 refetch 时拿到新值；此处不自行改写 props.statData，
+      // 避免与后端的真源产生两份互相打架的状态。
+      window.dispatchEvent(new CustomEvent("palink:mvuVariablesEdited"));
+    } catch (e: any) {
+      setError(e?.message || "变量写入失败");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="palink-th-panel">
@@ -116,6 +172,19 @@ export default function TavernHelperPanel({ tavernHelper, statData, defaultColla
         <span className="palink-th-panel__title-icon">📊</span>
         <span>状态面板</span>
       </button>
+      {/* 编辑入口只在拿得到 sessionId 时出现：拿不到就是纯只读，不摆一个点了没反应的按钮。 */}
+      {canEdit && !collapsed && (
+        <button
+          type="button"
+          className="palink-th-panel__edit-toggle"
+          onClick={() => (editing ? commitEdits() : setEditing(true))}
+          disabled={saving}
+        >
+          <Pencil size={12} />
+          {saving ? "保存中…" : editing ? "保存" : "编辑"}
+        </button>
+      )}
+      {error && <div className="palink-th-panel__error">{error}</div>}
       {!collapsed && (
         <div className="palink-th-panel__body">
           {groups.map((group, gi) => {
@@ -144,6 +213,24 @@ export default function TavernHelperPanel({ tavernHelper, statData, defaultColla
                             loading="lazy"
                           />
                           <span className="palink-th-panel__key">{field}</span>
+                        </div>
+                      );
+                    }
+
+                    if (editing) {
+                      const key = draftKey(group, field);
+                      return (
+                        <div className="palink-th-panel__row palink-th-panel__row--edit" key={field}>
+                          <span className="palink-th-panel__key">{field}</span>
+                          <input
+                            className="palink-th-panel__input"
+                            type={isBarValue(value) ? "number" : "text"}
+                            value={draft[key] ?? formatValue(value)}
+                            onChange={(e) =>
+                              setDraft((d) => ({ ...d, [key]: e.target.value }))
+                            }
+                            aria-label={`${group} ${field}`}
+                          />
                         </div>
                       );
                     }

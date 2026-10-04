@@ -1662,6 +1662,10 @@ function MessageInner({
                   tavernHelper={tavernHelper}
                   statData={statData}
                   defaultCollapsed={!isLast}
+                  // [变量编辑 2026-10-05] 传 sessionId 才启用编辑（端点
+                  // POST /api/character-sessions/{sid}/variables/patch 已就绪）。
+                  // 拿不到时面板保持纯只读，不会出现点了没反应的按钮。
+                  sessionId={_sessionId ? String(_sessionId) : null}
                 />
               )}
             </div>

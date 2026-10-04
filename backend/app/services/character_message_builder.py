@@ -594,12 +594,13 @@ def apply_mvu_reply_to_session(
             pass
     # character_book 存在 world_books 表而非 extensions，需合并其 entry content
     # 供 build_initial_stat_data 提取 <initvar>（头像 URL/服饰/内心想法等初始值）。
-    wb_entries = [
-        str(stage.content or "")
-        for wb in ((_mvu_char.world_books) if _mvu_char is not None else [])
-        if getattr(wb, "type", "") == "character_book"
-        for stage in (wb.entries or [])
-    ]
+    # [P3-a 2026-10-05] 走统一筛选：跳过 enabled=False 的条目（原实现不看该字段，
+    # 用户点了「禁用」的条目仍在参与 <initvar> / schema 提取）。
+    from .mvu_entry_filter import select_character_book_contents
+
+    wb_entries = select_character_book_contents(
+        _mvu_char.world_books if _mvu_char is not None else None
+    )
     char_ext_raw = merge_character_book_entries(char_ext_raw, wb_entries)
 
     sess = (
