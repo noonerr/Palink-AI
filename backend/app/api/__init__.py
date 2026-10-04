@@ -21,6 +21,10 @@ from .presets import router as presets_router
 from .context_templates import router as context_templates_router
 from .instruct_templates import router as instruct_templates_router
 from .variables import router as variables_router
+# [MVU 补齐第二波 2026-10-05] 会话变量补丁写入端点。
+# 落新文件而非 character_ext.py：后者开工时正被并行 agent 改动且未提交，
+# 叠加编辑会互相覆盖。详见 app/api/mvu_variables_api.py 文件头。
+from .mvu_variables_api import router as mvu_variables_router
 from .prompt_manager import router as prompt_manager_router
 from .personas import router as personas_router
 from .extension_prompts import router as extension_prompts_router
@@ -81,6 +85,7 @@ api_router.include_router(presets_router)
 api_router.include_router(context_templates_router)
 api_router.include_router(instruct_templates_router)
 api_router.include_router(variables_router)
+api_router.include_router(mvu_variables_router)
 api_router.include_router(prompt_manager_router)
 api_router.include_router(personas_router)
 api_router.include_router(extension_prompts_router)
