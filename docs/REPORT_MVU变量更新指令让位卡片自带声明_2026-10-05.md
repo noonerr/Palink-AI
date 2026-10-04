@@ -110,19 +110,43 @@ grep -c 'entry.depth is None'                 → 1
 DEPTH_ENTRIES_COUNT= 5   DEPTHS= [0,0,0,0,0]   ALL_ZERO=True   ANY_FOUR=False
 ```
 
+**在重导入后的真卡上复测同一端点**（会话 `aee7fd3d-…`，`message_count=7`，不花钱）——修复在新卡上同样成立：
+```
+worldbook_depth ×6  全部 detail=depth=0; order=100; role=system; key=customDepthWI_0_0
+mvu_user_tail       skipped / detail=card declares update spec in prompt
+total_tokens_estimate=16120   token_budget=997440（无裁剪）
+```
+
 ### 3.4 反证
 - **单元级**：把那行临时改回 `entry.depth or 4`，全量跑出 `1 failed, 1881 passed`，失败项正是 `test_real_depth_zero`（守门断言非空转）；改回即 `failed = 0`。
 - **机制级**：3.3 的前后对照本身即反证（同一会话同一端点，只因代码不同就从 `depth=4 + tail included` 变成 `depth=0 + tail skipped`）。
 - **效果级（真机 3 轮）：未完成 —— 被网关余额挡住**，见 ④。
 
+### 3.5 ⚠️ 验收期间环境发生的变化（非本批造成，如实留痕）
+
+1. **原卡 `05a3fe0f-…` 已从 `characters` 表消失**（实测 count=0），应为重导入所致。
+   现库中同名新卡为 **`c44f2ae6-5922-454d-8069-06ba48dc4408`**（user 1），已核对其世界书与原卡**完全同构**
+   （同样 4 条 `[mvu_update]` + `变量列表` + `强调`，position=4 / depth=0 / order=200，1 条 disabled）。
+   真机验收因此改在新卡上进行，判据不变。
+2. **`git log` 在验收期间被推进**：并行的「分支记忆混淆」会话提交了 `a877013`
+   （写入闸门 + 世界书禁用过滤 + 变量编辑面板）。本批三笔提交（`b027aa3` / `a44d646` / `b27cab7`）
+   均在该分支历史中且未被改写；已逐项核验 HEAD 内本批符号齐全
+   （`_MVU_GENERIC_TAIL` 2 处、`entry.depth is None` 1 处、旧模板 `桃汐/好感度` 0 处）。
+3. 验收脚本 `_accept_mvu_realrun.py` 的 `CHAR_ID` 已从旧 id 改为新卡 id。
+4. **遗留生产数据（未清理，等你处置）**：验收尝试建了 2 个空会话
+   （`17139b96-…`、`aee7fd3d-…`），各有 3 条 user 消息、**0 条 assistant 回复**（生成被余额挡住）。
+   清理属破坏性操作，本批不擅自执行。
+
 ## ④ 未完成 / 未做（如实标注）
 
-1. **真机 3 轮验收未完成，根因是外部账户余额，不是代码**：
+1. **真机 3 轮验收未完成，根因是外部账户余额，不是代码**（两次尝试，跨新旧两张卡）：
    ```
    403 insufficient_user_quota
-   预扣费额度失败, 用户剩余额度: ¥0.817264, 需要预扣费额度: ¥9.539640
+   剩余额度: ¥0.876934, 需要预扣费额度: ¥9.569745
    ```
-   新会话 `17139b96-6109-4d78-b945-6c2d588ac112` 已建好但 3 条 user 消息**无 assistant 回复落库**。只有你能处理余额。余额到位后按 ⑤ 复跑即可，无需再改代码。
+   两个会话 `17139b96-…`（旧卡）与 `aee7fd3d-…`（新卡）各落 3 条 user 消息、**0 条 assistant 回复**。
+   该卡世界书 19 条全 constant、提示词 2 万+ token，网关按最大可能输出预扣，故预扣额高达 ¥9.57。
+   只有你能处理余额。到位后按 ⑤ 复跑即可，**无需再改代码**。
 2. **文档 §1.6 `extract_schema_defaults` 接入主提示词：未做**（会改所有 MVU 卡提示词长度，另立议题）。
 3. **`mvu_secondary.py:82-85` 副模型提示词里同样写死的别卡字段名：未做**（按你裁定"只改主装配"，登记为紧随的第二笔）。
 4. **旧会话脏数据：未处理**（按你裁定靠新会话绕开；且脏快照会自我强化，见 1.5）。
@@ -132,7 +156,7 @@ DEPTH_ENTRIES_COUNT= 5   DEPTHS= [0,0,0,0,0]   ALL_ZERO=True   ANY_FOUR=False
 ## ⑤ 余额到位后的复跑步骤
 
 ```bash
-# 1) 新建会话跑 3 轮（脚本会自建会话并打印 session_id）
+# 1) 新建会话跑 3 轮（脚本已指向新卡 c44f2ae6…，会自建会话并打印 session_id）
 py -3 backend/scripts/_accept_mvu_realrun.py
 
 # 2) 查库判据（把 <新会话id> 换成上一步输出）
@@ -143,7 +167,13 @@ SELECT id, jsonb_typeof((extra::jsonb)->'variables'->'stat_data'->'露缇雅'->'
        (extra::jsonb)->>'mvu_patch' AS patch
 FROM character_chat_messages WHERE session_id='<新会话id>' ORDER BY id DESC LIMIT 3;"
 ```
-**通过线**：连续 3 轮 `object`；`爱意/魔力值/饥饿度` 三键都在；顶层键**不出现** `世界信息` 与 `露缇雅1.2`；`mvu_patch` 的 path 首段 ∈ {`露缇雅`,`环境`}。
+**通过线**：连续 3 轮 `object`；`爱意/魔力值/饥饿度` 三键都在；顶层键**不出现** `世界信息` 与 `露缇雅1.2`；
+`mvu_patch` 的 path 首段 ∈ {`露缇雅`,`环境`}。
+
+> 想先看装配结果（不花钱）：把 `<session_id>` 换成任一该卡会话，调
+> `POST /api/character-sessions/{id}/debug-prompt-assembly`，检查报告里
+> `mvu_user_tail` 是否 `skipped: card declares update spec in prompt`、
+> `worldbook_depth` 的 detail 是否 `depth=0; key=customDepthWI_0_0`。
 
 ## ⑥ 备份与提交
 
