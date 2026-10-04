@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Palink 报错提示 · 手机端重绘预览 v2</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #e9edf4;
+      --page-deep: #dfe5ee;
+      --phone: #f7f9fc;
+      --surface: rgba(255,255,255,.68);
+      --surface-strong: rgba(255,255,255,.86);
+      --surface-soft: rgba(244,247,252,.72);
+      --ink: #1f2937;
+      --ink-soft: #5d6a7d;
+      --ink-faint: #8c98a8;
+      --line: rgba(111,126,150,.20);
+      --blue: #4d73da;
+      --blue-strong: #355dcc;
+      --blue-soft: rgba(77,115,218,.12);
+      --red: #d85c64;
+      --red-soft: rgba(216,92,100,.12);
+      --amber: #b18343;
+      --amber-soft: rgba(177,131,67,.13);
+      --green: #4c9677;
+      --green-soft: rgba(76,150,119,.13);
+      --shadow: 0 22px 54px rgba(57,71,96,.18), 0 5px 16px rgba(57,71,96,.10);
+      --shadow-soft: 0 12px 26px rgba(57,71,96,.12);
+      --radius-xl: 29px;
+      --radius-lg: 21px;
+      --radius-md: 15px;
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --page: #121827;
+      --page-deep: #0d1220;
+      --phone: #1b2233;
+      --surface: rgba(34,43,64,.74);
+      --surface-strong: rgba(39,49,72,.92);
+      --surface-soft: rgba(28,36,55,.78);
+      --ink: #f2f5fb;
+      --ink-soft: #b1bdd0;
+      --ink-faint: #7f8ca2;
+      --line: rgba(188,201,226,.18);
+      --blue: #9ab5ff;
+      --blue-strong: #b4c7ff;
+      --blue-soft: rgba(122,153,239,.16);
+      --red: #ff9a93;
+      --red-soft: rgba(255,128,120,.15);
+      --amber: #edc58e;
+      --amber-soft: rgba(218,169,98,.15);
+      --green: #9ad1b6;
+      --green-soft: rgba(113,204,157,.15);
+      --shadow: 0 26px 58px rgba(0,0,0,.40), 0 6px 18px rgba(0,0,0,.22);
+      --shadow-soft: 0 12px 30px rgba(0,0,0,.26);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 24px 16px;
+      color: var(--ink);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 14% 8%, rgba(126,157,228,.22), transparent 26%),
+        radial-gradient(circle at 91% 87%, rgba(176,145,223,.19), transparent 25%),
+        linear-gradient(145deg, var(--page), var(--page-deep));
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    .preview { width: min(470px, 100%); }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 auto 12px;
+    }
+    .toolbar select, .toolbar button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: 0 5px 14px rgba(50,64,89,.07);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+    }
+    .toolbar select { flex: 1; min-width: 0; padding: 0 11px; outline: none; }
+    .toolbar button { padding: 0 12px; color: var(--ink-soft); border-color: transparent; }
+    .toolbar button:hover { color: var(--ink); border-color: var(--line); }
+
+    .phone {
+      position: relative;
+      height: min(850px, calc(100svh - 76px));
+      min-height: 690px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.48);
+      border-radius: 35px;
+      background: var(--phone);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+    .phone::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 80% 20%, rgba(94,135,225,.13), transparent 24%),
+        radial-gradient(circle at 9% 82%, rgba(187,146,225,.12), transparent 23%);
+    }
+    .island {
+      position: absolute;
+      z-index: 15;
+      top: 9px;
+      left: 50%;
+      width: 112px;
+      height: 28px;
+      transform: translateX(-50%);
+      border-radius: 18px;
+      background: #131722;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+    }
+    .status {
+      position: absolute;
+      z-index: 16;
+      top: 13px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      pointer-events: none;
+    }
+    .topbar {
+      position: absolute;
+      z-index: 9;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 146px;
+      padding: 54px 17px 15px;
+      background: linear-gradient(to bottom, var(--surface-strong), rgba(255,255,255,0));
+      backdrop-filter: blur(17px);
+      -webkit-backdrop-filter: blur(17px);
+    }
+    [data-theme="dark"] .topbar { background: linear-gradient(to bottom, rgba(27,34,51,.94), rgba(27,34,51,0)); }
+    .chat-head { display: flex; align-items: center; gap: 10px; height: 57px; }
+    .back, .more {
+      width: 34px; height: 34px; display: grid; place-items: center;
+      border: 1px solid var(--line); border-radius: 50%; background: var(--surface);
+      color: var(--ink-soft); font-size: 20px; line-height: 1;
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    }
+    .more { font-size: 18px; }
+    .avatar {
+      width: 38px; height: 38px; display: grid; place-items: center; flex: none;
+      border-radius: 14px; color: #fff; font-weight: 800;
+      background: linear-gradient(145deg, #7086c3, #8d76bd);
+      box-shadow: 0 5px 14px rgba(79,98,160,.24);
+    }
+    .identity { flex: 1; min-width: 0; }
+    .identity strong { display: block; font-size: 14px; font-weight: 700; }
+    .identity span { display: block; margin-top: 1px; color: var(--ink-faint); font-size: 10px; }
+
+    .content {
+      position: absolute;
+      inset: 123px 0 131px;
+      padding: 18px 15px 22px;
+      overflow: auto;
+      scrollbar-width: none;
+    }
+    .content::-webkit-scrollbar { display: none; }
+    .date { margin: 0 0 17px; color: var(--ink-faint); text-align: center; font-size: 10px; }
+    .bubble { width: fit-content; max-width: 84%; padding: 10px 13px; font-size: 13px; line-height: 1.55; }
+    .bubble.user { margin-left: auto; color: #fff; background: #28344d; border-radius: 20px 20px 7px 20px; }
+    .bubble.assistant { margin-top: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 20px 20px 20px 7px; box-shadow: 0 7px 16px rgba(59,75,103,.06); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); }
+    .time { display: block; margin-top: 4px; color: var(--ink-faint); font-size: 9px; }
+    .user .time { color: rgba(255,255,255,.58); }
+
+    .stack { margin-top: 18px; display: grid; gap: 10px; }
+    .notice {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      animation: rise .28s ease both;
+    }
+    .notice[hidden] { display: none; }
+    .notice-icon {
+      width: 32px; height: 32px; display: grid; place-items: center;
+      border-radius: 12px; font-size: 14px; font-weight: 800;
+    }
+    .notice.error .notice-icon { color: var(--red); background: var(--red-soft); }
+    .notice.warn .notice-icon { color: var(--amber); background: var(--amber-soft); }
+    .notice.ok .notice-icon { color: var(--green); background: var(--green-soft); }
+    .notice.loading .notice-icon { color: var(--blue); background: var(--blue-soft); }
+    .notice-copy { min-width: 0; padding-top: 1px; }
+    .notice-copy strong { display: block; font-size: 12px; font-weight: 750; }
+    .notice-copy p { overflow: hidden; margin: 3px 0 0; color: var(--ink-soft); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .notice-copy small { display: block; margin-top: 5px; color: var(--ink-faint); font-size: 10px; }
+    .notice-actions { display: flex; align-items: center; gap: 4px; padding-top: 1px; }
+    .notice-actions button { border: 0; background: transparent; color: var(--blue-strong); font-size: 11px; font-weight: 700; }
+    .notice-actions .close { width: 24px; height: 24px; border-radius: 50%; color: var(--ink-faint); font-size: 18px; font-weight: 400; }
+    .notice-actions .close:hover { background: var(--blue-soft); color: var(--ink); }
+
+    .quick-toast {
+      position: absolute;
+      z-index: 12;
+      top: 119px;
+      left: 15px;
+      right: 15px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 43px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--surface-strong);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      transform: translateY(-10px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease, transform .2s ease;
+    }
+    .quick-toast.show { transform: translateY(0); opacity: 1; pointer-events: auto; }
+    .quick-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
+    .quick-toast.ok .quick-dot { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
+    .quick-toast.warn .quick-dot { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+    .quick-copy { min-width: 0; font-size: 11px; }
+    .quick-copy strong { font-size: 11px; }
+    .quick-copy span { margin-left: 4px; color: var(--ink-soft); }
+    .quick-toast button { width: 25px; height: 25px; margin-left: auto; border: 0; border-radius: 50%; background: transparent; color: var(--ink-faint); font-size: 17px; }
+
+    .composer {
+      position: absolute;
+      z-index: 8;
+      left: 13px;
+      right: 13px;
+      bottom: 80px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 57px;
+      padding: 8px 9px 8px 13px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: var(--surface-strong);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      transition: bottom .28s ease, opacity .2s ease;
+    }
+    .composer.keyboard { bottom: 300px; }
+    .composer span { flex: 1; color: var(--ink-faint); font-size: 12px; }
+    .composer button { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--blue-soft); color: var(--blue-strong); font-size: 18px; }
+    .composer .send { color: #fff; background: var(--blue); }
+    .composer.keyboard::after { content: "键盘已展开 · 错误卡仍可操作"; position: absolute; left: 13px; right: 13px; bottom: -25px; color: var(--ink-faint); text-align: center; font-size: 9px; }
+
+    .dock {
+      position: absolute;
+      z-index: 9;
+      left: 13px;
+      right: 13px;
+      bottom: 13px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      height: 57px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: var(--surface);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      transition: opacity .2s ease;
+    }
+    .dock.hidden { opacity: .18; }
+    .dock button { border: 0; border-radius: 24px; background: transparent; color: var(--ink-faint); font-size: 10px; }
+    .dock button.active { color: var(--ink); background: var(--blue-soft); font-weight: 700; }
+
+    .drawer-backdrop {
+      position: absolute; inset: 0; z-index: 24; display: grid; align-items: end;
+      padding: 14px; background: rgba(20,28,43,.22); opacity: 0; pointer-events: none; transition: opacity .22s ease;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+    .drawer { padding: 18px; border: 1px solid var(--line); border-radius: 23px; background: var(--surface-strong); box-shadow: var(--shadow); transform: translateY(16px); transition: transform .22s ease; backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); }
+    .drawer-backdrop.open .drawer { transform: translateY(0); }
+    .drawer-handle { width: 36px; height: 4px; margin: -3px auto 15px; border-radius: 5px; background: var(--ink-faint); opacity: .45; }
+    .drawer h2 { margin: 0; font-size: 17px; }
+    .drawer p { margin: 7px 0 0; color: var(--ink-soft); font-size: 12px; }
+    .trace { margin-top: 14px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); color: var(--ink-soft); font: 10px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .drawer-foot { display: flex; gap: 8px; margin-top: 14px; }
+    .drawer-foot button { flex: 1; min-height: 38px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--ink); font-size: 12px; }
+    .drawer-foot .primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+
+    .caption { margin: 11px 4px 0; color: var(--ink-faint); text-align: center; font-size: 10px; }
+    .caption b { color: var(--ink-soft); }
+    @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="preview">
+    <div class="toolbar">
+      <select id="state" aria-label="选择预览状态">
+        <option value="error">生成失败 · 常驻错误卡</option>
+        <option value="timeout">请求超时 · 可重试</option>
+        <option value="network">网络断开 · 顶部轻提示</option>
+        <option value="auth">登录已过期 · 引导操作</option>
+        <option value="success">已保存 · 瞬时成功提示</option>
+        <option value="loading">生成中 · 处理中</option>
+      </select>
+      <button id="theme" type="button">深色</button>
+      <button id="keyboard" type="button" aria-pressed="false">键盘</button>
+    </div>
+
+    <section class="phone" aria-label="Palink 手机端聊天错误提示预览">
+      <div class="island" aria-hidden="true"></div>
+      <div class="status" aria-hidden="true"><span>9:41</span><span>● ▰</span></div>
+      <header class="topbar">
+        <div class="chat-head">
+          <button class="back" type="button" aria-label="返回">‹</button>
+          <div class="avatar" aria-hidden="true">A</div>
+          <div class="identity"><strong>Aurora</strong><span>角色对话 · 在线</span></div>
+          <button class="more" type="button" aria-label="更多">···</button>
+        </div>
+      </header>
+
+      <div id="toast" class="quick-toast" role="status" aria-live="polite">
+        <i class="quick-dot" aria-hidden="true"></i>
+        <div class="quick-copy"><strong id="toastTitle"></strong><span id="toastText"></span></div>
+        <button type="button" data-dismiss-toast aria-label="关闭提示">×</button>
+      </div>
+
+      <section class="content">
+        <div class="date">今天 09:41</div>
+        <div class="bubble user">继续刚才的场景。<span class="time">09:40</span></div>
+        <div class="bubble assistant">我会保持刚才的节奏，把这一段继续写下去。<span class="time">09:40</span></div>
+        <div class="bubble user" style="margin-top:14px">继续生成下一段。<span class="time">09:41</span></div>
+
+        <div class="stack">
+          <article class="notice error" data-notice="error">
+            <div class="notice-icon" aria-hidden="true">!</div>
+            <div class="notice-copy"><strong>生成失败</strong><p>连接超时，未生成回复</p><small>这条提示不会作为角色消息发送</small></div>
+            <div class="notice-actions"><button type="button" data-retry>重试</button><button type="button" class="close" data-close aria-label="关闭">×</button></div>
+          </article>
+          <article class="notice warn" data-notice="timeout" hidden>
+            <div class="notice-icon" aria-hidden="true">·</div>
+            <div class="notice-copy"><strong>请求超时</strong><p>这次没有生成回复，可以重新尝试</p><small>保留输入内容，点击重试即可</small></div>
+            <div class="notice-actions"><button type="button" data-retry>重试</button><button type="button" class="close" data-close aria-label="关闭">×</button></div>
+          </article>
+          <article class="notice error" data-notice="auth" hidden>
+            <div class="notice-icon" aria-hidden="true">!</div>
+            <div class="notice-copy"><strong>登录已过期</strong><p>重新登录后继续当前对话</p><small>当前内容已保留</small></div>
+            <div class="notice-actions"><button type="button" data-login>登录</button><button type="button" class="close" data-close aria-label="关闭">×</button></div>
+          </article>
+          <article class="notice loading" data-notice="loading" hidden>
+            <div class="notice-icon" aria-hidden="true">⋯</div>
+            <div class="notice-copy"><strong>正在生成</strong><p>正在等待模型回复</p><small>你可以继续浏览对话</small></div>
+            <div class="notice-actions"><button type="button" data-stop>停止</button></div>
+          </article>
+        </div>
+      </section>
+
+      <div class="composer" id="composer"><button type="button" aria-label="添加">+</button><span>与 Aurora 对话…</span><button type="button" class="send" aria-label="发送">↑</button></div>
+      <nav class="dock" id="dock" aria-label="主导航"><button class="active" type="button">聊天</button><button type="button">工作区</button><button type="button">角色</button><button type="button">设置</button></nav>
+
+      <div class="drawer-backdrop" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+        <div class="drawer">
+          <div class="drawer-handle" aria-hidden="true"></div>
+          <h2 id="drawerTitle">生成失败</h2>
+          <p>错误详情放在二级面板里，默认不打断对话，也不会把技术信息塞进消息正文。</p>
+          <div class="trace">Request timed out after 30s<br />channel: character-chat / sse<br />message: response not received</div>
+          <div class="drawer-foot"><button type="button" data-close-drawer>关闭</button><button class="primary" type="button" data-retry>重试</button></div>
+        </div>
+      </div>
+    </section>
+    <p class="caption"><b>设计意图：</b>顶部避开灵动岛，错误卡挂在消息流内，键盘展开时仍保留可操作按钮。</p>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const state = document.querySelector('#state');
+      const theme = document.querySelector('#theme');
+      const keyboard = document.querySelector('#keyboard');
+      const composer = document.querySelector('#composer');
+      const dock = document.querySelector('#dock');
+      const toast = document.querySelector('#toast');
+      const toastTitle = document.querySelector('#toastTitle');
+      const toastText = document.querySelector('#toastText');
+      const drawer = document.querySelector('#drawer');
+      const notices = [...document.querySelectorAll('[data-notice]')];
+      let toastTimer;
+
+      const quick = {
+        network: ['网络已断开', '恢复连接后会继续重试', 'warn'],
+        success: ['已保存', '更改已经保存', 'ok'],
+        loading: ['正在生成', '请稍候，回复会出现在当前对话中', '']
+      };
+
+      function hideNotice() { notices.forEach((notice) => { notice.hidden = true; }); }
+      function showToast(title, text, tone = '') {
+        clearTimeout(toastTimer);
+        toastTitle.textContent = title;
+        toastText.textContent = ` · ${text}`;
+        toast.className = `quick-toast show ${tone}`;
+        toastTimer = setTimeout(() => toast.classList.remove('show'), 4200);
+      }
+      function setState(next) {
+        hideNotice();
+        toast.classList.remove('show');
+        if (quick[next]) {
+          showToast(...quick[next]);
+          if (next === 'loading') document.querySelector('[data-notice="loading"]').hidden = false;
+          return;
+        }
+        const notice = document.querySelector(`[data-notice="${next}"]`);
+        if (notice) notice.hidden = false;
+      }
+      function flash(title, text, tone = 'ok') { showToast(title, text, tone); }
+
+      state.addEventListener('change', () => setState(state.value));
+      theme.addEventListener('click', () => {
+        const dark = root.dataset.theme === 'dark';
+        root.dataset.theme = dark ? 'light' : 'dark';
+        theme.textContent = dark ? '深色' : '浅色';
+      });
+      keyboard.addEventListener('click', () => {
+        const open = keyboard.getAttribute('aria-pressed') === 'true';
+        keyboard.setAttribute('aria-pressed', String(!open));
+        keyboard.textContent = open ? '键盘' : '收起键盘';
+        composer.classList.toggle('keyboard', !open);
+        dock.classList.toggle('hidden', !open);
+      });
+      document.addEventListener('click', (event) => {
+        const target = event.target.closest('button');
+        if (!target) return;
+        if (target.matches('[data-close]')) {
+          target.closest('.notice').hidden = true;
+          flash('提示已关闭', '对话内容保持不变');
+        }
+        if (target.matches('[data-retry]')) {
+          drawer.classList.remove('open');
+          flash('已重新发起请求', '正在等待模型回复');
+          state.value = 'loading';
+          setState('loading');
+        }
+        if (target.matches('[data-login]')) flash('登录入口已准备', '返回登录后继续当前对话');
+        if (target.matches('[data-stop]')) { setState('timeout'); flash('已停止生成', '你可以稍后再次重试', 'warn'); }
+        if (target.matches('[data-dismiss-toast]')) toast.classList.remove('show');
+        if (target.matches('.notice-copy')) drawer.classList.add('open');
+        if (target.matches('[data-close-drawer]')) drawer.classList.remove('open');
+      });
+      document.querySelectorAll('.notice-copy').forEach((copy) => copy.addEventListener('click', () => drawer.classList.add('open')));
+      drawer.addEventListener('click', (event) => { if (event.target === drawer) drawer.classList.remove('open'); });
+      setState('error');
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,991 @@
+<!doctype html>
+<html lang="zh" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Palink 报错通道 · 实测与收敛方案</title>
+<style>
+/* ═══════════════ 设计令牌 ═══════════════ */
+:root {
+  --canvas:#f5f6f8; --card:#fff; --inset:#fafbfc;
+  --line:#e4e7ec; --line-strong:#d3d8e0;
+  --ink-900:#101828; --ink-700:#344054; --ink-500:#667085; --ink-400:#98a2b3;
+  --accent:#2f6fed; --accent-ink:#1b4fbd; --accent-soft:#eef3ff;
+  --danger:#d92d20; --danger-ink:#b42318; --danger-soft:#fef3f2; --danger-line:#fecdca;
+  --warn:#b54708; --warn-soft:#fffaeb; --warn-line:#fedf89;
+  --ok:#067647; --ok-soft:#ecfdf3; --ok-line:#abefc6;
+  --shadow-s:0 1px 2px rgba(16,24,40,.05);
+  --shadow-m:0 4px 8px -2px rgba(16,24,40,.06),0 2px 4px -2px rgba(16,24,40,.04);
+  --shadow-l:0 12px 24px -4px rgba(16,24,40,.08),0 6px 12px -6px rgba(16,24,40,.05);
+  --r-s:8px; --r-m:12px; --r-l:16px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  /* 被测应用自身配色（示意图内容区） */
+  --app-page:#F8FAFC; --app-card:#fff; --app-line:#e4e4e7; --app-muted:#f4f4f5;
+  --app-mutefg:#71717a; --app-destructive:#ef4444; --app-primary:#2f7de1;
+  --sn-bg:hsl(359,100%,97%); --sn-bd:hsl(359,100%,94%); --sn-fg:hsl(360,100%,45%);
+  --kbd:#d4d4d8; --kbd-line:#a1a1aa;
+}
+[data-theme="dark"] {
+  --canvas:#0d1014; --card:#15191f; --inset:#11151a;
+  --line:#262c35; --line-strong:#333b47;
+  --ink-900:#e8ecf1; --ink-700:#c2cad6; --ink-500:#98a2b0; --ink-400:#6e7987;
+  --accent:#6f9bff; --accent-ink:#9dbbff; --accent-soft:#131d33;
+  --danger:#f97066; --danger-ink:#fda29b; --danger-soft:#2b1210; --danger-line:#55160c;
+  --warn:#f79009; --warn-soft:#281305; --warn-line:#5a2b05;
+  --ok:#47cd89; --ok-soft:#05271a; --ok-line:#085732;
+  --shadow-s:0 1px 2px rgba(0,0,0,.4); --shadow-m:0 4px 10px rgba(0,0,0,.4);
+  --shadow-l:0 16px 32px rgba(0,0,0,.5);
+  --app-page:#020617; --app-card:#0b0b0d; --app-line:#27272a; --app-muted:#27272a;
+  --app-mutefg:#a1a1aa; --app-destructive:#7a2e2e; --app-primary:#2f7de1;
+  --sn-bg:hsl(358,76%,10%); --sn-bd:hsl(357,89%,16%); --sn-fg:hsl(358,100%,81%);
+  --kbd:#18181b; --kbd-line:#3f3f46;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;padding:0 0 96px;background:var(--canvas);color:var(--ink-900);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",Roboto,sans-serif;
+  font-feature-settings:"kern","liga";-webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1160px;margin:0 auto;padding:0 24px}
+.prose{max-width:70ch}
+h1,h2,h3,h4{margin:0;letter-spacing:-.02em;font-weight:650;line-height:1.25}
+h1{font-size:34px;letter-spacing:-.035em}
+h2{font-size:22px}
+h3{font-size:16px}
+p{margin:10px 0}
+a{color:var(--accent-ink)}
+code,.code{font-family:var(--mono);font-size:.86em;background:var(--inset);border:1px solid var(--line);
+  padding:1px 5px;border-radius:5px;color:var(--ink-700);white-space:nowrap}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-400)}
+.muted{color:var(--ink-500)} .small{font-size:13px} .num{font-variant-numeric:tabular-nums}
+svg.i{width:1em;height:1em;flex:0 0 auto;stroke:currentColor;fill:none;stroke-width:1.9;
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-.14em}
+
+/* ═══════════════ 页头 ═══════════════ */
+header.hero{padding:56px 0 30px;border-bottom:1px solid var(--line);background:var(--card)}
+.hero .sub{margin-top:12px;font-size:14px;color:var(--ink-500);max-width:64ch}
+.stats{display:flex;flex-wrap:wrap;gap:0;margin:30px 0 0;border:1px solid var(--line);border-radius:var(--r-m);
+  overflow:hidden;background:var(--card);box-shadow:var(--shadow-s)}
+.stats div{flex:1 1 150px;padding:14px 18px;border-right:1px solid var(--line)}
+.stats div:last-child{border-right:0}
+.stats b{display:block;font-size:26px;font-weight:660;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1.15}
+.stats span{font-size:12px;color:var(--ink-500);display:block;margin-top:2px}
+.stats .bad b{color:var(--danger-ink)}
+
+/* ═══════════════ 工具条 ═══════════════ */
+.toolbar{position:sticky;top:0;z-index:60;background:color-mix(in srgb,var(--canvas) 88%,transparent);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line);margin-bottom:34px}
+.toolbar .wrap{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding-top:11px;padding-bottom:11px}
+.seg{display:flex;flex-wrap:wrap;gap:2px;padding:3px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-s)}
+.seg button{font:inherit;font-size:12.5px;font-weight:550;padding:5px 11px;border:0;border-radius:7px;background:transparent;
+  color:var(--ink-500);cursor:pointer;white-space:nowrap;transition:.14s}
+.seg button:hover{color:var(--ink-900);background:var(--inset)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff;box-shadow:var(--shadow-s)}
+.tgl{font:inherit;font-size:12.5px;font-weight:550;padding:6px 12px;border:1px solid var(--line);border-radius:9px;
+  background:var(--card);color:var(--ink-500);cursor:pointer;display:inline-flex;align-items:center;gap:6px;box-shadow:var(--shadow-s)}
+.tgl:hover{border-color:var(--line-strong);color:var(--ink-900)}
+.tgl[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink)}
+.tb-label{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-400)}
+
+/* ═══════════════ 区块 ═══════════════ */
+section{margin:0 0 52px}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.sec-head .n{font:700 12px/1 var(--mono);color:var(--ink-400);letter-spacing:.05em}
+.sec-head h2{flex:1}
+.sec-lead{color:var(--ink-500);font-size:14px;margin:0 0 22px;max-width:74ch}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-l);box-shadow:var(--shadow-m)}
+
+/* ═══════════════ 01 现象：手机 + 注解 ═══════════════ */
+.demo{display:grid;grid-template-columns:390px 1fr;gap:34px;align-items:start}
+.devwrap{width:390px}
+@media (max-width:900px){.demo{grid-template-columns:1fr}.devwrap{width:100%}}
+.device{position:relative;width:390px;height:780px;overflow:hidden;border-radius:44px;  background:var(--app-page);box-shadow:0 0 0 11px #1c1f26,0 0 0 13px #3a4050,var(--shadow-l);font-size:14px}
+@media (max-width:440px){.device{width:100%;transform-origin:top left}}
+.anno{display:flex;flex-direction:column;gap:14px}
+.note{display:flex;gap:14px;padding:16px 18px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r-m);box-shadow:var(--shadow-s)}
+.note .idx{flex:0 0 26px;height:26px;border-radius:8px;background:var(--danger-soft);border:1px solid var(--danger-line);
+  color:var(--danger-ink);display:grid;place-items:center;font:700 13px/1 var(--mono);margin-top:1px}
+.note.good .idx{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink,var(--ok))}
+.note h3{font-size:15px;margin-bottom:5px}
+.note p{margin:0;font-size:13.5px;color:var(--ink-700);line-height:1.62}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{font:600 11.5px/1 var(--mono);padding:5px 8px;border-radius:6px;background:var(--inset);
+  border:1px solid var(--line);color:var(--ink-700);font-variant-numeric:tabular-nums;white-space:nowrap}
+.chip.bad{background:var(--danger-soft);border-color:var(--danger-line);color:var(--danger-ink)}
+.chip.warn{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.chip.ok{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok)}
+.chip.acc{background:var(--accent-soft);border-color:#c7d9ff;color:var(--accent-ink)}
+[data-theme="dark"] .chip.acc{border-color:#26364f}
+
+/* ── 手机内部：浮层，坐标全部照源码 ── */
+.device .lay{position:absolute}
+body.outline .device .lay{outline:1.5px dashed var(--warn);outline-offset:2px}
+.device .who{display:none;position:absolute;top:-16px;left:0;font:700 9.5px/1 var(--mono);
+  background:var(--warn);color:#fff;padding:3px 5px;border-radius:3px;white-space:nowrap;z-index:20}
+body.outline .device .who{display:block}
+.hide{display:none!important}
+
+.island{position:absolute;left:0;right:0;top:0;height:59px;z-index:1000000;pointer-events:none;
+  -webkit-backdrop-filter:saturate(160%) blur(13px);backdrop-filter:saturate(160%) blur(13px);
+  background:rgba(10,12,16,.16)}
+[data-theme="dark"] .island{background:rgba(0,0,0,.36)}
+.island::after{content:"";position:absolute;inset:0;opacity:.5;
+  background:repeating-linear-gradient(45deg,rgba(255,255,255,.10) 0 5px,transparent 5px 10px)}
+.notch{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:118px;height:34px;
+  border-radius:18px;background:#000;z-index:1000001}
+body:not(.hazard) .island{background:rgba(10,12,16,.04);-webkit-backdrop-filter:none;backdrop-filter:none}
+body:not(.hazard) .island::after{display:none}
+body:not(.hazard) .notch{opacity:.3}
+.hz{position:absolute;left:0;right:0;bottom:0;height:104px;z-index:750;pointer-events:none;display:none;
+  border-top:1px dashed var(--danger);background:rgba(217,45,32,.06)}
+.hz::after{content:"dock 覆盖区";position:absolute;right:8px;top:-9px;font:650 9.5px/1 var(--mono);
+  background:var(--danger);color:#fff;padding:3px 6px;border-radius:4px}
+body.hazard .hz{display:block}
+#dev.kb .hz{display:none}
+
+.l-net{top:0;left:0;right:0;z-index:100;padding:8px 14px;font-size:13px;font-weight:500;color:#fff;
+  display:flex;align-items:center;gap:7px;justify-content:center;background:#ef4444}
+.l-sn{top:16px;left:16px;right:16px;z-index:999;display:flex;gap:9px;align-items:flex-start;
+  padding:11px 13px;border-radius:9px;background:var(--sn-bg);border:1px solid var(--sn-bd);
+  color:var(--sn-fg);box-shadow:0 4px 14px rgba(0,0,0,.1);font-size:13.5px}
+.l-sn svg.i{width:17px;height:17px;stroke-width:2.2;margin-top:1px}
+.l-sn .d{opacity:.8;font-size:12.5px;margin-top:1px}
+.l-etoast{bottom:96px;right:16px;width:100%;max-width:448px;z-index:50}
+.et{background:var(--app-card);border:1px solid var(--app-line);border-left:4px solid #f97316;border-radius:9px;
+  padding:12px 14px;color:var(--app-destructive);box-shadow:0 10px 16px rgba(0,0,0,.12)}
+.et .hd{display:flex;gap:10px}
+.et svg.i{width:19px;height:19px;flex:0 0 19px;margin-top:1px;color:#f97316}
+.et h4{margin:0;font-size:15.5px;font-weight:640}
+.et .desc{margin:5px 0 7px;font-size:13.5px;color:var(--app-mutefg)}
+.et .sug{display:inline-flex;gap:5px;align-items:center;font-size:13px;color:#ea580c;background:#fff7ed;
+  border-radius:5px;padding:4px 8px}
+[data-theme="dark"] .et .sug{background:rgba(124,45,18,.28);color:#fdba74}
+.et .lnk{display:block;margin-top:9px;font-size:11.5px;color:var(--app-mutefg);text-decoration:underline}
+.et .btns{display:flex;gap:8px;margin-top:11px}
+.et .b1{background:#ea580c;color:#fff;border:0;border-radius:7px;padding:6px 14px;font-size:13px;font-family:inherit}
+.et .b2{background:var(--app-muted);color:var(--ink-900);border:0;border-radius:7px;padding:6px 14px;font-size:13px;font-family:inherit}
+.l-timeout{bottom:16px;right:16px;width:100%;max-width:384px;z-index:50}
+.to{background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:14px;box-shadow:0 10px 16px rgba(0,0,0,.12)}
+[data-theme="dark"] .to{background:rgba(60,25,5,.45);border-color:#7c5c1c}
+.to h4{margin:0;font-size:13.5px;color:#854d0e;display:flex;align-items:center;gap:6px}
+.to p{margin:4px 0 0;font-size:13px;color:#a16207;line-height:1.5}
+[data-theme="dark"] .to h4{color:#fde68a}[data-theme="dark"] .to p{color:#fcd34d}
+.l-proc{top:59px;right:14px;z-index:80;display:flex;gap:9px;align-items:center;background:var(--app-card);
+  border:1px solid var(--app-line);border-radius:11px;padding:11px 13px;box-shadow:0 12px 20px rgba(0,0,0,.12);font-size:13px}
+.spin{width:17px;height:17px;border:2px solid var(--app-primary);border-top-color:transparent;border-radius:50%;
+  animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.l-toastr{top:16px;right:16px;width:290px;z-index:999999;opacity:.8;border-radius:4px;background:#bd362f;color:#fff;
+  padding:13px 14px 13px 42px;font-size:13px;box-shadow:0 0 12px rgba(0,0,0,.5)}
+.l-toastr .x{position:absolute;right:7px;top:3px;font-size:19px;line-height:1;opacity:.8}
+.l-toastr .gl{position:absolute;left:14px;top:14px;width:15px;height:15px;border-radius:50%;border:1.8px solid #fff;
+  text-align:center;font:700 10px/13px var(--mono)}
+.l-toastr b{display:block;margin-bottom:1px}
+.dock{position:absolute;bottom:0;left:0;right:0;z-index:50;display:flex;justify-content:center;padding-bottom:34px;
+  transition:transform .3s}
+.dock .bar{height:66px;width:92%;max-width:340px;border-radius:33px;display:flex;align-items:center;justify-content:space-around;
+  background:var(--app-card);border:1px solid var(--app-line);
+  box-shadow:0 -2px 14px rgba(0,0,0,.10);font-size:11px;color:var(--app-mutefg)}
+#dev.kb .dock{transform:translateY(130%)}
+.composer{position:absolute;bottom:114px;left:0;right:0;z-index:20;padding:0 12px}
+.composer .box{height:42px;border-radius:21px;background:var(--app-card);border:1px solid var(--app-line);
+  display:flex;align-items:center;padding:0 15px;color:var(--app-mutefg);font-size:13.5px}
+#dev.kb .composer{bottom:0}
+.kbd{display:none;position:absolute;left:0;right:0;bottom:0;height:336px;z-index:700;background:var(--kbd);
+  border-top:1.5px solid var(--kbd-line)}
+#dev.kb .kbd{display:block}
+.kbd .rows{padding:14px 8px;display:flex;flex-direction:column;gap:7px}
+.kbd .r{display:flex;gap:5px;justify-content:center}
+.kbd .k{height:34px;flex:1;max-width:34px;border-radius:5px;background:color-mix(in srgb,var(--app-card) 70%,transparent);
+  box-shadow:0 1px 0 var(--kbd-line)}
+.kbd .sp{flex:5;max-width:none}
+/* 键盘场景：把被埋住的错误卡位置画成虚线幽灵框，让人看见"它在这儿，但你看不到" */
+.ghost{position:absolute;bottom:96px;right:16px;width:100%;max-width:448px;height:188px;z-index:800;
+  border:1.5px dashed var(--danger);border-radius:10px;background:rgba(217,45,32,.06);
+  display:flex;align-items:flex-start;justify-content:center;pointer-events:none}
+.ghost span{font:650 10.5px/1.5 var(--mono);color:#fff;background:var(--danger);
+  padding:4px 8px;border-radius:0 0 6px 6px;text-align:center;transform:translateY(-1px)}
+.feed{position:absolute;top:59px;left:0;right:0;bottom:164px;padding:12px 16px 0;overflow:hidden}
+.mu{margin-left:auto;max-width:76%;background:var(--app-primary);color:#fff;border-radius:14px 14px 4px 14px;padding:8px 12px;font-size:13.5px}
+.ma{margin-top:12px;max-width:86%;background:var(--app-card);border:1px solid var(--app-line);
+  border-radius:14px 14px 14px 4px;padding:8px 12px;font-size:13.5px}
+.me{margin-top:12px;max-width:86%;background:var(--app-card);border:1px solid var(--app-line);
+  border-radius:14px 14px 14px 4px;padding:8px 12px;font-size:13.5px;line-height:1.55}
+.me .t{font-weight:660}
+.me .s{color:var(--app-mutefg)}
+.imf{margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  border:1px dashed var(--app-line);background:var(--app-muted);border-radius:11px;padding:9px 11px;font-size:12px;color:var(--app-mutefg)}
+.imf .rt{border:1px solid var(--app-line);border-radius:999px;padding:2px 9px;display:flex;gap:4px;align-items:center}
+
+/* ═══════════════ 遮挡标尺 ═══════════════ */
+.ruler{display:grid;grid-template-columns:1fr;gap:0;padding:22px}
+.ruler svg{width:100%;height:auto;display:block;max-width:900px;margin:0 auto}
+.ruler text{font:600 11px -apple-system,"PingFang SC",sans-serif;fill:var(--ink-700)}
+.ruler text.sm{font:500 10px var(--mono);fill:var(--ink-500)}
+.ruler text.hdr{font:700 10px -apple-system,sans-serif;fill:var(--ink-400);letter-spacing:.1em}
+.ruler .ax{stroke:var(--line-strong);stroke-width:1}
+.ruler .grid{stroke:var(--line);stroke-width:1;stroke-dasharray:2 3}
+
+/* ═══════════════ 表格 ═══════════════ */
+.tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
+.tbl th,.tbl td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl thead th{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-400);
+  background:var(--inset);border-top:1px solid var(--line)}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink-700)}
+.tbl .flag{display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:12px}
+.tbl .flag.bad{color:var(--danger-ink)} .tbl .flag.ok{color:var(--ok)} .tbl .flag.warn{color:var(--warn)}
+.scrollx{overflow-x:auto}
+
+/* ═══════════════ 02 图库 ═══════════════ */
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:16px}
+.spec{background:var(--card);border:1px solid var(--line);border-radius:var(--r-l);box-shadow:var(--shadow-m);
+  overflow:hidden;display:flex;flex-direction:column}
+.spec .top{display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid var(--line);background:var(--inset)}
+.spec .top .no{font:700 11px/1 var(--mono);color:var(--ink-400)}
+.spec .top svg.i{width:16px;height:16px;color:var(--ink-500)}
+.spec .top .nm{font-size:13.5px;font-weight:640;flex:1;letter-spacing:-.01em}
+.spec .top .tag{font:650 10px/1 var(--mono);padding:4px 6px;border-radius:5px;background:var(--danger-soft);
+  border:1px solid var(--danger-line);color:var(--danger-ink)}
+.spec .top .tag.ok{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok)}
+.spec .top .tag.n{background:var(--card);border-color:var(--line);color:var(--ink-400)}
+.spec .live{padding:20px 16px;min-height:112px;display:flex;flex-direction:column;justify-content:center;gap:8px;
+  background:var(--app-page);border-bottom:1px solid var(--line)}
+.spec .live>.lay{position:relative;top:auto;bottom:auto;left:auto;right:auto;width:auto;max-width:none}
+.spec dl{margin:0;padding:12px 16px 14px;font-size:12px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px}
+.spec dt{color:var(--ink-400);font-weight:600;white-space:nowrap}
+.spec dd{margin:0;color:var(--ink-700);line-height:1.55}
+.spec dd .no-c{color:var(--danger-ink);font-weight:600}
+
+/* ═══════════════ 04 后端实证 ═══════════════ */
+.find{display:grid;gap:16px}
+.find .f{border:1px solid var(--line);border-radius:var(--r-l);background:var(--card);overflow:hidden;box-shadow:var(--shadow-m)}
+.find .fh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.find .fh svg.i{width:18px;height:18px}
+.find .fh h3{font-size:15px;flex:1}
+.find .fb{padding:16px 18px;font-size:14px;color:var(--ink-700)}
+.find .fb p{margin:8px 0}
+.find .fb ul{margin:10px 0;padding-left:20px}
+.find .fb li{margin:7px 0;line-height:1.6}
+.f.bad .fh{background:var(--danger-soft)} .f.bad .fh svg.i{color:var(--danger-ink)}
+.f.warnb .fh{background:var(--warn-soft)} .f.warnb .fh svg.i{color:var(--warn)}
+.f.good .fh{background:var(--ok-soft)} .f.good .fh svg.i{color:var(--ok)}
+.verdict{font:700 11px/1 var(--mono);padding:5px 8px;border-radius:6px;letter-spacing:.04em}
+.verdict.no{background:var(--ok-soft);border:1px solid var(--ok-line);color:var(--ok)}
+.verdict.yes{background:var(--danger-soft);border:1px solid var(--danger-line);color:var(--danger-ink)}
+
+/* ═══════════════ 05 方案 ═══════════════ */
+.batch{border:1px solid var(--line);border-radius:var(--r-l);background:var(--card);box-shadow:var(--shadow-m);
+  margin-bottom:18px;overflow:hidden}
+.batch>h3{display:flex;align-items:center;gap:11px;padding:15px 20px;font-size:15.5px;background:var(--inset);
+  border-bottom:1px solid var(--line)}
+.batch>h3 .b{font:700 10px/1 var(--mono);letter-spacing:.08em;padding:5px 8px;border-radius:6px;
+  background:var(--accent);color:#fff}
+.batch>h3 .b.p2{background:var(--warn)} .batch>h3 .b.p3{background:var(--ink-500)}
+.batch>h3 .why{margin-left:auto;font-size:12px;font-weight:500;color:var(--ink-500)}
+.steps{padding:6px 20px 16px}
+.step{display:grid;grid-template-columns:44px 1fr;gap:0;padding:15px 0;border-bottom:1px dashed var(--line)}
+.step:last-child{border-bottom:0}
+.step .k{font:700 12px/1.4 var(--mono);color:var(--accent-ink);padding-top:2px}
+.step .v h4{margin:0 0 5px;font-size:14.5px;font-weight:640}
+.step .v p{margin:5px 0;font-size:13.5px;color:var(--ink-700);line-height:1.65}
+.step .v ul{margin:8px 0;padding-left:19px} .step .v li{margin:5px 0;font-size:13.5px;line-height:1.6}
+.hl{background:linear-gradient(transparent 62%,var(--warn-soft) 62%);font-weight:640;color:var(--ink-900);
+  -webkit-box-decoration-break:clone;box-decoration-break:clone}
+.hl.d{background:linear-gradient(transparent 62%,var(--danger-soft) 62%)}
+.hl.g{background:linear-gradient(transparent 62%,var(--ok-soft) 62%)}
+
+/* ═══════════════ 06 待拍板 ═══════════════ */
+.q{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:16px}
+.q .item{border:1px solid var(--line);border-radius:var(--r-l);background:var(--card);padding:18px;box-shadow:var(--shadow-m)}
+.q .item .h{display:flex;gap:9px;align-items:center;margin-bottom:8px}
+.q .item .h svg.i{width:17px;height:17px;color:var(--warn)}
+.q .item h3{font-size:14.5px}
+.q .item p{font-size:13px;color:var(--ink-700);margin:6px 0}
+.q .item .rec{margin-top:11px;padding-top:11px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--ink-500)}
+.q .item .rec b{color:var(--accent-ink)}
+
+footer{border-top:1px solid var(--line);background:var(--card);padding:26px 0 40px;margin-top:20px}
+footer .src{font-size:11.5px;line-height:2;color:var(--ink-400);font-family:var(--mono);word-break:break-all}
+</style>
+</head>
+<body class="hazard">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+<symbol id="i-wifioff" viewBox="0 0 24 24"><path d="m1 1 22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></symbol>
+<symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 4v6h-6M3 20v-6h6"/><path d="M4.5 9a8 8 0 0 1 13.2-3L21 10M3 14l3.3 3.9A8 8 0 0 0 19.5 15"/></symbol>
+<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6M3 3l18 18"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7l10-5ZM2 17l10 5 10-5M2 12l10 5 10-5"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0V8ZM12 17v5"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="9" ry="3"/><path d="M3 5.5v13c0 1.66 4 3 9 3s9-1.34 9-3v-13M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></symbol>
+<symbol id="i-eyeoff" viewBox="0 0 24 24"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.3 3.3M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.7 9.7 0 0 0 5.4-1.6M3 3l18 18M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M7 14h10"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+<symbol id="i-ruler" viewBox="0 0 24 24"><path d="m3 15 6-6 9 9 3-3-15-15-3 3 9 9-3 3-6-6Z"/><path d="M8 8l1.5 1.5M11 5l1.5 1.5M5 11l1.5 1.5"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/></symbol>
+</defs></svg>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Palink AI · 移动端体验调研</div>
+    <h1 style="margin-top:10px">报错与提示：11 个通道，两套互相矛盾的坐标</h1>
+    <p class="sub">2026-09-30 · 逐行取自 <code>frontend/src</code> 与 <code>backend/app</code> · 遮挡关系已在本页示意图上用
+      <code>getBoundingClientRect()</code> 实测量出 · 未在 iOS 真机验证</p>
+    <div class="stats">
+      <div class="bad"><b>11</b><span>会显示的提示通道</span></div>
+      <div><b>1</b><span>该显示却完全隐身</span></div>
+      <div><b>232</b><span>主气泡调用点 / 29 文件</span></div>
+      <div><b>95</b><span>内联红字 / 41 文件</span></div>
+      <div class="bad"><b>0</b><span>统一入口（无处可绕）</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="wrap">
+    <span class="tb-label">场景</span>
+    <div class="seg" id="scenes" role="group">
+      <button data-scene="fail" aria-pressed="true">角色页生成失败</button>
+      <button data-scene="img">出图失败</button>
+      <button data-scene="net">断网 + 失败</button>
+      <button data-scene="plugin">插件报错</button>
+      <button data-scene="all">全部叠上</button>
+      <button data-scene="kb">键盘弹起时</button>
+    </div>
+    <span class="tb-label" style="margin-left:6px">视图</span>
+    <button class="tgl" id="btnHazard" aria-pressed="true"><svg class="i"><use href="#i-target"/></svg>遮挡区</button>
+    <button class="tgl" id="btnOutline" aria-pressed="false"><svg class="i"><use href="#i-ruler"/></svg>浮层边界</button>
+    <button class="tgl" id="btnTheme" aria-pressed="false"><svg class="i"><use href="#i-sun"/></svg><span>暗色</span></button>
+  </div>
+</div>
+
+<main class="wrap">
+
+<!-- ══════════ 01 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">01</span><h2>两个现象，各自只有一个根因</h2></div>
+  <p class="sec-lead">左边是可交互示意图，坐标按源码真实值摆放；右边是结论。切场景看同一时刻叠了几层。</p>
+
+  <div class="demo">
+   <div class="devwrap">
+    <div class="device" id="dev">
+      <div class="feed">
+        <div class="mu">继续</div>
+        <div class="ma">她抬起头，雨还在下。</div>
+        <div class="me" data-when="fail all kb"><span class="t">⚠️ 网络错误</span><br><br>
+          无法连接到服务器，请检查网络后重试。<br><br><span class="s">💡 检查你的网络连接，或切换一个模型</span></div>
+        <div class="imf" data-when="img all"><span><svg class="i"><use href="#i-image"/></svg> 图片生成失败</span>
+          <span class="rt"><svg class="i" style="width:11px;height:11px"><use href="#i-refresh"/></svg> 重试</span></div>
+      </div>
+
+      <div class="lay l-net" data-when="net all"><span class="who">④ 网络横幅 · top-0 · z100</span>
+        <svg class="i"><use href="#i-wifioff"/></svg>网络连接已断开</div>
+
+      <div class="lay l-sn" data-when="img net all"><span class="who">① sonner 气泡 · top:16px · z999</span>
+        <svg class="i"><use href="#i-alert"/></svg><span>生成失败，请重试<div class="d">服务器返回 502</div></span></div>
+
+      <div class="lay l-proc" data-when="plugin all"><span class="who">⑦ 处理中小卡 · z80</span>
+        <span class="spin"></span>正在导入角色卡…</div>
+
+      <div class="lay l-toastr" data-when="plugin all"><span class="who">⑤ toastr · z999999</span>
+        <span class="x">×</span><span class="gl">i</span><b>Plugin Error</b>extension crashed</div>
+
+      <div class="lay l-etoast" data-when="fail net all kb"><span class="who">② ErrorToast · bottom-24 · z50</span>
+        <div class="et"><div class="hd"><svg class="i"><use href="#i-wifioff"/></svg><div style="flex:1">
+          <h4>网络连接问题</h4>
+          <p class="desc">无法连接到服务器，请检查网络后重试。</p>
+          <span class="sug"><svg class="i" style="width:13px;height:13px"><use href="#i-check"/></svg>检查你的网络连接，或切换一个模型</span>
+          <span class="lnk">显示技术详情</span>
+          <div class="btns"><button class="b1">重试</button><button class="b2">关闭</button></div>
+        </div></div></div></div>
+
+      <div class="lay l-timeout" data-when="fail all"><span class="who">③ 超时条 · bottom-4 · z50</span>
+        <div class="to"><h4><svg class="i" style="width:14px;height:14px"><use href="#i-clock"/></svg>请求时间较长</h4>
+          <p>AI模型正在处理您的请求，这可能需要一些时间。请耐心等待，或尝试切换到其他模型。</p></div></div>
+
+      <div class="composer"><div class="box">输入消息…</div></div>
+      <div class="dock"><div class="bar"><span>对话</span><span>角色</span><span>世界</span><span>我的</span></div></div>
+      <div class="kbd"><div class="rows">
+        <div class="r"><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i></div>
+        <div class="r"><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i></div>
+        <div class="r"><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i></div>
+        <div class="r"><i class="k"></i><i class="k"></i><i class="k sp"></i><i class="k"></i><i class="k"></i></div>
+      </div></div>
+
+      <div class="ghost hide" data-when="kb"><span>② 错误卡实际位置<br>整张都在键盘后面</span></div>
+
+      <div class="island"></div><div class="notch"></div>
+      <div class="hz"></div>
+    </div>
+    <p class="small muted" style="margin:12px 0 0;max-width:390px">提示：切到<b>暗色</b>再看这张错误卡的标题 ——
+      实测对比度 <span class="chip bad" style="font-size:10.5px">暗色 2.11:1</span>
+      <span class="chip bad" style="font-size:10.5px">亮色 3.76:1</span>，两侧都不达 AA 的 4.5:1。这就是第 05 节 2.4 说的问题。</p>
+  </div>
+
+    <div class="anno">
+      <div class="note">
+        <span class="idx">1</span>
+        <div style="flex:1">
+          <h3>顶部：报错被灵动岛吃掉，是因为项目主动铺到了它背后</h3>
+          <p><code>index.html:12</code> 的 <code>viewport-fit=cover</code> 加 <code>index.html:43</code> 的
+            <code>black-translucent</code>，让页面延伸到状态栏底下；那块由系统盖毛玻璃，Web 压不住 ——
+            <code>App.tsx:1111-1114</code> 的注释自己承认了这点。顶栏全做了安全区避让（全项目 20 多处），
+            <b>但报错浮层是漏网的</b>：主气泡没传任何 offset，网络横幅写死 <code>top-0</code>。</p>
+          <div class="chips">
+            <span class="chip bad">网络横幅 36/36px 全在带内</span>
+            <span class="chip bad">主气泡 43/68px 在带内</span>
+            <span class="chip warn">主气泡还没开 closeButton</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="note">
+        <span class="idx">2</span>
+        <div style="flex:1">
+          <h3>底部：<code>fixed</code> 被祖先的 transform 劫持，所以层级失效</h3>
+          <p>角色页四个 tab 由 <code>MobilePager</code> 渲染，槽位 div 带 <code>willChange:'transform'</code>
+            （<code>App.tsx:436</code>）+ 内联 <code>translate3d</code>（<code>App.tsx:407</code>）。带 transform 的祖先
+            会变成 fixed 子元素的包含块，并另起层叠上下文 —— 于是错误卡的 <code>z-50</code> 只在槽位内部有效，
+            而 dock 是 <code>main</code> 的兄弟节点，无条件压在它上面。</p>
+          <p style="margin-top:8px"><b>同一个坑本项目已经踩过并解决过一次</b>：<code>ChatInputArea.tsx:106-107</code>
+            注释原话「Portal 到 body 是为了逃离 MobilePager 槽位的 transform/will-change 包含块」。
+            输入框两步都做了，<b>错误卡和超时条两步都没做</b>。</p>
+          <div class="chips">
+            <span class="chip">卡底 96px · dock 顶 103.7px</span>
+            <span class="chip warn">dock 只咬到卡片下沿 7.7px</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="note">
+        <span class="idx">3</span>
+        <div style="flex:1">
+          <h3>但「按不到关闭」的真凶不是 dock，是键盘</h3>
+          <p>我先前那句「按钮被 dock 压住」<b>说过头了</b>，量完自己的图已更正：按钮行在 108px、dock 顶在 103.7px，
+            <b>差 4.3px 没被盖</b>；浏览器模式（inset=0）更是完全不重叠。真正吃掉它的是键盘 ——
+            iOS 键盘只缩 visual viewport、布局视口恒不变，卡锚在布局视口底部，键盘一开整张卡连按钮
+            <b>100% 落到键盘后面</b>。而你踩到的时机正是"点完发送就失败"，那时键盘还开着。</p>
+          <div class="chips">
+            <span class="chip bad">键盘弹起：卡片 100% 被盖</span>
+            <span class="chip bad">超时条 100% 被盖，且它没有关闭按钮</span>
+            <span class="chip acc">点「键盘弹起时」场景看</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 02 标尺 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">02</span><h2>遮挡标尺：谁压在谁上面</h2></div>
+  <p class="sec-lead">把手机竖过来看。左侧是内容区 0→778px 的真实刻度，每一条是一个浮层的实际占位；
+    斜纹区是 Web 管不着的系统层，红框区是 dock 与键盘。数据由脚本量自本页示意图。</p>
+  <div class="card ruler">
+    <svg viewBox="0 0 900 284" role="img" aria-label="遮挡标尺：各浮层在内容区中的实际占位">
+      <defs>
+        <pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill="var(--danger-soft)"/>
+          <line x1="0" y1="0" x2="0" y2="7" stroke="var(--danger)" stroke-width="1.8" opacity=".4"/>
+        </pattern>
+        <pattern id="hatch2" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill="var(--warn-soft)"/>
+          <line x1="0" y1="0" x2="0" y2="7" stroke="var(--warn)" stroke-width="1.8" opacity=".35"/>
+        </pattern>
+      </defs>
+
+      <!-- 顶部轴标题 -->
+      <text class="hdr" x="170" y="16">内容区 y（px · 0 = 屏幕顶 · 778 = 屏底）</text>
+      <text class="hdr" x="650" y="16">实测占位</text>
+
+      <!-- 遮挡区（竖向条带） -->
+      <rect x="170" y="24" width="35.6" height="196" fill="url(#hatch)"/>
+      <rect x="577.2" y="24" width="62.8" height="196" fill="url(#hatch2)"/>
+      <rect x="437" y="24" width="203" height="196" fill="none" stroke="var(--danger)" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <text class="sm" x="170" y="254" fill="var(--danger)">← 灵动岛带 0–59</text>
+      <text class="sm" x="437" y="254" fill="var(--danger)">← 键盘 0–336（自屏底向上）</text>
+      <text class="sm" x="577" y="272" fill="var(--warn)">← dock 0–103.7</text>
+
+      <!-- 轴 -->
+      <line class="ax" x1="170" y1="220" x2="640" y2="220"/>
+      <g class="sm">
+        <line class="grid" x1="170" y1="24" x2="170" y2="220"/><text x="170" y="234" text-anchor="middle">0</text>
+        <line class="grid" x1="287" y1="24" x2="287" y2="220"/><text x="287" y="234" text-anchor="middle">194</text>
+        <line class="grid" x1="404" y1="24" x2="404" y2="220"/><text x="404" y="234" text-anchor="middle">389</text>
+        <line class="grid" x1="521" y1="24" x2="521" y2="220"/><text x="521" y="234" text-anchor="middle">583</text>
+        <line class="grid" x1="640" y1="24" x2="640" y2="220"/><text x="640" y="234" text-anchor="middle">778</text>
+      </g>
+
+      <!-- 行：左侧名称 + 条形 + 右侧数值 -->
+      <g>
+        <text x="162" y="41" text-anchor="end">④ 网络横幅</text>
+        <rect x="170" y="28" width="21.7" height="18" rx="3" fill="#ef4444"/>
+        <text class="sm" x="650" y="41" fill="var(--danger-ink)">y 0–36 · 100% 在带内</text>
+      </g>
+      <g>
+        <text x="162" y="71" text-anchor="end">① sonner 气泡</text>
+        <rect x="179.7" y="58" width="41" height="18" rx="3" fill="var(--accent)"/>
+        <text class="sm" x="650" y="71" fill="var(--danger-ink)">y 16–84 · 43/68px 在带内</text>
+      </g>
+      <g>
+        <text x="162" y="101" text-anchor="end">⑦ 处理中小卡</text>
+        <rect x="205.6" y="88" width="30.8" height="18" rx="3" fill="var(--ok)"/>
+        <text class="sm" x="650" y="101" fill="var(--ok)">y 59–110 · 唯一做对了避让</text>
+      </g>
+      <g>
+        <text x="162" y="131" text-anchor="end">② 错误卡</text>
+        <rect x="468.4" y="118" width="113.6" height="18" rx="3" fill="#f97316"/>
+        <text class="sm" x="650" y="131">距底 96–284 · 卡高 188</text>
+      </g>
+      <g>
+        <text x="162" y="161" text-anchor="end">② 的按钮行</text>
+        <rect x="555.4" y="148" width="19.4" height="18" rx="3" fill="#7c2d12"/>
+        <text class="sm" x="650" y="161">距底 108–140 · 与 dock 顶差 4.3px</text>
+      </g>
+      <g>
+        <text x="162" y="191" text-anchor="end">③ 超时条</text>
+        <rect x="554.2" y="178" width="76.1" height="18" rx="3" fill="#eab308"/>
+        <text class="sm" x="650" y="191" fill="var(--danger-ink)">距底 16–142 · 无关闭按钮</text>
+      </g>
+    </svg>
+    <p class="small muted" style="margin:16px 0 0;max-width:78ch">
+      <b>读法：</b>②③ 两条整体落在 dock 与键盘的区间内 —— 报错出现在最没人管得着的地方；
+      ①④ 落在顶部系统带内 —— 报错出现在 Web 永远压不住的地方。<b>上下两端各占一个，中间反而没人用。</b>
+      另：② 的左边缘实测在内容区 <code>−16px</code>（<code>w-full</code> + <code>right:16px</code> 推出来的），左侧被裁出屏外。</p>
+  </div>
+
+  <div class="card" style="margin-top:16px;overflow:hidden">
+    <div class="scrollx"><table class="tbl">
+      <thead><tr><th>场景</th><th>触发链</th><th>同时出现</th><th style="text-align:center">层数</th></tr></thead>
+      <tbody>
+        <tr><td>角色页超时后失败</td><td class="n">:2116 + :1457</td><td>③ 黄条 + ② 橙卡 + ⑩ 正文 ⚠️，且 ②③ 同坐标互压</td><td class="n" style="text-align:center;color:var(--danger-ink);font-weight:700">3</td></tr>
+        <tr><td>角色页 WS / SSE 失败</td><td class="n">useCharacterChat.ts:532-549 / 1445-1468</td><td>⑩ 正文 ⚠️ + ② 底部橙卡</td><td class="n" style="text-align:center">2</td></tr>
+        <tr><td>出图失败</td><td class="n">:520-523 / :778-781 / :1340-1343</td><td>① sonner + ⑪ 出图失败卡</td><td class="n" style="text-align:center">2</td></tr>
+        <tr><td>角色页 SSE error 帧</td><td class="n">:767 / :978 / :1327（三处字面相同）</td><td>① sonner</td><td class="n" style="text-align:center">1</td></tr>
+        <tr><td>普通聊天页失败</td><td class="n">useChatView/index.ts:157-177</td><td>⑩ 正文 ⚠️（不弹橙卡，与角色页不一致）</td><td class="n" style="text-align:center">1</td></tr>
+        <tr><td>插件调 toastr.error()</td><td class="n">sandbox 轨 → ⑤ ／ shim 轨 → ①</td><td>取决于走哪条出口，视觉两套</td><td class="n" style="text-align:center">1</td></tr>
+        <tr><td>卡内脚本报错</td><td class="n">legacy-st-sim.ts:258 → CharacterCardRenderer.tsx:818</td><td><span class="flag bad">什么都不出现</span></td><td class="n" style="text-align:center;color:var(--danger-ink);font-weight:700">0</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ══════════ 03 图库 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">03</span><h2>11 种逐个平铺，每种照源码原样画</h2></div>
+  <p class="sec-lead">标签含义：<span class="chip bad" style="font-size:10px">缺关闭 / 缺避让 / 层级越权</span> 为实测确认的问题项。</p>
+  <div class="gal" id="gal"></div>
+</section>
+
+<!-- ══════════ 04 后端实证 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">04</span><h2>后端侧实证：我复核了自己上一轮的断言</h2></div>
+  <p class="sec-lead">我说过 ⑩「会被持久化、回喂模型、被 TTS 朗读」，那是读码推断。三条里两条说过头了 ——
+    但复核时挖出一个更靠得住的坑。以下每条我都自己打开源文件核对过原文。</p>
+
+  <div class="find">
+    <div class="f bad">
+      <div class="fh"><svg class="i"><use href="#i-alert"/></svg><h3>订正：⑩ 那条 ⚠️ 文本其实不入库</h3>
+        <span class="verdict no">A 不成立</span><span class="verdict no">B 不成立</span></div>
+      <div class="fb">
+        <p>两处写入点（<code>useCharacterChat.ts:540-548</code>、<code>:1459-1467</code>）函数体内没有任何落库调用，
+          被覆盖 content 的那条消息用的是<b>本地临时 id</b>（<code>messageUtils.ts:11-13</code> 的 <code>Date.now()-random</code> 串）。
+          只有成功路径 <code>:1352-1375</code> 才把 id 换成数据库返回的 <code>persistedMessageId</code>，<b>错误分支永不换 id</b>。</p>
+        <ul>
+          <li>连"用户手动编辑这条 ⚠️ 再保存"都存不进去 —— PUT 有 <code>Number.isInteger(persistedMessageId)</code> 门禁（<code>:1653-1654</code>），临时串转成 <code>NaN</code> 被挡。</li>
+          <li>装配链取历史只从数据库读（<code>character_message_builder.py:166-183</code>），不在库里 → 进不了提示词。</li>
+          <li><b>TTS 那条成立</b>：<code>Message.tsx:1120-1129</code> 取 assistant 正文，<code>tts.ts:208-220</code> 的清洗不认识 ⚠️；需用户点该条朗读键，无自动播放。</li>
+        </ul>
+        <p style="margin-top:12px"><span class="hl d">但 B 不成立的原因是 A 不成立，不是装配链有防护。</span>
+          装配层对 assistant 正文只做 <code>strip_inline_think</code>（<code>:227-231</code>）与剥标签清洗，⚠️ / <code>**</code> / 💡 一律原样通过；
+          <code>:238</code> 直接按 <code>m.role</code> 入 prompt，<b>连 role 白名单都没有</b>。插件调一次
+          <code>setChatMessages</code> → <code>POST /api/chats/save</code>（整表重建落库，<code>silly_tavern.py:2957-2993</code>），
+          这段文本就会原样进提示词。</p>
+      </div>
+    </div>
+
+    <div class="f warnb">
+      <div class="fh"><svg class="i"><use href="#i-db"/></svg><h3>真坑：SSE 那一轨的 <code>"Error: …"</code> 确实在落库</h3>
+        <span class="verdict yes">A 成立</span><span class="verdict yes">B 成立</span></div>
+      <div class="fb">
+        <p>项目早就知道这类污染：WS 轨 <code>websocket.py:663-670</code> 明确拒绝把 <code>Error:</code> 开头的正文入库，
+          注释留着一条 2026-08-18 实测 ——「2175/2177/2181 三条 Error 消息入库后该会话连续失败」「越重试越失败」。<b>SSE 轨没有这道守卫。</b></p>
+        <ul>
+          <li><code>character_ext.py:4649-4658</code> 的 <code>persist_snapshot</code> 只守 <code>has_content</code>；而错误分支
+            <code>:4955 / :4961 / :4970</code> 是<b>先</b>把 <code>full_content = "Error: …"</code> <b>再</b>调落库 ——
+            赋值动作自己让守卫条件为真，守卫形同虚设。</li>
+          <li>更糟：<code>:4963 / :4973</code> 在<b>已经出了一半内容</b>时走 <code>full_content += f"\n\n[{e.message}]"</code> ——
+            报错文案被拼进真回复正文一起落库，比占位行难发现得多。</li>
+          <li>装配侧的兜底过滤 <code>startswith("Error:")</code>（<code>character_ext.py:592-594</code>）<b>只挂在有分支的历史查询上</b>；
+            <code>character_message_builder.py:174-183</code> 的无分支回退查询没有它。而建行侧确有
+            <code>branch_id=active_branch.id if active_branch else None</code>（<code>:3076 / :3110 / :3143</code>）→
+            <span class="hl d">无分支会话可达，此时这些 Error 行会回喂给模型</span>，正是那条注释描述的恶性循环。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="f good">
+      <div class="fh"><svg class="i"><use href="#i-check"/></svg><h3>好消息：不用加字段、不用迁移，判据也已经写好了</h3></div>
+      <div class="fb">
+        <p><b><code>extra.ignore === true</code> 在装配层已实现并生效</b>（<code>character_message_builder.py:205-216</code>，
+          注释写明对齐 ST 1.18.0 的 <code>IGNORE_SYMBOL</code>），写路径也早就支持 dict：<code>MessageAppendRequest.extra</code>
+          （<code>character_ext.py:2935-2954</code>）、PUT 的 <code>edit_extra</code>（<code>:3252</code>）、前端类型上
+          <code>extra?</code> 与 <code>is_hidden?</code> 都在（<code>types/index.ts:465-494</code>）。
+          <span class="hl g">"可见但不回喂"这个能力是现成的</span> —— 我上一轮写的"要先确认落库字段"那个前提作废。</p>
+        <p><b><code>StreamResult.is_error_only()</code> 也已存在</b>（<code>stream_builder.py:26-34</code>），
+          文档串写明「"Error:" 是<b>本项目所有错误注入点的统一前缀</b>」，且 <code>tests/test_user_quota.py:252,264</code> 有覆盖。
+          它目前只用在一处：token 计数（<code>:47</code>）。<b>所以修法不是新写逻辑，是把它接到那两处落库上。</b></p>
+        <p>三个候选标记的取舍：<code>extra.ignore</code>（语义最贴、已生效，推荐）＞
+          <code>is_hidden</code>（过滤在 <code>:188</code> 也生效，但语义是"用户可见的隐藏"且已有 PATCH 界面，混用会撞车）＞
+          <code>role='system'</code>（<span class="hl d">不能用</span>，<code>:238</code> 会原样投进 prompt，它不是排除开关）。</p>
+        <p><b>顺带一条约定违背：</b>前端 ⑩ 用 <code>⚠️</code> 开头，而项目既有约定是统一 <code>Error:</code> 前缀 ——
+          <b>这正是它躲过所有现存守卫的原因。</b></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="note" style="margin-top:16px">
+    <span class="idx" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)">?</span>
+    <div style="flex:1"><h3>还没验、也不该我猜的两项</h3>
+      <p>① 生产库里 <code>branch_id IS NULL</code> 的会话占比，以及历史中现存 <code>Error:</code> 行数与"正文尾部带错误后缀"的行数 ——
+        它决定第 05 节的 1.6 是"顺手补守卫"还是"要连历史脏数据一起清"（后者得先备份）。② WS / SSE 谁占多数 ——
+        分流开关是 <code>useCharacterChat.ts:1224</code> 的 <code>useWebSocket</code>，我没追到它的默认值来源。
+        这两项要一条 SQL 和一次实机，不该由我猜。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 05 方案 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">05</span><h2>收敛方案：三批，顺序不能换</h2></div>
+  <p class="sec-lead">批 1 止血（改动小、可当天验收）→ 批 2 归一（先立入口再迁移）→ 批 3 结构性（含两处要你拍板）。</p>
+
+  <div class="batch">
+    <h3><span class="b">批 1</span>止血：两个遮挡 + 一条数据污染<span class="why">≈6 个文件，不动架构</span></h3>
+    <div class="steps">
+      <div class="step"><div class="k">1.1</div><div class="v"><h4>主气泡让开灵动岛</h4>
+        <p>改 <code>App.tsx:1150</code> 一行：给 <code>&lt;Toaster&gt;</code> 传 <code>mobileOffset</code>/<code>offset</code>
+          = <code>calc(env(safe-area-inset-top) + 8px)</code>，并开 <code>closeButton</code>。</p>
+        <p class="small muted">sonner 把 offset 写进 CSS 变量 <code>--offset-top</code> 再 <code>top: var(--offset-top)</code>，
+          <code>env()</code> 理论可用，<b>但必须实测</b>；不行就退回在 <code>index.css</code> 覆盖 <code>:root{--mobile-offset-top}</code>。</p></div></div>
+      <div class="step"><div class="k">1.2</div><div class="v"><h4>网络横幅让开灵动岛</h4>
+        <p><code>NetworkStatus.tsx:32</code> 的 <code>top-0</code> → <code>top-[env(safe-area-inset-top)]</code>。
+          彻底做法是把红/绿/黄三态并进 ① 的 toast，本批先只加偏移、不动结构。</p></div></div>
+      <div class="step"><div class="k">1.3</div><div class="v"><h4>底部两张卡：Portal 到 body <u>并且</u>接键盘变量</h4>
+        <p><b>(a)</b> Portal 到 <code>document.body</code>，逃离槽位 transform 包含块，让 z-index 能真正和 dock 比大小 —— 治 dock 那 7.7px。<br>
+          <b>(b)</b> <code>bottom</code> 改由 <code>--palink-kb-vh</code> / <code>keyboardHeight</code> 驱动 ——
+          <span class="hl d">只做 (a) 不够</span>：Portal 之后卡仍锚在布局视口底部，键盘一开照样整张埋掉。
+          输入框两步都做了，所以它一直贴键盘上沿没事。<br>
+          <b>(c)</b> <code>bottom-24</code> 换成 <code>calc(env(safe-area-inset-bottom) + var(--palink-dock-height) + 12px)</code>
+          （dock 高度 <code>index.css:97</code> 已有运行时变量），别再硬编码 6rem。</p>
+        <p><span class="hl g">我更推荐的省事解法</span>：把 ② 直接改成 sonner 的<b>常驻不自动消失 + 带关闭钮</b>
+          （<code>duration: Infinity</code>）一条 toast，归到顶部通道、与 1.1 共用同一套安全区偏移 ——
+          底部这片键盘/dock/输入框交战区<b>一次都不碰</b>。代价是丢掉"重试"按钮的形态，得用 <code>action</code> 补。</p></div></div>
+      <div class="step"><div class="k">1.4</div><div class="v"><h4>超时并进错误卡</h4>
+        <p>③ 降级成 ② 里的一行状态。少一个浮层、少一处 <code>bottom-4 right-4 z-50</code> 坐标冲突，
+          顺手补上它现在完全没有的关闭能力。</p></div></div>
+      <div class="step"><div class="k">1.5</div><div class="v"><h4>失败不再伪装成 AI 回复</h4>
+        <p>改成带 <code>extra.ignore=true</code> 的消息节点：可见、可重发、<b>不回喂模型</b>、不被 TTS 朗读。
+          <span class="hl g">复核确认不用加字段、不用迁移</span>（见第 04 节）。剩下的只是渲染层 ——
+          现在它和普通回复只差一个 ⚠️ 表情，形同 AI 自己承认失败。</p></div></div>
+      <div class="step"><div class="k">1.6</div><div class="v"><h4>把已有的判据接到 SSE 落库处<span class="hl d" style="margin-left:8px">优先级不低于 1.5</span></h4>
+        <ul>
+          <li><b>(a)</b> <code>character_ext.py:4649</code> 的 <code>persist_snapshot</code> 开头加
+            <code>if result.is_error_only(): return</code>，与 WS 轨拉平；顺带把 WS 那里手写的
+            <code>startswith("Error:")</code> 也换成同一个谓词，消掉重复实现。守卫必须用
+            <code>is_error_only()</code> 而不是 <code>has_content</code> —— 后者会被"先赋值"的写法自己满足。</li>
+          <li><b>(b)</b> <code>:4963 / :4973</code> 停止把报错 <code>+=</code> 拼进已生成的真回复正文。
+            文档串自己承认这种"真实输出后追加错误后缀"<b>不算 error-only</b>（<code>stream_builder.py:30</code>），
+            所以它必然落库并污染真内容。报错另存到 <code>extra</code>。</li>
+          <li><b>(c)</b> <code>character_message_builder.py:174-183</code> 的无分支回退查询补上与 <code>:592-594</code> 相同的过滤。</li>
+          <li><b>(d)</b> 前端别再造第三种前缀：要么遵守 <code>Error:</code> 统一约定，要么用 <code>extra.ignore</code> 显式标记。</li>
+        </ul>
+        <p class="small muted">动 (c) 之前先跑那条 SQL 量影响面（见第 04 节末）。</p></div></div>
+      <div class="step"><div class="k">验收</div><div class="v"><h4>我能做的 + 只能你做的</h4>
+        <p><code>npx tsc --noEmit</code> + <code>npx vitest run</code>（现状只认 failed=0）+ 后端 <code>python -m pytest tests/</code>（须进容器跑）。</p>
+        <p>真机三张图：① 断网时顶部横幅 + 一次生成失败的气泡，看第一行是否完整可读；②
+          <b>键盘还开着时触发失败</b>，看能否点到「关闭」—— 这是本批唯一能证伪"键盘元凶"假设的测试；
+          ③ 浏览器模式（非 PWA）同一场景，因为 dock 上沿两种模式差约 26px。</p></div></div>
+    </div>
+  </div>
+
+  <div class="batch">
+    <h3><span class="b p2">批 2</span>归一通道：11 类收到 3 类<span class="why">先立入口，再迁移，顺序不能反</span></h3>
+    <div class="steps">
+      <div class="step"><div class="k">2.1</div><div class="v"><h4>新建 <code>lib/notify.ts</code> 唯一入口</h4>
+        <p><code>notify.error / success / warn / loading / dismiss</code>，内部按下表路由。
+          迁移 29 文件 / 232 调用点期间<b>用 ESLint <code>no-restricted-imports</code> 挡住新增裸
+          <code>import { toast } from 'sonner'</code></b>，防止边收边涨。</p>
+        <div class="scrollx" style="margin-top:10px"><table class="tbl">
+          <thead><tr><th>目标类</th><th>承载</th><th>收编自</th></tr></thead>
+          <tbody>
+            <tr><td><b>瞬时提示</b><div class="small muted">自动消失</div></td><td>sonner 单实例：顶部、避开安全区、带关闭</td><td class="n">① ③ ⑤ ⑦</td></tr>
+            <tr><td><b>常驻错误卡</b><div class="small muted">需用户决策</div></td><td>ErrorToast 改造版：可关闭、带重试、走安全区与键盘变量</td><td class="n">② ⑧ ⑨ ⑪</td></tr>
+            <tr><td><b>阻断模态</b><div class="small muted">必须响应</div></td><td>Popup（保留，插件依赖它）</td><td class="n">⑥</td></tr>
+            <tr><td><b>系统消息</b><div class="small muted">留在消息流</div></td><td>带 <code>extra.ignore=true</code> 的节点，无需迁移</td><td class="n">⑩</td></tr>
+          </tbody></table></div></div></div>
+      <div class="step"><div class="k">2.2</div><div class="v"><h4>合并两套并行、互不兼容的错误模型</h4>
+        <p><code>lib/errorHandler.ts</code>（旧，字符串联合）与 <code>lib/error-handler/index.ts</code>（新，enum，多一个 <code>MODEL</code>）
+          <b>导出同名 <code>analyzeError</code></b>。同一网络故障走 <code>api.ts</code> 是「网络连接问题」、走 <code>stream-engine</code> 是「网络错误」。
+          保留新的、旧的标 deprecated 并 re-export、统一文案表。
+          <b>注意 <code>ErrorToast.tsx:15-23</code> 的 <code>errorIcons</code> 用的是旧联合类型，切到新 enum 会缺 <code>MODEL</code> 键 → 图标渲染不出来。</b>
+          零调用的 <code>useErrorHandler()</code>（<code>:248-276</code>）要么删、要么真接成 notify 的实现 —— 统一层写了没人接是现状。</p></div></div>
+      <div class="step"><div class="k">2.3</div><div class="v"><h4>插件 toastr 三条出口归一</h4>
+        <p><code>sandbox.ts:29</code> 不再注入真库，改注入与 ① 同一个 adapter；修
+          <code>sillyTavernPluginRuntime.ts:952</code> 把 warning 降级成红色 error 的问题；
+          给 <code>z-index:999999</code> 这种压过 modal 的行为封顶。</p></div></div>
+      <div class="step"><div class="k">2.4</div><div class="v"><h4>内联红字 token 统一 —— 但别只统一到 <code>destructive</code></h4>
+        <p>硬编码 <code>text-red-500 dark:text-red-400</code>（<code>WorldBookManager.tsx:320</code>、<code>CodeBlock.tsx:324</code>、
+          <code>GenerationParamsPanel.tsx:285</code>、<code>InlineCardRenderer.tsx:82</code>）机械替换成 <code>text-destructive</code> 看似收敛，
+          <span class="hl d">但本页实测 <code>destructive</code> 当文字用两个主题都不达标</span>：
+          暗色 <b>2.11:1</b>、亮色 <b>3.76:1</b>（AA 正文要 4.5:1，16px 半粗不算 large text）。
+          同卡里作为描述的 <code>--muted-foreground</code> 是 4.83 / 7.67，达标。</p>
+        <p>所以本批要一并定策略：<b>红色只用于底色 / 描边 / 图标</b>，报错正文文字改用前景色 + 红色图标；
+          或给 destructive 补一个真正可读的 <code>--destructive-text</code>（暗侧至少到 <code>#f87171</code> 量级）。</p></div></div>
+    </div>
+  </div>
+
+  <div class="batch">
+    <h3><span class="b p3">批 3</span>结构性<span class="why">含两处需你拍板，见 06</span></h3>
+    <div class="steps">
+      <div class="step"><div class="k">3.1</div><div class="v"><h4>两套 ErrorBoundary 合一，并接进 notify</h4>
+        <p><code>ErrorBoundary.tsx</code>（整页居中红卡，7 处挂载）与 <code>InlineCardRenderer.tsx:61-89</code>（内联红框，硬编码 red-500）
+          是两套完全不同的 UI。两者 <code>componentDidCatch</code> 现在<b>只进 console</b> —— 用户看不到、我们也收不到。</p></div></div>
+      <div class="step"><div class="k">3.2</div><div class="v"><h4>卡内脚本报错从「零感知」改成可发现</h4>
+        <p>现状：只写 <code>console.error</code> 和 <code>window.__palinkFrameErrors</code>（上限 50 条）。
+          CG 按钮点了没反应、立绘不显示，用户完全不知道发生了什么。可改成设置页错误列表或轻量角标。</p></div></div>
+      <div class="step"><div class="k">3.3</div><div class="v"><h4>内联红字去重</h4>
+        <p>「角色加载失败」空态卡在 <code>CharacterList.tsx:809-822</code> 与 <code>:1065-1078</code> 写了两份；
+          「处理中」小卡在 <code>:920-924</code> 与 <code>:1204-1208</code> 也写了两份。
+          名义统一的 <code>ui/alert.tsx</code> 全项目<b>只有 ErrorToast 一处用</b>。</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 06 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">06</span><h2>等你拍板的三件事</h2></div>
+  <div class="q">
+    <div class="item">
+      <div class="h"><svg class="i"><use href="#i-eyeoff"/></svg><h3>iOS 还要不要铺到灵动岛背后</h3></div>
+      <p>沉浸式靠 <code>viewport-fit=cover</code> + <code>black-translucent</code>，代价是顶部永远有一条 Web 管不着的毛玻璃带，
+        所有浮层都得手动避让 —— 本次两个遮挡都源于"漏了谁"。</p>
+      <p>替代做法是退回系统保留不透明状态栏：顶部避让代码可大面积简化、浮层不可能再被挡，
+        但失去沉浸观感，且 K18 / K19 / K20 一串真机校准（<code>index.html:24-64</code>、<code>index.css:1375</code>、
+        <code>Sidebar.tsx:501-517</code>）都要重测。</p>
+      <div class="rec">我的建议：<b>保留现状、只做避让</b>。改动面小得多。但这是产品观感决策，该你定。</div>
+    </div>
+    <div class="item">
+      <div class="h"><svg class="i"><use href="#i-eyeoff"/></svg><h3>卡内脚本报错要不要给可见入口</h3></div>
+      <p>现在它是 0 层提示。给它入口要占屏，而 K15 诊断角标当初正是按你的要求删掉的
+        （<code>App.tsx:476</code> 注释留痕）。</p>
+      <div class="rec">我的建议：<b>不占屏的形式</b> —— 收进设置页一个"卡与插件诊断"列表，只在有错误时显示未读点。</div>
+    </div>
+    <div class="item">
+      <div class="h"><svg class="i"><use href="#i-target"/></svg><h3>底部错误卡走哪条修法</h3></div>
+      <p>1.3 的两条路：跟输入框一样 Portal + 键盘变量（保住"重试"按钮形态，改动更局部），
+        或改成顶部常驻气泡（一次绕开键盘/dock/输入框三个对手，但重试要换成 action）。</p>
+      <div class="rec">我的建议：<b>顶部常驻气泡</b>。它同时就是批 2 的目标形态，不用做两遍。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 07 ══════════ -->
+<section>
+  <div class="sec-head"><span class="n">07</span><h2>为什么 4 类会长成 11 类</h2></div>
+  <div class="prose">
+    <p>你感觉到的"乱"是三件独立的事：</p>
+    <p><b>一、同一时刻叠多层。</b>角色页超时再失败 = 黄条 + 橙卡 + 正文 ⚠️ 三层，其中两层同坐标自己打架。</p>
+    <p><b>二、同一种错误在不同页面表现不同。</b>角色页 3 层、普通聊天页 1 层；插件报错走三条不同出口；
+      崩溃有两套完全不同的红卡；卡内脚本报错则一层都没有。</p>
+    <p><b>三、根本没有统一入口。</b>不存在 <code>lib/toast.ts</code> / <code>useToast</code> / <code>showToast</code>
+      （文件名、导出符号、函数名三个层面都搜过，全 0 命中），<code>index.css</code> 里对 sonner/toastr 的定制样式 0 命中，
+      主气泡是纯库默认皮肤；名义统一的 <code>ui/alert.tsx</code> 复用率 = 1 处。
+      <span class="hl">所以"绕过率 100%"其实是因为无处可绕 —— 每个组件只能自己写一个。</span>
+      这才是 4 变 11 的机制，也是为什么批 2 必须"先立入口再迁移"，反过来做就是白搬。</p>
+  </div>
+</section>
+
+</main>
+
+<footer><div class="wrap">
+  <div class="eyebrow">出处</div>
+  <div class="src">本页为静态调研产物，未改动任何 <code>src/</code> 或 <code>backend/</code> 代码。<br>
+    前端：index.html:12,43 · App.tsx:407,429,436,1111-1128,1141,1150 · Sidebar.tsx:492,517,522 ·
+    NetworkStatus.tsx:17-21,32-38 · ErrorToast.tsx:15-23,35-36,78-86 · CharacterChat.tsx:2106-2113,2116-2130 ·
+    useCharacterChat.ts:532-549,767/978/1327,1352-1375,1445-1468,1653-1654 · useChatView/index.ts:157-177,284-304 ·
+    ChatInputArea.tsx:102-127 · Message.tsx:1120-1129,1746-1749 · services/tts.ts:208-220 ·
+    lib/utils/messageUtils.ts:11-13 · index.css:97,136,1360,1375,1430,1464 · sandbox.ts:29,3363,3842 ·
+    getContext.ts:112-127 · sillyTavernPluginRuntime.ts:854-858,948-953 · Popup.tsx:85-183 ·
+    ErrorBoundary.tsx:38-67 · InlineCardRenderer.tsx:61-89 · MessageMedia.tsx:130-156 ·
+    CharacterList.tsx:145-163,809-822,920-924,1065-1078,1204-1208 · errorHandler.ts vs error-handler/index.ts<br>
+    后端：api/websocket.py:663-670 · api/character_ext.py:586-596,2935-2954,3076/3110/3143,3252,4649-4658,4952-4974 ·
+    api/silly_tavern.py:2882,2957-2993 · services/character_message_builder.py:166-183,188,205-216,227-238 ·
+    services/stream_builder.py:23-24,26-34,47,94-97,161-164 · models/character.py:100-135 ·
+    tests/test_user_quota.py:252,264 · frontend/src/types/index.ts:465-494</div>
+</div></footer>
+
+<script>
+/* ── 图库数据：全部照源码原样渲染 ── */
+const I = (id)=>`<svg class="i"><use href="#i-${id}"/></svg>`;
+const specs = [
+ {n:1,ic:'bell',nm:'sonner 气泡（主通道）',tag:'缺关闭+缺避让',live:`<div class="l-sn" style="position:static"><span>${I('alert')}</span><span>生成失败，请重试<div class="d">服务器返回 502</div></span></div>`,
+  dl:{源码:'App.tsx:1150 挂载 · 29 文件 import · ≈232 处（error 133 / success 83）',
+      定位:'移动端 top-center、桌面 top-right；库默认 offset 16/24px，z=999',
+      关闭:'<span class="no-c">无</span>（未传 closeButton），只能等自动消失',
+      避让:'<span class="no-c">无 offset / mobileOffset → 被灵动岛毛玻璃盖住</span>',
+      皮肤:'仅 richColors；index.css 对 sonner 定制 0 命中，纯库默认样式'}},
+ {n:2,ic:'alert',nm:'ErrorToast 底部橙边卡',tag:'缺避让+层级失效',live:`<div class="et" style="box-shadow:none"><div class="hd">${I('wifioff')}<div style="flex:1">
+      <h4>网络连接问题</h4><p class="desc">无法连接到服务器，请检查网络后重试。</p>
+      <span class="sug">${I('check')} 检查你的网络连接，或切换一个模型</span><span class="lnk">显示技术详情</span>
+      <div class="btns"><button class="b1">重试</button><button class="b2">关闭</button></div></div></div></div>`,
+  dl:{源码:'ErrorToast.tsx:25-93；渲染点<b>只有 1 处</b> CharacterChat.tsx:2106',
+      定位:'fixed bottom-24 sm:bottom-4 right-4 max-w-md w-full；左边缘实测 −16px（裁出屏外）',
+      关闭:'<span class="no-c">有，但在卡片底部的文字按钮</span>，不是右上角 X —— 长在屏幕最下面那一条',
+      避让:'<span class="no-c">bottom-24 硬编码 6rem</span>，没用 env(safe-area-inset-bottom)；且未 Portal → fixed 锚到槽位',
+      实测:'dock 只咬 7.7px（按钮差 4.3px 未被盖）；<span class="no-c">键盘弹起时 100% 被盖</span>',
+      配色:'外层 border-l-4 orange-500 橙 + 内层 Alert destructive 红，两套语义打架'}},
+ {n:3,ic:'clock',nm:'黄色超时条',tag:'完全无关闭',live:`<div class="to" style="box-shadow:none"><h4>${I('clock')} 请求时间较长</h4>
+      <p>AI模型正在处理您的请求，这可能需要一些时间。请耐心等待，或尝试切换到其他模型。</p></div>`,
+  dl:{源码:'CharacterChat.tsx:2116-2130（内联写死在页面里，不是组件）',
+      定位:'fixed bottom-4 right-4 z-50 max-w-sm w-full',
+      关闭:'<span class="no-c">完全没有</span>，只能等 useCharacterChat.ts:1490 的 finally 自己清',
+      冲突:'<span class="no-c">与 ② 在 sm 以上 bottom-4 right-4 z-50 像素级重叠、同 z</span>'}},
+ {n:4,ic:'wifioff',nm:'网络状态横幅',tag:'缺避让',live:`<div class="l-net" style="position:static">🔌 网络连接已断开</div>
+      <div class="l-net" style="position:static;background:#eab308">${I('alert')} 网络连接较慢 (slow-2g)</div>`,
+  dl:{源码:'NetworkStatus.tsx:29-57，挂在 App.tsx:1084',
+      定位:'fixed top-0 left-0 right-0 z-[100]，整屏宽',
+      关闭:'<span class="no-c">无</span>；恢复后 setTimeout(3000) 自动消失（:17-21）',
+      避让:'<span class="no-c">写死 top-0 → 实测 36/36px 整条落在灵动岛毛玻璃底下</span>',
+      配色:'硬编码 bg-red-500/green-500/yellow-500，不走主题 token'}},
+ {n:5,ic:'plug',nm:'真 toastr 独立容器（插件走这条）',tag:'层级越权',live:`<div class="l-toastr" style="position:static;max-width:290px">
+      <span class="x">×</span><span class="gl">i</span><b>Plugin Error</b>extension crashed</div>`,
+  dl:{源码:'sandbox.ts:29 注入真库，:3363/:3842 暴露给插件；依赖 package.json:49 toastr ^2.1.4',
+      定位:'#toast-container{position:fixed;z-index:999999}，条目宽 300px、opacity .8',
+      关闭:'右上角 ×，但需插件传 closeMethod，默认不显示',
+      问题:'<span class="no-c">z=999999 压过全场</span>（含 ImageViewer z-[9999]、Popup z-[1000]）',
+      三条出口:'①本条真库 ②getContext.ts:112-127 桥到 sonner ③sillyTavernPluginRuntime.ts:948-953 全局 shim（:952 还把 warning 降级成红色 error）'}},
+ {n:6,ic:'panel',nm:'ST Popup 模态',tag:'n',live:`<div style="background:rgba(0,0,0,.45);border-radius:8px;padding:18px">
+      <div class="pop-card" style="background:var(--app-card);border-radius:8px;max-width:340px;width:100%">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--app-line);font-weight:640;font-size:15px">Error</div>
+      <div style="padding:12px 16px;color:var(--app-mutefg);font-size:13px">Script failed to run in sandbox</div>
+      <div style="padding:12px 16px;border-top:1px solid var(--app-line);display:flex;justify-content:flex-end;gap:8px">
+      <button style="border:1px solid var(--app-line);background:transparent;color:inherit;border-radius:6px;padding:6px 13px;font:inherit;font-size:13px">取消</button>
+      <button style="border:0;background:var(--app-primary);color:#fff;border-radius:6px;padding:6px 13px;font:inherit;font-size:13px">确定</button></div></div></div>`,
+  dl:{源码:'lib/popup-system/Popup.tsx:16-185；单例 manager.ts:213；挂 App.tsx:1151',
+      定位:'fixed inset-0 z-[1000] + bg-black/50，卡片 max-w-lg mx-4',
+      关闭:'点遮罩 / Escape / 底部「取消」；<span class="no-c">无右上角 X</span>',
+      入口:'6 处 popupManager.show（sandbox.ts:3315、getContext.ts:1327/2020/2063 等）',
+      注意:':104-112 DISPLAY 分支 dangerouslySetInnerHTML（有 DOMPurify，但仍注入主 origin）'}},
+ {n:7,ic:'refresh',nm:'「处理中」右上小卡',tag:'ok',live:`<div class="l-proc" style="position:static;align-self:flex-start"><span class="spin"></span>正在导入角色卡…</div>`,
+  dl:{源码:'CharacterList.tsx:920-924 与 :1204-1208 —— <b>同一实现两份重复</b>',
+      定位:'fixed top-[max(0.875rem,env(safe-area-inset-top))] sm:top-4 right-3.5 z-[80]',
+      关闭:'无，只有 spinner + 文案',
+      避让:'<span class="no-c" style="color:var(--ok)">有 —— 全场唯一做对了的一条，可当整改参照样板</span>',
+      冲突:'与 ① 桌面 top-right 抢位；与 ④ 横幅抢位'}},
+ {n:8,ic:'alert',nm:'整页崩溃卡 ErrorBoundary',tag:'不上报',live:`<div style="text-align:center;padding:14px 0">
+      <div style="width:44px;height:44px;border-radius:50%;background:var(--destructive-10,rgba(239,68,68,.1));display:grid;place-items:center;margin:0 auto 10px">${I('alert')}</div>
+      <div style="font-size:16px;font-weight:640">页面出现了问题</div>
+      <div style="font-size:13px;color:var(--app-mutefg);margin:4px auto 12px;max-width:34ch">抱歉，页面渲染时遇到了错误。请尝试刷新页面。</div>
+      <button style="background:var(--app-primary);color:#fff;border:0;border-radius:8px;padding:6px 14px;font:inherit;font-size:13px">⟳ 重试</button></div>`,
+  dl:{源码:'ErrorBoundary.tsx:14-73，挂载 7 处（App.tsx:939,971,986,1007,1021,1083,1091）',
+      定位:'<b>非浮层</b> —— 整棵子树被替换，min-h-[300px] p-8 居中',
+      关闭:'<span class="no-c">无关闭</span>，只有「重试」；dev 态额外渲染 <code>&lt;pre&gt;</code> 堆栈',
+      上报:'<span class="no-c">componentDidCatch 只 console.error，不接 ①/②</span> → 崩溃不进任何提示通道'}},
+ {n:9,ic:'x',nm:'内联卡崩溃红框（另一套 UI）',tag:'无关闭无重试',live:`<div style="font-size:13px;color:#ef4444;border:1px solid #fca5a5;padding:8px 10px;border-radius:4px">
+      卡片内联渲染失败，已降级为文本。请关闭内联渲染开关或刷新页面。</div>`,
+  dl:{源码:'InlineCardRenderer.tsx:61-89',
+      定位:'内联在消息流里；text-red-500 p-2 border border-red-300 rounded',
+      '与 8 的差异':'<span class="no-c">硬编码 red-500/red-300 不走 destructive token，与整页卡视觉完全不同；无关闭、无重试</span>',
+      文案:'把锅甩给用户（「请关闭内联渲染开关」）；类名 palink-inline-card-error 在 index.css 里 0 定义'}},
+ {n:10,ic:'msg',nm:'写进消息正文的 ⚠️（两套模板）',tag:'伪装成回复',live:`
+      <div style="background:var(--app-card);border:1px solid var(--app-line);border-radius:12px;padding:9px 12px;font-size:13.5px;line-height:1.55">
+        <b>⚠️ 网络连接问题</b><br><br>无法连接到服务器，请检查网络后重试。<br><br><span class="muted">💡 检查你的网络连接，或切换一个模型</span></div>
+      <div class="small muted">↑ 角色页模板 useCharacterChat.ts:545 / :1464</div>
+      <div style="background:var(--app-card);border:1px solid var(--app-line);border-radius:12px;padding:9px 12px;font-size:13.5px">
+        <b>⚠️ 错误</b><br><br>无法连接到服务器</div>
+      <div class="small muted">↑ 普通聊天页模板 useChatView/index.ts:172 / :299（无 💡 行，也不触发 ②）</div>`,
+  dl:{本质:'<b>当 assistant 回复</b>写进 messages[].content 字符串 —— 不是浮层',
+      可关闭:'<span class="no-c">关不掉、消不掉</span>',
+      危害:'<b>不会</b>持久化、<b>不会</b>回喂（只改 React state，见 04 节）；<span class="no-c">会</span>被 TTS 朗读（需点击）；<span class="no-c">会</span>进插件可见的 chat 数组 —— 插件 setChatMessages 即经 POST /api/chats/save 整表重建落库',
+      一致性:'<span class="no-c">两个聊天页对同一种失败表现不一样</span>'}},
+ {n:11,ic:'grid',nm:'散落内联红字（95 处 / 41 文件）',tag:'token 混用',live:`
+      <div style="display:flex;gap:8px;align-items:center;padding:7px 11px;border-radius:8px;background:rgba(239,68,68,.1);color:var(--app-destructive);font-size:12px">
+        ${I('alert')}<span style="flex:1">图片超过 10MB</span>${I('x')}</div>
+      <div class="small muted">a · ChatInput.tsx:194-200 —— 有 X</div>
+      <div class="imf" style="margin:0">${I('image')}<span style="flex:1">生成超时，可能已中断</span><span class="rt">${I('refresh')} 重试</span></div>
+      <div class="small muted">c · MessageMedia.tsx:130-156 · role=alert，无关闭</div>`,
+  dl:{总量:'text-red-* | text-destructive | bg-red-* | border-red-* 共 <b>95 处 / 41 文件</b>',
+      token混用:'<span class="no-c">一半走 destructive、一半硬编码 red-500 dark:red-400 → 深色模式两套观感</span>，且本页实测 destructive 当文字两主题都不达对比度',
+      重复实现:'「角色加载失败」空态卡在 CharacterList.tsx:809-822 与 :1065-1078 写了两份',
+      Alert原语:'<span class="no-c">ui/alert.tsx 名义统一原语，全项目只有 ErrorToast 一处用</span>'}},
+ {n:12,ic:'eyeoff',nm:'卡内脚本报错 —— 用户零感知',tag:'0 层提示',live:`
+      <div style="border:1.5px dashed var(--line-strong);border-radius:10px;padding:22px;text-align:center;color:var(--ink-500);font-size:12.5px;
+        background:repeating-linear-gradient(45deg,var(--inset) 0 8px,transparent 8px 16px)">
+        ${I('eyeoff')} 这里应该有一条提示，但它不存在<br>
+        <span class="small muted">错误只进 console.error 和 window.__palinkFrameErrors（上限 50）</span></div>`,
+  dl:{源码:'legacy-st-sim.ts:258-296（iframe 内 error/unhandledrejection → postMessage）→ CharacterCardRenderer.tsx:810-831 接收',
+      渲染:'<span class="no-c">0 层 —— CG 按钮点了没反应、立绘不显示，用户完全不知道发生了什么</span>',
+      另有:'SillyTavernCompatRuntime.ts:6501-6520 收 error/rejection 只走 reportDiagnostic（:402-421，去重+缓存，不弹 UI）',
+      静默通道:'全项目 console.error 233 处；原生 alert()/confirm() 0 处'}},
+];
+document.getElementById('gal').innerHTML = specs.map(s=>`
+  <div class="spec">
+    <div class="top"><span class="no">${String(s.n).padStart(2,'0')}</span>${I(s.ic)}
+      <span class="nm">${s.nm}</span>
+      <span class="tag${s.tag==='ok'?' ok':(s.tag==='n'?' n':'')}">${s.tag==='ok'?'已避让':(s.tag==='n'?'模态':s.tag)}</span></div>
+    <div class="live">${s.live}</div>
+    <dl>${Object.entries(s.dl).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+  </div>`).join('');
+
+/* ── 场景切换 ── */
+const scenes={fail:['fail'],img:['img'],net:['net'],plugin:['plugin'],all:['all'],kb:['kb']};
+const dev=document.getElementById('dev');
+function apply(scene){
+  document.querySelectorAll('#dev [data-when]').forEach(el=>{
+    el.classList.toggle('hide', !(el.dataset.when.split(' ').includes(scene)));
+  });
+  dev.classList.toggle('kb', scene==='kb');
+}
+document.querySelectorAll('#scenes button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('#scenes button').forEach(x=>x.setAttribute('aria-pressed','false'));
+  b.setAttribute('aria-pressed','true'); apply(b.dataset.scene);
+}));
+const bind=(id,cls)=>{const b=document.getElementById(id);b.addEventListener('click',()=>{
+  const on=document.body.classList.toggle(cls);b.setAttribute('aria-pressed',String(on));});};
+bind('btnHazard','hazard'); bind('btnOutline','outline');
+document.getElementById('btnTheme').addEventListener('click',e=>{
+  const d=document.documentElement.dataset.theme==='dark';
+  document.documentElement.dataset.theme=d?'light':'dark';
+  e.currentTarget.setAttribute('aria-pressed',String(!d));
+  e.currentTarget.querySelector('span').textContent=d?'暗色':'亮色';
+});
+apply('fail');
+/* 深链：#kb / #all / #dark 等，便于把某个状态直接发给别人看 */
+(function(){
+  const h = (location.hash||'').replace(/^#/,'').toLowerCase();
+  if (!h) return;
+  if (h === 'dark') { document.getElementById('btnTheme').click(); return; }
+  const m = /(^|&)(theme=)?(light|dark)/.exec(h);
+  if (m && m[3] === 'dark') document.getElementById('btnTheme').click();
+  const sc = /(^|&|;)(scene=)?(fail|img|net|plugin|all|kb)\b/.exec(h);
+  if (sc) {
+    const b = document.querySelector('#scenes button[data-scene="' + sc[3] + '"]');
+    if (b) b.click();
+  }
+})();
+</script>
+</body>
+</html>
