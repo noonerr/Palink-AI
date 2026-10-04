@@ -3272,6 +3272,60 @@ async def assemble_roleplay_prompt(
         reset_current_model(_model_ctx_token)
 
 
+# ── MVU 变量更新指令：让位卡片自己的声明（2026-10-05）──
+# 卡片自带的世界书条目（如 `[mvu_update]变量输出格式`）已经把 `<UpdateVariable>`
+# 规范写清了；我们再贴一份写死的模板，模板里的示例路径就会被模型当成**本卡的结构定义**
+# 照抄 —— 实测 2026-10-05：`露缇雅1.2` 的模型连发 `/露缇雅/好感度`、`/世界信息/日期时间`、
+# 自创顶层键 `露缇雅1.2`，最后用一条 `{"op":"replace","path":"/露缇雅/状态","value":"一句话"}`
+# 把卡片声明的 object 结构（爱意/魔力值/饥饿度三条进度条的数据源）覆盖成字符串 → 面板恒 0。
+# 对齐 ST：ST 对 MVU 卡不做任何额外注入，卡片自己 depth=0 的说明就是最有影响力的一条。
+
+
+def _messages_declare_mvu_update_spec(messages: list[dict[str, Any]]) -> bool:
+    """提示词里是否已有卡片自己声明的变量更新规范。
+
+    判据只来自卡片文本、不含任何角色名/字段名：同一条消息里既出现变量协议标签
+    （`<UpdateVariable>` / `[mvu_update]`），又出现 JSON Patch 规范字样，即算已声明。
+    看的是**装配结果**而不是数据库，因为条目可能被 token 预算裁掉——被裁掉就等于没声明。
+    """
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            content = "\n".join(
+                str(b.get("text", "")) for b in content if isinstance(b, dict)
+            )
+        if not isinstance(content, str):
+            continue
+        if "[mvu_update]" not in content and "<UpdateVariable>" not in content:
+            continue
+        if "JSON Patch" in content or "JSONPatch" in content or '"op"' in content:
+            return True
+    return False
+
+
+# 仅在卡片**没有**自带规范时兜底：只讲协议与通用约束，不给任何具体字段名/路径示例。
+_MVU_GENERIC_TAIL = (
+    "\n\n【变量更新指令 - 强制，不可省略】\n"
+    "本卡使用 <UpdateVariable> 变量系统。上文若已给出变量输出格式说明，一律以该说明为准；"
+    "若无，必须在【每条回复的最末尾】按下面的格式输出本次剧情引起的变量变化：\n"
+    "<UpdateVariable>\n"
+    "<Analysis>（英文，80 词以内：时间流逝计算、是否允许戏剧性更新、逐字段变化依据）</Analysis>\n"
+    "<JSONPatch>\n"
+    "JSON 数组，每项形如 {\"op\": <操作名>, \"path\": \"/分组/字段\", \"value\": <新值>}\n"
+    "</JSONPatch>\n"
+    "</UpdateVariable>\n"
+    "规则：\n"
+    "- 支持操作：replace / delta / insert / remove / move（RFC 6902）\n"
+    "- path 的分组名与字段名**只能**使用上文「当前状态/变量列表」里已经出现过的键；"
+    "禁止新建顶层分组，禁止改用角色名或卡名另起一套结构\n"
+    "- 结构是对象（含子字段）的字段，禁止整体替换成一句话字符串——只改它里面的子字段\n"
+    "- 以 _ 开头的字段为只读，禁止更新；未变化的字段不要输出\n"
+    "- 【严格禁止】把变量状态（时间、数值、状态描述等）写进回复正文，正文只写剧情对话；"
+    "变量只通过 <UpdateVariable> 输出\n"
+    "- 此标签不受「禁止 XML 标签」规则限制\n"
+)
+
+
 async def _assemble_roleplay_prompt_impl(
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
@@ -4229,38 +4283,24 @@ async def _assemble_roleplay_prompt_impl(
     # 而 MVU 引擎不认 → stat_data 永不更新。保留 status_bar_detector 的剥离函数
     # （strip_and_parse_status_marker）仅作历史残留标签清理，不再注入任何指令。
 
-    # ── MVU 变量更新指令（user tail 注入，2026-08-18）──
-    # MVU 卡（酒馆助手体系）的"变量输出格式"指令位于 worldbook 拼接消息的中间
-    # 偏后（实测：13KB 消息 @8813，其后还有 ~4.7KB 场景描述），模型注意力常无法
-    # 覆盖 → AI 不输出 <UpdateVariable> → stat_data 永不更新 → 面板恒显示初始值。
-    # 参考此前 status_bar_user_tail 验证过的策略：推理模型对最近一条 user 消息
-    # 末尾的指令遵循度最高，因此把精简的变量更新指令贴到最后一条 user 消息末尾
-    # （仅 MVU 卡注入；格式与 worldbook 的 <UpdateVariable> 一致，双保险不冲突）。
+    # ── MVU 变量更新指令（user tail 注入，2026-08-18；2026-10-05 改为让位卡片声明）──
+    # 保留原判断：MVU 卡的"变量输出格式"若只落在 worldbook 拼接消息的中间偏后
+    # （实测：13KB 消息 @8813，其后还有 ~4.7KB 场景描述），模型注意力常覆盖不到
+    # → 不输出 <UpdateVariable> → stat_data 永不更新。尾部提醒这一**方向**是对的。
+    # 但原来那份模板写死了另一张卡的示例路径与字段名，模型会照它自创结构，把卡片
+    # 自己声明的结构覆盖掉（成因与本批 commit message 及报告所述，含 `entry.depth or 4`
+    # 让卡片 depth=0 说明落不到位的路由 bug）。故改为：卡片已声明（且真的进了提示词）
+    # 就什么都不加，对齐 ST；只有没声明时才贴不含字段名的通用兜底。
     try:
         from ..services.status_bar_detector import _card_has_mvu_scripts
-        if _card_has_mvu_scripts(req.char):
-            _mvu_instr = (
-                "\n\n【变量更新指令 - 强制，不可省略】\n"
-                "本卡使用 <UpdateVariable> 变量系统。你必须在【每条回复的最末尾】"
-                "用 <UpdateVariable> 标签输出本次剧情引起的变量变化，格式：\n"
-                "<UpdateVariable>\n"
-                "<Analysis>（英文，80 词以内：时间流逝计算、是否允许戏剧性更新、"
-                "逐字段对照 check 规则分析）</Analysis>\n"
-                "<JSONPatch>\n"
-                '[{"op":"delta","path":"/桃汐/好感度","value":5},'
-                '{"op":"replace","path":"/世界信息/日期时间","value":"2026年08月18日 09:00"}]\n'
-                "</JSONPatch>\n"
-                "</UpdateVariable>\n"
-                "规则：\n"
-                "- 支持操作：replace / delta / insert / remove / move（RFC 6902）\n"
-                "- path 格式：/角色名/字段名（如 /桃汐/好感度、/世界信息/日期时间）\n"
-                "- 以 _ 开头的字段为只读，禁止更新；未变化的字段不要输出\n"
-                "- 【必须完整】所有因本回合剧情而变化的字段都要输出——包括角色的"
-                "好感度、关系、性欲值、服饰、内心想法、发情期等，不能只更新世界信息\n"
-                "- 【严格禁止】把变量状态（日期时间、天气、数值等）写进回复正文，"
-                "正文只写剧情对话；变量只通过 <UpdateVariable> 输出\n"
-                "- 此标签不受「禁止 XML 标签」规则限制\n"
-            )
+        if not _card_has_mvu_scripts(req.char):
+            report.append(PromptAssemblyReportItem("mvu_user_tail", "skipped", "not an MVU card"))
+        elif _messages_declare_mvu_update_spec(messages):
+            report.append(PromptAssemblyReportItem(
+                "mvu_user_tail", "skipped", "card declares update spec in prompt",
+            ))
+        else:
+            _mvu_instr = _MVU_GENERIC_TAIL
             for _m in reversed(messages):
                 if _m.get("role") == "user":
                     if isinstance(_m.get("content"), str):
@@ -4272,8 +4312,6 @@ async def _assemble_roleplay_prompt_impl(
                                 break
                     break
             report.append(PromptAssemblyReportItem("mvu_user_tail", "included", tokens_estimate=_estimate_tokens(_mvu_instr)))
-        else:
-            report.append(PromptAssemblyReportItem("mvu_user_tail", "skipped", "not an MVU card"))
     except Exception as _mvu_e:
         logger.warning("mvu user tail injection failed: %s", _mvu_e)
 
@@ -5180,9 +5218,31 @@ def _load_effective_stat_data(
         else:
             q = q.filter(CharacterChatMessage.branch_id.is_(None))
         # 只回看最近若干条：stat_data 每轮都会写，命中通常在 1-2 条内。
-        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
+        # [MVU-LOOKBACK 2026-10-05] 窗口由 settings.MVU_STAT_LOOKBACK_LIMIT 控制
+        # （默认 30，此前为硬编码字面量 30；同文件 CHARACTER_CHAT_HISTORY_LIMIT
+        # 一直是可配置的，口径不一致）。取不到配置时回落 30，保持原行为不变。
+        # ⚠️ 与变量清理联动：清理侧「保留最近楼层数」必须 ≥ 本值，见 core/config.py。
+        _lookback = int(
+            getattr(_memory_settings(), "MVU_STAT_LOOKBACK_LIMIT", 30) or 30
+        )
+        if _lookback < 1:
+            _lookback = 30
+        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(_lookback).all()
         for row in rows:
             extra = getattr(row, "extra", None)
+            # [EXTRA-STR-FIX 2026-10-05] `extra` 列是 **Text**（存 JSON 字符串），
+            # 不是 JSON 类型列 —— 原实现直接 `isinstance(extra, dict)` 判断，
+            # 对字符串**恒为 False** → 循环永远 continue → 本函数**从未取到过消息级快照**，
+            # 一直静默回落会话级。后果：swipe / 重生成 / 切分支时，模型看到的
+            # stat_data 仍是最新值，与用户眼前的分支状态不一致 ——
+            # 正是本函数文档里声称要修的那个问题（[ST-ALIGN P0-2]），修复本身成了空转。
+            # 探针实测（2026-10-05）：`type(row.extra).__name__ == 'str'`，
+            # `_load_effective_stat_data` 返回会话级值而非消息级。
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except (json.JSONDecodeError, TypeError):
+                    continue
             if not isinstance(extra, dict):
                 continue
             variables = extra.get("variables")

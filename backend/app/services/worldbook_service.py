@@ -2140,7 +2140,13 @@ def build_worldbook_context(
         pos = entry.position if entry.position is not None else WI_POS_AT_DEPTH
         if pos == WI_POS_AT_DEPTH:
             # G6 修复: 包含 role (0=system, 1=user, 2=assistant)
-            depth_entries.append((entry.depth or 4, entry_content, entry.role or 0))
+            # ⚠️ depth=0 是 ST 的合法值（= 插到对话最末尾，紧贴模型下一次输出），
+            # 必须只在 None 时兜默认 4。原 `entry.depth or 4` 把 0 吃成 4，导致
+            # 卡片自带的 `[mvu_update]变量更新规则/输出格式`（position=4, depth=0）
+            # 落点比 ST 远 4 个楼层，让位给后端写死的变量指令（2026-10-05 实测
+            # debug-prompt-assembly：插入报告 depth=4、条目落在 index 8 而非末尾）。
+            _depth_value = 4 if entry.depth is None else entry.depth
+            depth_entries.append((_depth_value, entry_content, entry.role or 0))
         elif pos == WI_POS_EM_TOP:
             em_top_entries.append(entry_content)
         elif pos == WI_POS_EM_BOTTOM:
