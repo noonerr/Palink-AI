@@ -167,6 +167,7 @@ specs/**/_backup_*/
 .codebuddy/
 .playwright-cli/
 .workbuddy/
+.workbuddy-ai/
 .tmp_old_ui/
 .agents/
 .backups/

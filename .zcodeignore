@@ -1,0 +1,324 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build outputs
+frontend/dist/
+frontend/dist_new/
+frontend/dist_new_*/
+frontend/dist_broken_*/
+frontend/dist_fix_*/
+backend/__pycache__/
+build/
+dist/
+
+# Logs & temp files
+*.log
+.docker_*.txt
+.x_*.txt
+*.txt.bak
+
+# Environment & secrets
+.env
+env-v2*
+*-Pal.env
+*-Pal.yml
+*.pem
+*.key
+*.crt
+casdoor_app.conf
+
+# Large files / backups
+*.zip
+*.tar.gz
+*.mp4
+temp_backup/
+temp_extract*/
+backup_*/
+empty_del_*/
+backups/
+temp_backup_*/
+
+# ML model files (weights only, not Python source)
+*.gguf
+backend/models/
+
+# Runtime data directories
+data/
+backend/app/data/
+frontend/public/public/
+
+# Test attack payloads (may contain tokens/keys)
+test_attack/
+
+# IDE
+.trae/
+.claude/settings.local.json
+.claude/.mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sensitive scripts & temp files
+*.tmp
+*.bak
+*.backup
+*.backup_*
+*.backup2
+*.backup3
+*.backup4
+*.backup5
+*.docx
+_debug_test.py
+check_settings.py
+create_admin.py
+.tmp_*.json
+fix_*.sh
+fix_*.py
+update_env.sh
+modify_app.py
+
+# Root-level temp/legacy files (not part of app)
+/app.py
+/app_backup.py
+/app_build.py
+/build_app.py
+/database.py
+/main.py
+/update_starters.py
+/_fix_routes.py
+/auth_casdoor_with_token.py
+/casdoor_client_fixed.py
+/check_syntax.py
+/test_login.py
+/test_register.py
+/frp-client-gui.py
+/frp-memory-protection.service
+/frp-platform-nginx*.conf
+/nginx_https*.conf
+/docker-compose-v2*.yml
+/index-fixed.html
+/mobile-settings-*.html
+/test_websearch_sse.html
+/apply_protection_now.sh
+/check_*.sh
+/copy_certs_*.sh
+/optimize-static.sh
+/sync-static.sh
+COMMIT_MESSAGE.md
+DELIVERY_PACKAGE.md
+MOBILE_OPTIMIZATION_ROADMAP.md
+MOBILE_OPTIMIZATION_COMPLETE_REPORT.md
+
+# Debug / temp screenshots & captures
+/test-screenshots/
+/screenshots/
+/图片/
+characters-page.png
+homepage-after-rebuild.png
+roleplay-*.png
+rp-*.png
+st_native_*.png
+*.png.bak
+
+# Temp scripts & data dumps (root level)
+tmp_*.py
+tmp_*.json
+tmp_*.txt
+tmp_*.js
+tmp-*.py
+tmp-*.json
+tmp-*.txt
+tmp-*.js
+tmp_extract_regex*.py
+tmp_query.py
+tmp_repl.py
+tmp_verify.py
+tmp_view_lm.py
+inspect_regex.py
+regex-scripts.json
+snap_list.yaml
+init_chat.json
+create_test_*.sql
+update_*.sql
+update_plugin_config.sql
+update_test_password.sql
+compact-docker-vhdx.bat
+
+# Backend temp scripts
+backend/tmp_*.py
+
+# Accidental shell-redirect junk files
+/'
+/'scriptName'
+
+# Build artifacts accidentally written to root
+/CharacterView-*.js
+/MarkdownRenderer-*.js
+
+# Backup folders inside specs (state preserved via git tags instead)
+specs/**/_backup_*/
+
+# Local tooling / agent profile dirs
+.codebuddy/
+.playwright-cli/
+.workbuddy/
+.tmp_old_ui/
+.agents/
+.backups/
+.codex-browser-profile-*/
+.uploads/
+.claude/worktrees/
+.trae - 副本/
+
+# Editor backup files
+frontend/index.html.bak.*
+
+# 2026-08-16 安全分批提交：在途工作排除项（agent 调试垃圾文件 / 大体积 vendored 目录 / 验证产物）
+nul
+ext_dump.txt
+regex_scripts_dump.txt
+tmp_statusbar.html
+tmp_probe.cjs
+scripts/check-*.js
+scripts/s1.js
+scripts/s2.js
+scripts/s3.js
+scripts/s4.js
+scripts/s5.js
+scripts/s6.js
+scripts/chara.json
+scripts/chara-decoded.json
+scripts/dbchar.py
+scripts/render_script.txt
+community-st-forks/zhaiiker-SillyTavernMOD/
+tavern_resource/
+st-plugins/third-party/
+tmp-js-slash-runner/
+shots/
+scripts/shots/
+frontend/dev/
+frontend/.shim-baseline/
+frontend/.shim_current.txt
+frontend/dist_*/
+frontend/dist.prev/
+frontend/src_bak_*/
+
+# 2026-09-22 仓库卫生批次：历史 dist 备份目录与一次性产物已清场，
+# 补通用模式防止未来再被顺带提交（原先只有 frontend/dist_*/ 与 frontend/index.html.bak.*）。
+# 注：frontend/dist_old_<date>/ 是发布兜底目录，同样落在 dist_*/ 下，不入库属预期。
+dist_*/
+*.bak.*
+
+# 2026-08-23 分离存储批次：会话备份（含 DB 转储，禁止入库）、调试目录与临时文件
+_backup/
+.dbg/
+.omo/
+_tmp_*.txt
+backend/_tmp_*.py
+frontend/scripts/_shim_check_probe.*
+
+# 2026-08-29 分段提交：插件脚本 dump 与审计截图（一次性调试产物，体积大）
+_bam_script_dump.js
+_bubble_script_dump.js
+scripts/st_audit_seraphina.png
+capture.har
+
+# 2026-09-02 本地工具状态与一次性产物（永不入库）
+.mimosa/
+backend/.mimosa/
+.v2c/
+.zcode/
+frontend/_seam_crop*.png
+
+# 2026-09-05 体检补漏：凭据/备份/一次性产物
+scripts/st_audit/_credentials.py
+scripts/st_audit/sec_smoke_card.png
+*.bak.dock-fix
+dist_new_*/
+backup/
+.ui-backup-*/
+
+# 2026-09-22 仓库清场批次：孤儿目录与一次性调试产物已从仓库删除，此处防回流。
+# 已删项及判定依据（均为 0 代码引用，逐项核过）：
+#   tmp/            抓包 dump（chars_body.json 39MB / stbody.html 等）
+#   dev_archive/    早期解析器实验与旧组件快照
+#   icons/          根级图标，真实资源在 frontend/public/icons/（代码引用 /icons/*）
+#   backup/         旧源码快照（文档明确「不要从这些目录恢复」）
+#   community-st-forks/  第三方 ST 魔改 fork，ST 双轨 2026-09-03 已删
+/tmp/
+/dev_archive/
+/icons/
+/backup/
+/community-st-forks/
+# 根级一次性脚本与验证产物
+tmp-*.cjs
+/original_chat_view_mobile.tsx
+/goal-*.md
+/.goal-state.md
+/.dsh-*
+/test-small.txt
+/test-write.txt
+/test123.txt
+/security_fix_log.txt
+# 即时通讯图片与截图落进仓库根的常见误存（仅根级，避免误伤正常资源目录）
+/微信图片_*.png
+/屏幕录制*.mp4
+
+# 大批删除批次的物理备份规范位置是仓库外（../Palink-AI-backup-pre-<主题>-<日期>）。
+# 但后端那 5 个文件的副本误落在了仓库根，删它会丢掉唯一物理备份，故保留原地 + 忽略，
+# 避免它长期挂在 git status 里当噪音、更避免被 `git add -A` 整份提进仓库。
+/Palink-AI-backup-*/
+
+# ── 统一备份区 _BACKUPS/（2026-09-30 起）：仅台账与说明文件入库，其余大产物一律排除 ──
+# 规则：先整体排除 _BACKUPS 下所有文件 → 放行第一层目录 → 只放行 _INDEX.md 与第一层的 BACKUP_INFO.md。
+# 目的： backup 内可达 12GB（repo.bundle / source-snapshot.tar.gz / worktree 全量拷贝），
+#       绝不允入库；而「哪些备份存在、从哪来、为什么备份、还要做什么」必须版本化。
+#
+# ⚠️ 禁止把下面两条改回 `**/` 形式（2026-10-02 实测）：
+#   !_BACKUPS/**/            与   !_BACKUPS/**/BACKUP_INFO.md
+# 「放行任意层级的目录」会命令 git 钻进每一个被忽略的子目录去找放行文件，剪枝失效。
+# 代价：_BACKUPS/2026-09-30_dsh-源码版清理/ 里存着一份自我嵌套的 node_modules
+#   （@deepseek-ai/cordis → node_modules → cordis → …），git 一路钻到路径超长才停，
+#   单次 `git status -uall` 实测 123 秒、吐出 203,522 行 "Filename too long" 警告、
+#   走过 1,029,959 个 node_modules 路径段。IDE 的 Git 轮询用的正是 -uall，
+#   于是每 2 分钟起一个进程、永远排不空，实测堆到 23 个 git.exe / 15.8GB 内存。
+# 收成一层后 git 无需下探第二层，那 12GB 大产物照旧排除、39 个说明文件照旧入库。
+_BACKUPS/**
+!_BACKUPS/*/
+!_BACKUPS/_INDEX.md
+!_BACKUPS/*/BACKUP_INFO.md
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
