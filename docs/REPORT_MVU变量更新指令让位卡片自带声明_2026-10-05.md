@@ -83,6 +83,11 @@ grep -c '禁止新建顶层分组'                    → 1
 grep -c '桃汐/好感度'                          → 0     ← 旧模板已不在运行代码里
 grep -c 'entry.depth is None'                 → 1
 ```
+⚠️ **重建时机**：`docker compose build backend && up -d backend` 于 03:49 执行（真机验收必需），
+当时工作区**已含并行会话的未提交改动**（`character_ext.py` / `character_message_builder.py` /
+`mvu_engine.py` / `mvu_secondary.py` / `frontend Message.tsx` 等），故本次上线**连带带上了那些改动**，
+无法只挑本批上线。已知当时的并行会话均在运行中（用户确认其中一个已跑完，另一个在处理分支记忆混淆）。
+**此后本批未再重建**；若需纯净上线，请在该会话工作完成后由用户统一决定。
 
 ### 3.3 机制级前后对照（同一会话、同一端点、同样的请求体）
 
@@ -137,4 +142,30 @@ FROM character_chat_messages WHERE session_id='<新会话id>' ORDER BY id DESC L
 
 - 备份：`_BACKUPS/2026-10-05_MVU变量更新指令让位卡片自带声明/`（`pre/` 5 文件 + `_manifest.tsv` sha256 5 行 + `HEAD.txt`=`9eda04b` + `BACKUP_INFO.md` 四要素），台账已登记 `_BACKUPS/_INDEX.md`。
 - ⚠️ 回滚 `roleplay_prompt_assembly.py` 会**连带回退并行会话在 `_load_effective_stat_data` 的 +23 行未提交改动**，已写入该目录 `BACKUP_INFO.md`。
-- 提交：只暂存本批自己的 hunk（过滤掉 `_load_effective_stat_data` 那两块），逐项 pathspec，禁 `git add -A`。
+- 提交：`b027aa3`（本批改动）+ `a44d646`（剥离误带内容，见下）。
+
+### ⚠️ 共享工作区险情实录（必读，勿照搬我的做法）
+
+提交过程中出过一次事故，已修复并留痕：
+
+1. **现象**：`b027aa3` 把另一会话在**同一文件**的 `[MVU-LOOKBACK]` / `[EXTRA-STR-FIX]` 两块（22 行）一并提交了进来。
+2. **成因**：`roleplay_prompt_assembly.py` 里本批改动与该会话改动**同行共存**。我用
+   `git update-index --cacheinfo` 构造了"只含自己改动"的索引 blob（校验通过：foreign 0、自己的符号 2），
+   但**在我构造之后、commit 之前**，该会话又对同一文件执行了 `git add`，把索引覆盖回工作区版本。
+   `git commit -- <pathspec>` 提交的是**该路径索引中的全部内容** → 连他的 22 行一起进去了。
+3. **第一次修错**：改用 `git commit-tree $(git write-tree)` 时，`write-tree` 写入的是**整个索引**，
+   于是把他另外 3 个已 `git add` 的文件（`character_ext.py` / `character_message_builder.py` /
+   `Message.tsx`）也写进了修正提交。发现后用 `git update-ref` 把分支原子回退到 `b027aa3`，
+   **工作区与他的索引内容未受影响**。
+4. **正确做法**：用**临时索引**（`GIT_INDEX_FILE`）`git read-tree b027aa3` → 只替换目标 blob →
+   `git write-tree` 得到只含一个文件的 tree → `git commit-tree` + `git update-ref <ref> <new> <old>` 原子替换。
+   `update-ref` 带旧值参数，可确保期间无人动过 ref。
+5. **结论**：
+   - pathspec 提交**不等于**"只提交我的 hunk"——它提交该路径索引里的**一切**。
+   - 共享文件上想只提交自己的改动，**必须在提交瞬间原子完成索引写入 + 提交**，
+     中间任何让别的会话 `git add` 的窗口都会被吞。
+   - 提交后必须 `git show <commit> --stat` 核验文件清单，并 `git show <commit>:<path> | grep <对方标记>`
+     核验没夹带（本次两处都是靠这一步发现的，只看 `--stat` 的文件清单不会发现夹带，因为文件是对的）。
+6. **现状核验**：`a44d646` 只含 `roleplay_prompt_assembly.py` 一个文件；HEAD 里 `[MVU-LOOKBACK]` /
+   `[EXTRA-STR-FIX]` 标记为 **0**，即那 22 行已回到**未提交**状态还给其作者；该会话另外 3 个文件的
+   暂存内容与工作区改动全程未被触碰。
