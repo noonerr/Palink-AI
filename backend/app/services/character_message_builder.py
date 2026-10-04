@@ -570,7 +570,7 @@ def apply_mvu_reply_to_session(
     from sqlalchemy.orm import selectinload
 
     from ..models import CharacterChatSession, WorldBook
-    from .mvu_engine import MvuEngine, merge_character_book_entries
+    from .mvu_engine import MvuEngine, extract_schema_defaults, merge_character_book_entries
 
     _mvu_char = None
     if character_id:
@@ -633,6 +633,40 @@ def apply_mvu_reply_to_session(
         first_mes=getattr(_mvu_char, "first_mes", None),
         alternate_greetings=getattr(_mvu_char, "alternate_greetings", None),
     )
+
+
+    # [MVU-SHAPE-GUARD 2026-10-05] 应用补丁后，按卡片 schema 的**形状**归一化一次。
+    #
+    # 为什么必须在这里做：`apply_patches` 对模型给的 JSON Patch 是逐条照做，
+    # `_pointer_set` 会为不存在的中间路径凭空创建对象、且不做类型检查。
+    # 模型偶发把「schema 说是对象的字段」写成一段文本、并把它的子键提到父层，
+    # 错误结构就**永久落库** —— 实测故障（2026-10-04 20:11 起）：
+    # `露缇雅.状态` 被写成文本、`爱意/魔力值` 被提到 `露缇雅` 下，
+    # 卡状态栏的 `_.get(vars,'stat_data.露缇雅.状态.爱意', 0)` 穿不过字符串
+    # → 显示 prefault 默认值 0/100/0。
+    #
+    # ST 的 MVU 在应用命令后会跑卡片注册的 zod schema（prefault/transform 会把
+    # 结构修回来）；这一层就是把那份语义在 Python 侧补上。
+    #
+    # 安全边界：解析不出骨架 → 原样返回，**绝不擅改数据**；
+    # 归一化本身抛异常 → 只告警、不影响主流程（宁可结构歪，不可丢更新）。
+    try:
+        from .mvu_stat_normalize import normalize_variables
+
+        _skeleton = extract_schema_defaults(char_ext_raw.get("tavern_helper") or {})
+        if _skeleton:
+            _normalized, _nlog = normalize_variables(new_vars, _skeleton)
+            _real = [line for line in _nlog if not line.startswith("skip")]
+            if _real:
+                logger.warning(
+                    "MVU stat_data 形状已按 schema 归一化（模型写歪了结构）: %s",
+                    "; ".join(_real[:8]),
+                )
+                new_vars = _normalized
+    except Exception:
+        logger.warning("MVU stat_data 归一化失败（已跳过，不影响主流程）", exc_info=True)
+
+
     cur_meta["variables"] = new_vars
     sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
     if logs:
