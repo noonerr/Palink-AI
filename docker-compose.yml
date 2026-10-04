@@ -4,10 +4,15 @@ services:
     ports:
       # [2026-08-31] 统一为 3000：dev/部署同端口，不再区分开发与部署。
       # 历史: 3000 曾被 WinNAT 动态保留段(2934-3033)吞掉临时改用 13000，现验证可绑定已改回
-      # [TEMP-PORT 2026-09-30] Windows 保留段又吞了 3000（实测 excludedportrange 2959-3058），
+      # [TEMP-PORT 2026-09-30] Windows 保留段又吞了 3000（实测 excludedportrange 2934-3058），
       # docker 绑定失败 → 容器卡在 Created、站点打不开。临时挂 13000 继续测试。
       # 恢复原样：把下面一行换回 - "3000:8080"，并 `docker compose up -d frontend`。
-      - "13000:8080"
+      # [TEMP-PORT 2026-10-04] 13000 又落进新保留段 12940-13039（netsh int ipv4 show
+      # excludedportrange protocol=tcp 实测）→ 容器起来但**没有发布宿主端口**，宿主机
+      # curl 13000 拒连，浏览器验证做不了。改挂 14000（当前所有保留段之上、且未被监听）。
+      # 复核方法：docker ps 的 PORTS 列应出现 0.0.0.0:14000->8080，而不是只有 8080/tcp。
+      - "14000:8080"
+      # - "13000:8080"
       # - "3000:8080"
     depends_on:
       backend:
