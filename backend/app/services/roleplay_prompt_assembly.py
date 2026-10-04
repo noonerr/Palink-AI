@@ -5218,31 +5218,9 @@ def _load_effective_stat_data(
         else:
             q = q.filter(CharacterChatMessage.branch_id.is_(None))
         # 只回看最近若干条：stat_data 每轮都会写，命中通常在 1-2 条内。
-        # [MVU-LOOKBACK 2026-10-05] 窗口由 settings.MVU_STAT_LOOKBACK_LIMIT 控制
-        # （默认 30，此前为硬编码字面量 30；同文件 CHARACTER_CHAT_HISTORY_LIMIT
-        # 一直是可配置的，口径不一致）。取不到配置时回落 30，保持原行为不变。
-        # ⚠️ 与变量清理联动：清理侧「保留最近楼层数」必须 ≥ 本值，见 core/config.py。
-        _lookback = int(
-            getattr(_memory_settings(), "MVU_STAT_LOOKBACK_LIMIT", 30) or 30
-        )
-        if _lookback < 1:
-            _lookback = 30
-        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(_lookback).all()
+        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
         for row in rows:
             extra = getattr(row, "extra", None)
-            # [EXTRA-STR-FIX 2026-10-05] `extra` 列是 **Text**（存 JSON 字符串），
-            # 不是 JSON 类型列 —— 原实现直接 `isinstance(extra, dict)` 判断，
-            # 对字符串**恒为 False** → 循环永远 continue → 本函数**从未取到过消息级快照**，
-            # 一直静默回落会话级。后果：swipe / 重生成 / 切分支时，模型看到的
-            # stat_data 仍是最新值，与用户眼前的分支状态不一致 ——
-            # 正是本函数文档里声称要修的那个问题（[ST-ALIGN P0-2]），修复本身成了空转。
-            # 探针实测（2026-10-05）：`type(row.extra).__name__ == 'str'`，
-            # `_load_effective_stat_data` 返回会话级值而非消息级。
-            if isinstance(extra, str):
-                try:
-                    extra = json.loads(extra)
-                except (json.JSONDecodeError, TypeError):
-                    continue
             if not isinstance(extra, dict):
                 continue
             variables = extra.get("variables")
