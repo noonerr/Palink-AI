@@ -230,9 +230,53 @@ Tests  8 passed (8)
 
 ---
 
+## 6.5 上线记录（2026-10-05 03:1x）
+
+| 步骤 | 结果 |
+|---|---|
+| dist 备份（上线前整份） | `_BACKUPS/2026-10-05_MVU补齐第一波/dist-before/`（82 MB / assets 1284 项） |
+| 构建（旁路径，禁 `npm run build`） | `VITE_OUT_DIR=dist_new_wave1 node scripts/build-vite.mjs` → exit 0，36.4s |
+| 覆盖 | `cp -r dist_new_wave1/. dist/`（原地增量，未重命名 dist） |
+| gzip | `node scripts/gzip-dist.cjs` → 628 个 .gz |
+| 入口指纹 | **`index-ClGAMxcS.js` → `index-DtKE6gc3.js`** |
+| gz 与明文一致性 | `gunzip -c dist/index.html.gz` 与 `dist/index.html` 同为 `index-DtKE6gc3.js` ✅ |
+| 线上验证 | `curl --noproxy '*' http://localhost:14000/` → **200**，入口 `index-DtKE6gc3.js` |
+| 线上产物标记 | `mvuInit` / `mag_variable_initiailized` / `mag_before_message_update` / `mag_command_parsed` 各 1 命中 |
+| 后端重建 | `docker compose build backend` → `up -d backend` → Up (healthy) |
+| 容器内验证 | `grep 'merged_variables = dict'` → `dict(db_variables)` ✅；`has_incoming_metadata` 三处 ✅ |
+| 模块导入冒烟 | `import app.api.silly_tavern` → import ok，`_chat_header` callable ✅（专防「漏 import 恒 500」那类） |
+| 后端日志 | 重启后 3 分钟内无 error / traceback / 500 |
+
+### ⚠️ 上线过程中查到的一件事（重要）
+
+核对产物时发现：**02:54:48 有另一个 agent 重建过 dist**，而我的源码当时改到一半。
+它抓走了 `legacy-st-sim.ts`(02:49)、`CharacterCardRenderer.tsx`(02:53:56) 的改动，
+但**漏掉了 `InlineCardRenderer.tsx`(02:54:57) —— 比构建时间晚 9 秒**。
+
+⇒ 即「内联轨的 `mag_variable_initiailized` 接线」在那次构建里**是缺的**。
+本批 03:13 的构建是完整超集，已覆盖修正。
+
+**教训（值得固化）**：多 agent 同工作区时，**构建产物可能抓到别人改到一半的源码**，
+且 `mag_` 这类字符串 grep 命中**不能证明接线完整**（常量对象在，调用点可能不在）。
+判据要看**入口指纹 + 每个改动的落点文件 mtime 是否早于构建时间**。
+
+### 上线范围的知悉事项
+
+本次上线**无法只带本批**。同工作区一次构建，以下未提交成果一并上线：
+
+- 前端：`Message.tsx`（变量变化面板）、`CharacterChat.tsx`（副 AI 反馈）、`card-script-runner.ts`
+- 后端：`mvu_cleanup.py`（新增，自动清理变量）、`mvu_secondary.py` 三参数+重试、
+  `roleplay_prompt_assembly.py` 的 `extra` 字符串修复与回看窗口可配、
+  `character_ext.py` 的 `WorldBook` 导入修复、`alembic 0068`（DB 已在 0068 head，无需再升级）
+
+回滚路径：dist 用 `dist-before/` 拷回；后端 `git checkout` 后重建镜像；DB 未做 schema 变更。
+
+---
+
 ## 7. 如实标注
 
-1. **未做真机验证。** 本批改了前端（`SillyTavernCompatRuntime.ts`、`legacy-st-sim.ts`、
+1. ~~**未做真机验证。**~~ → **已于 2026-10-05 03:1x 上线**，见 §6.5。
+   （原文本保留说明：本批改了前端（`SillyTavernCompatRuntime.ts`、`legacy-st-sim.ts`、
    `inline-st-globals.ts`、`CharacterCardRenderer.tsx`、`InlineCardRenderer.tsx`），
    **按 AGENTS.md 必须重建 dist 并确认容器服务新指纹**。本批**没有做 dist 重建**，
    所以这些改动**目前未上线**。重建要走 `VITE_OUT_DIR=dist_new_*` → 原地覆盖 → gzip，
