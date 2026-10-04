@@ -117,6 +117,16 @@ mvu_user_tail       skipped / detail=card declares update spec in prompt
 total_tokens_estimate=16120   token_budget=997440（无裁剪）
 ```
 
+**兜底分支的离线实证**（`_verify_fallback_offline.py`，在**容器内的运行代码**上执行，证明上线产物与源码一致）：
+```
+A_detects_spec= False   ← 装配结果无声明 → 判据 False → 会走注入兜底
+B_detects_spec= True    ← 有卡片声明 → 判据 True → 不注入
+FORBIDDEN_HITS= []      ← 兜底模板不含任何具体角色名/字段名
+EXAMPLE_PATHS= ['/分组/字段']   ALL_PLACEHOLDER= True   ← 唯一示例路径是占位式
+HAS_NEW_TOPLEVEL_RULE= True     HAS_NO_OBJECT_REPLACE_RULE= True
+TAIL_LEN= 584
+```
+
 ### 3.4 反证
 - **单元级**：把那行临时改回 `entry.depth or 4`，全量跑出 `1 failed, 1881 passed`，失败项正是 `test_real_depth_zero`（守门断言非空转）；改回即 `failed = 0`。
 - **机制级**：3.3 的前后对照本身即反证（同一会话同一端点，只因代码不同就从 `depth=4 + tail included` 变成 `depth=0 + tail skipped`）。
@@ -150,8 +160,12 @@ total_tokens_estimate=16120   token_budget=997440（无裁剪）
 2. **文档 §1.6 `extract_schema_defaults` 接入主提示词：未做**（会改所有 MVU 卡提示词长度，另立议题）。
 3. **`mvu_secondary.py:82-85` 副模型提示词里同样写死的别卡字段名：未做**（按你裁定"只改主装配"，登记为紧随的第二笔）。
 4. **旧会话脏数据：未处理**（按你裁定靠新会话绕开；且脏快照会自我强化，见 1.5）。
-5. **双卡回归只完成 1 张**：第二张 MVU 卡 `我被猫娘包围了！`（user40/42）与全部非 MVU 卡都属于 admin 之外的账号，我不代跑别人账号；现网 MVU 卡**都自带 `[mvu_update]` 声明**，"兜底分支"没有真实对应卡，只能由单测覆盖。
-6. **旁证缺口（未修，非本批范围）**：该卡 `剧情引导` 条目 615 tok 经 `strip_template_syntax` 剥离 EJS 后只剩 33 tok，疑似条件块整段被吞。
+5. **双卡回归只完成 1 张**：第二张 MVU 卡 `我被猫娘包围了！`（user40/42）与全部非 MVU 卡都属于 admin
+   之外的账号，我不代跑别人账号；现网 MVU 卡**都自带 `[mvu_update]` 声明**，"兜底分支"没有真实对应卡，
+   已由**容器内运行代码的离线实证**（§3.3）+ 单测双重覆盖，但仍缺一次真卡兜底实跑。
+6. **旁证缺口（未修，非本批范围）**：该卡 `剧情引导` 条目 615 tok 经 `strip_template_syntax` 剥离 EJS 后
+   只剩 33 tok，疑似条件块整段被吞。另见 `[WB-UNBOUND]` 告警（`galgame界面插件` 本书未绑定任何角色，
+   本次未注入）——按项目既有裁定，未绑定即漏网不是合法态。
 
 ## ⑤ 余额到位后的复跑步骤
 
