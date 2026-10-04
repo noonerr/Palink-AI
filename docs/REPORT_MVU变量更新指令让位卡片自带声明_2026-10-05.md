@@ -70,11 +70,18 @@ ST 里 `depth=0` 是**合法值**，语义 = "插到对话最末尾，紧贴模�
 
 ### 3.1 门禁
 ```
-1882 passed, 51 skipped, 108 warnings in 124.24s (0:02:04)     ← failed = 0
-90 passed, 28 skipped  ← 定向（新增文件 + depth 顺序 + st_semantics）
+主工作区（含并行会话在途改动）：1882 passed, 51 skipped, 0 failed     ← 2:04
+隔离 worktree（纯 HEAD 内容，本批实际提交物）：1820 passed, 51 skipped, 0 failed, EXIT=0  ← 2:06
+定向：90 passed / 28 skipped（新增文件 + depth 顺序 + st_semantics）；142 passed（含 MVU 相关五个文件）
 ```
+两个数字不同是因为隔离目录缺未入库的 `backend/data` 等文件，**两者都 failed=0**。
+⚠️ 隔离目录首轮曾出现 **4 errors**（`test_batch_a_st_compat_debt.py` 2 例、`test_batch_f_fixes.py` 1 例等），
+单独复跑全绿、重跑全量不复现，判定为全量并发下的偶发 fixture 问题，**与本批改动无关**
+（三者代码路径分别是 `use_probability` 导入往返 / 分支问候宏 / `world_info_depth`，均不在本批三个改动点上）。
+若日后见同款 error，判据是"单独复跑是否绿"，别直接当回归。
+
 新增 `backend/tests/test_worldbook_depth_zero_routing.py`（13 例）：depth=0 原样下发 / depth=None 兜 4 / 声明检测三例 / 兜底模板负断言（`桃汐|世界信息|好感度|性欲值|发情期|内心想法|服饰` 一律不得出现）。
-> 注：交接文档提到的 3 例 safe-delete 守卫红本次**未触发**（0 failed）。
+> 注：交接文档提到的 3 例 safe-delete 守卫红本次**未触发**。
 
 ### 3.2 上线确认（容器内 grep 字面量，不靠标识符——压缩会抹掉标识符）
 ```
