@@ -143,6 +143,7 @@ class MemoryService:
         memory_mode: str = "vector",
         exclude_message_ids: Optional[List[int]] = None,
         character_id: Optional[str] = None,
+        branch_scopes: Optional[List[tuple]] = None,
     ) -> ContextResponse:
         """
         获取增强上下文
@@ -177,9 +178,18 @@ class MemoryService:
             # 召回（scope=user/character）时，不同角色拿到的结果集不同，共用
             # 键会把 A 卡的召回结果喂给 B 卡 —— 正是本次要修的串味。
             char_key = character_id or ""
+            # [MEM-MIRROR 2026-10-05] 分叉点截断后，作用域不再是「branch_id 集合」
+            # 就够描述 —— 同一批 branch_ids 在不同分叉点下召回集不同，故截断键
+            # （branch:up_to 序列）也必须进缓存键，否则子分支会命中祖先分支的缓存。
+            scope_key = (
+                hashlib.sha256(
+                    ",".join(f"{b}:{u}" for b, u in branch_scopes).encode()
+                ).hexdigest()[:12]
+                if branch_scopes else "none"
+            )
             cache_key = (
                 f"context:{user_id}:{session_id or ''}:{char_key}:"
-                f"{branch_key}:{query_hash}:{exclude_key}"
+                f"{branch_key}:{scope_key}:{query_hash}:{exclude_key}"
             )
             cached = await self._get_cache(cache_key)
             if cached is not None:
@@ -196,6 +206,7 @@ class MemoryService:
                 memory_mode=memory_mode,
                 exclude_message_ids=exclude_message_ids,
                 character_id=character_id,
+                branch_scopes=branch_scopes,
             )
 
             result = await asyncio.to_thread(self.retriever.retrieve, request)

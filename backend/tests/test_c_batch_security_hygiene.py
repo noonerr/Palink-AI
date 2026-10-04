@@ -77,6 +77,10 @@ def mem_env(db_session, _engine, monkeypatch):
         bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False
     )
     monkeypatch.setattr(ce_mod, "SessionLocal", test_session_factory)
+    # [MEM-MIRROR 2026-10-05] 统一镜像同步模块自带 SessionLocal，后台重嵌线程
+    # 从这里开库，必须一并接管到测试引擎。
+    from app.memory_module import mirror as mirror_mod
+    monkeypatch.setattr(mirror_mod, "SessionLocal", test_session_factory)
 
     MemoryStorage(db_session)
     return db_session
@@ -245,7 +249,12 @@ class TestMemSyncOnSwitch:
         assert _mem_rows(db, sess.id, msg.id) == []
 
     def test_source_contract_tag_present(self):
-        """源码契约：switch_message_swipe 含 [MEM-SYNC-ON-SWITCH] 同步钩子。"""
+        """源码契约：switch_message_swipe 含 [MEM-SYNC-ON-SWITCH] 同步钩子。
+
+        [MEM-MIRROR 2026-10-05] 重嵌逻辑已统一进 memory_module.mirror，
+        切换体内不再直接出现 store_memory 字面量（改为调 sync_message_memory），
+        故此断言改为校验统一入口，且断言真正写库在 mirror 模块内发生。
+        """
         src_path = os.path.join(_BACKEND_DIR, "app", "api", "character_ext.py")
         src = open(src_path, encoding="utf-8").read()
         assert "[MEM-SYNC-ON-SWITCH]" in src, "character_ext.py 缺少 swipe 切换钩子标签"
@@ -253,7 +262,14 @@ class TestMemSyncOnSwitch:
         assert idx != -1, "switch_message_swipe 函数未找到"
         body = src[idx:]
         assert "delete_by_message_id" in body, "切换钩子应先删旧记忆行"
-        assert "store_memory" in body, "切换钩子应按新文本 upsert 记忆"
+        assert "sync_message_memory" in body, "切换钩子应调统一镜像同步入口"
+
+        mirror_src = open(
+            os.path.join(_BACKEND_DIR, "app", "memory_module", "mirror.py"),
+            encoding="utf-8",
+        ).read()
+        assert "store_memory" in mirror_src, "统一镜像同步模块内应真正写库"
+        assert "delete_by_message_id" in mirror_src, "统一镜像同步模块内应删旧行"
 
 
 # ─────────────────────────────────────────────────────────────────────

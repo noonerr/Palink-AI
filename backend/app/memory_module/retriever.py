@@ -58,6 +58,7 @@ class MemoryRetriever:
                 limit=recent_limit + len(exclude_ids),
                 branch_ids=request.branch_ids,
                 character_id=request.character_id,
+                branch_scopes=request.branch_scopes,
             )
 
             # 去重，保留最新
@@ -124,6 +125,7 @@ class MemoryRetriever:
                     session_id=request.session_id,
                     branch_ids=request.branch_ids,
                     character_id=request.character_id,
+                    branch_scopes=request.branch_scopes,
                 )
                 
                 if semantic_candidates:

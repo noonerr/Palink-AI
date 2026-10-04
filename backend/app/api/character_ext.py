@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..core import get_db, settings
 from ..core.database import SessionLocal
@@ -37,6 +37,7 @@ from ..character_card import create_png_with_chara_card, convert_character_to_ch
 from ..services.character_import_service import CharacterImportService, PngCharacterCardParser
 from ..memory_module.service import MemoryService
 from ..memory_module.storage import delete_by_message_id
+from ..memory_module.mirror import sync_message_memory
 from ..schemas.character import character_to_dict
 from ..utils import normalize_image_url, get_default_ai_model, _is_public_http_url, clean_memory_content
 from ..services.inference_dispatcher import (
@@ -612,6 +613,40 @@ def _get_ancestor_branch_ids(db: Session, session_id: str, branch_id: str) -> li
     if not result:
         return []
     return [row[0] for row in reversed(result)]
+
+
+def _get_ancestor_branch_scopes(db: Session, session_id: str, branch_id: str) -> list:
+    """[MEM-MIRROR 2026-10-05] 返回 [(branch_id, up_to_message_id)]，root→self。
+
+    与 _get_full_branch_history_paged 的 fork_limits 同源同语义：沿 parent 链回溯，
+    每个祖先分支被「子分支的 parent_message_id（分叉点）」截断；当前分支 up_to=None。
+    供向量记忆召回按分叉点截断，使记忆可见范围与对话历史严格对齐
+    （否则子分支会召回到父分支「已放弃的剧情」）。
+    """
+    from ..models.character import CharacterChatSessionBranch
+
+    branch = db.query(CharacterChatSessionBranch).filter(
+        CharacterChatSessionBranch.id == branch_id,
+        CharacterChatSessionBranch.session_id == session_id,
+    ).first()
+    if not branch:
+        return []
+
+    scopes: list[tuple[str, int | None]] = []
+    cur = branch
+    up_to: int | None = None
+    while cur:
+        scopes.append((cur.id, up_to))
+        if cur.parent_branch_id:
+            up_to = cur.parent_message_id
+            cur = db.query(CharacterChatSessionBranch).filter(
+                CharacterChatSessionBranch.id == cur.parent_branch_id,
+                CharacterChatSessionBranch.session_id == session_id,
+            ).first()
+        else:
+            break
+    scopes.reverse()  # root → self
+    return scopes
 
 
 def _get_full_branch_history_paged(
@@ -2963,6 +2998,13 @@ async def delete_character_message(
     db.delete(msg)
     db.commit()
 
+    # [MVU-CLEANUP 2026-10-05] 删楼后恢复变量 —— 等价 MVU 插件在 MESSAGE_DELETED 上的
+    # ``Ya()``：删消息会让"保留窗口"往回滑，被清过的楼层可能滑进需要变量的范围，
+    # 此处从最近锚点重演把它们补回来。详见 app/services/mvu_cleanup.py。
+    from ..services.mvu_cleanup import run_restore_for_session
+
+    run_restore_for_session(db, session_id)
+
     # 触发 ST DATA_ROOT 同步（后台非阻塞）
     if session.character:
         try:
@@ -3346,8 +3388,10 @@ async def edit_character_message(
         swipe_info=req.swipe_info,
     )
     # [MEM-SYNC-ON-EDIT] 编辑即同步：记忆 = 消息当前内容的镜像。
-    # 内容(strip)变化 → 先删该消息全部记忆行，commit 后按新文本后台重嵌；
+    # 内容(strip)变化 → 先删该消息全部记忆行（请求内），commit 后按新文本后台重嵌；
     # 内容未变零操作；锁定消息已在上方 403 拦截（防御性再判一次）。
+    # [MEM-MIRROR 2026-10-05] 后台重嵌改为 CAS on 正文：编辑后紧接着切候选/再编辑时，
+    # 先到的后台任务发现正文已被改写 → 放弃写入，杜绝旧版本文本残留。
     _edited_for_reembed = None
     if not getattr(msg, "is_locked", False) and (msg.content or "").strip() != old_content_before.strip():
         delete_by_message_id(db, session_id, message_id)
@@ -3355,39 +3399,25 @@ async def edit_character_message(
     # 捕获标量，避免后台线程访问已关闭请求 Session 的 ORM 对象
     _edit_branch_id = msg.branch_id
     _edit_user_id = user.id
+    _edit_memory_mode = _resolve_memory_mode(db, user.id)
+    _edit_character_id = str(session.character_id) if session.character_id else None
     db.commit()
 
     if _edited_for_reembed is not None:
         _reembed_role, _reembed_text = _edited_for_reembed
 
         def _reembed_edited_message():
-            re_db = SessionLocal()
-            try:
-                svc = MemoryService(re_db)
-                if not svc.is_available():
-                    return
-                text_for_mem = (
-                    clean_memory_content(_reembed_text)
-                    if _reembed_role == "assistant"
-                    else _reembed_text
-                )
-                if text_for_mem.strip():
-                    svc.store_memory(
-                        user_id=_edit_user_id,
-                        session_id=session_id,
-                        role=_reembed_role,
-                        content=text_for_mem,
-                        branch_id=_edit_branch_id,
-                        message_id=message_id,
-                        # [T-跨卡串味修复] 会话已查（session.character_id）
-                        character_id=str(session.character_id) if session.character_id else None,
-                    )
-                    re_db.commit()
-            except Exception:
-                re_db.rollback()
-                logger.warning("[MEM-SYNC-ON-EDIT] re-embed after edit failed (message=%s)", message_id)
-            finally:
-                re_db.close()
+            sync_message_memory(
+                user_id=_edit_user_id,
+                session_id=session_id,
+                message_id=message_id,
+                role=_reembed_role,
+                captured_raw=_reembed_text,
+                branch_id=_edit_branch_id,
+                # [T-跨卡串味修复] 会话已查（session.character_id）
+                character_id=_edit_character_id,
+                memory_mode=_edit_memory_mode,
+            )
 
         asyncio.create_task(asyncio.to_thread(_reembed_edited_message))
 
@@ -4314,6 +4344,7 @@ async def smart_card_generate(
                 replace_placeholders=_replace_placeholders,
                 get_full_branch_history=_get_full_branch_history if req.include_history else (lambda *_args, **_kwargs: []),
                 get_ancestor_branch_ids=_get_ancestor_branch_ids,
+                get_ancestor_branch_scopes=_get_ancestor_branch_scopes,
                 contains_chinese=_contains_chinese,
                 apply_plugin_regex_scripts=_apply_plugin_regex_scripts,
                 apply_regex_scripts=_apply_regex_scripts,
@@ -4642,6 +4673,7 @@ async def _character_chat_impl(
             replace_placeholders=_replace_placeholders,
             get_full_branch_history=_get_full_branch_history,
             get_ancestor_branch_ids=_get_ancestor_branch_ids,
+            get_ancestor_branch_scopes=_get_ancestor_branch_scopes,
             contains_chinese=_contains_chinese,
             apply_plugin_regex_scripts=_apply_plugin_regex_scripts,
             apply_regex_scripts=_apply_regex_scripts,
@@ -4826,13 +4858,17 @@ async def _character_chat_impl(
             # 不剥离导致模型输出 <UpdateVariable> 时整段泄漏进正文。
             if force and not mvu_variables_saved:
                 try:
-                    new_vars, mvu_logs = apply_mvu_reply_to_session(
+                    new_vars, mvu_logs, mvu_patches = apply_mvu_reply_to_session(
                         save_db, char.id, session_id, final_raw
                     )
                     if new_vars is not None:
                         msg_extra["variables"] = new_vars
                         mvu_latest_variables = new_vars
                         mvu_variables_saved = True
+                        # [MVU-CLEANUP 2026-10-05] 留存本轮补丁，供清理后重演恢复用
+                        # （正文里的 <UpdateVariable> 已剥离且不留原文）。
+                        if mvu_patches:
+                            msg_extra["mvu_patch"] = mvu_patches
                 except Exception as mvu_err:
                     logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
             elif mvu_latest_variables is not None:
@@ -4910,6 +4946,13 @@ async def _character_chat_impl(
             except Exception as persist_error:
                 save_db.rollback()
                 logger.warning(f"Failed to persist assistant snapshot: {persist_error}")
+
+        # [MVU-CLEANUP 2026-10-05] 自动清理变量 —— 等价 MVU 插件在 MESSAGE_RECEIVED 上的
+        # 「每 5 楼清一段」。快照已在上面提交，此处楼层数是最新的。
+        # 详见 app/services/mvu_cleanup.py。
+        from ..services.mvu_cleanup import run_auto_cleanup_for_session
+
+        run_auto_cleanup_for_session(save_db, session_id)
 
         # [P4-模型自主出图] 与 WS 主路径同套门控：用户级开关（复用
         # auto_generate_chat_images）+ 服务商就绪才合并内置出图工具；关闭时
@@ -5292,6 +5335,7 @@ async def debug_prompt_assembly(
             replace_placeholders=_replace_placeholders,
             get_full_branch_history=_get_full_branch_history,
             get_ancestor_branch_ids=_get_ancestor_branch_ids,
+            get_ancestor_branch_scopes=_get_ancestor_branch_scopes,
             contains_chinese=_contains_chinese,
             apply_plugin_regex_scripts=_apply_plugin_regex_scripts,
             apply_regex_scripts=_apply_regex_scripts,
@@ -5917,6 +5961,13 @@ async def _run_action_stream(
                     except Exception as mem_err:
                         save_db.rollback()
                         logger.warning(f"[MEM-UPSERT] action stream memory update failed: {mem_err}")
+                # [MVU-CLEANUP 2026-10-05] 自动清理变量 —— 等价 MVU 插件在
+                # MESSAGE_RECEIVED 上的「每 5 楼清一段」。消息已在 persist_fn 内提交，
+                # 此处楼层数是最新的。三个 SSE 动作流入口（普通/regenerate/swipe/continue）
+                # 都经过这里，故只此一处。详见 app/services/mvu_cleanup.py。
+                from ..services.mvu_cleanup import run_auto_cleanup_for_session
+
+                run_auto_cleanup_for_session(save_db, session_id)
                 if message_id is not None:
                     yield f"data: {json.dumps({'type': 'final_content', 'content': final_content, 'message_id': message_id}, ensure_ascii=False)}\n\n"
             elif not final_body and (result.full_reasoning or "").strip():
@@ -5943,6 +5994,7 @@ def _action_deps() -> PromptAssemblyDeps:
         replace_placeholders=_replace_placeholders,
         get_full_branch_history=_get_full_branch_history,
         get_ancestor_branch_ids=_get_ancestor_branch_ids,
+        get_ancestor_branch_scopes=_get_ancestor_branch_scopes,
         contains_chinese=_contains_chinese,
         apply_plugin_regex_scripts=_apply_plugin_regex_scripts,
         apply_regex_scripts=_apply_regex_scripts,
@@ -6026,8 +6078,9 @@ async def continue_session(
         # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
         # （SSE 动作流与 WS 主路径共用同一实现；先解析，追加正文前剥离标签）
         _mvu_new_vars: Optional[dict] = None
+        _mvu_patches: Optional[list] = None
         try:
-            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
                 save_db, char.id, session_id, result.full_content
             )
         except Exception as mvu_err:
@@ -6052,6 +6105,8 @@ async def continue_session(
             patched_extra.setdefault("reasoning_type", "thinking")
         if _mvu_new_vars is not None:
             patched_extra["variables"] = _mvu_new_vars
+            if _mvu_patches:
+                patched_extra["mvu_patch"] = _mvu_patches
         # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）。
         # 注意保留原有"有内容才重写 extra"的条件——测试桩/旧调用方的 assembly 可能
         # 没有 ext_prompts_evidence 属性，此时行为必须与改前逐字节一致。
@@ -6171,8 +6226,9 @@ async def regenerate_message(
         # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
         # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
         _mvu_new_vars: Optional[dict] = None
+        _mvu_patches: Optional[list] = None
         try:
-            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
                 save_db, char.id, session_id, result.full_content
             )
         except Exception as mvu_err:
@@ -6197,6 +6253,8 @@ async def regenerate_message(
             current_extra["reasoning_type"] = "thinking"
         if _mvu_new_vars is not None:
             current_extra["variables"] = _mvu_new_vars
+            if _mvu_patches:
+                current_extra["mvu_patch"] = _mvu_patches
         # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）
         _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
         if _ext_ev is not None:
@@ -6271,6 +6329,13 @@ async def trigger_mvu_secondary(
 
     # 角色卡 extensions + character_book 合并（对齐 websocket.py persist_snapshot 逻辑）
     from sqlalchemy.orm import selectinload
+    # [MVU-SECONDARY-NAMEERROR-FIX 2026-10-05] 本函数用了 WorldBook 却没导入 →
+    # `NameError: name 'WorldBook' is not defined` → 端点**恒 500**，
+    # 即"副 AI 变量更新"按钮自诞生起从未成功过（真机探针实测：
+    # POST /api/character-sessions/{sid}/mvu-secondary → HTTP 500）。
+    # 本文件其余 3 处 WorldBook 用法（:2209 / :2543 / :2652）都是局部导入，
+    # 唯独这处漏了；按同一惯例补上。此为存量 bug，非本批引入（HEAD 同样缺）。
+    from ..models.worldbook import WorldBook
     _mvu_char = (
         db.query(Character)
         .options(selectinload(Character.world_books).selectinload(WorldBook.entries))
@@ -6323,12 +6388,35 @@ async def trigger_mvu_secondary(
 
     # 调用副模型生成 patches
     from app.services.mvu_engine import extract_schema_defaults, apply_patches
-    from app.services.mvu_secondary import run_secondary_mvu
+    from app.services.mvu_secondary import (
+        DEFAULT_SECONDARY_MAX_TOKENS,
+        DEFAULT_SECONDARY_RETRIES,
+        DEFAULT_SECONDARY_TEMPERATURE,
+        run_secondary_mvu,
+    )
     schema_defaults = extract_schema_defaults(
         char_ext_raw.get("tavern_helper") if isinstance(char_ext_raw, dict) else None
     )
     if not schema_defaults:
         return {"applied": False, "reason": "no_schema", "variables": cur_vars, "logs": []}
+
+    # [MVU-SECONDARY-PARAMS 2026-10-05] 用户级采样参数（NULL = 用代码内默认）。
+    # 写入侧已夹紧（api/users.py），此处再兜一层默认值以防历史脏数据。
+    _sec_temperature = (
+        us.mvu_secondary_temperature
+        if us.mvu_secondary_temperature is not None
+        else DEFAULT_SECONDARY_TEMPERATURE
+    )
+    _sec_max_tokens = (
+        us.mvu_secondary_max_tokens
+        if us.mvu_secondary_max_tokens is not None
+        else DEFAULT_SECONDARY_MAX_TOKENS
+    )
+    _sec_retries = (
+        us.mvu_secondary_retries
+        if us.mvu_secondary_retries is not None
+        else DEFAULT_SECONDARY_RETRIES
+    )
 
     try:
         patches, logs = await run_secondary_mvu(
@@ -6336,6 +6424,9 @@ async def trigger_mvu_secondary(
             stat_data=cur_vars,
             story_text=story_text,
             schema_defaults=schema_defaults,
+            temperature=_sec_temperature,
+            max_tokens=_sec_max_tokens,
+            retries=_sec_retries,
         )
     except Exception as exc:
         logger.warning("MVU secondary manual trigger failed: %s", exc)
@@ -6364,6 +6455,50 @@ async def trigger_mvu_secondary(
         )
 
     return {"applied": bool(applied), "reason": "ok" if applied else "no_change", "variables": new_vars, "logs": logs}
+
+
+class MvuCleanupRequest(BaseModel):
+    """手动清理请求。``depth`` 语义与插件弹窗一致：保留末尾多少楼不清。"""
+
+    depth: int = Field(default=10, ge=0, le=100_000)
+
+
+@router_sessions.post("/{session_id}/mvu-cleanup")
+async def trigger_mvu_cleanup(
+    session_id: str,
+    req: MvuCleanupRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """手动清理旧楼层变量 —— 等价 MVU 插件设置面板的「清除旧楼层变量」按钮。
+
+    插件原文：弹窗问"清到倒数第几楼"（默认 10）→ ``Za(1, chat.length - 1 - n, 快照间隔)``。
+    本端点行为一致：**只看 depth，不看「启用自动清理」开关**（插件的按钮同样不检查），
+    且**不删整条变量**，只摘掉 ``stat_data`` 等大字段、每 ``快照保留间隔`` 楼留一个锚点。
+    """
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from ..services.mvu_cleanup import _resolve_session_scope, run_manual_cleanup
+
+    scope = _resolve_session_scope(db, session_id)
+    character_id, branch_id, _uid = (
+        scope if scope else (session.character_id, None, user.id)
+    )
+    cleaned = run_manual_cleanup(
+        db,
+        session_id=session_id,
+        branch_id=branch_id,
+        character_id=character_id,
+        user_id=user.id,
+        depth=req.depth,
+    )
+    db.commit()
+    return {"cleaned": cleaned, "depth": req.depth}
 
 
 @router_sessions.post("/{session_id}/swipe")
@@ -6446,8 +6581,9 @@ async def swipe_message(
         # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
         # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
         _mvu_new_vars: Optional[dict] = None
+        _mvu_patches: Optional[list] = None
         try:
-            _mvu_new_vars, _mvu_logs = apply_mvu_reply_to_session(
+            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
                 save_db, char.id, session_id, result.full_content
             )
         except Exception as mvu_err:
@@ -6471,6 +6607,8 @@ async def swipe_message(
             current_extra["reasoning_type"] = "thinking"
         if _mvu_new_vars is not None:
             current_extra["variables"] = _mvu_new_vars
+            if _mvu_patches:
+                current_extra["mvu_patch"] = _mvu_patches
         # [PROMPT-EVERY-TURN 2026-10-02] 本轮 ext_prompts 证据落 extra（0 条也显式写）
         _ext_ev = getattr(assembly, "ext_prompts_evidence", None)
         if _ext_ev is not None:
@@ -6545,6 +6683,19 @@ async def get_message_swipes(
     }
 
 
+def _resolve_memory_mode(db: Session, user_id: int) -> str:
+    """解析用户记忆档位（与 _character_chat_impl :4519-4522 同源同默认值）。
+
+    无设置行时按 "vector" 走，与 UserSetting.memory_mode 列默认值一致
+    （2026-09-23 起不再是 "disabled"）。供编辑/切换等非动作流写入路径复用，
+    保证 memory_mode 语义全局一致（[MEM-MIRROR] 统一守卫）。
+    """
+    setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+    if setting and setting.memory_mode:
+        return setting.memory_mode
+    return "vector"
+
+
 @router_sessions.patch("/{session_id}/messages/{message_id}/swipe")
 async def switch_message_swipe(
     session_id: str,
@@ -6588,8 +6739,10 @@ async def switch_message_swipe(
         swipe_id=new_swipe_id,
     ))
     # [MEM-SYNC-ON-SWITCH] 切换即同步：记忆 = 消息当前内容的镜像。
-    # 切换导致内容(strip)变化 → 先删该消息全部记忆行，commit 后按新文本后台重嵌；
-    # 内容未变（重复切换到同一 swipe）零操作。
+    # 切换导致内容(strip)变化 → 先删该消息全部记忆行（请求内，保证召回即刻正确），
+    # commit 后按新文本后台重嵌；内容未变（重复切换到同一 swipe）零操作。
+    # [MEM-MIRROR 2026-10-05] 后台重嵌改为 CAS on 正文：并发/快速连点时，先到的
+    # 后台任务发现正文已被更新的切换改写 → 放弃写入，杜绝「旧版本文本永久残留」。
     _switched_for_reembed = None
     if (msg.content or "").strip() != old_content_before.strip():
         delete_by_message_id(db, session_id, message_id)
@@ -6597,6 +6750,8 @@ async def switch_message_swipe(
     # 捕获标量，避免后台线程访问已关闭请求 Session 的 ORM 对象
     _switch_branch_id = msg.branch_id
     _switch_user_id = user.id
+    _switch_memory_mode = _resolve_memory_mode(db, user.id)
+    _switch_character_id = str(session.character_id) if session.character_id else None
     db.commit()
     db.refresh(msg)
 
@@ -6604,33 +6759,17 @@ async def switch_message_swipe(
         _reembed_role, _reembed_text = _switched_for_reembed
 
         def _reembed_switched_message():
-            re_db = SessionLocal()
-            try:
-                svc = MemoryService(re_db)
-                if not svc.is_available():
-                    return
-                text_for_mem = (
-                    clean_memory_content(_reembed_text)
-                    if _reembed_role == "assistant"
-                    else _reembed_text
-                )
-                if text_for_mem.strip():
-                    svc.store_memory(
-                        user_id=_switch_user_id,
-                        session_id=session_id,
-                        role=_reembed_role,
-                        content=text_for_mem,
-                        branch_id=_switch_branch_id,
-                        message_id=message_id,
-                        # [T-跨卡串味修复] 会话已查（session.character_id）
-                        character_id=str(session.character_id) if session.character_id else None,
-                    )
-                    re_db.commit()
-            except Exception:
-                re_db.rollback()
-                logger.warning("[MEM-SYNC-ON-SWITCH] re-embed after switch failed (message=%s)", message_id)
-            finally:
-                re_db.close()
+            sync_message_memory(
+                user_id=_switch_user_id,
+                session_id=session_id,
+                message_id=message_id,
+                role=_reembed_role,
+                captured_raw=_reembed_text,
+                branch_id=_switch_branch_id,
+                # [T-跨卡串味修复] 会话已查（session.character_id）
+                character_id=_switch_character_id,
+                memory_mode=_switch_memory_mode,
+            )
 
         asyncio.create_task(asyncio.to_thread(_reembed_switched_message))
     return {

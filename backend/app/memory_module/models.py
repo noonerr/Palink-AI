@@ -5,7 +5,7 @@
 from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Index, text
 from sqlalchemy.dialects.postgresql import ARRAY, FLOAT
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pydantic import BaseModel
 
 
@@ -123,6 +123,10 @@ class ContextRequest(BaseModel):
     # 调用方（角色扮演装配链）传当前会话的 character_id，把过滤落到 SQL。
     # None = 调用方不掌握角色（如普通聊天 / ST 向量集合），行为与修复前一致。
     character_id: Optional[str] = None
+    # [MEM-MIRROR 2026-10-05] 分支作用域 [(branch_id, up_to_message_id)]，root→self。
+    # 提供时按分叉点截断召回（与消息历史 fork_limits 同语义）：某祖先分支在分叉点
+    # 之后写入的记忆对子分支不可见。None = 沿用 branch_ids 的旧行为（全祖先链可见）。
+    branch_scopes: Optional[List[Tuple[str, Optional[int]]]] = None
 
 
 class ContextResponse(BaseModel):

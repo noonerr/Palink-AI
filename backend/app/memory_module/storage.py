@@ -695,6 +695,7 @@ class MemoryStorage:
         session_id: Optional[str] = None,
         branch_ids: Optional[List[str]] = None,
         character_id: Optional[str] = None,
+        branch_scopes: Optional[List[Tuple[str, Optional[int]]]] = None,
     ) -> List[Tuple[MemoryEntry, float]]:
         """
         语义相似度搜索（SQLite版本，在Python中计算相似度）
@@ -707,6 +708,13 @@ class MemoryStorage:
                   过滤（这是修复前的串味源头：原先退化成用户级全量召回）
                 - 两者都为空                → 仍退回用户级，但**显式告警**，
                   见 ``last_search_scope``（静默降级是本项目既往教训）
+            branch_scopes: [MEM-MIRROR 2026-10-05] 分支作用域 [(branch_id, up_to_message_id)]，
+                root→self 顺序，up_to 为该分支的分叉点（子分支的 parent_message_id，
+                根分支/主聊天为 None）。提供时按分叉点截断——与消息历史
+                ``_get_full_branch_history_paged`` 的 fork_limits 同语义：某祖先分支
+                在分叉点之后写入的记忆，对子分支不可见（否则新分支会召回到父分支
+                "已放弃的剧情"）。message_id 为 NULL 的记忆行在「被截断的祖先分支」
+                下因无法定位楼层而排除（宁缺勿错）；branch_id IS NULL 的主聊天行保留可见。
 
         返回:
             [(记忆条目, 相似度分数), ...]
@@ -733,19 +741,51 @@ class MemoryStorage:
                 if (character_id and not session_id) else ""
             )
 
-            if session_id and branch_ids:
-                sql = text("""
-                    SELECT 
-                        id, user_id, session_id, branch_id, character_id, role, content,
-                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
-                    FROM conversation_memories
-                    WHERE user_id = :user_id AND session_id = :session_id
-                        AND (branch_id IN :branch_ids OR branch_id IS NULL)
-                        AND embedding IS NOT NULL
-                    ORDER BY created_at DESC
-                    LIMIT 200
-                """).bindparams(bindparam('branch_ids', expanding=True))
-                params = {"user_id": user_id, "session_id": session_id, "branch_ids": branch_ids}
+            if session_id and (branch_scopes is not None or branch_ids):
+                sql = None
+                params = {"user_id": user_id, "session_id": session_id}
+                if branch_scopes is not None:
+                    # [MEM-MIRROR 2026-10-05] 按分叉点截断：每个作用域 (bid, up_to)。
+                    # 截断条件镜像消息历史 fork_where：某祖先分支的记忆只有
+                    # message_id <= 分叉点才对子分支可见。message_id IS NULL 的行
+                    # 在被截断分支下无法定位楼层 → 被 `message_id <= up_to` 排除
+                    # （NULL 比较为 NULL=假，宁缺勿错）；branch_id IS NULL 的主聊天
+                    # 行保留可见（trunk 是共同祖先，维持既有行为）。
+                    # 空列表 = 主聊天（无分支）→ 只认 trunk，不再退化成全会话全分支。
+                    clauses = []
+                    for i, (bid, up_to) in enumerate(branch_scopes):
+                        if up_to is None:
+                            clauses.append(f"branch_id = :bs{i}")
+                            params[f"bs{i}"] = bid
+                        else:
+                            clauses.append(f"(branch_id = :bs{i} AND message_id <= :bsm{i})")
+                            params[f"bs{i}"] = bid
+                            params[f"bsm{i}"] = up_to
+                    scope_where = (" OR ".join(clauses)) if clauses else "1 = 0"
+                    sql = text(f"""
+                        SELECT
+                            id, user_id, session_id, branch_id, character_id, role, content,
+                            importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id
+                            AND (branch_id IS NULL OR ({scope_where}))
+                            AND embedding IS NOT NULL
+                        ORDER BY created_at DESC
+                        LIMIT 200
+                    """)
+                else:
+                    sql = text("""
+                        SELECT
+                            id, user_id, session_id, branch_id, character_id, role, content,
+                            importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id
+                            AND (branch_id IN :branch_ids OR branch_id IS NULL)
+                            AND embedding IS NOT NULL
+                        ORDER BY created_at DESC
+                        LIMIT 200
+                    """).bindparams(bindparam('branch_ids', expanding=True))
+                    params["branch_ids"] = branch_ids
             elif session_id:
                 sql = text("""
                     SELECT 
@@ -857,6 +897,7 @@ class MemoryStorage:
         branch_id: Optional[str] = None,
         branch_ids: Optional[List[str]] = None,
         character_id: Optional[str] = None,
+        branch_scopes: Optional[List[Tuple[str, Optional[int]]]] = None,
     ) -> List[MemoryEntry]:
         """获取最近记忆（时间倒序）
 
@@ -871,23 +912,47 @@ class MemoryStorage:
                 " AND character_id = :character_id"
                 if (character_id and not session_id) else ""
             )
-            if session_id and branch_ids:
-                sql = text("""
-                    SELECT
-                        id, user_id, session_id, branch_id, role, content,
-                        importance_score, topics, tokens_count, created_at, message_id
-                    FROM conversation_memories
-                    WHERE user_id = :user_id AND session_id = :session_id
-                        AND (branch_id IN :branch_ids OR branch_id IS NULL)
-                    ORDER BY created_at DESC
-                    LIMIT :limit
-                """).bindparams(bindparam('branch_ids', expanding=True))
+            if session_id and (branch_scopes is not None or branch_ids):
                 params = {
                     "user_id": user_id,
                     "session_id": session_id,
-                    "branch_ids": branch_ids,
                     "limit": limit,
                 }
+                if branch_scopes is not None:
+                    # [MEM-MIRROR 2026-10-05] 与 semantic_search 同口径的分叉点截断
+                    # （空列表 = 主聊天 → 只认 trunk）
+                    clauses = []
+                    for i, (bid, up_to) in enumerate(branch_scopes):
+                        if up_to is None:
+                            clauses.append(f"branch_id = :bs{i}")
+                            params[f"bs{i}"] = bid
+                        else:
+                            clauses.append(f"(branch_id = :bs{i} AND message_id <= :bsm{i})")
+                            params[f"bs{i}"] = bid
+                            params[f"bsm{i}"] = up_to
+                    scope_where = (" OR ".join(clauses)) if clauses else "1 = 0"
+                    sql = text(f"""
+                        SELECT
+                            id, user_id, session_id, branch_id, role, content,
+                            importance_score, topics, tokens_count, created_at, message_id
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id
+                            AND (branch_id IS NULL OR ({scope_where}))
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """)
+                else:
+                    sql = text("""
+                        SELECT
+                            id, user_id, session_id, branch_id, role, content,
+                            importance_score, topics, tokens_count, created_at, message_id
+                        FROM conversation_memories
+                        WHERE user_id = :user_id AND session_id = :session_id
+                            AND (branch_id IN :branch_ids OR branch_id IS NULL)
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """).bindparams(bindparam('branch_ids', expanding=True))
+                    params["branch_ids"] = branch_ids
             elif session_id and branch_id:
                 sql = text("""
                     SELECT

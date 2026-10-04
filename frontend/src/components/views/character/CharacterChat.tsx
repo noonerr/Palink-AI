@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 import { api, invalidateCache } from '@/services/api';
 import { generationEngine } from '@/services/generation-engine';
 import { toast } from 'sonner';
+import { resolveMvuSecondaryFeedback } from '@/components/views/character/mvuSecondaryFeedback';
 import { useVirtualKeyboard } from '@/hooks/useVirtualKeyboard';
 import { Message } from '@/components/ui/custom/Message';
 import { useRoleplayTheme } from '@/contexts/RoleplayThemeContext';
@@ -1323,6 +1324,10 @@ export function CharacterChat(props: CharacterChatProps) {
   // 稳定回调：按消息 id 定位索引，避免每条消息每帧创建新闭包导致 Message memo 失效
   const displayedMessagesRef = useRef(displayedMessages);
   displayedMessagesRef.current = displayedMessages;
+  // [MEM-MIRROR 2026-10-05] 候选切换 in-flight 去重：同一消息的 swipe PATCH 未回来前
+  // 忽略再次点击。服务端已用 CAS 兜底（正文被改写则放弃旧写入），此处是纵深防御，
+  // 同时避免用户连点造成无谓请求 + 短暂显示中间态。
+  const swipeInFlightRef = useRef<Set<string>>(new Set());
   const wrappedHandleRegenerateRef = useRef(wrappedHandleRegenerate);
   wrappedHandleRegenerateRef.current = wrappedHandleRegenerate;
   const handleEditMessageRef = useRef(handleEditMessage);
@@ -1355,19 +1360,17 @@ export function CharacterChat(props: CharacterChatProps) {
           detail: { sessionId: selectedSession.id, variables: res.variables },
         }));
       }
-      if (res?.applied) {
-        toast.success('变量已更新');
+      // [MVU-SECONDARY-FEEDBACK 2026-10-05] reason → 提示文案的映射抽到
+      // mvuSecondaryFeedback.ts（纯函数，有单测钉住）。原实现内联的 if/else 链
+      // 漏了 `call_failed`，会把"副模型调用失败"显示成"变量更新完成（无变化）"
+      // —— 用户被误导以为成功。抽出来后可穷举后端 reason 全集做回归。
+      const feedback = resolveMvuSecondaryFeedback(res?.applied, res?.reason);
+      if (feedback.level === 'success') {
+        toast.success(feedback.message);
+      } else if (feedback.level === 'error') {
+        toast.error(feedback.message);
       } else {
-        const reason = res?.reason || 'no_patches';
-        if (reason === 'secondary_disabled' || reason === 'secondary_model_missing') {
-          toast.error('副 AI 未配置，请在设置中开启并填写模型');
-        } else if (reason === 'no_schema') {
-          toast.error('角色卡无变量系统（无 tavern_helper schema）');
-        } else if (reason === 'no_patches') {
-          toast.info('副 AI 未解析出变量变化');
-        } else {
-          toast.info('变量更新完成（无变化）');
-        }
+        toast.info(feedback.message);
       }
     } catch (e: any) {
       console.error('Manual MVU secondary failed:', e);
@@ -1401,6 +1404,10 @@ export function CharacterChat(props: CharacterChatProps) {
       ? (current >= swipes.length - 1 ? 0 : current + 1)
       : (current <= 0 ? swipes.length - 1 : current - 1);
     const persistedMessageId = Number(messageId);
+    // [MEM-MIRROR 2026-10-05] 同一条消息的切换未完成前不重复发（防连点竞态）
+    const flightKey = String(messageId);
+    if (swipeInFlightRef.current.has(flightKey)) return;
+    swipeInFlightRef.current.add(flightKey);
     void (async () => {
       try {
         if (Number.isInteger(persistedMessageId) && persistedMessageId > 0) {
@@ -1416,6 +1423,8 @@ export function CharacterChat(props: CharacterChatProps) {
       } catch (e) {
         console.error('Swipe message failed:', e);
         toast.error('切换候选回复失败');
+      } finally {
+        swipeInFlightRef.current.delete(flightKey);
       }
     })();
   }, [selectedSession, setMessages]);

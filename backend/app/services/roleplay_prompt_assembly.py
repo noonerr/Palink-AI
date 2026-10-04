@@ -388,6 +388,8 @@ ContainsChineseFn = Callable[[str], bool]
 BuildSystemPromptFn = Callable[[Character, str, str, str, Optional[UserSetting]], str]
 GetFullBranchHistoryFn = Callable[..., list]
 GetAncestorBranchIdsFn = Callable[[Session, str, str], list]
+# [MEM-MIRROR 2026-10-05] 分支作用域 [(branch_id, up_to_message_id)]，含分叉点截断
+GetAncestorBranchScopesFn = Callable[[Session, str, str], list]
 ApplyRegexScriptsFn = Callable[..., str]
 ApplyPromptRegexToMessagesFn = Callable[[list, Session, Character, str], list]
 
@@ -402,6 +404,10 @@ class PromptAssemblyDeps:
     apply_plugin_regex_scripts: ApplyRegexScriptsFn
     apply_regex_scripts: ApplyRegexScriptsFn
     apply_prompt_regex_to_messages: ApplyPromptRegexToMessagesFn
+    # [MEM-MIRROR 2026-10-05] 分支作用域（含分叉点截断）。可选：None 时装配层回退到
+    # get_ancestor_branch_ids 的旧行为（整条祖先链可见，无分叉截断）。仅在需要
+    # 召回按分叉点隔离时由调用方注入 _get_ancestor_branch_scopes。
+    get_ancestor_branch_scopes: Optional[GetAncestorBranchScopesFn] = None
 
 
 @dataclass
@@ -5218,9 +5224,31 @@ def _load_effective_stat_data(
         else:
             q = q.filter(CharacterChatMessage.branch_id.is_(None))
         # 只回看最近若干条：stat_data 每轮都会写，命中通常在 1-2 条内。
-        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(30).all()
+        # [MVU-LOOKBACK 2026-10-05] 窗口由 settings.MVU_STAT_LOOKBACK_LIMIT 控制
+        # （默认 30，此前为硬编码字面量 30；同文件 CHARACTER_CHAT_HISTORY_LIMIT
+        # 一直是可配置的，口径不一致）。取不到配置时回落 30，保持原行为不变。
+        # ⚠️ 与变量清理联动：清理侧「保留最近楼层数」必须 ≥ 本值，见 core/config.py。
+        _lookback = int(
+            getattr(_memory_settings(), "MVU_STAT_LOOKBACK_LIMIT", 30) or 30
+        )
+        if _lookback < 1:
+            _lookback = 30
+        rows = q.order_by(CharacterChatMessage.created_at.desc()).limit(_lookback).all()
         for row in rows:
             extra = getattr(row, "extra", None)
+            # [EXTRA-STR-FIX 2026-10-05] `extra` 列是 **Text**（存 JSON 字符串），
+            # 不是 JSON 类型列 —— 原实现直接 `isinstance(extra, dict)` 判断，
+            # 对字符串**恒为 False** → 循环永远 continue → 本函数**从未取到过消息级快照**，
+            # 一直静默回落会话级。后果：swipe / 重生成 / 切分支时，模型看到的
+            # stat_data 仍是最新值，与用户眼前的分支状态不一致 ——
+            # 正是本函数文档里声称要修的那个问题（[ST-ALIGN P0-2]），修复本身成了空转。
+            # 探针实测（2026-10-05）：`type(row.extra).__name__ == 'str'`，
+            # `_load_effective_stat_data` 返回会话级值而非消息级。
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except (json.JSONDecodeError, TypeError):
+                    continue
             if not isinstance(extra, dict):
                 continue
             variables = extra.get("variables")
@@ -5460,6 +5488,33 @@ async def _append_memory_context(
         mem_svc = MemoryService(req.db)
         if mem_svc.is_available():
             ancestor_branch_ids = deps.get_ancestor_branch_ids(req.db, req.session_id, req.branch_id) if req.branch_id else []
+            # [MEM-MIRROR 2026-10-05] 分叉点截断（RC-2）：把「可见分支集合」升级为
+            # 「带分叉点的作用域」，使记忆可见范围与对话历史 _get_full_branch_history_paged
+            # 的 fork_limits 严格对齐 —— 否则新分支会召回到父分支分叉点之后
+            # （= 用户已放弃的剧情线）写入的记忆。
+            # RC-3：原写法 `branch_ids=ancestor_branch_ids if ancestor_branch_ids else None`
+            # 在祖先为空时**静默退化**为整会话全分支召回（storage.py 的 elif 分支无
+            # branch 过滤），且无任何告警 —— 等于把隔离关掉。现改为：deps 提供 scopes
+            # 时一律走 scopes（空列表 = 主聊天 → 只认 trunk）；branches 场景但 scopes
+            # 意外为空（数据异常）时只认当前分支 + 告警，不再退化成全会话。
+            branch_scopes: Optional[list] = None
+            # getattr 兜底：deps 是依赖袋，测试/脚本会用 SimpleNamespace 构造，
+            # 不保证带这个新字段。缺失时按旧行为（branch_ids）走，不炸召回。
+            _scopes_fn = getattr(deps, "get_ancestor_branch_scopes", None)
+            if _scopes_fn is not None:
+                if req.branch_id:
+                    branch_scopes = _scopes_fn(req.db, req.session_id, req.branch_id)
+                    if not branch_scopes:
+                        # 分支行查不到 = 数据异常：只认自己，宁窄勿宽 + 显式告警
+                        logger.warning(
+                            "[MEM-MIRROR] 分支作用域为空（session=%s branch=%s）：降级为仅当前分支召回",
+                            req.session_id, req.branch_id,
+                        )
+                        branch_scopes = [(req.branch_id, None)]
+                else:
+                    # 主聊天（branch_id 为空）→ 只认 trunk（branch_id IS NULL），
+                    # 不再把整会话所有分支的记忆召回来
+                    branch_scopes = []
             # D3 修复: ST protect 语义 —— 最近 5 条消息的记忆镜像不再重复注入
             # （对话历史窗口已含原文，重复召回浪费 token）；查询失败静默回退
             # 不排除（宁多勿缺）。分支内取当前分支消息，主聊天取 branch_id 为空的消息。
@@ -5494,7 +5549,10 @@ async def _append_memory_context(
                 query=req.smart_card_context if req.smart_card_trigger else req.message,
                 session_id=req.session_id,
                 max_tokens=memory_max_tokens,
-                branch_ids=ancestor_branch_ids if ancestor_branch_ids else None,
+                # scopes 优先；未提供 scopes 的调用方沿用旧 branch_ids 行为。
+                # ⚠️ 不再 `if ancestor_branch_ids else None`（那会把隔离静默关掉，RC-3）
+                branch_scopes=branch_scopes,
+                branch_ids=ancestor_branch_ids if branch_scopes is None else None,
                 memory_mode=memory_mode,
                 exclude_message_ids=exclude_message_ids or None,
                 character_id=memory_character_id,

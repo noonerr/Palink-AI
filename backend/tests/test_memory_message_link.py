@@ -82,6 +82,11 @@ def mem_env(db_session, _engine, monkeypatch):
     )
     monkeypatch.setattr(ce_mod, "SessionLocal", test_session_factory)
     monkeypatch.setattr(sessions_mod, "SessionLocal", test_session_factory)
+    # [MEM-MIRROR 2026-10-05] 统一镜像同步模块自带 SessionLocal，后台重嵌线程
+    # 从这里开库，必须一并接管到测试引擎，否则 CAS 重读会打到真实应用库、
+    # 误判「消息已删」而跳过写入。
+    from app.memory_module import mirror as mirror_mod
+    monkeypatch.setattr(mirror_mod, "SessionLocal", test_session_factory)
 
     MemoryStorage(db_session)
     return db_session
@@ -502,7 +507,9 @@ def test_edit_reembed_failure_ningque_wucuo(client, mem_env, test_user, monkeypa
         )
 
     assert resp.status_code == 200
-    assert _wait_for_log(caplog, "re-embed after edit failed")
+    # [MEM-MIRROR 2026-10-05] 三份后台重嵌闭包已统一进 memory_module.mirror，
+    # 失败日志随之统一（旧的 "re-embed after edit failed" 随闭包删除）。
+    assert _wait_for_log(caplog, "[MEM-MIRROR] sync failed")
     rows = _mem_rows(db, sess.id, msg.id)
     assert rows == [], "宁缺勿错：旧记忆删除后重嵌失败不得残留任何行"
 
