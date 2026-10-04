@@ -1334,8 +1334,16 @@ def _chat_header(
             continue
         db_variables[v.key] = _parse_variable_value(v.value)
     if db_variables or base_variables:
-        merged_variables = dict(base_variables)
-        merged_variables.update(db_variables)
+        # [MVU-READ-PRIORITY 2026-10-05] chat_metadata.variables 是 MVU 引擎写的**真源**，
+        # ChatVariable 表行只能补它里面**没有**的键，不能反客为主。
+        #
+        # 旧实现是 merged = dict(base); merged.update(db_variables) —— ChatVariable 行
+        # 「后写覆盖」，优先级反而更高。后果：只要历史上任何一次 saveChat 带着 variables
+        # 落过一行 ChatVariable(key="stat_data")，那行的值就**永久遮蔽**此后 MVU 引擎对
+        # chat_metadata.variables 的全部更新。现场表现就是「变量明明更新了，但面板/读接口
+        # 拿到的仍是旧值」。下面把顺序倒过来，让 base（chat_metadata）最终胜出。
+        merged_variables = dict(db_variables)
+        merged_variables.update(base_variables)
         metadata["variables"] = merged_variables
     return {
         "chat_metadata": metadata,
@@ -2909,12 +2917,14 @@ async def st_save_chat(
     incoming = raw_chat if isinstance(raw_chat, list) else []
     chat_items = []
     persisted_metadata: dict[str, Any] = {}
+    has_incoming_metadata = False
     for item in incoming:
         if not isinstance(item, dict):
             continue
         if "chat_metadata" in item and "mes" not in item:
             # ST 1.18.0 sends chat_metadata as a dedicated JSONL entry —
             # persist it on the session instead of discarding it.
+            has_incoming_metadata = True
             raw_meta = item.get("chat_metadata")
             if isinstance(raw_meta, dict):
                 persisted_metadata = raw_meta
@@ -2936,6 +2946,17 @@ async def st_save_chat(
         existing_meta = json.loads(session.chat_metadata) if session.chat_metadata else {}
     except (json.JSONDecodeError, TypeError):
         existing_meta = {}
+    # [MVU-SAVE-GATE 2026-10-05] payload 没带 chat_metadata 条目 = 客户端**不是**在做整包
+    # 覆盖（插件的 setChatMessages 走 slice(1) 把 header 切掉，天然不带该条目）。
+    # 旧实现此时 persisted_metadata 仍是 {}，只回填 palink_* 后整份写回 ——
+    # variables / note_prompt / hidden_bots 被**静默清空**。这是插件热路径，
+    # 一次调用就能抹掉整份 stat_data。没带就不碰 metadata。
+    if not has_incoming_metadata:
+        try:
+            restored_meta = json.loads(session.chat_metadata) if session.chat_metadata else {}
+        except (json.JSONDecodeError, TypeError):
+            restored_meta = {}
+        persisted_metadata.update(restored_meta if isinstance(restored_meta, dict) else {})
     if "palink_injections" in existing_meta and "palink_injections" not in persisted_metadata:
         persisted_metadata["palink_injections"] = existing_meta["palink_injections"]
     persisted_metadata["palink_session_id"] = session.id

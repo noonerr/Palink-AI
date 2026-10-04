@@ -12,7 +12,21 @@
  *  2. 拼接顺序固定：HEAD(ctx/frameId) → 本段 → 测量段 → IIFE 收尾，不可调换。
  *  3. 修改后必须跑 `node scripts/verify-shim-identity.mjs` 比对字节快照。
  */
-export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.parent / window.top 兼容代理：
+export const LEGACY_ST_SIM_SEGMENT = `  // [MVU-EVENTS 2026-10-05] MVU 事件键的契约真值，取自插件契约
+  // st-plugins/third-party/JS-Slash-Runner-main/@types/iframe/exported.mvu.d.ts。
+  // 事件总线以事件字符串本身为 key，值写错 = 卡脚本 eventOn(Mvu.events.X) 永远收不到。
+  // 此前 emit 的是无前缀的 VARIABLE_UPDATE_ENDED，与契约的 mag_ 前缀不符，事件整体是假活。
+  // 注意 VARIABLE_INITIALIZED 契约原文拼写就是 initiailized（少一个 l），照抄不要修正。
+  // COMMAND_PARSED 键在此定义但不 emit：契约要的是解析出的命令对象且要求应用前拦截改写，
+  // 我们后端留存的是已应用完的 JSON Patch，结构与时序都不符，emit 出来是假活（留空并登记）。
+  var MVU_EVENT_KEYS = {
+    VARIABLE_INITIALIZED: 'mag_variable_initiailized',
+    VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
+    COMMAND_PARSED: 'mag_command_parsed',
+    VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended',
+    BEFORE_MESSAGE_UPDATE: 'mag_before_message_update'
+  };
+  // [PARENT-ALIAS] 沙箱卡的 window.parent / window.top 兼容代理：
   // 未信任卡 iframe 为 opaque origin（P1-1 沙箱），卡片脚本读 parent.jQuery /
   // parent.$ 会抛 "Blocked a frame with origin null from accessing a
   // cross-origin frame"（ST 卡惯用 parent.jQuery —— ST 内卡片 iframe 同源可用）。
@@ -554,10 +568,15 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
               && typeof window.getVariable === 'function'
               && window.setVariable !== setSmartCardVariable
               && window.getVariable !== getSmartCardVariable;
+            // [MVU-EVENTS 2026-10-05] started 必须在合并**前** emit（契约：某轮变量更新开始时）。
+            eventSource.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_STARTED, clone(smartCardVariableStore));
             if (!compatTookOver) {
               mergePlainObjects(smartCardVariableStore, clone(data.context.variables));
             }
-            eventSource.emit('VARIABLE_UPDATE_ENDED', clone(smartCardVariableStore));
+            // [MVU-EVENTS 2026-10-05] 顺序对齐契约：started 已在合并前 emit，
+            // 此处 ended → before_message_update（即将用更新后的变量更新楼层）。
+            eventSource.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_ENDED, clone(smartCardVariableStore));
+            eventSource.emit(MVU_EVENT_KEYS.BEFORE_MESSAGE_UPDATE, clone(smartCardVariableStore));
             eventSource.emit('CHAT_VARIABLES_UPDATED', clone(smartCardVariableStore));
           } catch {}
         }
@@ -1125,8 +1144,10 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
   };
   window.Mvu = window.Mvu || {
     events: {
-      VARIABLE_UPDATE_ENDED: 'VARIABLE_UPDATE_ENDED',
-      VARIABLE_UPDATE_STARTED: 'VARIABLE_UPDATE_STARTED',
+      // [MVU-EVENTS 2026-10-05] 契约真值（见文件头 MVU_EVENT_KEYS 的注释）。
+      // 键放在展开/兜底之后：事件键是常量不是实现，必须以契约为准，
+      // 否则卡脚本按常量订阅会落空。
+      ...MVU_EVENT_KEYS,
       CHAT_VARIABLES_UPDATED: 'CHAT_VARIABLES_UPDATED',
     },
     getAllVariables: () => clone(allVariables),
@@ -1158,7 +1179,9 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [PARENT-ALIAS] 沙箱卡的 window.pa
     setByPath(smartCardVariableStore, path, value);
     persistSmartCardRuntimeStores();
     try {
-      eventSource.emit('VARIABLE_UPDATE_ENDED', clone(smartCardVariableStore));
+      // [MVU-EVENTS 2026-10-05] 卡片自己 setVariable 触发一轮更新：
+      // ended 要发；before_message_update 的语义是「即将更新楼层」，这条路径不涉及，不发。
+      eventSource.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_ENDED, clone(smartCardVariableStore));
       eventSource.emit('CHAT_VARIABLES_UPDATED', clone(smartCardVariableStore));
     } catch {}
     return value;

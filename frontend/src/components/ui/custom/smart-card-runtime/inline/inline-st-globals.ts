@@ -36,6 +36,27 @@ type AnyFn = (...args: unknown[]) => unknown;
 const INSTALL_FLAG = '__palinkInlineStGlobalsInstalled';
 const STORAGE_PREFIX = 'palink_card_';
 
+/* ────────────────────────── MVU 事件键（契约真值） ──────────────────────────
+ * [MVU-EVENTS 2026-10-05] 取自插件契约
+ * st-plugins/third-party/JS-Slash-Runner-main/@types/iframe/exported.mvu.d.ts。
+ * 事件总线（window.eventSource）以**事件字符串本身**为 key —— 值写错就意味着
+ * 卡脚本 eventOn(Mvu.events.X) 永远收不到。此前我们 emit 的是无前缀的
+ * 'VARIABLE_UPDATE_ENDED'，与契约的 mag_ 前缀不一致，MVU 事件整体是「假活」。
+ * ⚠️ VARIABLE_INITIALIZED 契约原文拼写就是 initiailized（少一个 l），
+ *    照抄，不要「修正」—— 修正了反而与卡脚本对不上。
+ * ⚠️ COMMAND_PARSED 键在此定义但**不 emit**：契约要的是「解析出的命令对象」
+ *    （{type, full_match, args, reason}）且语义是应用前拦截改写；我们后端留存的是
+ *    已应用完的 JSON Patch，结构与时序都不符，emit 出来是假活。留空并登记，
+ *    等解析搬到可拦截的位置再实现。见 docs/ 下本批交付报告。
+ */
+export const MVU_EVENT_KEYS = {
+  VARIABLE_INITIALIZED: 'mag_variable_initiailized',
+  VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
+  COMMAND_PARSED: 'mag_command_parsed',
+  VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended',
+  BEFORE_MESSAGE_UPDATE: 'mag_before_message_update',
+} as const;
+
 /** 后端下发的会话变量（含 stat_data），由 setInlineStVariables 逐条消息刷新。 */
 let currentVariables: AnyRecord = {};
 /** 卡片自己 setVariable 写入的本地变量，优先级低于后端数据。 */
@@ -323,12 +344,37 @@ function buildAllVariables(): AnyRecord {
 
 /** 宿主在每次拿到新的 AI 输出后调用，刷新卡片可见的变量。 */
 export function setInlineStVariables(variables: unknown): void {
+  const win = window as unknown as AnyRecord;
+  const bus = win.eventSource as { emit?: AnyFn } | undefined;
+  // [MVU-EVENTS 2026-10-05] 幂等顺序对齐契约：started →（应用）→ ended → before_message_update。
+  // before_message_update 的语义是「即将用更新后的变量更新楼层」，只在这一条
+  // 「宿主拿到新 AI 输出」的路径上 emit；卡片自己 setVariable 那条路径不 emit。
+  if (bus && typeof bus.emit === 'function') {
+    try {
+      bus.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_STARTED, buildAllVariables());
+    } catch {
+      /* 事件总线异常不影响渲染 */
+    }
+  }
   currentVariables = variables && typeof variables === 'object' ? (variables as AnyRecord) : {};
+  if (bus && typeof bus.emit === 'function') {
+    try {
+      const next = buildAllVariables();
+      bus.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_ENDED, next);
+      bus.emit(MVU_EVENT_KEYS.BEFORE_MESSAGE_UPDATE, next);
+    } catch {
+      /* 事件总线异常不影响渲染 */
+    }
+  }
+}
+
+/** 会话变量初始化完成时 emit mag_variable_initiailized（契约：新开聊天对变量初始化时触发）。 */
+export function emitInlineStVariablesInitialized(): void {
   const win = window as unknown as AnyRecord;
   const bus = win.eventSource as { emit?: AnyFn } | undefined;
   if (bus && typeof bus.emit === 'function') {
     try {
-      bus.emit('VARIABLE_UPDATE_ENDED', buildAllVariables());
+      bus.emit(MVU_EVENT_KEYS.VARIABLE_INITIALIZED, buildAllVariables());
     } catch {
       /* 事件总线异常不影响渲染 */
     }
@@ -431,8 +477,9 @@ export function ensureInlineStGlobals(): void {
     setByPath(localVariableStore, path, value);
     persist();
     try {
-      bus.emit('VARIABLE_UPDATE_ENDED', buildAllVariables());
-      bus.emit('CHAT_VARIABLES_UPDATED', buildAllVariables());
+      const next = buildAllVariables();
+      bus.emit(MVU_EVENT_KEYS.VARIABLE_UPDATE_ENDED, next);
+      bus.emit('CHAT_VARIABLES_UPDATED', next);
     } catch {
       /* ignore */
     }
@@ -461,10 +508,11 @@ export function ensureInlineStGlobals(): void {
   win.Mvu = {
     ...existingMvu,
     events: {
-      VARIABLE_UPDATE_ENDED: 'VARIABLE_UPDATE_ENDED',
-      VARIABLE_UPDATE_STARTED: 'VARIABLE_UPDATE_STARTED',
-      CHAT_VARIABLES_UPDATED: 'CHAT_VARIABLES_UPDATED',
       ...((existingMvu.events as AnyRecord) || {}),
+      // [MVU-EVENTS 2026-10-05] 契约值放在展开**之后**：事件键是常量不是实现，
+      // 插件万一给了别的值，必须以契约为准（否则卡脚本按常量订阅就会落空）。
+      ...MVU_EVENT_KEYS,
+      CHAT_VARIABLES_UPDATED: 'CHAT_VARIABLES_UPDATED',
     },
     getAllVariables: () => buildAllVariables(),
     getVariable: getVar,

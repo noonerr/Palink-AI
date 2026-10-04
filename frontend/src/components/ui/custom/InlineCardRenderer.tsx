@@ -45,6 +45,7 @@ import {
   endInlineCardScriptScope,
   ensureInlineStGlobals,
   exportInlineCardVariables,
+  emitInlineStVariablesInitialized,
   importInlineCardVariables,
   setInlineStVariables,
 } from './smart-card-runtime/inline/inline-st-globals';
@@ -122,6 +123,9 @@ function InlineCardHost({ html, cardId, context, onAction }: InlineCardHostProps
   const contextRef = useRef(context);
   contextRef.current = context;
 
+  // [MVU-EVENTS 2026-10-05] 本卡挂载后只允许发一次 mag_variable_initiailized。
+  const mvuInitPendingRef = useRef(true);
+
   // effect A：内容变化才动 DOM
   useLayoutEffect(() => {
     try {
@@ -181,6 +185,12 @@ function InlineCardHost({ html, cardId, context, onAction }: InlineCardHostProps
   // effect B：变量变化只广播，不碰 DOM
   useLayoutEffect(() => {
     setInlineStVariables(variables);
+    // [MVU-EVENTS 2026-10-05] 本卡挂载后的**首次**变量下发 = 会话变量初始化，
+    // emit mag_variable_initiailized；之后每轮只走 update 系列事件，不重复发初始化。
+    if (mvuInitPendingRef.current && variables && typeof variables === 'object') {
+      mvuInitPendingRef.current = false;
+      emitInlineStVariablesInitialized();
+    }
   }, [variables]);
 
   return (

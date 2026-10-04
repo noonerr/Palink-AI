@@ -490,6 +490,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     }, smartCardFrameTargetOrigin(trustedNativeRef.current));
   }, []);
 
+  // [MVU-EVENTS 2026-10-05] 帧加载后的首次 context-update 才带 mvuInit 标记。
+  const mvuInitPendingRef = useRef(true);
+
   const postContextToFrame = useCallback((nextContext: CharacterSmartCardContext, immediate = false) => {
     const targetWindow = iframeRef.current?.contentWindow;
     if (!targetWindow) return;
@@ -503,15 +506,20 @@ const IframeRenderer = React.memo(function IframeRenderer({
         frameId: frameIdRef.current,
         type: 'context-update',
         context: contextToPost,
+        // [MVU-EVENTS 2026-10-05] 帧加载后的**首次** context-update 打此标记，
+        // 帧内据此 emit mag_variable_initiailized（契约：新开聊天对变量初始化时触发）。
+        // 只在首次打，iframe 重载时由 handleFrameLoad 复位 —— 不能让卡脚本反复收到初始化。
+        mvuInit: mvuInitPendingRef.current,
         // [白边修复] 运行时同步应用主题给 iframe 文档（srcdoc 构建时注入的是
         // 构建时刻的主题；用户中途切换亮暗后由 context-update 通道热跟随，
         // 不重建 iframe 文档）。
         colorScheme: resolveHostColorScheme(),
       }, smartCardFrameTargetOrigin(trustedNativeRef.current));
-      // [P0-SRCDOC-SLIM] context 发送时顺带把插件脚本包推给 iframe（幂等，按
-      // generated_at 去重）。源码不再内联进 context，避免 4.4MB 随每次
-      // context-update（滚动/键盘等高频触发）反复结构化克隆导致滑动卡顿。
-      postPluginScriptsToFrame(targetWindow);
+    // [P0-SRCDOC-SLIM] context 发送时顺带把插件脚本包推给 iframe（幂等，按
+    // generated_at 去重）。源码不再内联进 context，避免 4.4MB 随每次
+    // context-update（滚动/键盘等高频触发）反复结构化克隆导致滑动卡顿。
+    postPluginScriptsToFrame(targetWindow);
+    mvuInitPendingRef.current = false;
     };
 
     if (immediate) {
@@ -573,6 +581,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // [CONTRAST-ENHANCE] iframe onLoad：同源直接读 contentDocument 并挂载对比度增强器。
   // 仅增强非沉浸式全屏卡片（launcher 等全屏界面自带完整配色，不套用消息气泡背景判定）。
   const handleFrameLoad = useCallback(() => {
+    // iframe 文档重建 = 帧内运行时是新实例，重新允许一次初始化事件。
+    mvuInitPendingRef.current = true;
     postLiveContext();
     // [P0-SRCDOC-SLIM] iframe onload（已稳定）时强制推送插件脚本包。
     // 解析期由 shim 发出的 request-plugin-scripts 触发的推送可能在 srcDoc 后续

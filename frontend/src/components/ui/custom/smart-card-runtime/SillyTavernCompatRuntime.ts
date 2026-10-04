@@ -264,6 +264,24 @@ export function buildSmartCardCompatRuntimeExternalScript(): string {
 function buildSillyTavernCompatRuntimeBodyScript(bootHeader: string): string {
   return `(() => {
 ${bootHeader}
+  // [MVU-EVENTS 2026-10-05] MVU 事件键的契约真值，取自插件契约
+  // st-plugins/third-party/JS-Slash-Runner-main/@types/iframe/exported.mvu.d.ts。
+  // 事件总线（eventSource.on）以事件字符串本身为 key —— 值写错就意味着卡脚本
+  // eventOn(Mvu.events.X) 永远收不到。此前 emit 的是无前缀的 VARIABLE_UPDATE_ENDED，
+  // 与契约的 mag_ 前缀不符，MVU 事件整体是「假活」。
+  // 注意 VARIABLE_INITIALIZED 契约原文拼写就是 initiailized（少一个 l），照抄不要修正。
+  // COMMAND_PARSED 键在此定义但不 emit：契约要的是解析出的命令对象且要求应用前拦截改写，
+  // 我们后端留存的是已应用完的 JSON Patch，结构与时序都不符，emit 出来是假活（留空并登记）。
+  const MVU_EVENT_KEYS = {
+    VARIABLE_INITIALIZED: 'mag_variable_initiailized',
+    VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
+    COMMAND_PARSED: 'mag_command_parsed',
+    VARIABLE_UPDATE_ENDED: 'mag_variable_update_ended',
+    BEFORE_MESSAGE_UPDATE: 'mag_before_message_update'
+  };
+  // 父页面在 iframe onLoad 后首次 context-update 上带 mvuInit 标记 → 置 true，
+  // 下一轮带 variables 的更新据此 emit mag_variable_initiailized，随后自清。
+  let mvuInitPendingCompat = false;
   // [SEC-2026-09-02 F-1] 帧内密钥（gesture token）——只被本 IIFE 闭包持有。
   // 与 legacy shim 同理：密钥经 <head> 的 <meta> 一次性投递，本段读取后立即移除该 meta，
   // 后续执行的卡片脚本既读不到 meta 也读不到本闭包变量（二者同 realm，写在源码里或走
@@ -4489,8 +4507,21 @@ ${IDB_NS_RUNTIME_SOURCE}
     // 合并行为对齐；否则 getVariable()/getAllVariables() 读到的是旧数据。
     if (nextContext.variables && typeof nextContext.variables === 'object') {
       try {
+        // [MVU-EVENTS 2026-10-05] mag_variable_initiailized：契约是「新开聊天对变量
+        // 初始化时触发」。由父页面在 iframe onLoad 后的**首次** context-update 上打
+        // mvuInit 标记带进来（见 CharacterCardRenderer.tsx），而不是靠「本帧第一次收到
+        // variables」猜 —— 后者会在 iframe 重载/重挂时误发，让卡脚本以为要重新初始化。
+        if (mvuInitPendingCompat) {
+          mvuInitPendingCompat = false;
+          deepMergeVariablesCompat(chatVariableStore, clone(nextContext.variables));
+          emitCompatEvent(MVU_EVENT_KEYS.VARIABLE_INITIALIZED, chatVariableStore);
+        }
+        // 顺序对齐契约：started 在合并前、ended 在合并后，
+        // before_message_update 表示「即将用更新后的变量更新楼层」，紧跟 ended。
+        emitCompatEvent(MVU_EVENT_KEYS.VARIABLE_UPDATE_STARTED, chatVariableStore);
         deepMergeVariablesCompat(chatVariableStore, clone(nextContext.variables));
-        emitCompatEvent('VARIABLE_UPDATE_ENDED', chatVariableStore);
+        emitCompatEvent(MVU_EVENT_KEYS.VARIABLE_UPDATE_ENDED, chatVariableStore);
+        emitCompatEvent(MVU_EVENT_KEYS.BEFORE_MESSAGE_UPDATE, chatVariableStore);
         emitCompatEvent('CHAT_VARIABLES_UPDATED', chatVariableStore);
       } catch (_e) {}
     }
@@ -4535,6 +4566,8 @@ ${IDB_NS_RUNTIME_SOURCE}
       if (data.colorScheme === 'dark' || data.colorScheme === 'light') {
         try { document.documentElement.style.setProperty('color-scheme', data.colorScheme); } catch (e) { /* ignore */ }
       }
+      // [MVU-EVENTS 2026-10-05] 父页面只在帧加载后的首次 context-update 上打 mvuInit。
+      if (data.mvuInit) mvuInitPendingCompat = true;
       applyParentContextUpdateCompat(data.context);
       return;
     }
@@ -6009,11 +6042,13 @@ ${IDB_NS_RUNTIME_SOURCE}
   // setVariable 预置为其独立 smartCardVariableStore 的读写（写 iframe memoryStorage，销毁即丢），
   // 短路会再次把全局变量 API 打回 legacy 版本，导致双 store 读写不一致、iframe 重载后变量丢失。
   Object.assign(window.Mvu, {
-    events: window.Mvu.events || {
-      VARIABLE_UPDATE_STARTED: 'VARIABLE_UPDATE_STARTED',
-      VARIABLE_UPDATE_ENDED: 'VARIABLE_UPDATE_ENDED',
+    // [MVU-EVENTS 2026-10-05] 事件键是**常量不是实现**，必须无条件以契约为准。
+    // 原写法 window.Mvu.events || {...} 意味着插件自己装过 MVU 时我们完全不注入，
+    // 而插件若给的是别的值（或压根没装、走我们的兜底），卡脚本按常量订阅就会落空。
+    // 合并顺序：插件的在前、契约的在后 —— 契约值最终胜出，其余键不丢。
+    events: Object.assign({}, window.Mvu.events, MVU_EVENT_KEYS, {
       CHAT_VARIABLES_UPDATED: 'CHAT_VARIABLES_UPDATED',
-    },
+    }),
     getAllVariables: mvuGetAllVariables,
     getVariable: (path, fallback) => getVariableWithPriorityCompat(chatVariableStore, localVariableStore, globalVariableStore, path, fallback),
     setVariable: (path, value) => {
@@ -6509,19 +6544,30 @@ ${IDB_NS_RUNTIME_SOURCE}
     window.Mvu = window.Mvu || {};
     window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
     setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
-    if (typeof window.Mvu.getMvuData !== 'function') {
-      window.Mvu.getMvuData = mvuGetMvuDataFinal;
-      setCompatFunction('getMvuData', mvuGetMvuDataFinal);
-    }
+    // [MVU-PANEL-DATA 2026-10-05] getMvuData 同样**无条件覆盖**，与 getAllVariables 口径一致。
+    //
+    // 原实现是条件覆盖（仅当插件尚未提供该函数时才装，带 typeof 判定守卫），
+    // 结果：插件自带 MVU 引擎时，它自己的 getMvuData 胜出 → 变量面板读的是**插件自己的
+    // （通常为空的）变量表**，而不是后端下发的 stat_data → 面板恒空/恒默认值。
+    //
+    // 实测依据（卡脚本 backend/data/smart_card_assets/0c646fb31a…js，MVU bundle 原文）：
+    //   getMvuData:function(e){return getVariables(e)},replaceMvuData:function(e,t){return replaceVariables(e,t)}
+    // 即 MVU 的 getMvuData 只是"裸全局 getVariables 的薄包装"。只要让 getVariables 指向我们的
+    // 数据源，面板就能显示真实 stat_data —— 这正是本处覆盖要保证的事（覆盖后本函数按
+    // type/message_id 解析来源，行为是 getVariables 的超集，不会更差）。
+    //
+    // 风险边界：只覆盖"读"，**不碰** replaceMvuData / parseMessage（写与解析），
+    // 因此不会与后端 mvu_engine 形成双写。详见
+    // docs/REPORT_MVU变量框架与Palink自有变量体系重叠专题_2026-10-04.md 第 11.5 节。
+    window.Mvu.getMvuData = mvuGetMvuDataFinal;
+    setCompatFunction('getMvuData', mvuGetMvuDataFinal);
     // 插件脚本若异步再次覆盖，延时再保险一次
     setTimeout(() => {
       try {
         window.Mvu.getAllVariables = mvuGetAllVariablesFinal;
         setCompatFunction('getAllVariables', mvuGetAllVariablesFinal);
-        if (typeof window.Mvu.getMvuData !== 'function') {
-          window.Mvu.getMvuData = mvuGetMvuDataFinal;
-          setCompatFunction('getMvuData', mvuGetMvuDataFinal);
-        }
+        window.Mvu.getMvuData = mvuGetMvuDataFinal;
+        setCompatFunction('getMvuData', mvuGetMvuDataFinal);
       } catch (_e) { /* ignore */ }
     }, 0);
   } catch (_e) { /* ignore */ }
