@@ -12,6 +12,80 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已施工·⚠未上线·⚠未真机验证] 插件设置轴复核 + 批次1/2修复（本 agent，2026-10-04 晚）
+
+- **做了什么**：独立复核 `REPORT_插件设置按卡隔离_批次0-1交付_2026-10-04.md`（三道门禁数字属实、
+  404 死路径与 `recordStubHit` 裸调两条真修），同时发现 4 条缺陷并全部修掉：
+  ① P0 **切卡后设置静默丢失**（facade 停在旧对象，可执行探针实测复现）→ 无条件重指向；
+  ② P0 **按卡隔离未实现**（落点用户级、对所有卡合并）→ 改存 `plugin_extension_settings_by_character[卡]`
+     独立格 + 归属校验（非本人卡 **404** 不返 403）+ **撤销**上一批的用户级合并；
+  ③ P1 **写入口触达后端生成管线**（`extension_settings.regex_scripts` 会被 `character_ext.py` 当正则应用；
+     实测现网库里 **0 行**）→ 由独立格自然关闭，另补测试钉住"不得改写存量那一格"；
+  ④ P2 **超限/失败对插件不可见**（前端从不读 POST 响应体）→ 读响应并登记降级。
+- **批次 2（用户裁定「放 A 半桶 + 生成参数封顶放」）**：**闸 3 引擎硬底**——`openai_max_context`
+  此前被**原样采信且压过模型注册表**（用户自己手滑填 200 万也能捅，不只插件），现一律
+  `min(声明值, 模型真实窗口)`，注册表不认识的模型不夹；L2 放行 = 卡影子 > 用户设置 > 注册表，
+  三层全过闸 3。**A 半桶按实卡命中数收口**：只接 `saveChat`(×8，改为记账、不再谎报成功) 与
+  `getPreset`(×5)；人设/角色增删改/预设增删改/importRaw 命中 **0 → 不接**。
+  `powerUserSettings` 不挂（没人消费）。`custom_include_body` 照存但记账不生效。
+- **门禁**（全部本人独立复跑）：`tsc --noEmit` exit 0；`vitest run` **53 文件 / 718 passed / 0 failed**；
+  `pytest tests/ -q` **1796 passed / 0 failed**。新增测试：后端 `test_plugin_runtime_settings.py`(15，重写)
+  + `test_ctx_hard_floor.py`(9) + `test_l2_card_shadow.py`(8)；前端 `plugin-runtime-l1-settings.test.ts`(37)。
+  ⚠️ 新测试有效性已反证：把修复翻回旧写法，切卡那 2 例立即变红。
+- **⚠ 阻塞项（交还用户）**：① **未上线**——后端未 rebuild、前端 dist 未重建（实测线上 dist 含上一会话
+  未提交标记 `__palink_card_script__`/`extensions_settings2`，**不含**本轮任何标记）；
+  ② **真机验证做不了**——5 个容器**均未发布宿主端口**（curl 13000/3000/8080 全拒连），要先 `docker compose up -d`
+  恢复端口才能开页面；③ 本轮 + 上一会话共 10 个改动文件全部**未提交**。
+- **仍缺（不属本批）**：`chat_metadata` 不落库且整个页面共用一份（跨聊天不隔离，需 chatId→后端桥）；
+  `get/setLorebookSettings`（世界书全局档，需改引擎）；MVU「额外模型解析」的键名白名单待用户裁定。
+- **备份**：`_BACKUPS/2026-10-04_插件设置复核修复/`（`pre/` 4 文件 + `pre-batch2/` 1 文件，
+  `_manifest.tsv` / `_sha.txt` / `worktree-status-before.txt` 齐，台账已登记）。
+  上一份交付报告顶部已留**复核订正段**（原文未删）。
+
+### [已施工·已部署·真机验收闭环] 插件设置空间收纳：MVU 等第三方面板不再怼在页面上（本 agent，2026-10-04）
+
+- **背景**：用户报 MVU 变量框架面板直接怼在聊天/角色页上且收不起来。根因两条：
+  ① `#extensions_settings`/`#extensions_settings2` 由 `StPluginMountPoints` 渲染在页面流里（有内容自动显示，无任何布局样式），
+  ST 原生里它们住在顶栏扩展抽屉里天然收纳；② Palink 前端**零** inline-drawer 折叠处理（无 CSS 无委托）。
+  MVU 本体是卡自带 tavern_helper 脚本（非 `/api/plugins` 安装），不在插件管理器列表里。
+- **改动**（全部前端，未提交 git）：
+  - `StPluginMountPoints.tsx`：两个设置挂载点改 `ParkedMountPoint` 常驻离屏（`position:fixed top:-9999px + visibility:hidden`，
+    不用 display:none——部分插件用 offsetWidth 判断可见性，同款考量见 SillyTavernCompatRuntime）。DOM 保留供注入与扫描。
+  - **新增** `StPluginSettingsDrawer.tsx` + `st-plugin-settings-drawer.css`（st-plugin-ui-host/）：三个点菜单 →「插件设置」右侧抽屉。
+    打开时把挂载点**整个根节点 move**（appendChild）进抽屉、关闭按原位 move 回 —— 移动真实节点保留 Vue/jQuery 绑定
+    （对比 PluginSettingsPanel 的 cloneNode 死快照）；打开期间新注入自动可见（MutationObserver 兜底晚注入场景）。
+  - `ChatMoreMenu.tsx`/`CharacterChat.tsx`：菜单项 + state + 渲染接线（ChatHeader 经 ComponentProps 透传，零改动）。
+  - inline-drawer 折叠：抽屉内事件委托 + 最小 ST 风格（header 可点/箭头/collapsed 隐 content）。
+- **⚠️ 关键坑（真机实测抓到，vitest 盖不住）**：挂载点根节点被 move 后，**React 合成事件沿 fiber 树（App 外壳）传播**，
+  不经过抽屉的 fiber 子树 → 折叠委托挂在 React onClick 上真机点击无反应。修法 = 折叠委托用**原生 addEventListener**
+  （原生冒泡走真实 DOM 树）。测试里假根节点没有 fiber，所以 7 例全绿仍漏过 —— 插件 DOM 交互一律原生监听。
+- **门禁与部署**：tsc exit 0；vitest 52 文件 / 678 passed / 3 skipped / 0 failed（含新增 7 例：
+  parked 样式/move 进出/原位还原/晚注入自动搬入/双列搬入/折叠委托×2）。容器入口 `index-DXPr_tO-.js`（02:05 部署）。
+  真机（露缇雅1.2 卡）：面板不再进视口、页面中心不再被命中；抽屉内 MVU 面板可交互（复选框/下拉/按钮全渲染）；
+  折叠展开切换正常；关闭后挂载点按原位归位（父节点=app-shell、兄弟顺序保持）。
+- **备份**：`_BACKUPS/2026-10-04_插件设置空间收纳/`（pre/ 3 文件 + `_manifest.tsv` + `BACKUP_INFO.md`，台账已登记；
+  双轨：git stash `ba8b21c8` 全工作树快照 + 物理副本经仓库外脚本从 stash 导出——Mimosa 拦 Bash 直碰源码路径）。
+  构建中间产物 `dist_new_8/9` 已入 `_BACKUPS/_QUARANTINE_2026-10-04/`（待用户确认后删）。
+- **遗留 / 下一步**：①「脚本按钮栏 UI」（上一条 P0 项）可直接挂进本抽屉；② PluginManager 的「打开设置面板」仍是
+  cloneNode 死快照方案，后续可复用本抽屉的 move 方案升级；③ 本批与上一批（酒馆助手适配）改动都未提交 git，待用户表态。
+
+### [已施工·待接手] 酒馆助手（JS-Slash-Runner）API 适配 —— 交接给下一个 agent（本 agent，2026-10-04）
+
+- **交接文件**：**`HANDOFF_酒馆助手API适配_2026-10-04.md`（先读这份）**
+- **完整审计**：`docs/REPORT_酒馆助手API适配查验_2026-10-03.md`（843 行，每步都有物证；§0 结论速览 / §9.12 风险边界）
+- **已完成并真机验证**：卡脚本第三方全局（z/Vue/lodash/YAML/showdown）、`window.Mvu` 挂载（`getMvuData()` 返回真实变量）、
+  变量结构注册、MVU 设置面板、Galgame 面板 + 12 按钮、相册按钮、生成类事件桥接、Live2D（`isReady=true`）、JS 报错归零。
+- **改动**：4 文件 +339/−34（`sillyTavernPluginRuntime.ts` +245 / `legacy-st-sim.ts` +42 / `CharacterChat.tsx` +69−25 / `nginx.conf` +17）
+  + 3 新文件。**全部未提交 git**。容器入口 `index-4-8sIwLv.js`。
+- **下一步（P0，零写库风险）**：**脚本按钮栏 UI** —— `getScriptButtons()` 已有 6 个注册按钮但页面上没有容器可画，
+  这是「按钮点不到」的最后一块拼图。另可顺带补 `window.TavernHelper` 总目录、事件族（`eventOnce`/`eventClearAll`/`iframe_events`）、
+  角色读取族（沙箱轨 `sandbox.ts` 有现成实现可搬）。
+- **明确不做**（理由见报告 §9.12，**别误以为是遗漏**）：角色/世界书/预设/人设的**写** + `importRaw*` + `installExtension` 族（约 45 项）。
+  四条风险：数据源双写 / 权限模型被绕过 / 任意代码执行 / 不可逆操作无确认。
+- **待用户拍板**：① 隔离区 4 个 `dist_new_*` 是否删；② 本批是否提交 git；③ 变量写入通道要不要开；④ 按钮栏 UI 放哪。
+- ⚠️ 本 agent 自查发现并**已补救**两条备份违规：`_BACKUPS/2026-10-03_dist重建前_酒馆助手全局与父窗口别名/`
+  原先**缺 `BACKUP_INFO.md` 且未登记台账**（违反规范第 2、3 条），已于 2026-10-04 01:05 补齐。
+
 ### [已施工·待真机验收] 报错提示模板落地 阶段一改皮 + 批1止血（本 agent，2026-10-03）
 
 - **文档**：`docs/PROMPT_报错提示模板落地_2026-10-03.md`（上游权威件 `docs/PROMPT_报错提示系统重写_2026-09-30.md`）。
