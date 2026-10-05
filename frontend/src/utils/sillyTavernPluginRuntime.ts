@@ -1595,6 +1595,110 @@ export class SillyTavernPluginRuntime {
           };
         }
 
+        // ── [MVU-UNBLOCK 2026-10-05] 角色绑定世界书的「名字列表」与「单本内容」 ──
+        // 现象（真机 console）：MVU bundle（MagVarUpdate@beta）在**模块顶层初始化**里
+        // 调 getCharWorldbookNames() 读角色世界书绑定，取不到就抛
+        //   ReferenceError: getCharWorldbookNames is not defined
+        // 连锁反应：紧接着一条未捕获的
+        //   TypeError: Cannot read properties of undefined (reading 'length')
+        //   → MVU 初始化中断 → 卡内状态栏/变量面板拿不到变量引擎，显示 schema 默认值。
+        //
+        // 为什么这里以前是空的：本文件 :2067 的 SUPPLIED 白名单只决定 TavernHelper Proxy
+        // 「认不认这个键」—— :2123 的 has() 是 IS_SUPPLIED[prop] === true && !!lookup(prop)，
+        // 即**列进白名单还得真有实现**才算数。白名单负责"声明认"，不负责"实现"，
+        // 于是这些名字在 :2115 被 lookup 判空后掉进 :2119 的 missing(prop)（记桩降级）。
+        // iframe 轨（frame-shim/legacy-st-sim.ts:1372、SillyTavernCompatRuntime.ts:5315）
+        // 各自实现了，主页面轨一直漏着 —— 卡脚本跑在主页面（card-script-runner.ts），
+        // 所以受害的正是这条轨。
+        //
+        // 数据源复用上面 A3 已有的 __palinkBridge.charLorebooks（真查
+        // /api/worldbooks?character_id=…&type=character_book，非空数组假货）。
+        // ST 语义是 Promise，故本族一律返回 Promise。
+        if (typeof window.getCharWorldbookNames !== 'function') {
+          window.getCharWorldbookNames = function() {
+            var bridge = window.__palinkBridge;
+            if (!bridge || typeof bridge.charLorebooks !== 'function') {
+              if (runtime && typeof runtime.recordStubHit === 'function') {
+                runtime.recordStubHit('getCharWorldbookNames', '角色世界书桥不可用，返回空列表');
+              }
+              return Promise.resolve([]);
+            }
+            var collect = function() {
+              var books = bridge.charLorebooks() || { primary: null, additional: [] };
+              var names = [];
+              if (books.primary) names.push(books.primary);
+              if (Array.isArray(books.additional)) {
+                books.additional.forEach(function(n) { if (n) names.push(n); });
+              }
+              return names;
+            };
+            // MVU 在模块顶层 await 这个 API，而桥缓存是惰性拉取的（见 CharacterChat.tsx:1746
+            // 注释：注入时角色 id 未必已进 context）。首次调用几乎必然撞上冷缓存，
+            // 直接返回 [] 会让 MVU 以为「这张卡没有世界书」——那正是原报错下游的病根。
+            // 故冷缓存时自己拉一次再答（ST 语义本就是 Promise，等得起）。
+            var cached = collect();
+            if (cached.length > 0) return Promise.resolve(cached);
+            var cid = runtime && runtime.context && runtime.context.characterUuid;
+            if (!cid || typeof bridge.refreshCharLorebooks !== 'function') {
+              return Promise.resolve(cached);
+            }
+            return Promise.resolve(bridge.refreshCharLorebooks(String(cid)))
+              .then(collect)
+              .catch(function() { return cached; });
+          };
+        }
+        if (typeof window.getCharWorldbook !== 'function') {
+          window.getCharWorldbook = function(name) {
+            if (typeof window.getWorldbook === 'function') {
+              return window.getWorldbook(name);
+            }
+            if (runtime && typeof runtime.recordStubHit === 'function') {
+              runtime.recordStubHit('getCharWorldbook', 'Palink 未提供按名取角色世界书内容');
+            }
+            return Promise.resolve(null);
+          };
+        }
+
+        // ── [CG-ALBUM-UNBLOCK 2026-10-05] 当前角色 id（ST 全局，卡脚本在用）──
+        // 卡内相册脚本 isChatActive() 第一步就取它，取不到 / 为空字符串就直接
+        // return false，后面的 scanLatestMessageForCg() 一次都不跑 —— 相册于是
+        // 永远停在卡自带开场白给的那 1 条（用户看到的「1/205」）。
+        // 真机实测主页面此前 typeof window.getCurrentCharacterId === 'undefined'。
+        //
+        // 注意**不要**改用 messageManager.getCurrentCharacterId()：它全仓零调用方、
+        // 恒返回空串（见 CharacterChat.tsx:1579 注释，已核实），接上去只会把
+        // 「undefined」换成「空字符串」，相册照样不解锁。唯一真源是 runtime.context。
+        if (typeof window.getCurrentCharacterId !== 'function') {
+          window.getCurrentCharacterId = function() {
+            var ctx = runtime && runtime.context;
+            var id = ctx && ctx.characterUuid;
+            return id == null || id === '' ? null : String(id);
+          };
+        }
+
+        // ── [VAR-ALIAS 2026-10-05] getAllVariables / getChatVariables 别名 ──
+        // iframe 轨有（legacy-st-sim.ts:1216/1218、SillyTavernCompatRuntime.ts:17），
+        // 主页面轨与沙箱轨都没有 —— 卡脚本跑在主页面，于是这两族调用直接 undefined。
+        // 酒馆助手语义里 getAllVariables = 全部作用域合并（global+chat+local），
+        // getChatVariables = 仅会话级。Palink 的会话变量只有一档（stat_data），
+        // 故两者同源，都指向下面这个 getVariables；返回副本，避免脚本改到我们的对象。
+        // 真机审计：SUPPLIED 白名单 68 项里有 9 项「列了但主页面没实现」，这两项是其中
+        // 真会被卡脚本调到的（其余 7 项在 ST 侧亦无同名导出，属白名单虚列，另记）。
+        if (typeof window.getAllVariables !== 'function') {
+          window.getAllVariables = function() {
+            return typeof window.getVariables === 'function'
+              ? JSON.parse(JSON.stringify(window.getVariables() || {}))
+              : {};
+          };
+        }
+        if (typeof window.getChatVariables !== 'function') {
+          window.getChatVariables = function() {
+            return typeof window.getVariables === 'function'
+              ? JSON.parse(JSON.stringify(window.getVariables() || {}))
+              : {};
+          };
+        }
+
         // A5：预设名列表（Palink /api/roleplay/presets，注入时已预取）
         if (typeof window.getPresetNames !== 'function') {
           window.getPresetNames = function() {

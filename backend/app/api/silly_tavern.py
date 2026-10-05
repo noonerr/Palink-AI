@@ -3383,7 +3383,11 @@ async def st_get_worldinfo(
     """
     if not req.name:
         raise HTTPException(status_code=400, detail="World name is required")
-    wb = _resolve_worldbook(db, user, world_id=None, name=req.name)
+    # [WB-GET-CHAR 2026-10-05] 读端点放宽到「任意书」：ST 的 /get 按名字取，不分全局/绑定。
+    # 详见 _resolve_worldbook 的 include_character_bound 说明。
+    wb = _resolve_worldbook(
+        db, user, world_id=None, name=req.name, include_character_bound=True,
+    )
     if not wb:
         # ST readWorldInfoFile(allowDummy=true) 返回 {entries: {}}
         return {"entries": {}}
@@ -4452,12 +4456,32 @@ def _worldbook_to_st_world_info(wb: WorldBook, db: Optional[Session] = None) -> 
 
 def _resolve_worldbook(
     db: Session, user: User, world_id: Optional[str], name: Optional[str],
+    *,
+    include_character_bound: bool = False,
 ) -> Optional[WorldBook]:
-    """按 ID 或名称查找用户的全局世界书（character_id 为空）。"""
-    query = db.query(WorldBook).filter(
-        WorldBook.user_id == user.id,
-        WorldBook.character_id.is_(None),
-    )
+    """按 ID 或名称查找用户的**全局**世界书（character_id 为空）。
+
+    ``include_character_bound=True`` 时放宽到「任意书」（全局 + 绑定到某张卡的）。
+
+    [WB-GET-CHAR 2026-10-05] 此前**读**端点（``/api/worldinfo/get``）也走默认的
+    「只查全局书」，于是按名取书对**角色绑定书**一律返回 ``{entries: {}}``。ST 侧不是
+    这样：``src/endpoints/worldinfo.js:71`` 的 ``/get`` 走 ``readWorldInfoFile(dirs, name)``，
+    按名字从用户书库里取，不区分全局/角色绑定。
+
+    实测后果（真机）：卡 ``c44f2ae6…`` 的世界书「露缇雅1.2」是绑定书（185 条 stage），
+    ``POST /api/worldinfo/get {name:'露缇雅1.2'}`` 返回 ``{"entries":{}}`` →
+    前端桥 ``worldbookGetEntries`` 拿到 0 条 →
+    ``getLorebookEntries`` / ``getWorldbook`` 对该卡恒空 →
+    MVU 初始化读不到角色世界书内容，抛
+    ``TypeError: Cannot read properties of undefined (reading 'length')``。
+
+    ⚠️ 只给**读**端点开这个开关：``/edit``（:3420）与 ``/delete``（:3499）保持默认的
+    全局语义，否则会顺带把「删角色绑定书」变成可达操作 —— 那不是本轮要修的东西。
+    越权口径两条路径一致：都按 ``user_id == user.id`` 过滤。
+    """
+    query = db.query(WorldBook).filter(WorldBook.user_id == user.id)
+    if not include_character_bound:
+        query = query.filter(WorldBook.character_id.is_(None))
     if world_id:
         return query.filter(WorldBook.id == world_id).first()
     if name:
