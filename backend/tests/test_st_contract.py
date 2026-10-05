@@ -1189,6 +1189,54 @@ class TestSTWorldInfoContract:
         data = resp.json()
         assert data.get("entries") == {}
 
+    def test_worldinfo_get_prefers_current_character_when_names_collide(
+        self, db_session, test_user,
+    ):
+        """同名书不止一本时，按名取书优先取当前角色绑定的那本。
+
+        [WB-NAME-AMBIG 2026-10-06] 世界书名不是唯一键。实测同一用户有两本同名
+        「露缇雅1.2」，分别绑在两张卡上。放宽到「任意书」之前按名查找不会撞车；
+        放宽之后 ``filter(name).first()`` 无 ORDER BY，取到哪本不确定 —— 插件
+        于是读到别的角色的书。这里验证 ``prefer_character_id`` 只做排序偏好、
+        不缩小候选集：传了就优先该角色，没传则行为不变（仍返回一本）。
+        """
+        from app.api.silly_tavern import _resolve_worldbook
+        from app.models.character import Character
+        from app.models.worldbook import WorldBook
+
+        # character_id 有 FK 指向 characters，需先建两张真角色卡
+        char_a = Character(user_id=test_user.id, name="Ambig Char A")
+        char_b = Character(user_id=test_user.id, name="Ambig Char B")
+        db_session.add_all([char_a, char_b])
+        db_session.flush()
+        for ch in (char_a, char_b):
+            db_session.add(WorldBook(user_id=test_user.id, character_id=ch.id, name="Ambig World"))
+        db_session.commit()
+        char_a, char_b = char_a.id, char_b.id
+
+        # 传 characterId → 拿到该角色那本
+        got_b = _resolve_worldbook(
+            db_session, test_user, world_id=None, name="Ambig World",
+            include_character_bound=True, prefer_character_id=char_b,
+        )
+        assert got_b is not None
+        assert got_b.character_id == char_b
+
+        got_a = _resolve_worldbook(
+            db_session, test_user, world_id=None, name="Ambig World",
+            include_character_bound=True, prefer_character_id=char_a,
+        )
+        assert got_a is not None
+        assert got_a.character_id == char_a
+
+        # 不传 → 仍然返回一本（行为不变），但必须是该用户的
+        got_any = _resolve_worldbook(
+            db_session, test_user, world_id=None, name="Ambig World",
+            include_character_bound=True,
+        )
+        assert got_any is not None
+        assert got_any.user_id == test_user.id
+
     def test_worldinfo_import_accepts_json(self, client, auth_headers):
         """POST /api/worldinfo/import 接受 JSON 世界书。"""
         wb_data = {

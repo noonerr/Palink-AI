@@ -3232,8 +3232,12 @@ class WorldInfoNameRequest(BaseModel):
       - /api/worldinfo/edit  body = {name, data}
       - /api/worldinfo/delete body = {name}
     所有端点均通过全局世界书的 name 定位，不再使用 Palink 早期的 avatar_url。
+
+    ``characterId`` 可选（仅 /get 消费，/delete 忽略）：同名书去重提示，见
+    _resolve_worldbook 的 prefer_character_id 说明。
     """
     name: str = ""
+    characterId: Optional[str] = None
 
 
 class WorldInfoEditRequest(BaseModel):
@@ -3387,6 +3391,8 @@ async def st_get_worldinfo(
     # 详见 _resolve_worldbook 的 include_character_bound 说明。
     wb = _resolve_worldbook(
         db, user, world_id=None, name=req.name, include_character_bound=True,
+        # [WB-NAME-AMBIG 2026-10-06] 同名书不止一本时，优先取当前角色绑定的那本。
+        prefer_character_id=req.characterId,
     )
     if not wb:
         # ST readWorldInfoFile(allowDummy=true) 返回 {entries: {}}
@@ -4458,17 +4464,32 @@ def _resolve_worldbook(
     db: Session, user: User, world_id: Optional[str], name: Optional[str],
     *,
     include_character_bound: bool = False,
+    prefer_character_id: Optional[str] = None,
 ) -> Optional[WorldBook]:
     """按 ID 或名称查找用户的**全局**世界书（character_id 为空）。
 
     ``include_character_bound=True`` 时放宽到「任意书」（全局 + 绑定到某张卡的）。
+
+    ``prefer_character_id`` 只在**按名字查找且同名书不止一本**时生效：把绑定到该
+    角色的那本排到最前。
+
+    [WB-NAME-AMBIG 2026-10-06] 为什么需要它：世界书名字不是唯一键 —— 同一用户可以有
+    多本同名的书（实测：两张不同角色的卡各绑了一本「露缇雅1.2」，各 19 条）。
+    放宽到「任意书」之前，按名查找天然只会在全局书里命中，撞名概率低；放宽之后
+    ``filter(name).first()`` 会在多本同名书里**随机**挑一本（SQL 无 ORDER BY 时顺序
+    不保证），两张卡的插件于是互相读到对方的书 —— 内容与当前角色对不上，且症状
+    沉默（条目数恰好一样时完全看不出来）。
+    这里**只调整优先级、不缩小候选集**：仍然按 ST 语义在用户书库里按名取，
+    只是撞名时优先当前角色那本；没撞名或没传 characterId 时行为与之前完全一致。
 
     [WB-GET-CHAR 2026-10-05] 此前**读**端点（``/api/worldinfo/get``）也走默认的
     「只查全局书」，于是按名取书对**角色绑定书**一律返回 ``{entries: {}}``。ST 侧不是
     这样：``src/endpoints/worldinfo.js:71`` 的 ``/get`` 走 ``readWorldInfoFile(dirs, name)``，
     按名字从用户书库里取，不区分全局/角色绑定。
 
-    实测后果（真机）：卡 ``c44f2ae6…`` 的世界书「露缇雅1.2」是绑定书（185 条 stage），
+    实测后果（真机）：卡 ``c44f2ae6…`` 的世界书「露缇雅1.2」是绑定书（19 条 stage）。
+    ⚠️ 订正 2026-10-06：此处原写「185 条」，与库里实际条数不符（实测 ``world_book_stages``
+    按 world_book_id 计数 = 19）已改。引用该数字前请自己数一遍。
     ``POST /api/worldinfo/get {name:'露缇雅1.2'}`` 返回 ``{"entries":{}}`` →
     前端桥 ``worldbookGetEntries`` 拿到 0 条 →
     ``getLorebookEntries`` / ``getWorldbook`` 对该卡恒空 →
@@ -4485,7 +4506,21 @@ def _resolve_worldbook(
     if world_id:
         return query.filter(WorldBook.id == world_id).first()
     if name:
-        return query.filter(WorldBook.name == name).first()
+        matches = query.filter(WorldBook.name == name).all()
+        if not matches:
+            return None
+        if len(matches) > 1:
+            if prefer_character_id:
+                wanted = str(prefer_character_id)
+                for m in matches:
+                    if m.character_id and str(m.character_id) == wanted:
+                        return m
+            logging.getLogger(__name__).warning(
+                "[WB-NAME-AMBIG] 用户 %s 有 %d 本同名世界书 %r（prefer=%s），"
+                "按名查找取到的可能不是当前角色那本",
+                user.id, len(matches), name, prefer_character_id,
+            )
+        return matches[0]
     return None
 
 

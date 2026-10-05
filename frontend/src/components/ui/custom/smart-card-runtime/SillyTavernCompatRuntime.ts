@@ -352,6 +352,84 @@ ${bootHeader}
       close: '\u5173\u95ed',
     });
   }
+  // [CONSOLE-GOVERNOR 2026-10-06] 卡脚本的 console 噪音治理。
+  //
+  // 问题（2026-10-06 用户真机日志实测）：一张 4MB 的卡脚本在控制台打 5~6 份**完全相同**
+  // 的日志——因为它被重复实例化，每次 init 都重新打一遍（TitleScreenDiag / GSAP /
+  // Live2D profile / BubbleDialogue 全是 5~6×）。769 行日志里 383 行是 React 内部堆栈，
+  // 真正有信息量的不足 30 行。用户描述「吐出来很多没必要的信息，数据量太大」。
+  //
+  // 策略（保守，只压「重复」，不压「首次」）：
+  //  - log / info / debug：**同一条**相同内容只放行第一次，后续折叠并累计次数，
+  //    每 N 次打一条「（已折叠 xN）」提示。首次照常可见 ⇒ 不丢信息，只去重。
+  //  - warn / error：**原样放行**。告警和报错可能含唯一信息（数值/时序），折叠会藏 bug。
+  //  - dir / table / trace / group：同样按 debug 处理（卡脚本常用于调试转储）。
+  //  - 只包一层，且**不吞异常**：任何内部失败都退回原生 console。
+  //
+  // 逃生开关：卡片设置面板或控制台执行 window.__palinkConsoleVerbose = true 即全量放行。
+  // 折叠上限按 key 计数，key 表超过 500 条时清空（防长跑内存增长）。
+  //
+  // ⚠️ 本段是注入 iframe 的模板字符串的一部分：注释与代码里禁止出现反引号和美元花括号。
+  const __nativeConsole = (typeof window !== 'undefined' && window.console) || null;
+  if (__nativeConsole && !window.__palinkConsoleGovernor) {
+    try {
+      const foldMap = new Map();
+      const FOLD_KEY_LIMIT = 500;
+      const ANNOUNCE_EVERY = 20;
+      const passThrough = ['warn', 'error', 'assert', 'count', 'countReset', 'groupEnd', 'time', 'timeEnd', 'timeLog'];
+      const foldable = ['log', 'info', 'debug', 'dir', 'table', 'trace'];
+      const makeKey = (args) => {
+        try {
+          let text = '';
+          for (let i = 0; i < args.length && i < 4; i++) {
+            const value = args[i];
+            if (typeof value === 'string') text += value.slice(0, 240);
+            else if (value === null) text += 'null';
+            else if (typeof value === 'object') text += '[object]';
+            else text += String(value).slice(0, 120);
+            text += '|';
+          }
+          return text;
+        } catch (e) { return ''; }
+      };
+      const governed = {};
+      foldable.forEach((name) => {
+        const native = __nativeConsole[name];
+        if (typeof native !== 'function') return;
+        governed[name] = function () {
+          try {
+            if (window.__palinkConsoleVerbose === true) return native.apply(__nativeConsole, arguments);
+            const key = name + '::' + makeKey(arguments);
+            if (!key.trim() || key === name + '::') return native.apply(__nativeConsole, arguments);
+            if (foldMap.size > FOLD_KEY_LIMIT) foldMap.clear();
+            const seen = foldMap.get(key) || 0;
+            foldMap.set(key, seen + 1);
+            if (seen === 0) return native.apply(__nativeConsole, arguments);
+            if (seen % ANNOUNCE_EVERY === 0) {
+              return native.call(__nativeConsole, '[已折叠重复日志 x' + (seen + 1) + '] ' + String(arguments[0] || '').slice(0, 120));
+            }
+            return undefined;
+          } catch (e) {
+            return native.apply(__nativeConsole, arguments);
+          }
+        };
+      });
+      passThrough.forEach((name) => {
+        const native = __nativeConsole[name];
+        if (typeof native === 'function') governed[name] = native.bind(__nativeConsole);
+      });
+      // 保底：其余未列出的原生方法（clear / dirxml / profile 等）直接透传。
+      Object.keys(__nativeConsole).forEach((name) => {
+        if (governed[name] === undefined && typeof __nativeConsole[name] === 'function') {
+          governed[name] = __nativeConsole[name].bind(__nativeConsole);
+        }
+      });
+      window.__palinkConsoleGovernor = governed;
+      window.console = governed;
+    } catch (e) { /* console 不可用时保持原生 */ }
+  }
+  const console = window.console;
+
   const diagnostics = [];
   const diagnosticKeys = new Set();
   let requestSeq = 0;
@@ -6586,25 +6664,54 @@ ${IDB_NS_RUNTIME_SOURCE}
     }
   });
 
+  // [DEBUG-VISIBLE 2026-10-06] 卡内报错必须**同时**满足两件事：上报（reportDiagnostic，
+  // 走 postMessage 给宿主页）+ **在 console 留一条带前缀的可见记录**。
+  //
+  // 为什么以前查不到：上报走 postMessage，宿主页 CharacterCardRenderer.tsx:889 收到后
+  // 转成 onAction({type:'diagnostic'})，**由调用方决定要不要渲染**——Palink 当前没有
+  // 消费方，于是这条错误等于进了黑洞。实测（2026-10-06 用户真机日志）那张卡崩在
+  // legacy_chat.ts:9，报错确实被上报了，但 console 里只有浏览器原生的
+  // "Uncaught (in promise)"，没有卡名、没有归类，排查时极易当成噪音划过去。
+  //
+  // ⚠️ 本文件主体是**注入 iframe 的模板字符串**：注释里禁止出现反引号和美元花括号，
+  // 否则提前终止模板（本注释第一版就是因此炸出一堆 TS1005/TS1443）。
+  //
+  // 加前缀「卡内错误」：一是搜索方便（console 过滤框打「卡内错误」即可只看卡的问题），
+  // 二是与浏览器原生堆栈区分开。**不改变上报行为**，只是多一条可见记录。
+  // ⚠️ 注意：下面这个 helper 的实参**不能写 TS 类型标注** —— 本文件主体是注入 iframe 的
+  // 模板字符串，产出的必须是**纯 JS**；写 (label: string) 会在生成文本里留下冒号，
+  // 运行时 SyntaxError（2026-10-06 被 generated-script-parse-guard.test.ts 拦下）。
+  const logCardError = (label, message, stack) => {
+    try {
+      // 带前缀 + 卡标识，便于在噪音里一眼认出
+      console.error('[卡内错误] ' + label + (frameId ? ' @' + String(frameId).slice(-6) : '') + ': ' + message, stack || '');
+    } catch { /* console 不可用时静默 */ }
+  };
+
   window.addEventListener('error', (event) => {
     const message = String(event.message || event.error?.message || uiText.unknownError);
     const refMatch = message.match(/(?:ReferenceError:\\s*)?([A-Za-z_$][\\w$]*) is not defined/);
+    const stack = String(event.error?.stack || '');
+    logCardError('脚本错误', message, stack);
     reportDiagnostic({
       severity: refMatch ? 'warning' : 'error',
       code: refMatch ? 'undefined_global' : 'script_error',
       apiName: refMatch?.[1] || '',
       message,
-      stack: String(event.error?.stack || ''),
+      stack,
     });
   });
 
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
+    const message = String(reason?.message || reason || uiText.unhandledRejection);
+    const stack = String(reason?.stack || '');
+    logCardError('未处理的异步错误', message, stack);
     reportDiagnostic({
       severity: 'error',
       code: 'unhandled_rejection',
-      message: String(reason?.message || reason || uiText.unhandledRejection),
-      stack: String(reason?.stack || ''),
+      message,
+      stack,
     });
   });
 
@@ -6631,6 +6738,83 @@ ${IDB_NS_RUNTIME_SOURCE}
       );
     }
   }, 0);
+
+  // [CARD-CRASH-GUARD 2026-10-06] 卡脚本崩了怎么办——给它留一条能走通的出口。
+  //
+  // 现象（2026-10-06 用户真机）：卡脚本 init 中途抛错死掉（实测崩在它自己从 CDN 拉的
+  // legacy_chat.ts:9），于是它后段的 setEventsRefs({showSettingsPanel}) 永不执行。
+  // 结果：设置按钮**已经渲染出来**（所以 hover 有反馈、看起来"点了没反应"），
+  // 但点击处理里 _showSettingsPanelRef2 仍是 null，而那段代码是「null 就静默跳过」
+  // ——无 else、无报错、无 toast 之外的任何提示。用户完全无法判断发生了什么。
+  //
+  // 这里做的事（不改卡、不动它的代码）：
+  //  1. 监听捕获阶段文档点击：若点的是卡的设置入口（data-action=config/open-settings），
+  //     且**卡自己的处理器已经跑过**（用标记位判断），就额外弹一条可见提示，
+  //     告诉用户"卡片初始化失败，设置面板打不开"，而不是让点击石沉大海。
+  //  2. 把这次崩溃通过已有的 diagnostic 通道上报，宿主页可自行决定展示。
+  //
+  // 刻意**不替代**卡的功能（不自己实现设置面板）：卡的面板是它私有的 UI 结构，
+  // 我们拿不到可靠的挂载点与状态。只做"失败要可见"，不做"替它干活"。
+  // 这符合本项目一贯纪律：不猜卡内部语义，只补可见性与可观测性。
+  const cardCrashGuardState = { sawCardBootstrap: false, warnedAt: 0 };
+  try {
+    // 卡的正常初始化会在 window 上挂它的全局导出（实测该卡挂 window.galgame）。
+    // 若 5 秒后仍只有 Palink 自己装的键，说明卡脚本没跑完。
+    const CARD_BOOT_MARKERS = ['galgame', 'GalgameUI', 'TavernHelper_init_done', '__galgame_ui_ready__'];
+    setTimeout(() => {
+      try {
+        const found = CARD_BOOT_MARKERS.some((key) => window[key] !== undefined);
+        if (found) { cardCrashGuardState.sawCardBootstrap = true; return; }
+        reportDiagnostic({
+          severity: 'warning',
+          code: 'card_bootstrap_incomplete',
+          message: '卡片脚本未完成初始化（5 秒内未挂载全局导出），其设置面板等入口可能无响应。',
+          detail: 'frameId=' + String(frameId || ''),
+        });
+      } catch (e) { /* 静默 */ }
+    }, 5000);
+  } catch (e) { /* 静默 */ }
+
+  try {
+    document.addEventListener('click', (event) => {
+      try {
+        const target = event.target;
+        if (!target || typeof target.closest !== 'function') return;
+        const hit = target.closest('[data-action="config"], [data-action="open-settings"]');
+        if (!hit) return;
+        // 卡自己处理过就不打扰（它自己会开面板或切菜单）。
+        if (cardCrashGuardState.sawCardBootstrap) return;
+        const now = Date.now();
+        if (now - cardCrashGuardState.warnedAt < 6000) return;
+        cardCrashGuardState.warnedAt = now;
+        const actionName = String(hit.getAttribute('data-action') || '');
+        // 报错要**可见**：走 diagnostics（宿主页可展示）+ 控制台带前缀一条。
+        // 不自己实现卡的设置面板：那是它私有的 UI 结构与状态，替它干活只会做出错的界面。
+        reportDiagnostic({
+          severity: 'warning',
+          code: 'card_settings_entry_unresponsive',
+          apiName: actionName,
+          message: '卡片初始化未完成，设置入口无响应（点击已被 Palink 捕获）。',
+          detail: 'frameId=' + String(frameId || ''),
+        });
+        logCardError('设置入口无响应', '卡片脚本初始化未完成，data-action=' + actionName, '');
+        // 卡内自己的 toast 也可能因挂载点为空而静默不显示（实测过），所以再叠一条
+        // 不依赖卡挂载点的浮层提示，确保用户**一定**看得到"为什么点了没反应"。
+        try {
+          const noticeId = 'palink-card-crash-notice';
+          const old = document.getElementById(noticeId);
+          if (old) old.remove();
+          const notice = document.createElement('div');
+          notice.id = noticeId;
+          notice.setAttribute('data-palink-card-crash-notice', '1');
+          notice.style.cssText = 'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147483646;max-width:92vw;padding:9px 14px;border-radius:8px;background:rgba(24,24,28,.95);color:#fde68a;font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 26px rgba(0,0,0,.35);border:1px solid rgba(253,230,138,.35);pointer-events:none;';
+          notice.textContent = '卡片初始化失败，设置面板暂时打不开（按 F12 搜「卡内错误」看详情）';
+          (document.body || document.documentElement).appendChild(notice);
+          setTimeout(() => { try { notice.remove(); } catch (e) {} }, 4200);
+        } catch (e) { /* 静默 */ }
+      } catch (e) { /* 静默 */ }
+    }, true);
+  } catch (e) { /* 静默 */ }
 })();`;
 }
 

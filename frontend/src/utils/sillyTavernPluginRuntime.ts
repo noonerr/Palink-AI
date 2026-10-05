@@ -712,7 +712,15 @@ export class SillyTavernPluginRuntime {
       // P0-4: COT 世界书读写（ST getWorldbook 语义返回条目数组）
       worldbookGetEntries: async (name: string): Promise<any[]> => {
         try {
-          const resp = await api.post('/api/worldinfo/get', { name });
+          // [WB-NAME-AMBIG 2026-10-06] 带上当前角色：同一用户可以有多本同名的书
+          // （实测两张卡各绑一本「露缇雅1.2」），不带的话后端按名查找会在同名书里
+          // 随机挑一本，读到的是别的角色的书。后端只用它做排序偏好，不做过滤，
+          // 取不到时行为与不带完全一致。
+          const cid = (this.context as any)?.characterUuid;
+          const resp = await api.post('/api/worldinfo/get', {
+            name,
+            characterId: cid ? String(cid) : undefined,
+          });
           const entries = resp?.entries;
           if (!entries) return [];
           const list = Array.isArray(entries) ? entries : Object.values(entries);

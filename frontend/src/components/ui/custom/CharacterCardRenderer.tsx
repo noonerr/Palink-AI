@@ -1245,11 +1245,24 @@ const IframeRenderer = React.memo(function IframeRenderer({
   //     origin，parent/localStorage/cookie 全部不可达；iframe 内存储由
   //     legacy-st-sim 的 memoryStorage 覆盖（postMessage 持久化，不受影响）。
   // 静态 HTML（无脚本）无需 sandbox。
+  //
+  // [SANDBOX-CAPABILITY 2026-10-06] 此前两种模式都只给了脚本权限，其余能力一律没开。
+  // 后果：卡脚本里的 alert/confirm/prompt **静默失效**（浏览器不报错、不弹窗，调用
+  // 直接返回），表现就是「按钮点了没反应」—— Galgame 数据库界面插件 / 对话渲染系统
+  // 这类卡里弹窗调用合计上百处，配置面板、导入导出、删除确认大量依赖它们。
+  //
+  // 补上的四项**都不授予同源，也不放开对父页面的任何访问**，与上面 P1-1 的红线无关：
+  //   - allow-modals：允许 alert/confirm/prompt（否则静默失效，最难查的一类）
+  //   - allow-forms：允许表单提交（设置面板保存按钮常见形态）
+  //   - allow-popups：允许 window.open（未信任时弹出的是 opaque origin 窗口）
+  //   - allow-downloads：允许下载（配置的导入导出/备份）
+  // 仍未给：allow-same-origin（未信任时不给，保持 P1-1）、allow-top-navigation。
+  const CAPABILITY_TOKENS = 'allow-modals allow-forms allow-popups allow-downloads';
   const sandbox = effectiveMode === 'static-html'
     ? ''
     : trustedNative
-      ? 'allow-scripts allow-same-origin'
-      : 'allow-scripts';
+      ? `allow-scripts allow-same-origin ${CAPABILITY_TOKENS}`
+      : `allow-scripts ${CAPABILITY_TOKENS}`;
   // [CONTENT-UNLOCK] 解锁后 frameHeight 跟随 height（内容高），min 放开到 INLINE_MIN_HEIGHT
   // 允许内容收缩后 iframe 跟着收缩；未解锁保持视口切片（height=min=max 三重锁定）。
   const frameHeight = prefersAvailableHeight ? (contentOverrideActive ? height : availableHeight) : height;
