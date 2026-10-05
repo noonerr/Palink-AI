@@ -201,7 +201,9 @@ def test_depth_beyond_message_count_floors_at_main_prompt():
         out = _insert_depth_prompt(list(BASE_MESSAGES), _make_req(), _make_deps(), entries, [])
         # 断言内容而不只是下标：首条必须仍是原主提示词
         assert out[0] == {"role": "system", "content": "sys"}
-        assert out[1] == {"role": "system", "content": "DEEP"}
+        # 注入条带 _palink_in_chat_injection 私有标记键（供裁剪分类识别，
+        # 装配返回前会被剥掉），故只比 role/content —— 本测试验的是落点位置。
+        assert (out[1]["role"], out[1]["content"]) == ("system", "DEEP")
         assert _contents(out)[2:] == ["u1", "a1", "u2", "a2", "u3"]
 
 
@@ -222,7 +224,8 @@ def test_no_leading_system_allows_index_zero():
     ]
     entries = [DepthInjection(depth=99, content="DEEP", role=0, source="t", sort_key="a")]
     out = _insert_depth_prompt(list(messages), _make_req(), _make_deps(), entries, [])
-    assert out[0] == {"role": "system", "content": "DEEP"}
+    # 同上：注入条带私有标记键，只比 role/content
+    assert (out[0]["role"], out[0]["content"]) == ("system", "DEEP")
     assert _contents(out)[1:] == ["u1", "a1"]
 
 

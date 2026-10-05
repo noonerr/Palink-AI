@@ -1010,6 +1010,25 @@ def _classify_message_identifier(
     if isinstance(explicit_id, str) and explicit_id:
         return explicit_id
 
+    # [IN-CHAT-NOT-TRIMMED 2026-10-05] in-chat 注入（at-depth 世界书 / AN(IN_CHAT) /
+    # persona(pos=0) / /inject / 插件 IN_CHAT / 角色 depth_prompt）。
+    #
+    # ST 把这类内容排在**聊天历史预算裁剪之前**注入：openai.js:1325 先
+    # populationInjectionPrompts 拼好 messages，:1331 才 populateChatHistory 走预算；
+    # 而 script.js:4834 的裁剪只遍历聊天历史数组，注入条目不在其中 → 结构上永不被裁。
+    #
+    # 此前本函数没有这个分支，in-chat 注入落到末尾兜底
+    # `PROMPT_ID_WORLD_INFO_BEFORE`（优先级 80，trimmable=True），于是超预算时
+    # 卡片自己声明的格式规范（MVU 变量更新格式、<cg> 立绘标签规范等）被当成
+    # 世界书正文块优先裁掉——模型压根收不到指令，自然产不出对应标签。
+    #
+    # 返回 chatHistory 而非新标识：ST 的 prompt_order 枚举里没有"in-chat 注入"
+    # 这一项（它不在 prompt_order 可排序的槽位里），借用 chatHistory 可避免
+    # 破坏既有 PromptPreset.prompt_order 配置；真正的"不裁剪"在
+    # _collect_prompt_sources 的优先级分支里单独处理（见 _IN_CHAT 标记）。
+    if message.get("_palink_in_chat_injection"):
+        return PROMPT_ID_CHAT_HISTORY
+
     role = message.get("role", "user")
     content = _message_content_to_text(message.get("content", ""))
     content_stripped = content.strip()
@@ -1109,7 +1128,12 @@ def _collect_prompt_sources(
         # P1-1 修复: 角色卡字段代理消息（_palink_char_field_proxy）使用较低优先级，
         # 使其在 token 超预算时优先被裁剪，避免与 system_prompt 中合并的字段
         # 产生重复内容占用预算。
-        if m.get("_palink_char_field_proxy"):
+        if m.get("_palink_in_chat_injection"):
+            # [IN-CHAT-NOT-TRIMMED 2026-10-05] 不可裁剪，且不受"最近 N 条"启发式影响
+            # （in-chat 注入是卡的固定契约，位置由 depth 决定，与"离模型多近"无关）。
+            priority = _TRIM_PRIORITY_SYSTEM
+            trimmable = False
+        elif m.get("_palink_char_field_proxy"):
             priority = _TRIM_PRIORITY_SMART_CARD  # 复用较低优先级（30）
             trimmable = True
         elif identifier == PROMPT_ID_SYSTEM_PROMPT:
@@ -4580,6 +4604,17 @@ async def _assemble_roleplay_prompt_impl(
     else:
         report.append(PromptAssemblyReportItem("instruct_mode", "skipped"))
 
+    # [PRIVATE-KEY-STRIP 2026-10-05] 装配内部私有标记键必须在离开装配层前剥掉。
+    # _classify_message_identifier / _collect_prompt_sources 靠这些键做裁剪分类
+    # （_palink_in_chat_injection / _palink_prompt_id / _palink_char_field_proxy），
+    # 但装配结果会原样交给推理 API —— OpenAI 兼容端对 message 对象的未知字段
+    # 不保证容忍（严格实现直接 400）。分类与裁剪均已在本行之前完成，剥离无副作用；
+    # 全仓仅本文件读这些键（已 grep 确认），下游无消费者。
+    for _pm in messages:
+        if isinstance(_pm, dict):
+            for _pk in [k for k in _pm if isinstance(k, str) and k.startswith("_palink_")]:
+                _pm.pop(_pk, None)
+
     return PromptAssemblyResult(
         messages=messages,
         system_prompt=system_prompt,
@@ -4806,6 +4841,50 @@ def _append_worldbook_context(
             # A5 修复: 百分比预算基数传真实上下文上限（16000 仅作兜底）
             max_context_tokens=max_context_tokens,
         )
+# ── [WB-INDEP 2026-10-05] 世界书六份产物相互独立 ──────────────────
+        # ST getWorldInfoPrompt（script.js:4575）一次返回 worldInfoString /
+        # worldInfoBefore / worldInfoAfter / worldInfoExamples / worldInfoDepth /
+        # outletEntries 六个**互不依赖**的结果；at-depth 条目走扩展注册表 IN_CHAT
+        # （script.js:4612 setExtensionPrompt CUSTOM_WI_DEPTH_ROLE），从不被
+        # before/after 正文块是否为空所左右。
+        #
+        # 此前 depth / em_top / em_bottom / outlet 四段被错放在 `if wb_result.text:`
+        # 内侧。正文块一旦被 token 预算裁空（默认 25% 对长书即可能裁空），整本
+        # at-depth 指令随之静默丢失——表现为卡片级的格式规范（MVU 变量更新格式、
+        # <cg> 立绘标签规范等）压根没进 prompt，模型自然产不出对应标签。
+        # 该缺陷与具体卡无关：任何"只靠 at-depth 提供指令"的世界书都会整本失效。
+        _wb_has_output = bool(
+            wb_result.text
+            or wb_result.depth_entries
+            or wb_result.em_top_entries
+            or wb_result.em_bottom_entries
+            or wb_result.outlet_entries
+        )
+        # 报告与逐条明细不依赖 text：有 depth-only 命中时同样要报出来，
+        # 否则用户看到的是误导性的 "no matched entries"。
+        by_source: dict[str, list[str]] = {}
+        for _meta in (wb_result.book_sources or {}).values():
+            by_source.setdefault(_meta.get("source") or "global", []).append(
+                _meta.get("name") or "(未命名)",
+            )
+        detail_parts = [
+            f"entries={len([r for r in wb_result.debug_report if r.status == 'activated'])}"
+        ]
+        for _src in ("chat", "character", "global"):
+            if by_source.get(_src):
+                detail_parts.append(f"{_src}:{','.join(by_source[_src])}")
+        for r in wb_result.debug_report:
+            report.append(
+                PromptAssemblyReportItem(
+                    f"worldbook_entry_{r.entry_id}",
+                    r.status,
+                    detail=(
+                        f"book={r.book_name}; source={r.lore_source}; "
+                        f"title={r.title}; reason={r.reason}; keywords={r.matched_keywords}"
+                    ),
+                    tokens_estimate=r.tokens_estimate,
+                )
+            )
         if wb_result.text:
             wb_text = wb_result.text
             wb_text = deps.apply_plugin_regex_scripts(
@@ -4836,21 +4915,6 @@ def _append_worldbook_context(
             )
             wb_text = deps.replace_placeholders(wb_text, user_nickname, req.char.name or "")
             dynamic_context_parts.append(wb_text)
-            # [WB-CHAR-ISOLATION 2026-10-03] 三源可见性：先出一条书级行
-            # （每本被注入的书 + 它是 chat/character/global 哪一源），再出条目级行。
-            # 用户据此一眼看出"这书为什么进来了"——global 源的书需要手动改绑角色，
-            # 否则它对所有卡生效（这正是本次修复的串味来源）。
-            by_source: dict[str, list[str]] = {}
-            for _meta in (wb_result.book_sources or {}).values():
-                by_source.setdefault(_meta.get("source") or "global", []).append(
-                    _meta.get("name") or "(未命名)",
-                )
-            detail_parts = [
-                f"entries={len([r for r in wb_result.debug_report if r.status == 'activated'])}"
-            ]
-            for _src in ("chat", "character", "global"):
-                if by_source.get(_src):
-                    detail_parts.append(f"{_src}:{','.join(by_source[_src])}")
             report.append(
                 PromptAssemblyReportItem(
                     "worldbook",
@@ -4859,61 +4923,48 @@ def _append_worldbook_context(
                     tokens_estimate=wb_result.total_tokens,
                 )
             )
-            # Merge worldbook debug report
-            for r in wb_result.debug_report:
-                report.append(
-                    PromptAssemblyReportItem(
-                        f"worldbook_entry_{r.entry_id}",
-                        r.status,
-                        detail=(
-                            f"book={r.book_name}; source={r.lore_source}; "
-                            f"title={r.title}; reason={r.reason}; keywords={r.matched_keywords}"
-                        ),
-                        tokens_estimate=r.tokens_estimate,
+        # Collect depth entries from worldbook
+        # ST 对齐: 包装为统一队列记录，key 对齐 ST customDepthWI_{depth}_{role}
+        # （constants.js L53）；同 key 多条按收集序稳定排列
+        for wb_depth, wb_content, wb_role in wb_result.depth_entries:
+            depth_entries.append(DepthInjection(
+                depth=wb_depth,
+                content=balance_custom_tags(
+                    deps.replace_placeholders(wb_content, user_nickname, req.char.name or "")
+                ),
+                role=wb_role if isinstance(wb_role, int) else _ROLE_NAME_TO_INT.get(str(wb_role).lower(), 0),
+                source="worldbook_depth",
+                sort_key=_KEY_WI_DEPTH_FMT.format(depth=wb_depth, role=wb_role),
+                report_on_insert=True,
+            ))
+        # ST 1.18.0 对齐: 把 EMTop/EMBottom/outlet 条目传递给 MacroEnv
+        # 通过 {{mesExamples}} 和 {{outlet::name}} 宏注入到 prompt 中
+        # 注意: 这些条目也需要经过 replace_placeholders 处理 {{user}}/{{char}}
+        if em_top_entries is not None:
+            for content in wb_result.em_top_entries:
+                em_top_entries.append(
+                    balance_custom_tags(
+                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
                     )
                 )
-            # Collect depth entries from worldbook
-            # ST 对齐: 包装为统一队列记录，key 对齐 ST customDepthWI_{depth}_{role}
-            # （constants.js L53）；同 key 多条按收集序稳定排列
-            for wb_depth, wb_content, wb_role in wb_result.depth_entries:
-                depth_entries.append(DepthInjection(
-                    depth=wb_depth,
-                    content=balance_custom_tags(
-                        deps.replace_placeholders(wb_content, user_nickname, req.char.name or "")
-                    ),
-                    role=wb_role if isinstance(wb_role, int) else _ROLE_NAME_TO_INT.get(str(wb_role).lower(), 0),
-                    source="worldbook_depth",
-                    sort_key=_KEY_WI_DEPTH_FMT.format(depth=wb_depth, role=wb_role),
-                    report_on_insert=True,
-                ))
-            # ST 1.18.0 对齐: 把 EMTop/EMBottom/outlet 条目传递给 MacroEnv
-            # 通过 {{mesExamples}} 和 {{outlet::name}} 宏注入到 prompt 中
-            # 注意: 这些条目也需要经过 replace_placeholders 处理 {{user}}/{{char}}
-            if em_top_entries is not None:
-                for content in wb_result.em_top_entries:
-                    em_top_entries.append(
+        if em_bottom_entries is not None:
+            for content in wb_result.em_bottom_entries:
+                em_bottom_entries.append(
+                    balance_custom_tags(
+                        deps.replace_placeholders(content, user_nickname, req.char.name or "")
+                    )
+                )
+        if outlet_entries is not None:
+            for outlet_name, contents in wb_result.outlet_entries.items():
+                if outlet_name not in outlet_entries:
+                    outlet_entries[outlet_name] = []
+                for content in contents:
+                    outlet_entries[outlet_name].append(
                         balance_custom_tags(
                             deps.replace_placeholders(content, user_nickname, req.char.name or "")
                         )
                     )
-            if em_bottom_entries is not None:
-                for content in wb_result.em_bottom_entries:
-                    em_bottom_entries.append(
-                        balance_custom_tags(
-                            deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                        )
-                    )
-            if outlet_entries is not None:
-                for outlet_name, contents in wb_result.outlet_entries.items():
-                    if outlet_name not in outlet_entries:
-                        outlet_entries[outlet_name] = []
-                    for content in contents:
-                        outlet_entries[outlet_name].append(
-                            balance_custom_tags(
-                                deps.replace_placeholders(content, user_nickname, req.char.name or "")
-                            )
-                        )
-        else:
+        if not _wb_has_output:
             report.append(PromptAssemblyReportItem("worldbook", "skipped", "no matched entries"))
         nested.commit()
     except Exception as exc:
@@ -5682,7 +5733,13 @@ def _insert_depth_prompt(
             # 退化为 0，保住兜底分支）。只钳下限，不动 depth 算术。
             _floor = 1 if next_messages and next_messages[0].get("role") == "system" else 0
             insert_index = max(_floor, len(next_messages) - head.depth)
-            next_messages.insert(insert_index, {"role": _ROLE_INT_TO_NAME.get(head.role, "system"), "content": merged_content})
+            # [IN-CHAT-NOT-TRIMMED 2026-10-05] 打标记，让 _collect_prompt_sources 认出
+            # 这是 in-chat 注入而非世界书正文块（ST 见下方说明）。
+            next_messages.insert(insert_index, {
+                "role": _ROLE_INT_TO_NAME.get(head.role, "system"),
+                "content": merged_content,
+                "_palink_in_chat_injection": True,
+            })
             inserted_any = True
             i = j
 
