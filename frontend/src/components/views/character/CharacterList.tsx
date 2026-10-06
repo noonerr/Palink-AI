@@ -31,14 +31,6 @@ export interface CharacterListProps {
   characters: CharacterListItem[];
   processingCharacter: string | null;
   forceShowOverlay: string | null;
-  /**
-   * [PERF-2026-10-07 问题1] 正在进入对话的角色 id。
-   * 点击角色卡后要串行等待「会话列表 → 消息列表」两跳（弱网可达数秒），
-   * 此前这段等待完全没有承载状态（唯一相关的 `loadingSessionRef` 是 useRef，
-   * 不触发渲染）⇒ 被点击的卡片毫无变化，用户判定为卡死。
-   * 这里用独立 prop 而非复用 `processingCharacter`：后者绑定导入/解析流程且带「停止」按钮。
-   */
-  enteringCharacterId?: string | null;
   showProcessingMessage: { show: boolean; message: string };
   showImportOptions: string | null;
   showDeleteCharacterConfirm: boolean;
@@ -203,7 +195,6 @@ const CharacterCard = React.memo(({
   onViewProfile,
   processingCharacter,
   forceShowOverlay,
-  enteringCharacterId,
   onStartChat,
   onParseAndTranslateCharacter,
   onExportCharacter,
@@ -219,7 +210,6 @@ const CharacterCard = React.memo(({
   onViewProfile: (char: CharacterListItem) => void;
   processingCharacter: string | null;
   forceShowOverlay: string | null;
-  enteringCharacterId?: string | null;
   onStartChat: (char: Character) => void;
   onParseAndTranslateCharacter: (id: string) => void;
   onExportCharacter: (char: Character, format: 'png' | 'json') => void;
@@ -299,17 +289,6 @@ const CharacterCard = React.memo(({
         </div>
       )}
       
-      {/* [PERF-2026-10-07 问题1] 进入对话的加载反馈：此前点击角色卡后要串行等两跳请求，
-          卡片上毫无变化。这里给出 spinner + 文案，并把卡片上的操作按钮禁用防重复点击。 */}
-      {enteringCharacterId === char.id && !char._importing && processingCharacter !== char.id && (
-        <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-40 rounded-3xl" aria-busy="true">
-          <div className="text-white text-center p-5">
-            <div className="w-12 h-12 border-[3px] border-white border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-base font-semibold">正在进入对话…</p>
-          </div>
-        </div>
-      )}
-
       <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 rounded-3xl" />
       
       <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 z-20 transition-opacity duration-300 group-hover:opacity-0 pointer-events-none rounded-b-3xl">
@@ -335,7 +314,7 @@ const CharacterCard = React.memo(({
                 size="sm" 
                 className="flex-1 text-[11px] h-7 bg-white/90 text-slate-900 hover:bg-white"
                 onClick={(e) => { e.stopPropagation(); onStartChat(char); }}
-                disabled={char.is_processing || processingCharacter === char.id || enteringCharacterId === char.id}
+                disabled={char.is_processing || processingCharacter === char.id}
               >
                 <Play size={12} className="mr-1" />
                 <span className="hidden sm:inline">开始对话</span>
@@ -348,7 +327,7 @@ const CharacterCard = React.memo(({
                 size="sm" 
                 className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onParseAndTranslateCharacter(char.id); }}
-                disabled={char.is_processing || processingCharacter === char.id || enteringCharacterId === char.id}
+                disabled={char.is_processing || processingCharacter === char.id}
                 title="AI解析并翻译角色卡"
               >
                 <Sparkles size={14} className="text-white" />
@@ -359,7 +338,7 @@ const CharacterCard = React.memo(({
                 className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0 hidden sm:inline-flex"
                 onClick={(e) => { e.stopPropagation(); onExportCharacter(char, 'png'); }}
                 title="导出为PNG"
-                disabled={char.is_processing || processingCharacter === char.id || enteringCharacterId === char.id}
+                disabled={char.is_processing || processingCharacter === char.id}
               >
                 <Download size={14} className="text-white" />
               </Button>
@@ -368,7 +347,7 @@ const CharacterCard = React.memo(({
                 size="sm" 
                 className="h-7 w-7 p-0 bg-white/20 hover:bg-white/30 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onEditCharacter(char); }}
-                disabled={char.is_processing || processingCharacter === char.id || enteringCharacterId === char.id}
+                disabled={char.is_processing || processingCharacter === char.id}
               >
                 <Edit3 size={14} className="text-white" />
               </Button>
@@ -377,7 +356,7 @@ const CharacterCard = React.memo(({
                 size="sm" 
                 className="h-7 w-7 p-0 bg-white/20 hover:bg-red-500/40 backdrop-blur-md border-0"
                 onClick={(e) => { e.stopPropagation(); onDeleteCharacter(char.id); }}
-                disabled={char.is_processing || processingCharacter === char.id || enteringCharacterId === char.id}
+                disabled={char.is_processing || processingCharacter === char.id}
               >
                 <Trash2 size={14} className="text-white" />
               </Button>
@@ -560,7 +539,6 @@ const MobileView = ({
   characters,
   processingCharacter,
   forceShowOverlay,
-  enteringCharacterId,
   showProcessingMessage,
   showImportOptions,
   showDeleteCharacterConfirm,
@@ -893,7 +871,6 @@ const MobileView = ({
                     onViewProfile={onViewProfile}
                     processingCharacter={processingCharacter}
                     forceShowOverlay={forceShowOverlay}
-                    enteringCharacterId={enteringCharacterId}
                     onStartChat={onStartChat}
                     onParseAndTranslateCharacter={onParseAndTranslateCharacter}
                     onExportCharacter={onExportCharacter}
@@ -990,7 +967,6 @@ const DesktopView = ({
   characters,
   processingCharacter,
   forceShowOverlay,
-  enteringCharacterId,
   showProcessingMessage,
   showImportOptions,
   showDeleteCharacterConfirm,
@@ -1162,7 +1138,6 @@ const DesktopView = ({
                       onViewProfile={onViewProfile}
                       processingCharacter={processingCharacter}
                       forceShowOverlay={forceShowOverlay}
-                      enteringCharacterId={enteringCharacterId}
                       onStartChat={onStartChat}
                       onParseAndTranslateCharacter={onParseAndTranslateCharacter}
                       onExportCharacter={onExportCharacter}
