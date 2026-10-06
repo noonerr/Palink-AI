@@ -86,24 +86,83 @@ function runGovernorWithFakeConsole() {
  * 而它依赖的 DOM 面太宽（见文件头说明），抽段测试更稳。
  */
 describe('SillyTavern API 桥接（缺 API 会崩的根因修复）', () => {
-  it('生成文本里装了 SillyTavern 的 Proxy 回落（否则缺键=undefined=TypeError）', () => {
+  /**
+   * 把 Proxy 这一段抽出来，在 vm 里注入桩依赖**真跑一遍**。
+   * 比结构断言强：能直接复现「卡拿到的是什么值」，而值本身就是这次 bug 的全部。
+   */
+  function runProxyWithStubs(): any {
     const body = extractRuntimeBody();
-    expect(body).toContain('installSillyTavernCompatProxy');
-    // 三层回落顺序：自己有 → tavernHelperCompat → makeMissingApiFunction
-    expect(body).toContain('if (prop in target) return target[prop];');
-    expect(body).toContain('if (prop in tavernHelperCompat) return tavernHelperCompat[prop];');
-    expect(body).toContain("return makeMissingApiFunction('SillyTavern.'");
+    const start = body.indexOf('const installSillyTavernCompatProxy = () => {');
+    expect(start).toBeGreaterThan(-1);
+    const end = body.indexOf('installSillyTavernCompatProxy();', start);
+    expect(end).toBeGreaterThan(start);
+    const block = body.slice(start, end) + '\ninstallSillyTavernCompatProxy();';
+
+    const sandbox: any = {
+      Proxy,
+      Object,
+      String,
+      Boolean,
+      console,
+      diagnostics: [] as any[],
+      // ① 层：SillyTavern 自带的键，必须优先且不被覆盖
+      window: { SillyTavern: { getContext: () => ({ from: 'self' }) } },
+      // ③ 层：tavernHelperCompat（实测 57 键，MVU 要的 23 个里只命中 1 个）
+      tavernHelperCompat: { uuidv4: () => 'stub-uuid' },
+      // ② 层：getContextCompat —— 真正装着 MVU 要的那 ~20 个实现
+      getContextCompat: () => ({
+        chat: [{ id: 1 }],
+        characters: [{ name: 'char-a' }],
+        ToolManager: { isToolCallingSupported: () => false },
+        registerFunctionTool: () => true,
+      }),
+      reportDiagnostic: (d: any) => {
+        sandbox.diagnostics.push(d);
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(block, sandbox);
+    return sandbox;
+  }
+
+  it('②层必须落到 getContextCompat（一修错落到 tavernHelperCompat，等于没修）', () => {
+    const body = extractRuntimeBody();
+    const start = body.indexOf('const installSillyTavernCompatProxy = () => {');
+    expect(start).toBeGreaterThan(-1);
+    const block = body.slice(start, start + 2600);
+    expect(block).toContain('getContextCompat()');
+    expect(block).toContain('if (ctxObj && prop in ctxObj) return ctxObj[prop];');
+    expect(block).toContain('if (prop in tavernHelperCompat) return tavernHelperCompat[prop];');
   });
 
-  it('反证：回落链里必须有 makeMissingApiFunction 兜底，不能只剩 undefined', () => {
-    const body = extractRuntimeBody();
-    // 若哪天有人把最后一层兜底删了，卡脚本访问缺失的 SillyTavern.xxx 又会拿到
-    // undefined，MVU 那句 SillyTavern.ToolManager.isToolCallingSupported() 会再崩一次。
-    const idx = body.indexOf('installSillyTavernCompatProxy');
-    expect(idx).toBeGreaterThan(-1);
-    const block = body.slice(idx, idx + 2000);
-    expect(block).toContain('makeMissingApiFunction');
-    expect(block).toContain('tavernHelperCompat');
+  it('已知 API 能按 ①→②→③ 顺序取到真实实现', () => {
+    const s = runProxyWithStubs();
+    expect(s.window.SillyTavern.getContext().from).toBe('self'); // ① 自带优先
+    expect(s.window.SillyTavern.chat).toEqual([{ id: 1 }]); // ② getContext
+    expect(s.window.SillyTavern.ToolManager.isToolCallingSupported()).toBe(false); // ②
+    expect(s.window.SillyTavern.uuidv4()).toBe('stub-uuid'); // ③
+  });
+
+  it('★ 缺口必须返回 undefined，不能返回假函数', () => {
+    // 这是 2026-10-06 二修的核心。一修给缺口返回 makeMissingApiFunction，
+    // 而**函数在 JS 里恒为真**。MVU 原文写法：
+    //   const { registerFunctionTool: e } = SillyTavern;
+    //   return e ? 走注册分支 : (提示不支持, 返回安全空实现)
+    // 假函数 ⇒ 走左边 ⇒ 崩在更深处；undefined ⇒ 走右边 ⇒ 优雅降级。
+    const s = runProxyWithStubs();
+    const missing = s.window.SillyTavern.registerFunctionTool_不存在的键;
+    expect(missing).toBeUndefined();
+    expect(s.window.SillyTavern.chatCompletionSettings).toBeUndefined();
+    expect(missing ? '走注册分支(会崩)' : '走安全降级分支').toBe('走安全降级分支');
+  });
+
+  it('缺口要有诊断留痕，不能静默消失', () => {
+    const s = runProxyWithStubs();
+    void s.window.SillyTavern.某个没实现的API;
+    void s.window.SillyTavern.某个没实现的API; // 第二次不应重复上报
+    const hits = s.diagnostics.filter((d: any) => d.code === 'sillytavern_api_missing');
+    expect(hits.length).toBe(1);
+    expect(String(hits[0].apiName)).toContain('SillyTavern.某个没实现的API');
   });
 });
 

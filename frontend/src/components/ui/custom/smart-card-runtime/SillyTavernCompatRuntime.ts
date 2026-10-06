@@ -6469,33 +6469,37 @@ ${IDB_NS_RUNTIME_SOURCE}
   window.SillyTavern.runGenerationInterceptors = runGenerationInterceptorsCompat;
   window.SillyTavern.getExtensionPrompts = getExtensionPromptsCompat;
 
-  // [SILLYTAVERN-PROXY 2026-10-06] 卡脚本从 SillyTavern 上取的 API，我们一直没给全。
+  // [SILLYTAVERN-PROXY 2026-10-06 二修] 卡脚本从 SillyTavern 上取的 API，我们一直没给全。
   //
   // 实测（2026-10-06，用户追问「是不是我们缺 API」——**用户是对的**）：
-  // MVU 插件从 SillyTavern 上取 22 个 API（registerFunctionTool / ToolManager /
-  // registerMacro / saveChat / chat / characters / callGenericPopup / POPUP_TYPE ...），
-  // 而上面只挂了 9 个通用键，**交集几乎为零**。
+  // MVU 插件从 SillyTavern 上取 23 个 API（chat / callGenericPopup / POPUP_TYPE /
+  // POPUP_RESULT / saveChat / getRequestHeaders / extensionSettings / ToolManager /
+  // registerFunctionTool / chatCompletionSettings ...），而 window.SillyTavern 上
+  // 只挂了 9 个通用键，**交集几乎为零**。
   //
-  // 要命的不是"没有"，是**没有的时候会怎样**：
-  //  - window.TavernHelper 是 Proxy（见 installTavernHelperCompatProxy），缺的键会回落到
-  //    makeMissingApiFunction —— 返回安全 async 函数 + 上报诊断，**不抛异常**；
-  //  - window.SillyTavern 此前是**裸对象**，缺的键就是 undefined ⇒
-  //    MVU 那句 SillyTavern.ToolManager.isToolCallingSupported() 直接 TypeError，
-  //    而它包在 Vue 的 watch(..., { immediate: true }) 里 —— 组件创建即执行 ⇒
-  //    **初始化链当场断掉**，后段 setEventsRefs 永不执行 ⇒ 设置面板打不开（症状）。
+  // ★ 一修（同一天早些时候）**方向对、落点错**，已废止，留作教训：
+  //   一修把回落指向了 tavernHelperCompat —— 但那个对象只有 57 个键，MVU 要的 23 个里
+  //   实测只命中 1 个（uuidv4）。真正装着这些实现的是**上面的 getContextCompat()**
+  //   （ST 的 getContext() 契约，220+ 键，命中 MVU 要的 ~20 个）。
+  //   ⇒ 一修的 ② 层几乎全部漏到 ③ 层，等于没修。
   //
-  // 这些 API 我们**不是没实现**：它们在 tavernHelperCompat 里（219 个键，含 MVU 要的 19 个），
-  // 只是挂在了 TavernHelper 上、没挂到 SillyTavern 上。⇒ 准确说法是**挂错了地方**，不是没做。
+  // ★★ 更要命的是 ③ 层本身：makeMissingApiFunction 返回的是**函数**，而函数在 JS 里
+  //   **恒为真**。卡判断"这个能力有没有"用的是最朴素的特性检测，MVU 原文即：
+  //     const { registerFunctionTool: e } = SillyTavern;
+  //     return e ? 走注册分支 : (提示不支持, 返回安全空实现)
+  //   undefined ⇒ 走右边，优雅降级；给了个空函数 ⇒ 走左边，**炸在更深处**。
+  //   即一修把「缺 API 就优雅降级」改成了「缺 API 就假装支持」——比不改更糟。
+  //   （同一条判据也否决了给 chatCompletionSettings 塞空对象：MVU 校验通过后立刻写
+  //    e.runtimes.is_function_call_enabled，空对象会在那里 TypeError；
+  //    给 undefined 反而走它自己那句 throw new Error，被我们捕获，不打断初始化。）
+  //   ⇒ 缺口一律返回 **undefined**，只上报一次诊断让缺口可见，**不替卡改变结论**。
   //
-  // 这里照搬 TavernHelper 那套三层回落：
+  // 现在的四层回落：
   //   ① SillyTavern 自己的键（上面的 9 个，优先，不被覆盖）
-  //   ② tavernHelperCompat 的真实实现（19 个，功能真能用）
-  //   ③ makeMissingApiFunction（安全空函数 + 上报诊断，保证**任何缺口都不再抛 TypeError**）
-  // 与 TavernHelper 完全同构，行为可预期。不动 P1-1 沙箱红线。
-  //
-  // ⚠️ 影响面是**所有卡**不只这一张：此前靠「SillyTavern.xxx === undefined」做特性检测
-  // 的卡，现在会拿到实现而改走"支持"分支。这是本来的正确语义（这些能力我们确实有），
-  // 但属于行为变化，需真机回归。
+  //   ② getContextCompat() 的真实实现（ST getContext 契约，命中 ~20 个）
+  //   ③ tavernHelperCompat（补充）
+  //   ④ 都没有 ⇒ undefined + 一条 diagnostics（**不再给假函数**）
+  // 不动 P1-1 沙箱红线。卡脚本不会整体覆盖 window.SillyTavern（实测无赋值），代理稳定。
   const installSillyTavernCompatProxy = () => {
     const existingHelper = window.SillyTavern && typeof window.SillyTavern === 'object'
       ? window.SillyTavern
@@ -6504,20 +6508,48 @@ ${IDB_NS_RUNTIME_SOURCE}
       window.SillyTavern = existingHelper;
       return;
     }
+    let ctxSnapshotCache = null;
+    const contextSnapshotCompat = () => {
+      if (ctxSnapshotCache) return ctxSnapshotCache;
+      try {
+        ctxSnapshotCache = (typeof getContextCompat === 'function') ? getContextCompat() : {};
+      } catch (e) {
+        ctxSnapshotCache = {};
+      }
+      return ctxSnapshotCache;
+    };
+    const missingReported = {};
     const proxy = new Proxy(existingHelper, {
       get(target, prop) {
         if (prop === 'then') return undefined;
         if (prop === '__palinkSillyTavernProxy') return true;
         if (prop in target) return target[prop];
+        const ctxObj = contextSnapshotCompat();
+        if (ctxObj && prop in ctxObj) return ctxObj[prop];
         if (prop in tavernHelperCompat) return tavernHelperCompat[prop];
-        return makeMissingApiFunction('SillyTavern.' + String(prop), { severity: 'warning' });
+        // 缺口：返回 undefined，不要返回"看起来像实现"的空函数（理由见上方 ★★）。
+        const keyName = String(prop);
+        if (!missingReported[keyName]) {
+          missingReported[keyName] = true;
+          try {
+            reportDiagnostic({
+              severity: 'warning',
+              code: 'sillytavern_api_missing',
+              apiName: 'SillyTavern.' + keyName,
+              message: '卡脚本需要 SillyTavern.' + keyName + '，Palink 尚未实现；已返回 undefined，让卡走自己的降级分支。',
+            });
+          } catch (e) { /* 静默 */ }
+        }
+        return undefined;
       },
       set(target, prop, value) {
         target[prop] = value;
         return true;
       },
       has(target, prop) {
-        return prop in target || prop in tavernHelperCompat;
+        if (prop in target) return true;
+        const ctxObj = contextSnapshotCompat();
+        return Boolean(ctxObj && prop in ctxObj) || prop in tavernHelperCompat;
       },
     });
     try { Object.defineProperty(proxy, '__palinkSillyTavernProxy', { value: true, configurable: true }); } catch {}
@@ -6737,11 +6769,22 @@ ${IDB_NS_RUNTIME_SOURCE}
   // ⚠️ 注意：下面这个 helper 的实参**不能写 TS 类型标注** —— 本文件主体是注入 iframe 的
   // 模板字符串，产出的必须是**纯 JS**；写 (label: string) 会在生成文本里留下冒号，
   // 运行时 SyntaxError（2026-10-06 被 generated-script-parse-guard.test.ts 拦下）。
+  // 卡内错误留一份内存副本（上限 20 条）：哨兵要把它写进诊断与浮层提示，
+  // 否则用户只看到"初始化失败"四个字，不知道到底缺了什么。
+  const cardErrorLog = [];
   const logCardError = (label, message, stack) => {
     try {
+      if (cardErrorLog.length < 20) cardErrorLog.push({ label, message, stack });
       // 带前缀 + 卡标识，便于在噪音里一眼认出
       console.error('[卡内错误] ' + label + (frameId ? ' @' + String(frameId).slice(-6) : '') + ': ' + message, stack || '');
     } catch { /* console 不可用时静默 */ }
+  };
+  const firstCardErrorText = () => {
+    try {
+      const first = cardErrorLog[0];
+      if (!first) return '';
+      return String(first.message || '').replace(/\s+/g, ' ').slice(0, 160);
+    } catch { return ''; }
   };
 
   window.addEventListener('error', (event) => {
@@ -6812,23 +6855,60 @@ ${IDB_NS_RUNTIME_SOURCE}
   // 刻意**不替代**卡的功能（不自己实现设置面板）：卡的面板是它私有的 UI 结构，
   // 我们拿不到可靠的挂载点与状态。只做"失败要可见"，不做"替它干活"。
   // 这符合本项目一贯纪律：不猜卡内部语义，只补可见性与可观测性。
-  const cardCrashGuardState = { sawCardBootstrap: false, warnedAt: 0 };
+  // [CARD-CRASH-GUARD 二修 2026-10-06] 一修的判据是**写死卡名**，实测误报。
+  // 一修只看 galgame/GalgameUI/TavernHelper_init_done/__galgame_ui_ready 四个名字，
+  // 这四个是**那一张卡**的导出；换张卡、或这张卡走了别的分支，哨兵就一直喊"没初始化"，
+  // 而卡其实是好的——告警本身成了新的噪音，还误导排查方向（用户据此来问"为什么还不行"）。
+  // 二修改成两条判据（任一命中即认为卡跑起来了）：
+  //   ① 已知卡的全局导出白名单（保留，命中快）
+  //   ② **通用判据**：window 上出现了基线之外的新键 ⇒ 确实有卡/插件脚本执行完了初始化
+  // 基线在哨兵安装这一刻取（本 shim 已装完、卡脚本还在等父页面推送，尚未执行），
+  // 并滤掉 Palink 自己装的键，避免把自己算成卡。
+  const cardCrashGuardState = { sawCardBootstrap: false, warnedAt: 0, baselineKeys: [] };
   try {
-    // 卡的正常初始化会在 window 上挂它的全局导出（实测该卡挂 window.galgame）。
-    // 若 5 秒后仍只有 Palink 自己装的键，说明卡脚本没跑完。
-    const CARD_BOOT_MARKERS = ['galgame', 'GalgameUI', 'TavernHelper_init_done', '__galgame_ui_ready__'];
-    setTimeout(() => {
+    cardCrashGuardState.baselineKeys = Object.keys(window).filter((k) => !/^(?:__)?palink/i.test(k));
+  } catch (e) { cardCrashGuardState.baselineKeys = []; }
+
+  const detectCardBootstrapCompat = () => {
+    const known = ['galgame', 'GalgameUI', 'TavernHelper_init_done', '__galgame_ui_ready__'];
+    for (let i = 0; i < known.length; i++) {
+      if (window[known[i]] !== undefined) return true;
+    }
+    try {
+      const baseSet = new Set(cardCrashGuardState.baselineKeys || []);
+      const keysNow = Object.keys(window);
+      for (let i = 0; i < keysNow.length; i++) {
+        const k = keysNow[i];
+        if (baseSet.has(k)) continue;
+        if (/^(?:__)?palink/i.test(k)) continue;
+        return true;
+      }
+    } catch (e) { /* 静默 */ }
+    return false;
+  };
+
+  try {
+    // 5 秒一查、共 4 次（5/10/15/20 秒）后才告警：卡脚本是父页面**异步推送**的，
+    // 单张插件脚本就有 4MB，慢机器上光解析就超过 5 秒，一修那次单点判定必然误报。
+    const runBootstrapCheckCompat = (attempt) => {
       try {
-        const found = CARD_BOOT_MARKERS.some((key) => window[key] !== undefined);
-        if (found) { cardCrashGuardState.sawCardBootstrap = true; return; }
+        if (detectCardBootstrapCompat()) { cardCrashGuardState.sawCardBootstrap = true; return; }
+        if (attempt < 3) {
+          setTimeout(() => runBootstrapCheckCompat(attempt + 1), 5000);
+          return;
+        }
+        const firstError = firstCardErrorText();
         reportDiagnostic({
           severity: 'warning',
           code: 'card_bootstrap_incomplete',
-          message: '卡片脚本未完成初始化（5 秒内未挂载全局导出），其设置面板等入口可能无响应。',
-          detail: 'frameId=' + String(frameId || ''),
+          message: '卡片脚本未完成初始化（20 秒内未挂载任何全局导出）'
+            + (firstError ? '，首个卡内错误：' + firstError : '，且未捕获到卡内错误（可能是卡脚本未加载或静默退出）。')
+            + ' 其设置面板等入口可能无响应。',
+          detail: 'frameId=' + String(frameId || '') + '; capturedErrors=' + String(cardErrorLog.length),
         });
       } catch (e) { /* 静默 */ }
-    }, 5000);
+    };
+    setTimeout(() => runBootstrapCheckCompat(0), 5000);
   } catch (e) { /* 静默 */ }
 
   try {
@@ -6864,7 +6944,11 @@ ${IDB_NS_RUNTIME_SOURCE}
           notice.id = noticeId;
           notice.setAttribute('data-palink-card-crash-notice', '1');
           notice.style.cssText = 'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147483646;max-width:92vw;padding:9px 14px;border-radius:8px;background:rgba(24,24,28,.95);color:#fde68a;font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 26px rgba(0,0,0,.35);border:1px solid rgba(253,230,138,.35);pointer-events:none;';
-          notice.textContent = '卡片初始化失败，设置面板暂时打不开（按 F12 搜「卡内错误」看详情）';
+          // 把**真正的错误**写到浮层上：只写"初始化失败"等于没说，用户无法据此判断
+          // 是缺 API、是脚本没加载、还是卡自己的 bug。这里直接把首条卡内错误贴出来。
+          const errText = firstCardErrorText();
+          notice.textContent = '卡片初始化失败，设置面板暂时打不开'
+            + (errText ? '：' + errText : '（按 F12 搜「卡内错误」看详情）');
           (document.body || document.documentElement).appendChild(notice);
           setTimeout(() => { try { notice.remove(); } catch (e) {} }, 4200);
         } catch (e) { /* 静默 */ }

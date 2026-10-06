@@ -223,6 +223,49 @@ Proxy，三层回落：① 自己的 9 个键 → ② `tavernHelperCompat` 的 1
 
 ---
 
+### 4.0-bis ★★★ 一修是错的，已三修（2026-10-06，用户反馈「不行」后复查）
+
+> ⚠️ **本节订正 §4.0 末尾那段"已修"**。用户真机反馈：桥接上线后卡片**依旧**
+> 报 `card_bootstrap_incomplete`，设置面板仍打不开。复查结论：**一修方向对、落点错**，
+> 而且它引入的兜底**比不改更糟**。三修已上线（`frontend` 侧，dist 已合并重建）。
+
+**错处一：回落指错了对象。**
+一修把 `window.SillyTavern` 的回落指向 `tavernHelperCompat`。实测该对象只有 **57 个键**，
+而 MVU 要的那 23 个里只命中 **1 个**（`uuidv4`）。真正装着这些实现的是
+**`getContextCompat()`**（ST `getContext()` 契约，220+ 键，命中 ~20 个）——
+它是 §4.0 里被我误读成"SillyTavern 的 9 个键"的那个大对象的**真身**
+（那个对象字面量从 `:6182` 开始，返回给 `getContext()`，**不是**赋给 `window.SillyTavern`）。
+⇒ 一修的 ② 层几乎全部漏到 ③ 层，**等于没修**。
+
+**错处二（更严重）：③ 层的兜底本身有害。**
+`makeMissingApiFunction` 返回的是**函数，而函数在 JS 里恒为真**。卡判断"有没有这个能力"
+用的是最朴素的特性检测，MVU 原文：
+`const{registerFunctionTool:e}=SillyTavern; return e ? 走注册分支 : (提示不支持, 安全空实现)`
+- `undefined` ⇒ 走右边，**优雅降级**（改之前就是这个行为，本来是安全的）；
+- 给了个空函数 ⇒ 走左边，**炸在更深处**。
+
+⇒ 一修把「缺 API 就优雅降级」改成了「缺 API 就假装支持」。
+同一条判据也否决了给 `chatCompletionSettings` 塞空对象：MVU 的 `Aa(e)` 只校验
+`typeof e === 'object'`，空对象会通过校验，紧接着写 `e.runtimes.is_function_call_enabled`
+⇒ 在那里 TypeError；给 `undefined` 反而走它自己那句 `throw new Error`，被我们捕获，
+**不打断初始化**。
+
+**三修的四层回落**（`installSillyTavernCompatProxy`）：
+① SillyTavern 自带键 → ② `getContextCompat()` 真实实现 → ③ `tavernHelperCompat`
+→ ④ 都没有 ⇒ **返回 `undefined`** + 一条 `sillytavern_api_missing` 诊断（同键只报一次）。
+
+**误报也修了**：`card_bootstrap_incomplete` 的判据原本写死成
+`galgame / GalgameUI / TavernHelper_init_done / __galgame_ui_ready`（那**一张卡**的导出名），
+换张卡或走别的分支就一直误报；且单点 5 秒判定对异步推送的 4MB 脚本天然过短。
+现改为 ① 已知导出白名单 ∪ ② **通用判据**（window 上出现基线之外的新全局键），
+5/10/15/20 秒共 4 次，20 秒后才告警，并把**首条卡内错误**写进诊断和浮层提示。
+
+**为什么这轮敢说"修了"**：新增测试直接把 Proxy 段放进 `vm` 跑桩依赖，断言
+`SillyTavern.chat` 真拿到 `[{id:1}]`、缺口真为 `undefined`、
+且 `missing ? 走注册分支 : 走安全降级` 走的是右边。不是结构断言，是**值断言**。
+
+---
+
 ### 4.1 ~~已定位的根因~~（已被 §4.0 取代，保留其日志证据与调用链分析）
 
 日志：`C:\Users\Pall\Downloads\localhost-1791227114044.log`（769 行）。
