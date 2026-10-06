@@ -44,22 +44,55 @@ interface CharacterViewProps {
 type ViewState = 'list' | 'edit' | 'profile' | 'chat';
 
 /**
- * [PERF-2026-10-07 问题1] 进入对话的阶段 → 全屏覆盖层的进度与文案。
+ * [PERF-2026-10-07 问题1] 进入对话的阶段 → 全屏覆盖层的进度上限与文案。
  *
- * 用户要求（2026-10-07）：不要在被点击的角色卡上打局部转圈，而是**跳进对话页 +
- * 全屏覆盖层 + 进度条**，让用户知道还要等多久。
- * 因此这里按「实际已完成的关键路径节点」推进进度，而不是假造一个匀速动画。
+ * 用户要求：显示**进度百分比**（不是等待秒数）；且**允许多等一会儿**，
+ * 等前端渲染完全再放行，让进去之后的体感更好（不留半渲染的界面）。
  *
- * ⚠️ 剩余时间无法真实预测（取决于网络与后端），所以展示的是「已等待 N 秒」而非
- * 「还需 N 秒」—— 后者只能靠猜，会给出错误承诺。
+ * 进度模型：每个阶段有一个「硬上限」，进度只会平滑爬升到该上限、绝不越过 ——
+ * 所以百分比始终是「至少完成了这么多」的**下界**，不虚报。
+ * 阶段停留超过 `CHAT_ENTER_SLOW_AFTER_MS` 后允许极慢爬行（不到下一阶段的安全线），
+ * 既是给用户「还在动」的感知，也不会爬到 100% 后干等。
  */
 const CHAT_ENTER_STAGES = {
-  character: { progress: 35, label: '正在加载角色信息…' },
-  messages: { progress: 70, label: '正在加载对话消息…' },
-  done: { progress: 100, label: '即将进入对话' },
+  character: { cap: 45, label: '正在加载角色信息…' },
+  messages: { cap: 75, label: '正在加载对话消息…' },
+  // 渲染阶段：消息数据已到位，等首屏真正画完（含卡片 iframe 挂载）
+  render: { cap: 92, label: '正在渲染对话界面…' },
+  done: { cap: 100, label: '即将进入对话' },
 } as const;
 
 type ChatEnterStage = keyof typeof CHAT_ENTER_STAGES;
+
+const CHAT_ENTER_STAGE_ORDER: ChatEnterStage[] = ['character', 'messages', 'render', 'done'];
+
+/** 单个阶段停留超过此时长后，允许进度以极慢速度继续爬（避免进度条看起来卡死） */
+const CHAT_ENTER_SLOW_AFTER_MS = 2200;
+
+/**
+ * 放行前的额外等待：数据到位 ≠ 画面就绪。双 rAF 等 React 提交 + 浏览器布局，
+ * 再留一段时间给卡片 iframe 挂载 / 字体 / 首屏图片。
+ * 用户明确表示「可以稍微让用户等得更久一点，让前端加载得更完全」。
+ */
+const CHAT_ENTER_SETTLE_MS = 700;
+
+/**
+ * 等首屏真正画完：双 rAF 等 React 提交与浏览器布局，再留 `settleMs` 给
+ * 卡片 iframe 挂载 / 字体 / 首屏图片。数据到位 ≠ 画面就绪。
+ */
+function waitForFirstPaint(settleMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') {
+      resolve();
+      return;
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.setTimeout(resolve, settleMs);
+      });
+    });
+  });
+}
 
 type InitiateConversationOptions = {
   forceNew?: boolean;
@@ -255,20 +288,40 @@ export function CharacterView({
   // 覆盖层是 `fixed` 全局层，因此在列表页与对话页之上都会显示 —— 点击后先遮住列表，
   // 页面切到聊天后继续遮住，消息到位才消失，视觉上就是「跳进对话 + 全屏加载」。
   const [chatEnterStage, setChatEnterStage] = useState<ChatEnterStage | null>(null);
-  const [chatEnterElapsed, setChatEnterElapsed] = useState(0);
+  const [chatEnterProgress, setChatEnterProgress] = useState(0);
 
-  // 已等待秒数：每秒 +1，进入新阶段时归零
+  // 进度平滑爬升：只在当前阶段的上限内前进（所以百分比是真实完成度的**下界**，不虚报）；
+  // 阶段停留超过 CHAT_ENTER_SLOW_AFTER_MS 后改为极慢爬行，避免进度条看起来卡死。
   useEffect(() => {
-    if (!chatEnterStage || chatEnterStage === 'done') return undefined;
-    setChatEnterElapsed(0);
-    const timer = window.setInterval(() => setChatEnterElapsed((v) => v + 1), 1000);
+    if (!chatEnterStage) {
+      setChatEnterProgress(0);
+      return undefined;
+    }
+    if (chatEnterStage === 'done') {
+      setChatEnterProgress(100);
+      return undefined;
+    }
+    const index = CHAT_ENTER_STAGE_ORDER.indexOf(chatEnterStage);
+    const hardCap = CHAT_ENTER_STAGES[chatEnterStage].cap;
+    const nextStage = CHAT_ENTER_STAGE_ORDER[index + 1];
+    // 慢速阶段的软上限：逼近但不越过下一阶段的安全线，保证仍不虚报
+    const softCap = nextStage ? Math.max(hardCap, CHAT_ENTER_STAGES[nextStage].cap - 5) : hardCap;
+    const startedAt = performance.now();
+    const timer = window.setInterval(() => {
+      const slow = performance.now() - startedAt > CHAT_ENTER_SLOW_AFTER_MS;
+      setChatEnterProgress((current) => {
+        const cap = slow ? softCap : hardCap;
+        if (current >= cap) return current;
+        return Math.min(cap, current + (slow ? 0.5 : 2));
+      });
+    }, 100);
     return () => window.clearInterval(timer);
   }, [chatEnterStage]);
 
   // 进度满格后保留一瞬再撤，避免遮罩生硬消失导致闪一下空白
   useEffect(() => {
     if (chatEnterStage !== 'done') return undefined;
-    const timer = window.setTimeout(() => setChatEnterStage(null), 300);
+    const timer = window.setTimeout(() => setChatEnterStage(null), 320);
     return () => window.clearTimeout(timer);
   }, [chatEnterStage]);
   // [PERF-2026-10-07 问题3] 会话级变量。后端 messages 接口已在响应里返回 variables
@@ -1323,6 +1376,11 @@ export function CharacterView({
         setChatEnterStage('messages');
         await loadMessages(latestSession.id);
       }
+      // [PERF-2026-10-07 问题1] 数据到位 ≠ 画面就绪：这里刻意再等一程，
+      // 等首屏真正画完（含卡片 iframe 挂载 / 字体 / 首屏图片）才放行，
+      // 避免用户进去后看到界面还在逐条补渲染。用户明确要求「可以等更久一点，加载得更完全」。
+      setChatEnterStage('render');
+      await waitForFirstPaint(CHAT_ENTER_SETTLE_MS);
       // [iOS-HISTORY] 目标地址与当前地址相同时不再 push：react-router 对同 URL 的 push
       // 照样会往 history 里加一条，iOS 滑动返回时表现为「闪过一页一模一样的页面」。
       if (characterId !== fullCharacter.id && window.location.pathname !== `/characters/${fullCharacter.id}`) {
@@ -2013,19 +2071,20 @@ export function CharacterView({
           aria-busy="true"
         >
           <div className="w-[min(88vw,380px)] rounded-2xl bg-white px-6 py-6 shadow-2xl dark:bg-slate-900">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900 dark:border-slate-600 dark:border-t-white" />
-              <span className="text-sm font-medium">{CHAT_ENTER_STAGES[chatEnterStage].label}</span>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900 dark:border-slate-600 dark:border-t-white" />
+                <span className="truncate text-sm font-medium">{CHAT_ENTER_STAGES[chatEnterStage].label}</span>
+              </div>
+              <span className="shrink-0 text-sm font-semibold tabular-nums text-muted-foreground">
+                {Math.round(chatEnterProgress)}%
+              </span>
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
               <div
-                className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
-                style={{ width: `${CHAT_ENTER_STAGES[chatEnterStage].progress}%` }}
+                className="h-full rounded-full bg-primary transition-[width] duration-200 ease-out"
+                style={{ width: `${chatEnterProgress}%` }}
               />
-            </div>
-            <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-              <span>正在进入对话</span>
-              <span>已等待 {chatEnterElapsed} 秒</span>
             </div>
           </div>
         </div>
