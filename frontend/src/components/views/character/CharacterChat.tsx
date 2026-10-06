@@ -328,6 +328,11 @@ export interface CharacterChatProps {
   setMobileSidebarOpen: (v: boolean) => void;
   // init
   initializingChat: boolean;
+  /**
+   * [PERF-2026-10-07 问题3] 会话级变量，由 CharacterView 从 messages 响应里承接后下发。
+   * 取代本组件内部那个额外的 `?limit=1` 请求（无缓存，每次切会话多一个往返）。
+   */
+  sessionVariables?: { stat_data?: Record<string, unknown> } | undefined;
   handleInitiateConversation: (msg?: string, options?: InitiateConversationOptions) => Promise<InitiateConversationResult>;
   // world book
   wb: any; // useWorldBook return type
@@ -376,6 +381,8 @@ export function CharacterChat(props: CharacterChatProps) {
   const [pluginSettingsOpen, setPluginSettingsOpen] = useState(false);
   // MVU 会话级变量（后端下发的 stat_data，作为消息级 extra.variables 的兜底）
   const [sessionVariables, setSessionVariables] = useState<{ stat_data?: Record<string, unknown> } | undefined>(undefined);
+  // [PERF-2026-10-07 问题3] 主来源改为父级 props（CharacterView 从 messages 响应里承接，
+  // 零额外请求）；生成流结束后的 mvuVariablesUpdated 事件仍是覆盖源。见下方同步 effect。
   // 卡内脚本桥接用：注入 effect 只在切卡时重跑，变量必须走 ref 读最新值，否则脚本读到旧 stat_data
   const sessionVariablesRef = useRef(sessionVariables);
   sessionVariablesRef.current = sessionVariables;
@@ -472,6 +479,7 @@ export function CharacterChat(props: CharacterChatProps) {
     sidebarCollapsed, setSidebarCollapsed: _setSidebarCollapsed,
     mobileSidebarOpen, setMobileSidebarOpen,
     initializingChat, handleInitiateConversation,
+    sessionVariables: sessionVariablesProp,
     wb, showWorldBookManager, setShowWorldBookManager,
     showWorldBookOverview, setShowWorldBookOverview,
     selectedWorldBookId, setSelectedWorldBookId,
@@ -777,22 +785,14 @@ export function CharacterChat(props: CharacterChatProps) {
     prevBranchIdRef.current = branchId;
   }, [isMobile, selectedBranch, selectedSession?.id]);
 
-  // MVU 变量：会话切换时拉取后端下发的 stat_data
+  // [PERF-2026-10-07 问题3] 会话级变量：由父级 props 承接（后端已在 messages 响应里返回
+  // variables），取代原先那个额外的 `?limit=1` 请求 —— 它无 cacheTtlMs、与 `?limit=10`
+  // 无法复用缓存，是每次进入会话的纯额外往返。
+  // 依赖里带上 selectedSession?.id：切会话时即使 props 尚未更新也先清空，
+  // 避免把上一段对话的变量串到新会话。
   useEffect(() => {
-    if (!selectedSession?.id) {
-      setSessionVariables(undefined);
-      return;
-    }
-    let cancelled = false;
-    void api.get(`/api/character-sessions/${selectedSession.id}/messages?limit=1`)
-      .then((res: any) => {
-        if (!cancelled && res?.variables) {
-          setSessionVariables(res.variables);
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [selectedSession?.id]);
+    setSessionVariables(sessionVariablesProp ?? undefined);
+  }, [sessionVariablesProp, selectedSession?.id]);
 
   useEffect(() => {
     prevMessagesRef.current = messages;
@@ -2028,8 +2028,19 @@ export function CharacterChat(props: CharacterChatProps) {
         {(displayedMessages.length > 0 || displayedActiveSessionId) && (
           <div
             id="chat"
-            className={cn('rp-chat-area flex-1 flex flex-col overflow-y-auto space-y-4 w-full', isMobile ? 'px-1' : 'px-2 pt-4 pb-4')}
-            style={isMobile ? { paddingTop: 'calc(env(safe-area-inset-top) + 3.5rem)', paddingBottom: `${mobileMessagesBottomPaddingPx}px` } : undefined}
+            className={cn('rp-chat-area flex-1 flex flex-col overflow-y-auto space-y-4 w-full', isMobile ? 'px-[1%]' : 'px-2 pt-4 pb-4')}
+            style={
+              {
+                // [PERF-2026-10-07 问题2] 关闭浏览器原生 scroll anchoring。
+                // 容器内卡片高度由 iframe 经 postMessage 异步上报，布局在加载后仍在变化，
+                // 原生锚点会被替换/抖动；锚定改由 loadOlderMessages 的 delta 补偿统一接管，
+                // 两套机制同时生效反而互相打架。
+                overflowAnchor: 'none',
+                ...(isMobile
+                  ? { paddingTop: 'calc(env(safe-area-inset-top) + 3.5rem)', paddingBottom: `${mobileMessagesBottomPaddingPx}px` }
+                  : null),
+              } as React.CSSProperties
+            }
             onScroll={handleScroll}
             onClick={() => { activePausedAutoScrollRef.current = true; }}
           >

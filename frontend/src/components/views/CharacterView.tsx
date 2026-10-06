@@ -233,6 +233,13 @@ export function CharacterView({
   const [showDeleteBranchConfirm, setShowDeleteBranchConfirm] = useState(false);
   const [pendingDeleteBranch, setPendingDeleteBranch] = useState<string | null>(null);
   const [initializingChat, setInitializingChat] = useState(false);
+  // [PERF-2026-10-07 问题1] 正从角色列表进入对话的角色 id —— 下发给 CharacterList，
+  // 在被点击的角色卡上渲染 spinner 并禁用其操作按钮（此前这段等待无任何视觉反馈）。
+  const [enteringCharacterId, setEnteringCharacterId] = useState<string | null>(null);
+  // [PERF-2026-10-07 问题3] 会话级变量。后端 messages 接口已在响应里返回 variables
+  // （character_ext.py:2931 / :2969），此处承接，供 CharacterChat 复用；
+  // 取代 CharacterChat 内部那个额外的 `?limit=1` 请求（无缓存、每次切会话多一个往返）。
+  const [sessionVariables, setSessionVariables] = useState<{ stat_data?: Record<string, unknown> } | undefined>(undefined);
   const [showImportOptions, setShowImportOptions] = useState<string | null>(null);
   // ── [PLUGIN-ON-DEMAND] 导入后的插件勾选步骤 ──
   const [importPluginSuggestions, setImportPluginSuggestions] = useState<PluginSuggestion[]>([]);
@@ -264,10 +271,8 @@ export function CharacterView({
 
   const loadingSessionRef = useRef<string | null>(null);
   const pendingInitialBottomLockRef = useRef(false);
-  const initialBottomLockUntilRef = useRef(0);
   const isAtBottomRef = useRef(true);
   const userPausedAutoScrollRef = useRef(false);
-  const INITIAL_BOTTOM_LOCK_MS = 1500;
 
   // Forward-declare loadSessions and loadMemoryStats for hooks
   const loadSessions = useCallback(async (characterId: string) => {
@@ -664,7 +669,8 @@ export function CharacterView({
   const fetchBranchTree = useCallback(async () => {
     if (!selectedSession) return;
     try {
-      const data = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`);
+      // [PERF-2026-10-07 问题3] 此前完全无 cacheTtlMs ⇒ 每次开侧栏都真发一次请求。
+      const data = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`, { cacheTtlMs: 60_000 });
       setBranchTree(data);
     } catch (e) {
       console.error('Failed to fetch branch tree:', e);
@@ -701,7 +707,7 @@ export function CharacterView({
         loadMemoryStats(selectedSession.id, branchId),
         (async () => {
           try {
-            const treeData = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`, { cacheTtlMs: 15_000 });
+            const treeData = await api.get(`/api/character-sessions/${selectedSession.id}/branch-tree`, { cacheTtlMs: 60_000 });
             setBranchTree(treeData);
           } catch {
             // Branch tree refresh is best-effort alongside message loading.
@@ -723,21 +729,23 @@ export function CharacterView({
       setForkPoint(null);
       setHasMoreMessages(false);
 
-      const data = await api.get(`/api/character-sessions/${sessionId}/messages?limit=10`, { cacheTtlMs: 10_000 });
+      // [PERF-2026-10-07 问题3] TTL 10s → 60s：10 秒基本等于每次重拉（弱网感知极明显）。
+      // 响应里的 variables 一并由后端带回，此处承接以避免额外往返。
+      const data = await api.get(`/api/character-sessions/${sessionId}/messages?limit=10`, { cacheTtlMs: 60_000 });
       if (loadingSessionRef.current !== sessionId) return;
       setMessages(data.messages);
+      setSessionVariables(data?.variables ?? undefined);
       setHasMoreMessages(data.has_more || false);
 
       isAtBottomRef.current = true;
       pendingInitialBottomLockRef.current = (data.messages || []).length > 0;
-      initialBottomLockUntilRef.current = performance.now() + INITIAL_BOTTOM_LOCK_MS;
       
       await Promise.all([
         loadMemoryStats(sessionId),
         loadBranches(sessionId),
         (async () => {
           try {
-            const treeData = await api.get(`/api/character-sessions/${sessionId}/branch-tree`, { cacheTtlMs: 15_000 });
+            const treeData = await api.get(`/api/character-sessions/${sessionId}/branch-tree`, { cacheTtlMs: 60_000 });
             if (loadingSessionRef.current === sessionId) {
               setBranchTree(treeData);
             }
@@ -754,6 +762,14 @@ export function CharacterView({
   const loadOlderMessages = useCallback(async () => {
     if (!selectedSession || !hasMoreMessages || isLoadingOlderMessages || messages.length === 0) return;
     setIsLoadingOlderMessages(true);
+    // [PERF-2026-10-07 问题2] 记录插入前的滚动几何。
+    // 历史消息是 **prepend** 到数组头部的：插入后 scrollHeight 变大而 scrollTop 不变，
+    // 视口内容被整体推走（表现为"跳到别处 / 停在正文中间"）。
+    // 此前全仓无一处做该补偿，三个"滚到底"effect 又都以 isAtBottom 为前提
+    // （用户在顶部点"加载更早"时必然为 false）⇒ 完全失去锚定。
+    const scrollerBefore = messagesEndRef.current?.parentElement ?? null;
+    const prevScrollHeight = scrollerBefore ? scrollerBefore.scrollHeight : 0;
+    const prevScrollTop = scrollerBefore ? scrollerBefore.scrollTop : 0;
     try {
       const oldestId = messages[0]?.id;
       if (!oldestId) return;
@@ -763,6 +779,15 @@ export function CharacterView({
           const existingIds = new Set(prev.map(m => m.id));
           const newMsgs = data.messages.filter((m: CharacterChatMessage) => !existingIds.has(m.id));
           return [...newMsgs, ...prev];
+        });
+        // [PERF-2026-10-07 问题2] prepend 补偿：把视口钉回原来那条消息。
+        // 用 rAF 而非 useEffect —— 需在 React 提交 DOM 之后、浏览器绘制之前取到新的
+        // scrollHeight。补偿量 = 新增内容的高度，即 scrollHeight 的增量。
+        requestAnimationFrame(() => {
+          const el = messagesEndRef.current?.parentElement;
+          if (!el) return;
+          const delta = el.scrollHeight - prevScrollHeight;
+          if (delta > 0) el.scrollTop = prevScrollTop + delta;
         });
       }
       setHasMoreMessages(data.has_more || false);
@@ -1227,6 +1252,9 @@ export function CharacterView({
   wbRef.current = wb;
 
   const handleStartChat = useCallback(async (character: Character) => {
+    // [PERF-2026-10-07 问题1] 点击瞬间点亮被点击角色卡的 spinner。
+    // 该函数要串行等两跳（会话列表 → 消息列表），弱网下可达数秒，此前全程零反馈。
+    setEnteringCharacterId(character.id);
     routeCharacterSyncRef.current = character.id;
     setSelectedSession(null);
     setMessages([]);
@@ -1237,30 +1265,34 @@ export function CharacterView({
     setBranchTree(null);
     setHasMoreMessages(false);
 
-    // 角色详情与会话列表并行拉取（弱网下显著缩短进入聊天的时间）
-    const [detail, loadedSessions] = await Promise.all([
-      api.get(`/api/characters/${character.id}`, { cacheTtlMs: 30_000 }).catch((error) => {
-        console.warn('Failed to preload full character details before chat:', error);
-        return null;
-      }),
-      loadSessions(character.id),
-    ]);
+    try {
+      // 角色详情与会话列表并行拉取（弱网下显著缩短进入聊天的时间）
+      const [detail, loadedSessions] = await Promise.all([
+        api.get(`/api/characters/${character.id}`, { cacheTtlMs: 30_000 }).catch((error) => {
+          console.warn('Failed to preload full character details before chat:', error);
+          return null;
+        }),
+        loadSessions(character.id),
+      ]);
 
-    const fullCharacter = detail && typeof detail === 'object'
-      ? { ...character, ...detail }
-      : character;
-    setSelectedCharacter(fullCharacter);
-    wbRef.current.loadWorldBooks(fullCharacter.id);
-    setViewState('chat');
-    const latestSession = loadedSessions[0];
-    if (latestSession?.id) {
-      setSelectedSession(latestSession);
-      await loadMessages(latestSession.id);
-    }
-    // [iOS-HISTORY] 目标地址与当前地址相同时不再 push：react-router 对同 URL 的 push
-    // 照样会往 history 里加一条，iOS 滑动返回时表现为「闪过一页一模一样的页面」。
-    if (characterId !== fullCharacter.id && window.location.pathname !== `/characters/${fullCharacter.id}`) {
-      navigate(`/characters/${fullCharacter.id}`);
+      const fullCharacter = detail && typeof detail === 'object'
+        ? { ...character, ...detail }
+        : character;
+      setSelectedCharacter(fullCharacter);
+      wbRef.current.loadWorldBooks(fullCharacter.id);
+      setViewState('chat');
+      const latestSession = loadedSessions[0];
+      if (latestSession?.id) {
+        setSelectedSession(latestSession);
+        await loadMessages(latestSession.id);
+      }
+      // [iOS-HISTORY] 目标地址与当前地址相同时不再 push：react-router 对同 URL 的 push
+      // 照样会往 history 里加一条，iOS 滑动返回时表现为「闪过一页一模一样的页面」。
+      if (characterId !== fullCharacter.id && window.location.pathname !== `/characters/${fullCharacter.id}`) {
+        navigate(`/characters/${fullCharacter.id}`);
+      }
+    } finally {
+      setEnteringCharacterId(null);
     }
   }, [loadSessions, loadMessages, navigate, characterId]);
 
@@ -1482,18 +1514,14 @@ export function CharacterView({
     setSelectedSession(session);
     setMemoryStats(null);
     setForkPoint(null);
+    // 首屏唯一关键路径：消息列表。loadMessages 内部已并发拉过 memoryStats / branches / branch-tree。
     await loadMessages(session.id);
-    await loadMemoryStats(session.id);
-    try {
-      await wb.loadSessionStatus(session.id);
-    } catch {
-      // World book status is optional for opening a session.
-    }
-    try {
-      await pl.loadSessionStatus(session.id);
-    } catch {
-      // Plot line status is optional for opening a session.
-    }
+    // [PERF-2026-10-07 问题1] 以下两项与首屏无关，改为后台并发且不 await：
+    // 此前串行 await（loadMemoryStats 还与 loadMessages 内部那次重复），弱网下总耗时是累加的。
+    void Promise.all([
+      wb.loadSessionStatus(session.id).catch(() => undefined),
+      pl.loadSessionStatus(session.id).catch(() => undefined),
+    ]);
   };
 
   // Galgame 插件桥接事件：openCharacterChat（palink:switchChat）、分支切换
@@ -1647,11 +1675,10 @@ export function CharacterView({
       return;
     }
 
-    if (performance.now() >= initialBottomLockUntilRef.current) {
-      pendingInitialBottomLockRef.current = false;
-      return;
-    }
-
+    // [PERF-2026-10-07 问题2] 已删除 1.5 秒硬时限（INITIAL_BOTTOM_LOCK_MS）。
+    // 原逻辑：消息响应晚于该时限到达就 `pendingInitialBottomLockRef=false` 直接放弃，
+    // ⇒ 弱网下进会话根本不定位到底部。锁的语义本就是"首次消息到位后滚到底"，
+    // 只要消息已到达就应当执行，与耗时无关。
     let rafA: number | null = null;
     let rafB: number | null = null;
 
@@ -1744,6 +1771,7 @@ export function CharacterView({
           onRetry={retryLoadCharacters}
           processingCharacter={processingCharacter}
           forceShowOverlay={forceShowOverlay}
+          enteringCharacterId={enteringCharacterId}
           showProcessingMessage={showProcessingMessage}
           showImportOptions={showImportOptions}
           showDeleteCharacterConfirm={showDeleteCharacterConfirm}
@@ -1915,6 +1943,8 @@ export function CharacterView({
           mobileSidebarOpen={mobileSidebarOpen}
           setMobileSidebarOpen={setMobileSidebarOpen}
           initializingChat={initializingChat}
+          // [PERF-2026-10-07 问题3] 会话级变量由 messages 响应带回，CharacterChat 不再单独请求
+          sessionVariables={sessionVariables}
        handleInitiateConversation={handleInitiateConversation}
           wb={wb}
           showWorldBookManager={showWorldBookManager}

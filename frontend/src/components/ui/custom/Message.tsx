@@ -660,17 +660,25 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
     const buffer = Math.max(window.innerHeight || 0, 480);
     const dormantRef = { current: false };
     const repaintKick = () => {
-      // [P1 2026-10-06] 唤醒重绘踢：卡片 iframe 在休眠态（content-visibility:hidden）期间
-      // 完成加载时，部分引擎（用户实测 Safari/iOS 为主）揭开子树后不会重新光栅化，
-      // 表现为卡片正文区域退化为纯文本/空白，重新进入视口也不自愈。翻转一个对布局
-      // 中立的 transform 强制该子树重排+重绘一次（不重载 iframe，不产生新导航，
-      // 不违反 iOS 幽灵历史约束）。
+      // [P1 2026-10-06] / [PERF-2026-10-07 修正] 唤醒重绘踢。
+      //
+      // 原因：卡片 iframe 在休眠态完成加载后，揭开子树时部分引擎不会重新光栅化，
+      // 表现为正文退化成空白，重新进入视口也不自愈。
+      //
+      // ⚠️ 原实现用 `transform: translateZ(0)` 翻转 —— 该手法是**合成器加速**路径，
+      // 恰恰可能被合成器跳过而不触发重绘，是它经典的失效模式（10-06 报告自己也标注
+      // "未做真机验证"）。这里改用 `display` 双帧切换：display:none → '' 必然触发
+      // 完整重排 + 重绘，绕不过合成器优化。
+      // 仍不重载 iframe（display:none 不卸载文档），不产生新导航，
+      // 不违反 iOS 幽灵历史约束。
       requestAnimationFrame(() => {
         const host = containerRef.current;
         if (!host) return;
-        host.style.transform = 'translateZ(0)';
+        const inner = host.firstElementChild as HTMLElement | null;
+        if (!inner) return;
+        inner.style.display = 'none';
         requestAnimationFrame(() => {
-          if (containerRef.current) containerRef.current.style.transform = '';
+          inner.style.display = '';
         });
       });
     };
@@ -704,16 +712,20 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
         <div aria-hidden="true" style={{ height: dormantHeight != null ? `${dormantHeight}px` : undefined }} />
       ) : (
         // 隐藏而非卸载：保留 iframe 文档，重新入视口不产生新导航（不新增历史条目）。
-        // content-visibility:hidden 让浏览器跳过子树渲染（省掉合成层开销），
-        // visibility:hidden 作为不支持 content-visibility 的旧版兜底。
+        //
+        // [PERF-2026-10-07 修正] 已移除 `content-visibility: hidden`。
+        // 它不只是"看不见"，而是让浏览器**跳过整棵子树的渲染工作** —— 这正是
+        // "iframe 在隐藏态加载完成、唤醒后不重绘"的载体（分支切换后正文整块空白的成因）。
+        // 休眠的初衷只是避免 iframe 重建（iOS 幽灵历史条目），`visibility: hidden`
+        // 已经满足该诉求：它不改变"是否需要渲染"的语义，退化为纯视觉隐藏。
+        // 代价：失去 content-visibility 省下的那部分渲染开销；
+        // 收益：彻底消除"休眠态加载 → 唤醒空白"这一整类问题。
         <div
           aria-hidden={dormant || undefined}
           style={dormant ? ({
             height: dormantHeight != null ? `${dormantHeight}px` : undefined,
             overflow: 'hidden',
             visibility: 'hidden',
-            contentVisibility: 'hidden',
-            containIntrinsicSize: dormantHeight != null ? `${dormantHeight}px` : undefined,
           } as React.CSSProperties) : undefined}
         >
           {children}
