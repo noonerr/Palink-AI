@@ -80,6 +80,33 @@ function runGovernorWithFakeConsole() {
   return { sandbox, nativeLogs, nativeErrors };
 }
 
+/**
+ * SillyTavern 兼容面：卡脚本（实测 MVU）从 window.SillyTavern 上取 API，取不到就崩。
+ * 这里只做**生成文本的结构断言**——真行为验证要整套运行时在 vm 里跑，
+ * 而它依赖的 DOM 面太宽（见文件头说明），抽段测试更稳。
+ */
+describe('SillyTavern API 桥接（缺 API 会崩的根因修复）', () => {
+  it('生成文本里装了 SillyTavern 的 Proxy 回落（否则缺键=undefined=TypeError）', () => {
+    const body = extractRuntimeBody();
+    expect(body).toContain('installSillyTavernCompatProxy');
+    // 三层回落顺序：自己有 → tavernHelperCompat → makeMissingApiFunction
+    expect(body).toContain('if (prop in target) return target[prop];');
+    expect(body).toContain('if (prop in tavernHelperCompat) return tavernHelperCompat[prop];');
+    expect(body).toContain("return makeMissingApiFunction('SillyTavern.'");
+  });
+
+  it('反证：回落链里必须有 makeMissingApiFunction 兜底，不能只剩 undefined', () => {
+    const body = extractRuntimeBody();
+    // 若哪天有人把最后一层兜底删了，卡脚本访问缺失的 SillyTavern.xxx 又会拿到
+    // undefined，MVU 那句 SillyTavern.ToolManager.isToolCallingSupported() 会再崩一次。
+    const idx = body.indexOf('installSillyTavernCompatProxy');
+    expect(idx).toBeGreaterThan(-1);
+    const block = body.slice(idx, idx + 2000);
+    expect(block).toContain('makeMissingApiFunction');
+    expect(block).toContain('tavernHelperCompat');
+  });
+});
+
 describe('控制台噪音治理（console governor）', () => {
   it('同一条重复日志只放行首次，重复的被折叠', () => {
     const { sandbox, nativeLogs } = runGovernorWithFakeConsole();

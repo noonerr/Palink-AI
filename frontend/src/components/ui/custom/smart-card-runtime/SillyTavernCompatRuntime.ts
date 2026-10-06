@@ -6468,6 +6468,62 @@ ${IDB_NS_RUNTIME_SOURCE}
   }));
   window.SillyTavern.runGenerationInterceptors = runGenerationInterceptorsCompat;
   window.SillyTavern.getExtensionPrompts = getExtensionPromptsCompat;
+
+  // [SILLYTAVERN-PROXY 2026-10-06] 卡脚本从 SillyTavern 上取的 API，我们一直没给全。
+  //
+  // 实测（2026-10-06，用户追问「是不是我们缺 API」——**用户是对的**）：
+  // MVU 插件从 SillyTavern 上取 22 个 API（registerFunctionTool / ToolManager /
+  // registerMacro / saveChat / chat / characters / callGenericPopup / POPUP_TYPE ...），
+  // 而上面只挂了 9 个通用键，**交集几乎为零**。
+  //
+  // 要命的不是"没有"，是**没有的时候会怎样**：
+  //  - window.TavernHelper 是 Proxy（见 installTavernHelperCompatProxy），缺的键会回落到
+  //    makeMissingApiFunction —— 返回安全 async 函数 + 上报诊断，**不抛异常**；
+  //  - window.SillyTavern 此前是**裸对象**，缺的键就是 undefined ⇒
+  //    MVU 那句 SillyTavern.ToolManager.isToolCallingSupported() 直接 TypeError，
+  //    而它包在 Vue 的 watch(..., { immediate: true }) 里 —— 组件创建即执行 ⇒
+  //    **初始化链当场断掉**，后段 setEventsRefs 永不执行 ⇒ 设置面板打不开（症状）。
+  //
+  // 这些 API 我们**不是没实现**：它们在 tavernHelperCompat 里（219 个键，含 MVU 要的 19 个），
+  // 只是挂在了 TavernHelper 上、没挂到 SillyTavern 上。⇒ 准确说法是**挂错了地方**，不是没做。
+  //
+  // 这里照搬 TavernHelper 那套三层回落：
+  //   ① SillyTavern 自己的键（上面的 9 个，优先，不被覆盖）
+  //   ② tavernHelperCompat 的真实实现（19 个，功能真能用）
+  //   ③ makeMissingApiFunction（安全空函数 + 上报诊断，保证**任何缺口都不再抛 TypeError**）
+  // 与 TavernHelper 完全同构，行为可预期。不动 P1-1 沙箱红线。
+  //
+  // ⚠️ 影响面是**所有卡**不只这一张：此前靠「SillyTavern.xxx === undefined」做特性检测
+  // 的卡，现在会拿到实现而改走"支持"分支。这是本来的正确语义（这些能力我们确实有），
+  // 但属于行为变化，需真机回归。
+  const installSillyTavernCompatProxy = () => {
+    const existingHelper = window.SillyTavern && typeof window.SillyTavern === 'object'
+      ? window.SillyTavern
+      : {};
+    if (existingHelper.__palinkSillyTavernProxy) {
+      window.SillyTavern = existingHelper;
+      return;
+    }
+    const proxy = new Proxy(existingHelper, {
+      get(target, prop) {
+        if (prop === 'then') return undefined;
+        if (prop === '__palinkSillyTavernProxy') return true;
+        if (prop in target) return target[prop];
+        if (prop in tavernHelperCompat) return tavernHelperCompat[prop];
+        return makeMissingApiFunction('SillyTavern.' + String(prop), { severity: 'warning' });
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+      has(target, prop) {
+        return prop in target || prop in tavernHelperCompat;
+      },
+    });
+    try { Object.defineProperty(proxy, '__palinkSillyTavernProxy', { value: true, configurable: true }); } catch {}
+    window.SillyTavern = proxy;
+  };
+  installSillyTavernCompatProxy();
   // [P0-SRCDOC-SLIM] 向父页面请求插件脚本包（父页面回推 plugin-scripts-push）。
   // 插件源码不再内联进 srcDoc（瘦身），由父页面按需单次推送：减小 srcDoc 体积、
   // 避免 context-update 高频全量传输 4.4MB，同时支持 iframe 重建后重新拉取。
