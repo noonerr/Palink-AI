@@ -290,8 +290,11 @@ export const generationEngine = {
 
         if (!reasoning && !modelReasoning && !content) return;
 
+        // [P3 2026-10-06] 只累加 reasoning。model_reasoning 是 stream_builder 发出的同值
+        // 别名字段（兼容旧前端），两个都累加会把思考文本逐条翻倍（真机表现为两字两字重复）。
+        // 与主聊天链路（useCharacterChat）的 P3 修复同源；本文件是卡脚本/插件 API 链路
+        //（Generate / generateQuietPrompt / generateRaw 的底层）的同一缺陷补修。
         if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
         if (content) {
           fullContent += content;
           runtime?.onStreamToken(content);

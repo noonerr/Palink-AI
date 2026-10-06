@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Brain, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -7,6 +7,8 @@ import { CharacterCardRenderer, looksLikeSmartCardHtml } from './CharacterCardRe
 interface ThinkingProcessProps {
   content: string;
   streaming?: boolean;
+  /** [P4 2026-10-06] 思考已结束（正文开始输出）：需求④⑤的收合触发信号，由 Message 侧计算 */
+  reasoningEnded?: boolean;
   t: Record<string, string>;
   messageKey?: string;
 }
@@ -16,45 +18,66 @@ const thinkingExpandedState = new Map<string, boolean>();
 export function ThinkingProcess({
   content,
   streaming = false,
+  reasoningEnded = false,
   t,
   messageKey,
 }: ThinkingProcessProps) {
+  // [P4 2026-10-06] 思考框默认折叠（需求①）：不再随流式自动展开。用户手动开合经
+  // thinkingExpandedState 按消息记忆；流式结束时的收合策略见下方 transition effect。
   const [isExpanded, setIsExpanded] = useState(() => {
     if (messageKey && thinkingExpandedState.has(messageKey)) {
-      return thinkingExpandedState.get(messageKey) ?? true;
+      return thinkingExpandedState.get(messageKey) ?? false;
     }
-    return !!streaming;
+    return false;
   });
+  // [P4 2026-10-06] 「已思考 X 秒」计时（需求②）：流式期间逐秒走表让用户感知模型仍在
+  // 运行，思考结束后冻结在总耗时；历史消息（挂载即 streaming=false）无计时数据，回退旧标题。
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const startedAtRef = useRef<number | null>(null);
   const [measuredHeight, setMeasuredHeight] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
-  const streamAutoExpandedRef = useRef(false);
 
   useEffect(() => {
     if (!messageKey) {
       return;
     }
     if (thinkingExpandedState.has(messageKey)) {
-      setIsExpanded(thinkingExpandedState.get(messageKey) ?? true);
-      return;
+      setIsExpanded(thinkingExpandedState.get(messageKey) ?? false);
     }
-    const initial = !!streaming;
-    thinkingExpandedState.set(messageKey, initial);
-    setIsExpanded(initial);
-  }, [messageKey, streaming]);
+  }, [messageKey]);
 
+  // [P4 2026-10-06] 计时器：streaming=true 期间每秒走表；结束后 interval 清理、读数冻结。
   useEffect(() => {
-    if (streaming && !streamAutoExpandedRef.current) {
-      streamAutoExpandedRef.current = true;
-      setIsExpanded(true);
+    if (!streaming) {
+      return undefined;
+    }
+    if (startedAtRef.current == null) {
+      startedAtRef.current = Date.now();
+    }
+    setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
+    const timer = window.setInterval(() => {
+      const startedAt = startedAtRef.current ?? Date.now();
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+
+  // [P4 2026-10-06] 收合策略（需求④⑤）：折叠着的在思考结束点保持折叠，展开着的自动折叠。
+  // 「思考结束」的正确信号是 reasoningEnded（streaming 期间正文首 chunk 到达，Message 侧计算），
+  // 而非 streaming 翻转——isGenerating 在整轮生成期间恒为 true，思考结束、正文开始时它并不
+  // 翻转，按 streaming 翻转判定会拖到整轮结束才收合（需求⑤实际不成立的根因，排查报告 §4.3）。
+  // 自动折叠只在转变点发生一次；此后用户手动展开的不再被自动收起（需求③用户主动点击才展开）。
+  const prevReasoningEndedRef = useRef(false);
+  useEffect(() => {
+    const wasEnded = prevReasoningEndedRef.current;
+    prevReasoningEndedRef.current = reasoningEnded;
+    if (!wasEnded && reasoningEnded && isExpanded) {
+      setIsExpanded(false);
       if (messageKey) {
-        thinkingExpandedState.set(messageKey, true);
+        thinkingExpandedState.set(messageKey, false);
       }
     }
-
-    if (!streaming) {
-      streamAutoExpandedRef.current = false;
-    }
-  }, [streaming, messageKey]);
+  }, [reasoningEnded, isExpanded, messageKey]);
 
   useEffect(() => {
     const node = contentRef.current;
@@ -117,7 +140,11 @@ export function ThinkingProcess({
             streaming && "animate-pulse text-primary"
           )}
         />
-        <span>{t.thinking || 'Thinking'}</span>
+        <span>
+          {(streaming || elapsedSeconds > 0)
+            ? `已思考 ${elapsedSeconds} 秒`
+            : (t.thinking || 'Thinking')}
+        </span>
         {(content || !streaming) && (
           <span className="ml-1">
             <ChevronDown

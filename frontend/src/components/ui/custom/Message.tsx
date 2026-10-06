@@ -658,15 +658,34 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
     if (!el || typeof IntersectionObserver === 'undefined') return undefined;
     // rootMargin 一屏缓冲：上下各扩一个视口高度，快速滚动时提前唤醒/延迟休眠
     const buffer = Math.max(window.innerHeight || 0, 480);
+    const dormantRef = { current: false };
+    const repaintKick = () => {
+      // [P1 2026-10-06] 唤醒重绘踢：卡片 iframe 在休眠态（content-visibility:hidden）期间
+      // 完成加载时，部分引擎（用户实测 Safari/iOS 为主）揭开子树后不会重新光栅化，
+      // 表现为卡片正文区域退化为纯文本/空白，重新进入视口也不自愈。翻转一个对布局
+      // 中立的 transform 强制该子树重排+重绘一次（不重载 iframe，不产生新导航，
+      // 不违反 iOS 幽灵历史约束）。
+      requestAnimationFrame(() => {
+        const host = containerRef.current;
+        if (!host) return;
+        host.style.transform = 'translateZ(0)';
+        requestAnimationFrame(() => {
+          if (containerRef.current) containerRef.current.style.transform = '';
+        });
+      });
+    };
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
+          if (dormantRef.current) repaintKick();
+          dormantRef.current = false;
           setDormant(false);
         } else {
           const measured = el.offsetHeight > 0
             ? el.offsetHeight
             : Math.round(entry.boundingClientRect.height);
           setDormantHeight(measured > 0 ? measured : null);
+          dormantRef.current = true;
           setDormant(true);
         }
       }
@@ -986,7 +1005,16 @@ function MessageInner({
     // [N-3] sanitizeStCompatHtml（DOMPurify）从 render 体移入本 memo：仅随 content/正则脚本集
     // 等输入重算。上游 smartCardChatMessages 引用稳定后，流式期间历史消息不会重入本 memo，
     // 消毒不再每帧裸跑；render 体只读 stCompatSanitizedHtml。
-    return { ...result, stCompatSanitizedHtml: sanitizeStCompatHtml(result.content || renderContent) };
+    // [P2 2026-10-06] 流式末条（streaming && isLast）时该消毒结果不可达——渲染分支先走
+    // 「正在加载卡片…」占位 / SmoothOutput，不会读 stCompatSanitizedHtml。跳过它避免每帧
+    // 对增长中的正文跑 DOMPurify（流式期间主线程饱和、开侧边栏极卡的主凶之一）。
+    const needSanitizedHtml = !(streaming && isLast);
+    return {
+      ...result,
+      stCompatSanitizedHtml: needSanitizedHtml
+        ? sanitizeStCompatHtml(result.content || renderContent)
+        : '',
+    };
   }, [isCharacterChat, isUser, displayContent, renderContent, useNativeStRendering, characterName, _userName, messageIndex, _totalMessages, streaming, isLast, _globalRegexScripts, _characterExtensions, _characterPresetData, _chatMessages, formatterRevision, hasStatusBarScript]);
 
   // [FULLSCREEN-ADAPT] 全屏界面检测：smart-card 内容若为「开局界面/星空启动器」等界面文档
@@ -1441,6 +1469,9 @@ function MessageInner({
               <ThinkingProcess
                 content={thinkingContent}
                 streaming={streaming && isLast}
+                // [P4 2026-10-06] 「思考结束」= 正文开始输出（displayContent 首次非空）。
+                // isGenerating 在整轮生成期间恒为 true，不能拿 streaming 翻转当思考结束。
+                reasoningEnded={streaming && isLast && !!displayContent}
                 t={_t}
                 messageKey={message.id ? String(message.id) : (messageIndex !== undefined ? `msg-${messageIndex}` : undefined)}
               />

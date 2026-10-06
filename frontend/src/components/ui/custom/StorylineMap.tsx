@@ -87,6 +87,25 @@ interface StorylineMapProps {
   onDeleteBranch?: (branchId: string) => void;
 }
 
+// [P2-C 2026-10-06] branchTree 内容签名引用规范化。
+// fetchBranchTree 每次打开侧栏都会重拉并返回新对象引用；而下游 activePath /
+// downstreamNodes / siblingBranchesMap / wrappedOnNavigate 的 useMemo 与 buildGraph
+// 布局缓存（layoutCacheRef）全部按对象引用比较 → 每次重拉后全链失效、缓存恒 miss，
+// dagre 全量重算 + React Flow 全图重挂（流式期间打开侧栏卡顿的次因，排查报告 §2.2 主因 C）。
+// 树内容没变（打开侧栏重拉的典型场景）就复用旧引用，下游全链恢复命中。
+// 签名含 branches 全量数据（节点/摘要/swipe 计数等），任何影响布局的内容变化都会穿透；
+// 仅在重拉时计算一次，平时渲染走 useMemo 引用短路，成本可忽略。
+function useStableBranchTree(next: BranchTree): BranchTree {
+  const cacheRef = useRef<{ sig: string; tree: BranchTree } | null>(null);
+  return useMemo(() => {
+    const sig = JSON.stringify([next.active_branch_id, next.character_info, next.branches]);
+    const cached = cacheRef.current;
+    if (cached && cached.sig === sig) return cached.tree;
+    cacheRef.current = { sig, tree: next };
+    return next;
+  }, [next]);
+}
+
 // ──────────────────────────────────────────────
 // Active path computation
 // ──────────────────────────────────────────────
@@ -999,7 +1018,11 @@ function buildGraph(
 // Main component
 // ──────────────────────────────────────────────
 
-function StorylineMapInner({ branchTree, onNavigate, isDark, sessionId, onDeleteBranch }: StorylineMapProps) {
+function StorylineMapInner(props: StorylineMapProps) {
+  // [P2-C 2026-10-06] 规范化后的树 shadow 掉 props.branchTree，函数体其余部分零改动：
+  // 下游所有按引用比较的 memo / 布局缓存都消费这份稳定引用。
+  const branchTree = useStableBranchTree(props.branchTree);
+  const { onNavigate, isDark, sessionId, onDeleteBranch } = props;
   const rfInstanceRef = useRef<any>(null);
   const activePath = useMemo(
     () => computeActivePath(branchTree.branches, branchTree.active_branch_id),

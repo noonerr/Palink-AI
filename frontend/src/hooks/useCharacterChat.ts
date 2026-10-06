@@ -330,10 +330,24 @@ export function useCharacterChat({
     }
   }, [selectedSession?.id]);
 
+  // [P2 2026-10-06] 流式 UI 节流（约 10fps）：WS/SSE 增量每秒可达几十条，原先每条都经
+  // rAF 触发 setMessages → 流式消息每帧重跑显示管线 + DOMPurify，主线程被吃满，
+  // 流式期间任何交互动画（开侧边栏等）都会严重卡顿（iOS Safari 实测尤甚）。
+  // pending 始终持有全量累计串，节流只降低刷新频率、不影响内容正确性；
+  // onDone / clearGenerationTimers 的 rAF 取消逻辑不变，可随时打断节流等待。
+  const lastStreamFlushAtRef = useRef(0);
+  const STREAM_FLUSH_MIN_INTERVAL_MS = 100;
+
   const flushStreamUpdate = useCallback(() => {
     streamRafRef.current = null;
     const pending = streamPendingRef.current;
     if (!pending) return;
+    if (performance.now() - lastStreamFlushAtRef.current < STREAM_FLUSH_MIN_INTERVAL_MS) {
+      // 未到节流间隔：保留 pending，推迟到下一帧再查
+      streamRafRef.current = requestAnimationFrame(flushStreamUpdate);
+      return;
+    }
+    lastStreamFlushAtRef.current = performance.now();
     streamPendingRef.current = null;
     setMessages(prev => {
       const applyPatch = (msg: (typeof prev)[number]) => (
@@ -852,15 +866,16 @@ export function useCharacterChat({
           return;
         }
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
         const content = typeof json.content === 'string' ? json.content : '';
 
         if (json.type === 'usage') return;
 
-        if (!reasoning && !modelReasoning && !content) return;
+        // [P3 2026-10-06] model_reasoning 为同值别名字段，忽略（见上条注释）
+        if (!reasoning && !content) return;
 
+        // [P3 2026-10-06] 只累加 reasoning。stream_builder 会同时发射同值的 model_reasoning
+        // 别名字段（兼容旧前端），两个都累加会把思考文本逐条翻倍（真机表现为两字两字重复）。
         if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
         if (content) {
           fullContent += content;
           // Task 7.3: 触发 ST STREAM_TOKEN_RECEIVED 事件
@@ -1049,15 +1064,16 @@ export function useCharacterChat({
           return;
         }
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
         const content = typeof json.content === 'string' ? json.content : '';
 
         if (json.type === 'usage') return;
 
-        if (!reasoning && !modelReasoning && !content) return;
+        // [P3 2026-10-06] model_reasoning 为同值别名字段，忽略（见上条注释）
+        if (!reasoning && !content) return;
 
+        // [P3 2026-10-06] 只累加 reasoning。stream_builder 会同时发射同值的 model_reasoning
+        // 别名字段（兼容旧前端），两个都累加会把思考文本逐条翻倍（真机表现为两字两字重复）。
         if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
         if (content) {
           fullContent += content;
           runtime?.onStreamToken(content);
@@ -1421,7 +1437,6 @@ export function useCharacterChat({
         }
 
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
         const content = typeof json.content === 'string' ? json.content : '';
 
         if (json.type === 'usage') return;
@@ -1444,10 +1459,12 @@ export function useCharacterChat({
           }
         }
 
-        if (!reasoning && !modelReasoning && !content) return;
+        // [P3 2026-10-06] model_reasoning 为同值别名字段，忽略（见上条注释）
+        if (!reasoning && !content) return;
 
+        // [P3 2026-10-06] 只累加 reasoning。stream_builder 会同时发射同值的 model_reasoning
+        // 别名字段（兼容旧前端），两个都累加会把思考文本逐条翻倍（真机表现为两字两字重复）。
         if (reasoning) fullReasoning += reasoning;
-        if (modelReasoning) fullReasoning += modelReasoning;
         if (content) {
           fullContent += content;
           // Task 7.3: 触发 ST STREAM_TOKEN_RECEIVED 事件

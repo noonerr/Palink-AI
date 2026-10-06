@@ -227,8 +227,9 @@ export class StreamEngine {
         // 处理内容
         const content = typeof json.content === 'string' ? json.content : '';
         const reasoning = typeof json.reasoning === 'string' ? json.reasoning : '';
-        const modelReasoning = typeof json.model_reasoning === 'string' ? json.model_reasoning : '';
-        const reasoningDelta = `${reasoning}${modelReasoning}`;
+        // [P3 2026-10-06] model_reasoning 是 stream_builder 发出的同值别名字段（兼容旧前端），
+        // 与 reasoning 拼接累加会把思考文本逐条翻倍（真机表现为两字两字重复）。只取 reasoning。
+        const reasoningDelta = reasoning;
 
         if (!content && !reasoningDelta) return;
 
