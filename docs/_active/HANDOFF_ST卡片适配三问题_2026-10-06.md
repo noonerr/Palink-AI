@@ -154,7 +154,76 @@ OpenAI 兼容端对 message 对象的未知字段**不保证容忍**（严格实
 > 并已落两层"可见性"修复（未修卡本身）。以下保留原三假设的否证记录（别再重复走），
 > 新增「已定位的根因」与「本轮做了什么」。
 
-### 4.1 已定位的根因（决定性证据来自用户提供的完整浏览器日志）
+### 4.0 ★★ 真正的根因：**我们缺 API**（2026-10-06 深夜二次定位，推翻 §4.1 的旧结论）
+
+> ⚠️ **本节的结论取代 §4.1。** §4.1 说的"崩在第三方 CDN 模块"**是错的** ——
+> 我只证明了 `legacy_chat.ts` 不在 Palink 源码里、也不在那 2 个 plugin_scripts 里，
+> 就往"外部 CDN"上归。**实际它是 MVU 插件的源文件**（webpack 打包，sourcemap 是空壳
+> 所以 grep 不到文件名）。留下 §4.1 是因为它的日志证据与调用链分析仍有效。
+
+用户追问「是不是我们缺少 API 支持？」—— **用户是对的。**
+
+**证据链（每步都有出处）：**
+
+1. **报错文案出处**：`MVU: function tools are not supported` 在
+   `backend/data/smart_card_assets/0c646fb31a8cd5610d22ccd26323258a430f83a09e6a0a09596b2b1875eabac2.js`
+   （307KB，**MVU 插件本体，就在 Palink 自己的资产目录里**）。
+   源码是 `const{registerFunctionTool:e}=SillyTavern; return e ? (注册…) : (console.debug('MVU: function tools are not supported'), ()=>{})`
+   ⇒ **MVU 想从 `SillyTavern` 上取 `registerFunctionTool`，取不到。**
+
+2. **MVU 一共要 22 个 `SillyTavern.xxx`**（grep 该 bundle 统计）：
+   `chat`(23) `callGenericPopup`(13) `POPUP_TYPE`(13) `POPUP_RESULT`(11)
+   `getCurrentChatId`(7) `saveChat`(4) `getRequestHeaders`(3) `extensionSettings`(3)
+   `chatCompletionSettings`(3) **`ToolManager`(3)** `unregisterFunctionTool`(2)
+   `unregisterMacro` `saveSettingsDebounced` `registerMacro` `name2` `loadWorldInfo`
+   `getCurrentLocale` `getChatCompletionModel` `getCharacterCardFields`
+   `characters` `characterId`。
+
+3. **我们只给 `window.SillyTavern` 挂了 9 个键**（`SillyTavernCompatRuntime.ts:6404-6470`）：
+   `libs` / `getContext` / `getCurrentMessageId` / `getChatMessages` / `getGroups` /
+   `getGroupChat` / `openThirdPartyExtensionMenu` / `runGenerationInterceptors` /
+   `getExtensionPrompts`。⇒ **交集几乎为零。**
+
+4. **但这些 API 我们不是没实现 —— 是挂在别处**：`window.TavernHelper`
+   （`:5458` 的 `tavernHelperCompat`，219 个键）上有 **19 个**现成实现，
+   含 MVU 要的 `registerFunctionTool` / `ToolManager` / `registerMacro` / `saveChat` /
+   `chat` / `characters` / `callGenericPopup` / `POPUP_TYPE` 等。
+   只有 3 个 TavernHelper 也没有：`loadWorldInfo` / `getChatCompletionModel` /
+   `chatCompletionSettings`。
+   ⇒ **"缺 API" 的准确说法是：实现了，但没挂到卡脚本取的那个对象上。**
+
+5. **致命差异在"没有的时候会怎样"（这才是"崩"而不是"降级"的原因）**：
+   - `window.TavernHelper` 是 **Proxy**（`:5552-5569`），缺的键回落
+     `makeMissingApiFunction`（`:4661`）—— 返回安全 async 函数 + 上报诊断，**不抛异常**；
+   - `window.SillyTavern` 此前是**裸对象**，缺的键就是 `undefined`
+     ⇒ MVU 那句 `SillyTavern.ToolManager.isToolCallingSupported()` **直接 TypeError**。
+
+6. **为什么崩在设置面板**：MVU 里 3 处 `SillyTavern.ToolManager.isToolCallingSupported()`，
+   其中 2 处的文案是 `panel.prompt.toolCallUnsupported`（**面板·提示**），且外层是 Vue 的
+   `watch(..., { immediate: true })` —— **组件创建即执行**，所以初始化阶段就撞上，
+   不是等用户点才炸。
+
+**修复（已上线，`1b97bc1`）**：给 `window.SillyTavern` 套上与 TavernHelper **同构**的
+Proxy，三层回落：① 自己的 9 个键 → ② `tavernHelperCompat` 的 19 个真实现 →
+③ `makeMissingApiFunction`（安全空函数 + 上报诊断）。
+一次性解决两件事：功能真能用（19 个），且**任何缺口都不再抛 TypeError**（止血）。
+
+⚠️ **影响面是所有卡，不只这一张**：此前靠「`SillyTavern.xxx === undefined`」做特性检测
+的卡，现在会拿到实现而改走"支持"分支。**需抽查几张不同的卡做真机回归。**
+
+**仍未修的**：
+- 3 个 API TavernHelper 也没有（`loadWorldInfo` / `getChatCompletionModel` /
+  `chatCompletionSettings`），走第 ③ 层安全兜底 —— 不崩，但功能不可用；
+- `window.ToolManager` 目前是**空壳**（`isToolCallingSupported: () => false`），
+  所以 MVU 的工具调用会走**降级分支** —— 不崩，但要真能用需另行实现。
+
+**教训**：「不在我们代码里」≠「是外部的」。中间还有"在我们库里但 grep 路径没覆盖"
+这种可能（本例：文件在 `backend/data/`，不在 `frontend/src`，也不在 `plugin_scripts` 表）。
+下结论前先把**可能的来源枚举全**，别拿"排除法只排了两处"当"已排除全部"。
+
+---
+
+### 4.1 ~~已定位的根因~~（已被 §4.0 取代，保留其日志证据与调用链分析）
 
 日志：`C:\Users\Pall\Downloads\localhost-1791227114044.log`（769 行）。
 关键片段（第 509–524 行）：
