@@ -812,7 +812,8 @@ class MemoryStorage:
                 logger.warning(f"异步更新 embedding 失败 (id={memory_id}, attempt={attempt}/{max_retries}): {e}")
                 if attempt < max_retries:
                     await asyncio.sleep(2.0 * attempt)
-        logger.error(f"异步更新 embedding 最终失败 (id={memory_id})，将在下次语义搜索时重试")
+        logger.error(f"异步更新 embedding 最终失败 (id={memory_id})，行留 NULL，"
+                     f"由 [EMB-BACKFILL] 回填线程（memory_module/backfill.py）按轮补算")
     
     def _sync_update_embedding(self, memory_id: int, content: str):
         """同步计算并更新 embedding（无事件循环时的回退方案）"""

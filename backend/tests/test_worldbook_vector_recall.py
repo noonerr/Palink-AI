@@ -355,12 +355,21 @@ class TestP3CollectDegradedSignals:
 
     def test_query_success_no_degradation(self, db_session, monkeypatch):
         from app.services.worldbook_vector_service import WorldBookVectorService
+        import app.memory_module.embedder as embedder_mod
+        import numpy as np
+        from app.memory_module.config import memory_config
 
         user, char, msgs = self._mk_book_with_vec_entry(db_session, "sess-p3e", "wb-p3e")
         self._patch_ready_and_fire(monkeypatch, fired := [])
+        # [EMB-DEDUP] 嵌入已上移到 _collect_vector_hits 内，须在此打桩
+        _dim = int(memory_config.VECTOR_DIMENSION)
+        monkeypatch.setattr(
+            embedder_mod, "embed_text",
+            lambda texts: np.array([[0.1] * _dim], dtype=np.float32),
+        )
         monkeypatch.setattr(
             WorldBookVectorService, "query_entries",
-            lambda self, bid, qtext, top_k=3, threshold=0.55: ([("x1", 0.9)], False),
+            lambda self, bid, qtext, top_k=3, threshold=0.55, query_vec=None: ([("x1", 0.9)], False),
         )
         hits, degraded = self._collect(db_session, self._entries(db_session, "wb-p3e"), msgs)
         assert hits == {"x1": 0.9}
@@ -399,9 +408,18 @@ class TestP2NoSyncInAssemblyPath:
             raise AssertionError("装配路径不得调用 sync_worldbook_vectors")
 
         monkeypatch.setattr(WorldBookVectorService, "sync_worldbook_vectors", _forbidden)
+        # [EMB-DEDUP] 嵌入已上移到 _collect_vector_hits 内，须在此打桩
+        import app.memory_module.embedder as embedder_mod
+        import numpy as np
+        from app.memory_module.config import memory_config as _mc
+        _dim = int(_mc.VECTOR_DIMENSION)
+        monkeypatch.setattr(
+            embedder_mod, "embed_text",
+            lambda texts: np.array([[0.1] * _dim], dtype=np.float32),
+        )
         monkeypatch.setattr(
             WorldBookVectorService, "query_entries",
-            lambda self, bid, qtext, top_k=3, threshold=0.55: ([], False),
+            lambda self, bid, qtext, top_k=3, threshold=0.55, query_vec=None: ([], False),
         )
         fired: list[str] = []
         monkeypatch.setattr(

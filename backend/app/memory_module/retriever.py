@@ -201,27 +201,43 @@ class MemoryRetriever:
         stm_ids: set,
     ) -> List[Tuple[MemoryEntry, float]]:
         """
-        对候选记忆评分：similarity × 0.6 + context_proximity × 0.2 + importance × 0.2
+        对候选记忆评分：similarity × 0.6 + context_proximity × 0.2 + (importance − 0.5) × 0.2
+
+        [IMP-CENTER 2026-10-07] importance 项**居中**（减去默认值 0.5）。此前写法
+        ``importance × 0.2`` 里，自动入库的记忆 importance 恒为默认 0.5（写入点
+        全部硬编码，前端无任何设置入口），等于给所有候选加了常数 +0.1——不改变
+        排序，却让这 20% 权重"假装存在"。居中后：
+        - 默认 0.5 的行贡献恰好为 0，排序在默认行之间与旧公式**逐条等价**
+          （旧式每条多加的 0.1 是同一常数，不改变相对次序）；
+        - 手动经 /api/memory/vector/store 设置过 importance 的行仍按偏离 0.5
+          的幅度 ±0.1 内浮动，人工加权能力保留（数据列与 API 均不动）。
         """
         # 过滤掉 STM 中已有的
         filtered = [(m, s) for m, s in semantic_candidates if m.id not in stm_ids]
         if not filtered:
             return []
-        
+
         # 计算上下文邻近度
         context_scores = self._compute_context_proximity(filtered)
-        
+
         scored = []
         for i, (memory, similarity) in enumerate(filtered):
-            importance = memory.importance_score or 0.5
+            # [IMP-CENTER 2026-10-07] 显式判 None 而非 `or 0.5`：旧写法把手动
+            # 设置的合法 0.0 也当成默认值吞掉（falsy 陷阱），居中化后 0.0 的
+            # −0.1 惩罚开始有实际语义，必须区分"没设"和"设为零"。
+            importance = (
+                memory.importance_score
+                if memory.importance_score is not None
+                else 0.5
+            )
             ctx = context_scores[i]
             final_score = (
                 similarity * 0.6 +
                 ctx * 0.2 +
-                importance * 0.2
+                (importance - 0.5) * 0.2
             )
             scored.append((memory, final_score))
-        
+
         return scored
     
     def _compute_context_proximity(

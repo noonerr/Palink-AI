@@ -8,9 +8,159 @@
 > 本项目所有 agent（Claude Code / Codex / TRAE / 其他）在动工改代码前，请先阅读本文件。
 > 这是跨会话/跨 agent 的遗留任务、方向决策与进行中工作项的唯一入口。修改前先同步，完成后更新状态。
 
+> 📌 **先看这份**：[`docs/OPEN_ISSUES.md`](./docs/OPEN_ISSUES.md) —— **待解决问题清单（按危险程度分级）**。
+> 想知道"现在该干什么、哪些是真的还没解决"，看那份；本文件是任务记录与历史档案。
+> ⚠️ 本文件双重身份会导致状态标签僵尸化（决策已在别处关闭、原条目仍标"待拍板"）。
+> **遇到标着"进行中/待拍板"的条目，先去 OPEN_ISSUES.md 交叉核对，再决定要不要开工。**
+
 ---
 
 ## 待办任务（进行中 / 未完成）
+
+### [已完成·已上线] 向量链路优化三件套 + 10-07 记忆批代存档（2026-10-07 晚）
+
+- **背景**：用户要求分析向量链路并优化。结论：大头已被前几轮修坑批吃掉，剩三件实事。
+- **① 代存档**：10-07 记忆向量批（元组解包 P0 / TEXT→vector(1024) 迁移 / pgvector 精确 top-K /
+  查询窗口 / 结构切分默认 / epsilon 校准）此前已随镜像上线但零 commit，已按可归属文件
+  代为存档提交（`roleplay_prompt_assembly.py` 的同批 hunk 因与多会话在途改动混叠未纳入，仍待其归属会话提交）。
+- **② 优化三件套**（新增 `memory_module/backfill.py` + 3 个测试文件，全量 pytest **1960/51/0**）：
+  - **[EMB-BACKFILL] NULL 向量自动回填**：写入链路留 NULL 的记忆行（嵌入失败重试 3 次放弃 /
+    降级拒写 / 迁移清洗）此前**永不参与语义召回**且无自动补救（storage.py 旧注释"下次语义搜索时重试"
+    并无实现）。现 main.lifespan 拉起 daemon 线程轮询补算：行龄宽限 300s（不与异步首算双算）、
+    批量嵌入 32/批、维度契约照旧拒写。开关 `MEMORY_EMBED_BACKFILL_INTERVAL`（默认 600s，≤0 关）。
+  - **[EMB-DEDUP] 世界书多书查询共享一次嵌入**：`_collect_vector_hits` 原对每本书各嵌一遍同一份
+    查询文本（N 本书 = N 次相同调用），现嵌入一次传 `query_vec` 给 `query_entries`（新可选参，缺省行为不变）；
+    嵌入失败/维度不符 → 全书按 P3 降级回退关键词。
+  - **[IMP-CENTER] importance 评分项居中化**：自动入库记忆 importance 恒 0.5（前端零入口），
+    旧公式 `importance×0.2` 是全员常数、假装占 20% 权重。改 `(importance−0.5)×0.2`：默认行贡献归零、
+    **排序与旧公式逐条等价**（常数不改变相对次序）、手动 API 加权能力保留。顺手修了
+    `importance_score or 0.5` 把合法 0.0 吞成默认值的 falsy 陷阱。
+- **测试串扰记录**：test_c/d_batch 的 mirror 后台线程 SessionLocal 接共享引擎，其晚到写入会躲过
+  per-test 清表留残留行——既有行为；本批测试以"起点清表"自隔离，未动 c/d 批。
+- **遗留**：B 档微优化未做（世界书 `ensure_table()` 每查询跑 DDL、store() 单条路径逐消息嵌入、
+  ivfflat lists=100 小表摆设）；C 档（记忆老化/压缩）按既定 Phase 2 等信号。
+
+### [已施工·未提交·⚠未真机验证] MVU 变量自动清理 1:1 对齐插件（本 agent，2026-10-05 凌晨）
+
+> **2026-10-06 下午状态更新（复核会话）**：本批后端改动已随 10-06 02:48 的 backend 镜像重建
+> **进入生产**（容器内实测有 `mvu_cleanup.py` 与 `mvu_patch` 标记），但 git 仍未提交、
+> 清理/恢复行为本身未逐项真机验证。另注意：它构成「MVU 客户端自动清理」（依赖 A-0 投影才可能复活）
+> 的**双跑对手**——A-0 动工前先评估两者交互。
+
+- **触发**：用户拍板「**让它和插件原本跑的一模一样，没有任何区别，也就是百分百适配这个功能**」。
+- **权威来源**：卡脚本 bundle `backend/data/smart_card_assets/0c646fb31a…js`（307,179 B）里的
+  `Za()`（清理）与 `Ya()`（恢复）两个函数 + zod schema 默认值。SPEC：
+  `docs/SPEC_变量自动清理_MVU对齐_2026-10-05.md`（§1 是完整算法解码）。
+- **插件原算法**：抽稀 + 减重 —— 每 `快照保留间隔`(50) 楼打 `snapshot` 锚点留完整；
+  其余楼层 `_.omit` 掉 `initialized_lorebooks/stat_data/display_data/delta_data/schema`（**不删整条**）。
+  默认 `启用=true / 间隔50 / 保留最近20楼 / 触发恢复10楼`。触发：每 5 楼增量清 + 首次启用弹窗 + 手动按钮。
+- **本批落地（全部后端）**：
+  - **新增** `backend/app/services/mvu_cleanup.py`：设置解析（**与插件同源**：
+    `plugin_extension_settings_by_character[<卡>].mvu_settings.自动清理变量`，缺省回落插件默认值）
+    + `prune_variables`/`prune_floor_window`/`auto_prune_window`/`should_auto_prune`
+    + `find_anchor_floor`/`replay_patches` + `run_auto_cleanup`/`run_manual_cleanup`/`run_restore`
+    + 两个"只传 session_id"的接线入口（内部反查卡/分支/用户，减少接线点）。
+  - **三个触发入口**：① 生成落库后自动清理（WS + 三个 SSE 入口，共 3 处接线）
+    ② 删消息后恢复 ③ 手动端点 `POST /api/character-sessions/{sid}/mvu-cleanup`（等价「清除旧楼层变量」按钮，
+    **不看 enabled 开关** —— 插件同款）。
+  - **补丁留存**（支撑重演）：`MvuEngine.update_from_reply` / `apply_mvu_reply_to_session`
+    返回值加第 3 元（应用的 JSON Patch），5 个落库点写入 `msg.extra["mvu_patch"]`。
+- **★ 与插件的两处必要差异（行为等价，非功能打折）**：
+  1. **重演原料不同**：插件 `Ya()` 靠 `Tn(chat[t].mes, u)` 重新解析楼层**正文**里的变量指令；
+     而我们正文在后端落库前已剥 `<UpdateVariable>` 且不留原文（实测 `websocket.py:742-778`）→
+     改为**留存解析后的补丁**，重演直接应用。结果等价、确定性更高；清理只动 `extra["variables"]`，
+     天然不碰补丁。
+  2. **楼层编号基准**：插件用 `SillyTavern.chat` 数组下标（0 号位是伪消息头），我们用 1 起算楼层号。
+     锚点落点可能差 1 楼，功能无差别。
+- **门禁（独立复跑）**：`pytest tests/ -q` **1824 passed / 51 skipped / 0 failed**（基线 1796，+28 例）；
+  `tsc --noEmit` **exit 0**；`vitest run` **56 文件 / 751 passed / 3 skipped / 0 failed**（前端本批未改）。
+  新增 `backend/tests/test_mvu_cleanup.py` **28 例**（五组：清理语义 / 窗口语义 / 设置来源 / 端到端 / 重演原语），
+  含**反证**：关掉开关必须一楼都不清。
+- **⚠️ 施工中抓到的两个真 bug（已被新测试拦下）**：
+  1. **锚点标记被丢弃** —— `prune_floor_window` 早期只把"减重"当改动写回，打锚点（`changed` 但不 `pruned`）
+     的结果被丢掉 → 恢复功能随即失效。修法：拆开 `changed`（决定写库）与 `pruned`（决定计数）两个布尔。
+  2. **幂等性误报** —— 已清过的楼层再走一遍仍报"变化"，会产生无谓写库。修法：只有真摘掉字段才算变化。
+- **★ 测试阶段追加（2026-10-05 01:4x，用户"继续做测试"）**：
+  - **测出一个存量真 bug（与本功能无关，但被本批测试照出来）**：
+    `roleplay_prompt_assembly.py::_load_effective_stat_data` 用 `isinstance(extra, dict)` 判断消息 extra，
+    而 **`extra` 列是 Text（存 JSON 字符串）→ 判断恒为 False** → 该函数**从未取到过消息级快照**，
+    一直静默回落会话级。后果：它文档里声称修好的 `[ST-ALIGN P0-2]`（swipe / 重生成 / 切分支时变量跟着回退）
+    **实际是空转**。探针实测：`type(row.extra).__name__ == 'str'`。**已修**（加 `isinstance(extra, str) → json.loads`）；
+    **既有测试零覆盖**，生产调用点仅 1 处（`roleplay_prompt_assembly.py:5292`）。
+    ⚠️ **这是本批唯一会改变线上行为的改动**（修好后消息级快照真的优先于会话级，会改变提示词注入取值）→ **需重点真机验证**。
+  - **新增安全边界测试** `backend/tests/test_mvu_cleanup_safety.py`（17 例）：不碰别的东西（reasoning/model/ext_prompts/
+    **mvu_patch**/正文与 swipes/会话级 chat_metadata.variables/chat_variables 表）、作用域隔离（只动目标会话 /
+    **只动活跃分支** / 设置按(用户,卡)隔离）、装配不受影响、**体积真降 4251 B → 732 B（83%）**、HTTP 端点（越权 404）。
+  - **反证脚本** `backend/scripts/_reverse_check_mvu_cleanup.py`（4 项，跑完自动恢复 + sha256 校验）：**4/4 变红** ✅。
+    ⚠️ 第 ④ 项第一版设计错误（`mvu_patch` 是 extra 兄弟键，加进 PRUNED_FIELDS 不生效）→ 改成"整个 extra 换掉"才正确变红。
+    **教训：反证本身也要被验证。**
+  - **门禁终值**：`pytest tests/ -q` **1841 passed / 51 skipped / 0 failed**（基线 1796 → **+45 例**：清理 28 + 安全 17）；
+    `tsc` exit 0；`vitest` 56 文件 / 751 passed / 0 failed。
+
+- **⚠ 未做（交还用户）**：
+  ① **未提交**；② **未真机验证**（需开页面确认：每 5 楼自动清理真发生 / 删消息后恢复真补回 / 手动端点可用）；
+  ③ **未重建镜像与 dist**；④ 插件首次启用的**弹窗三选一**（只清理 / 不再提醒 / 备份并清理）与
+  `ignore_cleanup` 标记位未实现（我们直接按默认值生效）；⑤ 前端自有设置入口未做
+  （现由插件面板同源驱动，插件面板不可达时走默认值）。
+- **备份**：`_BACKUPS/2026-10-05_变量自动清理_MVU对齐/`（`pre/` 7 文件 + `_manifest.tsv` + `HEAD.txt`，
+  `BACKUP_INFO.md` 四要素齐，台账已登记）。⚠️ 该备份是**动工后补做**（违反规范第 1 条时序，已在
+  `BACKUP_INFO.md` 如实记录）；副本取自 `git show HEAD:`，已核验 HEAD(`6b98c57`) 不含本轮改动。
+
+### [已施工·未提交·⚠未真机验证] 变量可见性补全 + 插件变量接线两处不一致（本 agent，2026-10-05 凌晨）
+
+> **2026-10-06 下午状态更新（复核会话）**：本批未提交改动已随 10-06 三修（`8128b9a`）的 dist 重建
+> **被烤进线上**（`delete_occurred` / `变量变化` / `palink-vc-panel` / `mvu-secondary` 标记均实证在线上
+> chunk），用户真机反馈 MVU 面板已显示真实数据（原话「我看已经有用了」）——下面「未真机验证」三项中
+> ②「面板显示的是我们的 stat_data」已过验，①③ 未逐项确认。⚠️ **提交仍欠**：任何一次从干净树/stash
+> 重建 dist 都会把面板静默打回，逐项 pathspec 提交是当务之急。
+
+- **触发**：用户问「MVU 变量框架插件和我们的功能重叠，能不能整体换成插件那套、删掉我们自己的」。
+  研究结论（`docs/REPORT_MVU变量框架与Palink自有变量体系重叠专题_2026-10-04.md` §11）：**不能整体替换** ——
+  六条硬约束，最硬一条是 `roleplay_prompt_assembly.py:5116-5191` 从 **DB** 读 stat_data 压平后注入提示词，
+  而插件的变量住在**浏览器内存**，永远到不了服务端装配（删后端引擎 = 模型看不到当前状态）。
+  其余：消息级快照的分支回退语义插件没有 / 插件副 AI 直连 `generateRaw` 绕开额度审计 / 剥离必须在服务端
+  （否则回到 2026-09-30 的 tag 裸显 + 双写）/ 插件零测试且依赖 CDN（10-03 实测挂过一次）/ 插件 store 刷新即丢。
+  用户随后拍板先做两件低风险的事。
+- **关键侦察证据（本批最有价值的一条）**：MVU 的变量 API 就是**裸全局的薄包装**。实测卡脚本
+  `backend/data/smart_card_assets/0c646fb31a…js`（307,179 B，MVU bundle）原文：
+  `getMvuData:function(e){return getVariables(e)},replaceMvuData:function(e,t){return replaceVariables(e,t)}`。
+  该脚本真实调用计数：`replaceVariables`×7、`updateVariablesWith`×8、`getChatMessages`×7、`setChatMessages`×7、
+  `getVariables`×4、`deleteVariable`×1、`insertOrAssignVariables`×1、`setChatMessage`×1、`getMvuData`×1。
+  → 所以「面板接不上数据」**不是缺读口**（页面轨 `window.getVariables` 已由 `card-script-runner.ts` 桥到会话变量），
+  而是**写口族内不一致**。MVU 面板挂载点 `#extensions_settings2`，展示入口是 `StPluginSettingsDrawer`（三个点菜单 → 插件设置）。
+- **改动（3 改 2 增，全部前端，未提交）**：
+  1. **新增** `components/ui/custom/VariableChangePanel.tsx` + `.css`：**变量变化记录**面板
+     （旧值 → 新值，区分 新增/变化/移除）。数据只用已有的**消息级快照** `msg.extra.variables`，
+     本楼与"最近一条更早的快照"对比；**两边都必须来自消息级**（不复用带会话级兜底的 `statData`，
+     否则无快照的历史消息会显示虚假差异）。取不到基准就不渲染 —— 宁可不显示，也不谎报变化。
+  2. `Message.tsx`：在助手消息区（`TavernHelperPanel` 旁）挂上面板。**不受 `hasStatusBarScript` 限制** ——
+     带原生状态栏的卡同样需要看"这一轮改了什么"。现有 `TavernHelperPanel` 只显示**当前值**，二者互补。
+  3. `smart-card-runtime/SillyTavernCompatRuntime.ts:6512`：`Mvu.getMvuData` 由**条件覆盖**改**无条件覆盖**
+     （含 `setTimeout` 延时补刀那处），与同处 `getAllVariables` 口径一致。原实现只在"插件没提供"时才装 →
+     插件自带 MVU 时它自己的 getMvuData 胜出 → 面板读插件自己的空表。**只覆盖读，不碰 `replaceMvuData`/`parseMessage`**，无双写风险。
+  4. `lib/sillytavern/card-script-runner.ts`：把**回写族**从 2 个名字补到 7 个（`setVariables`/`setVariable`/
+     `replaceVariables`/`updateVariablesWith`/`insertOrAssignVariables`/`setChatMessage`/`deleteVariable`），
+     一律 `recordStubHit` 显式降级、**只登记不写入**。原实现里前两个已登记，其余是**裸 undefined** →
+     MVU 更新管线每轮抛 ReferenceError（是"崩溃"不是"降级"）。异步族返回 resolved Promise、
+     `deleteVariable` 返回 `{variables, delete_occurred}` 同形状空结果 —— 避免调用方二次炸。
+- **门禁（全部本人独立复跑）**：`tsc --noEmit` **exit 0**；`vitest run` **56 文件 / 751 passed / 3 skipped / 0 failed**
+  （基线 53/718 → 本批 **+3 文件 +33 例**）；`pytest tests/ -q` **1796 passed / 51 skipped / 0 failed**（后端未改，无连带）。
+  **变量/插件专项子集**（用户要求单独跑）：前端 33 文件 **483 passed**；后端 26 文件 **542 passed**。
+  新增测试 3 个文件 33 例：`variable-change-panel.test.ts`(18) + `card-script-bridge-write-degradation.test.ts`(10)
+  + `mvu-panel-data-override.test.ts`(5)。
+  ⚠️ 新增测试 3 本身是个发现：`Mvu.getMvuData` / `getAllVariables` 此前在本仓**零测试覆盖** —— "面板读谁的数据"这条链路一直无人守。
+  ⚠️ 反证已做：把 `getMvuData` 的赋值翻回条件守卫，其中 **2 条立即变红**，恢复后复绿（sha256 校验恢复一致）。
+- **⚠ 阻塞/未做（交还用户）**：
+  ① **未提交**（3 改 2 增，逐项 pathspec 待办）；
+  ② **未真机验证** —— 需开站点确认三件事：MVU 面板经「插件设置」抽屉可见 / 面板显示的是我们的 stat_data /
+     变量变化面板在有 `<UpdateVariable>` 的卡上正确；
+  ③ **未重建 dist、未重建容器** —— 提交≠上线，改前端须重建 dist 并确认容器服务新指纹；
+  ④ `replaceVariables` 的**真实写入**（走补丁入口 → `mvu_engine.apply_patches`）属变量链路改动，**须另立批次单独做单独验**；
+  ⑤ 前端 5 套变量供给里 3 套冗余壳（`legacy-st-sim` / `inline-st-globals` / `sandbox` 变量层）的收敛未做。
+- **环境坑（本轮复现）**：`SillyTavernCompatRuntime.ts` 是**大模板字符串**，注释里写反引号会提前终止模板 →
+  esbuild `Expected ";" but found "if"`，vitest 连配置都加载不了。改该文件前先确认注释无反引号。
+- **备份**：`_BACKUPS/2026-10-05_变量面板与插件变量接线/`（`pre/` 3 文件 + `_manifest.tsv` sha256 3 行，
+  `BACKUP_INFO.md` 四要素齐，台账已登记）。
 
 ### [已施工·⚠未上线·⚠未真机验证] 插件设置轴复核 + 批次1/2修复（本 agent，2026-10-04 晚）
 

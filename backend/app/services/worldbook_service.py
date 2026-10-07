@@ -1617,7 +1617,26 @@ def _collect_vector_hits(
     effective_top_k = _resolve_vector_top_k(top_k)
     effective_threshold = _resolve_vector_threshold(threshold)
 
-    from .worldbook_vector_service import WorldBookVectorService
+    # [EMB-DEDUP 2026-10-07] 查询文本对所有书是同一份——嵌入**一次**，把向量
+    # 传给每本书的 query_entries。原实现对每本书各嵌一遍（挂 N 本 vectorized
+    # 书 = 每轮 N 次一模一样的嵌入调用）。嵌入失败/维度不符 → 全部书按 P3
+    # 降级（回退关键词），与原先逐书失败的净效果一致。
+    from ..memory_module.embedder import embed_text
+    from ..memory_module.config import memory_config
+    from .worldbook_vector_service import WorldBookVectorService, _flatten_embedding
+    try:
+        query_vec = _flatten_embedding(embed_text(query_text))
+    except Exception as exc:
+        logger.warning("worldbook vector query embedding failed (all books degraded): %s", exc)
+        return {}, set(books_with_vec)
+    if len(query_vec) != memory_config.VECTOR_DIMENSION:
+        logger.warning(
+            "worldbook vector query 维度 %s ≠ 声明 %s（嵌入器疑似降级），"
+            "全部书本轮降级（P3 回退关键词）",
+            len(query_vec), memory_config.VECTOR_DIMENSION,
+        )
+        return {}, set(books_with_vec)
+
     svc = WorldBookVectorService(db)
     hits: dict[str, float] = {}
     degraded_books: set[str] = set()
@@ -1630,6 +1649,7 @@ def _collect_vector_hits(
         try:
             book_hits, book_degraded = svc.query_entries(
                 wb_id, query_text, top_k=effective_top_k, threshold=effective_threshold,
+                query_vec=query_vec,
             )
             for entry_id, score in book_hits:
                 # 多本书场景下同一 entry 只保留更高分

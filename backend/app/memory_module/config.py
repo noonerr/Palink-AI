@@ -71,6 +71,13 @@ class MemoryConfig:
     CHUNK_MIN_SENTENCE_CHARS: int = int(os.getenv("MEMORY_CHUNK_MIN_SENTENCE_CHARS", "20"))
     # 检索命中块时是否自动携带前后相邻块
     NEIGHBOR_EXPAND: bool = os.getenv("MEMORY_NEIGHBOR_EXPAND", "true").lower() == "true"
+
+    # ── NULL 向量自动回填（[EMB-BACKFILL] 2026-10-07，backfill.py）──
+    # 轮询间隔秒数；<=0 关闭回填线程。宽限期内（默认 300s）的 NULL 行不回填——
+    # 正常路径 store() 的异步首算几秒内就会补上，回填不抢活、避免双算。
+    EMBED_BACKFILL_INTERVAL: float = float(os.getenv("MEMORY_EMBED_BACKFILL_INTERVAL", "600"))
+    EMBED_BACKFILL_BATCH: int = int(os.getenv("MEMORY_EMBED_BACKFILL_BATCH", "32"))
+    EMBED_BACKFILL_GRACE_SECONDS: float = float(os.getenv("MEMORY_EMBED_BACKFILL_GRACE", "300"))
     
     @classmethod
     def is_enabled(cls) -> bool:

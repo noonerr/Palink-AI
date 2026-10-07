@@ -329,6 +329,7 @@ class WorldBookVectorService:
         query_text: str,
         top_k: int = 3,
         threshold: float = 0.55,
+        query_vec: Optional[List[float]] = None,
     ) -> Tuple[List[Tuple[str, float]], bool]:
         """向量检索命中的 entry_id 列表。
 
@@ -338,12 +339,18 @@ class WorldBookVectorService:
         一挂，勾选了向量的设定就"既不关键词也不向量"地消失。空 hits 且
         degraded=False 才是可信的"无命中"。
 
+        [EMB-DEDUP 2026-10-07] ``query_vec`` 允许调用方传入预计算的查询向量：
+        多本书共用同一份查询文本（_collect_vector_hits 的循环场景），嵌入一次
+        传进来即可，不必每本书重算一次。缺省 None 时保持原行为（函数内自嵌）。
+
         Args:
             world_book_id: 世界书 ID
             query_text: 查询文本
             top_k: 返回条数上限（默认对齐 P1 收紧值 3）
             threshold: 相似度阈值（cosine similarity，默认对齐 P1 收紧值 0.55），
                 低于此值的不返回
+            query_vec: 预计算的查询向量（与 MEMORY_VECTOR_DIMENSION 同维）；
+                传入时函数内不再调用嵌入
 
         Returns:
             ([(entry_id, similarity_score), ...] 按 similarity 降序, degraded)
@@ -351,9 +358,10 @@ class WorldBookVectorService:
         try:
             self.ensure_table()
 
-            # 1. 嵌入查询文本
-            query_emb = embed_text(query_text)
-            query_vec = _flatten_embedding(query_emb)
+            # 1. 嵌入查询文本（调用方已预计算则复用，EMB-DEDUP）
+            if query_vec is None:
+                query_emb = embed_text(query_text)
+                query_vec = _flatten_embedding(query_emb)
             # P4: 查询向量维度 ≠ 声明维度（嵌入服务降级/配置漂移）→ 降级返回，
             # 调用方（_collect_vector_hits）会按 P3 对该书回退关键词匹配
             if len(query_vec) != memory_config.VECTOR_DIMENSION:

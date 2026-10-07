@@ -272,6 +272,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("明文 API Key 迁移失败（非致命）")
 
+    # [EMB-BACKFILL] NULL 向量自动回填 daemon 线程（幂等；interval<=0 关闭，
+    # 失败不阻断启动）。兜底写入链路留 NULL 的记忆行，否则它们永不参与语义召回。
+    try:
+        from .memory_module.backfill import start_backfill_worker
+        start_backfill_worker()
+    except Exception:
+        logger.exception("记忆向量回填线程启动失败（非致命）")
+
     missing_secret_refs = get_missing_provider_secret_refs()
     if missing_secret_refs:
         refs = ", ".join(
