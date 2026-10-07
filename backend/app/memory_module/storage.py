@@ -69,6 +69,73 @@ def _dim_mismatch_reason(emb_list) -> Optional[str]:
     return f"维度 {actual} ≠ 契约 {baseline}"
 
 
+_VECTOR_COLUMN_SQL = """
+    SELECT format_type(a.atttypid, a.atttypmod) AS type_text
+    FROM pg_attribute a
+    JOIN pg_class r ON r.oid = a.attrelid
+    WHERE r.relname = 'conversation_memories'
+      AND a.attname = 'embedding' AND a.attnum > 0
+"""
+
+
+def _detect_vector_column(db) -> bool:
+    """[VEC-PG] embedding 列当前是否真是 pgvector ``vector(N)``。
+
+    只读探测（pg_attribute），任何异常都按 False 处理 —— 判假时调用方退回
+    Python 余弦路径，行为与迁移前一致；判真才允许走 ``<=>``。
+    反过来（列还是 TEXT 却按 vector 写 SQL）会让 ``<=>`` 抛错、被 except 吞掉
+    ⇒ 返回空 ⇒ 复现"明明有记忆却召回 0"这种最难查的静默失效。
+    """
+    try:
+        # 先看方言再看列：SQLite 上没有 pg_attribute，让异常当控制流会把会话
+        # 推进"需要回滚"的状态，探测函数不该有这种副作用。
+        if getattr(getattr(db.get_bind(), "dialect", None), "name", "") != "postgresql":
+            return False
+        row = db.execute(text(_VECTOR_COLUMN_SQL)).fetchone()
+    except Exception:
+        # 探测语句无副作用；同连接可能有在途事务，此处不 rollback
+        return False
+    return bool(row and str(row[0] or "").startswith("vector("))
+
+
+def _parse_vector_cell(raw) -> Optional[List[float]]:
+    """[VEC-PG] 解析 embedding 单元格为浮点列表，兼容三种历史形态。
+
+    - pgvector ``vector`` 列经 psycopg2 取回的是**文本** ``"[0.1,0.2]"``，
+      这个形态恰好是合法 JSON ⇒ ``json.loads`` 直接可用（迁移后主路径）。
+    - SQLite / 迁移前的 TEXT 列存的是 ``json.dumps`` 结果，同上。
+    - 兜底分支处理 pgvector 可能输出的 ``.1`` / ``nan`` 这类非法 JSON 写法。
+
+    解析失败返回 None，由调用方按"宁缺勿错"跳过该行——与旧实现的
+    per-row try/except 语义一致：一条脏向量不得炸掉整批检索。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        return [float(x) for x in raw]
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        try:
+            return [float(x) for x in s.strip("()[]{}").split(",") if x.strip()]
+        except Exception:
+            return None
+    if not isinstance(parsed, list):
+        return None
+    try:
+        return [float(x) for x in parsed]
+    except (TypeError, ValueError):
+        return None
+
+
+def _vector_to_pgstr(emb_list) -> str:
+    """列表 → pgvector 字面量 ``[v1,v2,...]``（与 worldbook_vector_service 同配方）。"""
+    return "[" + ",".join(repr(float(v)) for v in emb_list) + "]"
+
+
 def _resolve_search_scope(
     session_id: Optional[str], character_id: Optional[str]
 ) -> str:
@@ -155,6 +222,9 @@ def delete_by_message_id(db_session: Session, session_id: str, message_id: int) 
 
 _tables_initialized = False
 _is_postgres_cached = None
+# [VEC-PG] embedding 列是否已是 pgvector vector(N)（None=未探测）。
+# 与 is_postgres 同为进程级缓存：列类型只在迁移/运维手里变，不会每次查询都变。
+_vector_column_cached: Optional[bool] = None
 _migration_done = False
 _storage_lock = threading.Lock()
 
@@ -249,7 +319,15 @@ class MemoryStorage:
     
     def _init_postgres_tables(self):
         """初始化PostgreSQL表"""
-        self.db.execute(text("""
+        # [VEC-PG] embedding 建为 pgvector 的 vector(dim) 列，维度取运行时契约值
+        # （memory_config.VECTOR_DIMENSION，docker-compose 口径 = 1024/bge-m3）。
+        # 列级维度约束顺带堵死 DIM-CONTRACT 那类"存得进召不回"的死向量：
+        # 维度不符的行在 INSERT 阶段就被 PG 拒绝，而不是等到检索时静默丢弃。
+        _dim = int(memory_config.VECTOR_DIMENSION)
+        self.db.execute(text(f"""
+            CREATE EXTENSION IF NOT EXISTS vector
+        """))
+        self.db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS conversation_memories (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER,
@@ -259,7 +337,7 @@ class MemoryStorage:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 content_summary TEXT,
-                embedding TEXT,
+                embedding vector({_dim}),
                 importance_score REAL DEFAULT 0.5,
                 topics TEXT DEFAULT '[]',
                 tokens_count INTEGER DEFAULT 0,
@@ -282,6 +360,86 @@ class MemoryStorage:
             )
         """))
     
+    def _embedding_column_is_vector(self) -> bool:
+        """[VEC-PG] 实例侧包装：非 PostgreSQL 恒 False，PostgreSQL 走进程级缓存探测。"""
+        global _vector_column_cached
+        if not self.is_postgres:
+            return False
+        with _storage_lock:
+            if _vector_column_cached is None:
+                _vector_column_cached = _detect_vector_column(self.db)
+            return _vector_column_cached
+
+    def _migrate_embedding_column(self) -> None:
+        """[VEC-PG] 把历史 TEXT / float[] 形态的 embedding 列转成 vector(dim)，幂等。
+
+        **为什么必须走运行时通道，而不只写 alembic 修订**：生产 compose 里
+        ``RUN_MIGRATIONS_ON_STARTUP=false``（``docker-compose.yml:169`` +
+        ``app/core/config.py:48``），启动时 alembic **不执行**；0067 那批列能落库，
+        靠的就是本文件 ``_migrate_tables`` 这条运行时通道。alembic 0069 只负责
+        把变更记进 schema 历史。
+
+        转换前先清理：元素个数 ≠ dim 的行置 NULL。一条降级期写入的 512 维向量
+        不该阻塞全库 ALTER（CAST 失败会让整条迁移回滚），按宁缺勿错丢向量不丢正文。
+        逗号计数对 ``json.dumps`` 产出的纯数字数组成立（浮点字面量里不含逗号）。
+        """
+        global _vector_column_cached
+        dim = int(memory_config.VECTOR_DIMENSION)
+        if dim <= 0:
+            logger.warning("[VEC-PG] MEMORY_VECTOR_DIMENSION=%s 非法，跳过列迁移", dim)
+            return
+        try:
+            nested = self.db.begin_nested()
+            row = self.db.execute(text(_VECTOR_COLUMN_SQL)).fetchone()
+            if row is None:
+                nested.commit()
+                return
+            type_text = str(row[0] or "")
+            if type_text.startswith("vector("):
+                if type_text != f"vector({dim})":
+                    # 列维度与当前契约不符 = 换了嵌入模型。这里**绝不自动重打字**：
+                    # 那会把整列存量向量作废。回填是
+                    # scripts/reembed_all_to_bge_m3.py 的活，显式告警而不是静默跑偏。
+                    logger.warning(
+                        "[VEC-PG] embedding 列维度 %s ≠ 配置 %s：存量向量与当前嵌入器"
+                        "不在同一空间，检索结果不可信。请跑 "
+                        "scripts/reembed_all_to_bge_m3.py 重嵌后再用。",
+                        type_text, dim,
+                    )
+                nested.commit()
+                _vector_column_cached = True
+                return
+
+            cleaned = self.db.execute(text(
+                f"""
+                UPDATE conversation_memories
+                SET embedding = NULL
+                WHERE embedding IS NOT NULL
+                  AND (length(embedding) - length(replace(embedding, ',', ''))) + 1 <> {dim}
+                """
+            )).rowcount
+            self.db.execute(text(
+                f"ALTER TABLE conversation_memories "
+                f"ALTER COLUMN embedding TYPE vector({dim}) "
+                f"USING embedding::vector({dim})"
+            ))
+            nested.commit()
+            _vector_column_cached = True
+            logger.info(
+                "[VEC-PG] embedding 列 %s → vector(%d) 完成（维度不符已置 NULL %d 行）",
+                type_text or "?", dim, int(cleaned or 0),
+            )
+        except Exception as exc:
+            try:
+                nested.rollback()
+            except Exception:
+                pass
+            _vector_column_cached = False
+            logger.error(
+                "[VEC-PG] embedding 列转 vector 失败（本轮检索自动退回 Python 余弦路径）: %s",
+                exc,
+            )
+
     def _migrate_tables(self):
         """在现有表上安全添加新列（幂等）- 使用 SAVEPOINT 隔离"""
         if self.is_postgres:
@@ -315,6 +473,8 @@ class MemoryStorage:
                 logger.info("迁移: 添加 character_id 列")
             except Exception:
                 nested.rollback()
+            # [VEC-PG] TEXT → vector(dim)。放在列添加之后：新列走的是建表即 vector 的路径
+            self._migrate_embedding_column()
         else:
             # SQLite 无 ADD COLUMN IF NOT EXISTS：先查 table_info 判列存在，
             # 仅缺列时执行 ALTER（避免异常吞咽路径上的 rollback 波及同连接在途数据）
@@ -514,6 +674,13 @@ class MemoryStorage:
 
         try:
             ids: List[int] = []
+            # [VEC-PG] 列是 vector(N) 时显式 CAST：SQLAlchemy 会把 str 参数按 text
+            # 送过去，而 "text 不能隐式转 vector"，不 CAST 直接 DatatypeMismatch。
+            # 配方与 worldbook_vector_service 一致。
+            _emb_ph = (
+                "CAST(:embedding AS vector)"
+                if self._embedding_column_is_vector() else ":embedding"
+            )
             for i, chunk in enumerate(chunks):
                 emb_list = embeddings[i].tolist()
                 # [DIM-CONTRACT] 维度不符契约 → 宁缺勿错：embedding 留 NULL，
@@ -526,11 +693,11 @@ class MemoryStorage:
                 else:
                     emb_json = json.dumps(emb_list)
                 topics_json = json.dumps(_chunk_topics(turn_hash, i, total))
-                sql = text("""
+                sql = text(f"""
                     INSERT INTO conversation_memories
                     (user_id, session_id, branch_id, character_id, role, content, embedding,
                      importance_score, topics, tokens_count, created_at, message_id)
-                    VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, :embedding,
+                    VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, {_emb_ph},
                             :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                 """)
                 params = {
@@ -547,11 +714,11 @@ class MemoryStorage:
                     "message_id": message_id,
                 }
                 if self.is_postgres:
-                    sql = text("""
+                    sql = text(f"""
                         INSERT INTO conversation_memories
                         (user_id, session_id, branch_id, character_id, role, content, embedding,
                          importance_score, topics, tokens_count, created_at, message_id)
-                        VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, :embedding,
+                        VALUES (:user_id, :session_id, :branch_id, :character_id, :role, :content, {_emb_ph},
                                 :importance_score, :topics, :tokens_count, CURRENT_TIMESTAMP, :message_id)
                         RETURNING id
                     """)
@@ -606,7 +773,7 @@ class MemoryStorage:
                 row_meta = _parse_chunk_meta(row.topics)
                 if row_meta is None or row_meta[1] not in target_idxs:
                     continue
-                emb_list = json.loads(row.embedding) if row.embedding else None
+                emb_list = _parse_vector_cell(row.embedding)
                 out.append(MemoryEntry(
                     id=row.id,
                     user_id=row.user_id,
@@ -667,9 +834,13 @@ class MemoryStorage:
         from ..core.database import SessionLocal
         db = SessionLocal()
         try:
-            sql = text("""
-                UPDATE conversation_memories SET embedding = :embedding WHERE id = :id
-            """)
+            # [VEC-PG] 独立会话拿不到实例的 is_postgres 缓存，直接探列类型；
+            # vector 列必须 CAST（str 参数按 text 送出，text 不能隐式转 vector）。
+            global _vector_column_cached
+            _is_vec = _detect_vector_column(db)
+            _vector_column_cached = _is_vec
+            _emb_ph = "CAST(:embedding AS vector)" if _is_vec else ":embedding"
+            sql = text(f"UPDATE conversation_memories SET embedding = {_emb_ph} WHERE id = :id")
             db.execute(sql, {"embedding": embedding_json, "id": memory_id})
             db.commit()
         except Exception as e:
@@ -686,6 +857,142 @@ class MemoryStorage:
         """[T-跨卡串味修复] 公开版作用域判定，供调用方/可观测性复用。"""
         return _resolve_search_scope(session_id, character_id)
 
+    _MEMORY_SELECT_COLS = (
+        "id, user_id, session_id, branch_id, character_id, role, content, "
+        "importance_score, topics, tokens_count, created_at, message_id, embedding"
+    )
+
+    def _build_scope_filter(
+        self,
+        user_id: int,
+        session_id: Optional[str],
+        branch_ids: Optional[List[str]],
+        character_id: Optional[str],
+        branch_scopes: Optional[List[Tuple[str, Optional[int]]]],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """[VEC-PG] 组装召回作用域 WHERE 子句 + 参数字典（不含 embedding IS NOT NULL）。
+
+        pgvector 路与 Python 余弦路**共用这一份**：隔离条件历史上在三条 if/elif 里
+        各抄一遍，改一处漏两处的风险比检索算法本身更大。
+
+        语义与迁移前逐条对应，一分不改：
+        - 有 session_id + branch_scopes → 按分叉点截断（[MEM-MIRROR 2026-10-05]）；
+          空列表 = 主聊天 → 只认 trunk（``branch_id IS NULL``）
+        - 有 session_id + branch_ids    → ``branch_id IN (...) OR branch_id IS NULL``
+        - 有 session_id 且两者都没传     → 不做分支过滤（旧 ``elif session_id`` 分支）
+        - 无 session_id                 → 用户级；仅当传了 character_id 才追加角色过滤
+          （有 session_id 时不加：会话已唯一归属角色，再加会滤掉存量 NULL 行）
+        """
+        parts = ["user_id = :user_id"]
+        params: Dict[str, Any] = {"user_id": user_id}
+
+        if session_id:
+            parts.append("session_id = :session_id")
+            params["session_id"] = session_id
+            if branch_scopes is not None:
+                clauses = []
+                for i, (bid, up_to) in enumerate(branch_scopes):
+                    if up_to is None:
+                        clauses.append(f"branch_id = :bs{i}")
+                        params[f"bs{i}"] = bid
+                    else:
+                        clauses.append(f"(branch_id = :bs{i} AND message_id <= :bsm{i})")
+                        params[f"bs{i}"] = bid
+                        params[f"bsm{i}"] = up_to
+                if clauses:
+                    parts.append(f"(branch_id IS NULL OR ({' OR '.join(clauses)}))")
+                else:
+                    parts.append("branch_id IS NULL")
+            elif branch_ids:
+                keys = []
+                for i, bid in enumerate(branch_ids):
+                    keys.append(f":br{i}")
+                    params[f"br{i}"] = bid
+                parts.append(f"(branch_id IN ({', '.join(keys)}) OR branch_id IS NULL)")
+        elif character_id:
+            parts.append("character_id = :character_id")
+            params["character_id"] = character_id
+
+        return " AND ".join(parts), params
+
+    def _semantic_search_pgvector(
+        self,
+        query_embedding: List[float],
+        limit: int,
+        min_similarity: float,
+        where_sql: str,
+        params: Dict[str, Any],
+        scope: str,
+    ) -> List[Tuple[MemoryEntry, float]]:
+        """[VEC-PG] 库内 cosine 取 top-K：不再按时间预筛，也不建向量索引。
+
+        为什么**故意不建 HNSW/IVFFlat**：pgvector 的索引扫描是"先按向量取近邻、
+        再套 WHERE"，在 user_id/session_id 这种高选择性过滤下会少返甚至返 0 条
+        （官方文档明确的已知限制）。那正是本项目最坑的"明明有记忆却召回 0"，
+        而且它会伪装成"用户没什么历史"。本项目单用户语料是千行量级，实测暴力算
+        192 行 2.6ms、放大到 1.2 万行仍是毫秒级，精确算更快也更准。
+        真要上索引，得连带把过滤条件下推（partial index / iterative scan）一起设计。
+
+        与旧 Python 路径的行为差异（都是修复）：
+        - 旧实现先 ``ORDER BY created_at DESC LIMIT 200`` 再算相似度 ⇒ 第 201 条
+          往前的记忆**永远召不回**（实测用户级 614 行里 151 条过阈值，窗口只覆盖
+          79 条）。这里改为在整个作用域内按相似度取 top-K。
+        - 维度契约由列类型 ``vector(N)`` 在写入侧硬拦，读侧不再有"跳过 N 条维度
+          不兼容"这条静默路径。
+        """
+        dim = int(memory_config.VECTOR_DIMENSION)
+        if len(query_embedding) != dim:
+            # 与列维度不符的查询向量必然让 <=> 报错；显式告警而不是让 except 吞掉
+            logger.warning(
+                "[VEC-DIM] 查询向量维度 %d ≠ 列维度 %d，本轮召回跳过（嵌入器疑似降级）",
+                len(query_embedding), dim,
+            )
+            return []
+
+        q = dict(params)
+        q["qv"] = _vector_to_pgstr(query_embedding)
+        q["min_sim"] = float(min_similarity)
+        q["lim"] = int(limit)
+        rows = self.db.execute(text(f"""
+            SELECT {self._MEMORY_SELECT_COLS},
+                   1 - (embedding <=> CAST(:qv AS vector)) AS similarity
+            FROM conversation_memories
+            WHERE {where_sql}
+              AND embedding IS NOT NULL
+              AND 1 - (embedding <=> CAST(:qv AS vector)) >= :min_sim
+            ORDER BY embedding <=> CAST(:qv AS vector)
+            LIMIT :lim
+        """), q).fetchall()
+
+        out: List[Tuple[MemoryEntry, float]] = []
+        for row in rows:
+            emb_list = _parse_vector_cell(row.embedding)
+            out.append((
+                MemoryEntry(
+                    id=row.id,
+                    user_id=row.user_id,
+                    session_id=row.session_id,
+                    branch_id=row.branch_id,
+                    message_id=getattr(row, "message_id", None),
+                    role=row.role,
+                    content=row.content,
+                    importance_score=row.importance_score,
+                    topics=json.loads(row.topics) if row.topics else [],
+                    tokens_count=row.tokens_count or 0,
+                    created_at=row.created_at,
+                    embedding=emb_list,
+                ),
+                float(row.similarity),
+            ))
+
+        logger.info(
+            "语义检索完成: 找到 %d 条记忆，最低相似度: %s, 作用域: %s",
+            len(out),
+            f"{out[-1][1]}" if out else "N/A",
+            scope,
+        )
+        return out
+
     def semantic_search(
         self,
         user_id: int,
@@ -698,7 +1005,11 @@ class MemoryStorage:
         branch_scopes: Optional[List[Tuple[str, Optional[int]]]] = None,
     ) -> List[Tuple[MemoryEntry, float]]:
         """
-        语义相似度搜索（SQLite版本，在Python中计算相似度）
+        语义相似度搜索。两条路径由 embedding 列的真实类型决定（见 _detect_vector_column）：
+
+        - PostgreSQL + ``vector(N)`` 列 → 库内 cosine 取 top-K（_semantic_search_pgvector），
+          **不再有"最近 200 行"的时间预筛**
+        - SQLite / 列仍是 TEXT        → 捞进 Python 逐行算余弦（回退路径）
 
         Args:
             character_id: [T-跨卡串味修复] 角色维度过滤。
@@ -733,88 +1044,41 @@ class MemoryStorage:
             )
 
         try:
-            # 角色过滤子句：仅在「有 character_id 且 无 session_id」时追加。
-            # 有 session_id 时会话本身已唯一归属一个角色，再加 character_id
-            # 反而会滤掉存量 NULL 行（既有契约：不改变 session 分支行为）。
-            char_clause = (
-                " AND character_id = :character_id"
-                if (character_id and not session_id) else ""
+            # [VEC-PG] 作用域条件抽到 _build_scope_filter，pgvector 路与回退路共用一份。
+            where_sql, params = self._build_scope_filter(
+                user_id=user_id, session_id=session_id, branch_ids=branch_ids,
+                character_id=character_id, branch_scopes=branch_scopes,
             )
+            if self._embedding_column_is_vector():
+                return self._semantic_search_pgvector(
+                    query_embedding=query_embedding, limit=limit,
+                    min_similarity=min_similarity, where_sql=where_sql,
+                    params=params, scope=scope,
+                )
 
-            if session_id and (branch_scopes is not None or branch_ids):
-                sql = None
-                params = {"user_id": user_id, "session_id": session_id}
-                if branch_scopes is not None:
-                    # [MEM-MIRROR 2026-10-05] 按分叉点截断：每个作用域 (bid, up_to)。
-                    # 截断条件镜像消息历史 fork_where：某祖先分支的记忆只有
-                    # message_id <= 分叉点才对子分支可见。message_id IS NULL 的行
-                    # 在被截断分支下无法定位楼层 → 被 `message_id <= up_to` 排除
-                    # （NULL 比较为 NULL=假，宁缺勿错）；branch_id IS NULL 的主聊天
-                    # 行保留可见（trunk 是共同祖先，维持既有行为）。
-                    # 空列表 = 主聊天（无分支）→ 只认 trunk，不再退化成全会话全分支。
-                    clauses = []
-                    for i, (bid, up_to) in enumerate(branch_scopes):
-                        if up_to is None:
-                            clauses.append(f"branch_id = :bs{i}")
-                            params[f"bs{i}"] = bid
-                        else:
-                            clauses.append(f"(branch_id = :bs{i} AND message_id <= :bsm{i})")
-                            params[f"bs{i}"] = bid
-                            params[f"bsm{i}"] = up_to
-                    scope_where = (" OR ".join(clauses)) if clauses else "1 = 0"
-                    sql = text(f"""
-                        SELECT
-                            id, user_id, session_id, branch_id, character_id, role, content,
-                            importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
-                        FROM conversation_memories
-                        WHERE user_id = :user_id AND session_id = :session_id
-                            AND (branch_id IS NULL OR ({scope_where}))
-                            AND embedding IS NOT NULL
-                        ORDER BY created_at DESC
-                        LIMIT 200
-                    """)
-                else:
-                    sql = text("""
-                        SELECT
-                            id, user_id, session_id, branch_id, character_id, role, content,
-                            importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
-                        FROM conversation_memories
-                        WHERE user_id = :user_id AND session_id = :session_id
-                            AND (branch_id IN :branch_ids OR branch_id IS NULL)
-                            AND embedding IS NOT NULL
-                        ORDER BY created_at DESC
-                        LIMIT 200
-                    """).bindparams(bindparam('branch_ids', expanding=True))
-                    params["branch_ids"] = branch_ids
-            elif session_id:
-                sql = text("""
-                    SELECT 
-                        id, user_id, session_id, branch_id, character_id, role, content,
-                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
-                    FROM conversation_memories
-                    WHERE user_id = :user_id AND session_id = :session_id AND embedding IS NOT NULL
-                    ORDER BY created_at DESC
-                    LIMIT 200
-                """)
-                params = {"user_id": user_id, "session_id": session_id}
-            else:
-                # [T-跨卡串味修复] 分支3 = 串味源头。character_id 非空时把过滤
-                # 落到 SQL（WHERE user_id AND character_id），只有角色也拿不到
-                # （普通聊天 / ST 向量集合）才退回纯用户级，并由上方 warning
-                # + ContextResponse.scope="user" 双路标明这是降级。
-                sql = text(f"""
-                    SELECT 
-                        id, user_id, session_id, branch_id, character_id, role, content,
-                        importance_score, topics, tokens_count, created_at, message_id, embedding, message_id
-                    FROM conversation_memories
-                    WHERE user_id = :user_id{char_clause} AND embedding IS NOT NULL
-                    ORDER BY created_at DESC
-                    LIMIT 200
-                """)
-                params = {"user_id": user_id}
-                if char_clause:
-                    params["character_id"] = character_id
-            
+            # 回退路径（SQLite，或列还没转成 vector）：把作用域内的行捞进 Python
+            # 逐行算余弦。迁移前这里写死 ``ORDER BY created_at DESC LIMIT 200``，
+            # 等于"只在最近 200 条里做语义检索"——实测用户级 614 行里 151 条过阈值，
+            # 窗口只覆盖到 79 条，第 201 条往前的记忆**永远召不回**。现改为 5000 行
+            # 的防 OOM 上限，且触顶即告警，不再静默少召回。
+            _scan_cap = 5000
+            _cap_row = self.db.execute(text(
+                f"SELECT count(*) AS n FROM conversation_memories "
+                f"WHERE {where_sql} AND embedding IS NOT NULL"
+            ), params).fetchone()
+            if _cap_row and int(_cap_row[0] or 0) > _scan_cap:
+                logger.warning(
+                    "[VEC-PG] 回退路径命中 %s 行 > 扫描上限 %s：本次召回被截断，"
+                    "embedding 列应转 pgvector（见 _migrate_embedding_column）",
+                    _cap_row[0], _scan_cap,
+                )
+            sql = text(f"""
+                SELECT {self._MEMORY_SELECT_COLS}
+                FROM conversation_memories
+                WHERE {where_sql} AND embedding IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT {_scan_cap}
+            """)
             result = self.db.execute(sql, params)
             
             memories_with_similarity = []
@@ -826,7 +1090,7 @@ class MemoryStorage:
 
             for row in result:
                 try:
-                    embedding_list = json.loads(row.embedding) if row.embedding else None
+                    embedding_list = _parse_vector_cell(row.embedding)
                     if embedding_list is None:
                         continue
                         

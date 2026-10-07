@@ -160,3 +160,100 @@ class TestExcludeRecentMirrors:
         assert 6 not in returned_mids
         assert 7 not in returned_mids
         assert returned_mids <= {1, 2, 3, 4, 5}
+
+
+class TestLtmExcludeWithRealEmbeddings:
+    """[TUPLE-UNPACK-FIX 2026-10-07] 补上上一段测试**真正漏掉的那条路径**。
+
+    为什么既有 5 条用例全绿却没拦住线上 P0：`_insert_recent_set` 插入的记忆
+    **embedding 全为 NULL**，而 `semantic_search` 的 SQL 带 `AND embedding IS NOT NULL`
+    ⇒ `semantic_candidates` 恒为空 ⇒ `if semantic_candidates:` 直接跳过 ⇒
+    **出错的那一行从未被执行到**。上面那句注释「嵌入不可用（全 NULL）→ LTM 为空属预期」
+    正是把它当成预期行为放过了。
+
+    生产里 embedding 是有的（实测 665/723 条带向量），所以真正会走的路径是
+    「候选非空 + exclude 非空」——本类把它钉住。
+
+    判据（正反对照）：
+      - 改成旧写法 `m for m in semantic_candidates` ⇒ 本类第 1 条立刻红；
+      - 仅把 exclude 置空 ⇒ 旧写法也不红（说明错误确实由该分支引入）。
+    """
+
+    @staticmethod
+    def _insert_with_embedding(db, user_id, content, message_id, created_at, vec):
+        import json
+
+        result = db.execute(
+            text(
+                "INSERT INTO conversation_memories "
+                "(user_id, session_id, role, content, importance_score, topics, "
+                " tokens_count, created_at, message_id, embedding) "
+                "VALUES (:u, :s, 'assistant', :c, 0.5, '[]', 10, :t, :m, :e)"
+            ),
+            {
+                "u": user_id,
+                "s": SESSION_ID,
+                "c": content,
+                "t": created_at,
+                "m": message_id,
+                "e": json.dumps(vec),
+            },
+        )
+        db.flush()
+        return result.lastrowid
+
+    def test_ltm_exclude_does_not_abort_retrieval(self, mem_env, test_user, monkeypatch):
+        """★ 候选非空 + exclude 非空 ⇒ 检索不得整体失败（旧实现恒抛 AttributeError）。"""
+        import numpy as np
+
+        from app.memory_module import retriever as retriever_mod
+
+        storage, db = mem_env
+        # 单位向量：query 与全部记忆同向 ⇒ cosine = 1.0，稳过 MIN_SIMILARITY(0.5)
+        unit = [1.0, 0.0, 0.0, 0.0]
+
+        monkeypatch.setattr(
+            retriever_mod, "embed_text",
+            lambda t: np.array([unit], dtype=np.float32),
+        )
+
+        base = datetime(2026, 10, 7, 12, 0, 0)
+        for i in range(1, 7):
+            self._insert_with_embedding(
+                db, test_user.id, f"vec-memory-{i}", i,
+                base + timedelta(seconds=i), unit,
+            )
+
+        response = _retrieve(storage, test_user.id, mode="vector", exclude=[6])
+
+        # 关键断言：不能是 error 兜底路径，也不能整体空
+        assert response.strategy_used != "error", (
+            "检索走了异常兜底 ⇒ LTM 排除分支仍会抛错（元组未解包）"
+        )
+        assert response.memories, "有候选且未被全排除 ⇒ 必须注入记忆"
+        returned_mids = {m.message_id for m in response.memories}
+        assert 6 not in returned_mids, "排除集内的镜像不得注入"
+        assert returned_mids == {1, 2, 3, 4, 5}
+
+    def test_ltm_exclude_all_still_empty(self, mem_env, test_user, monkeypatch):
+        """排除集覆盖全部候选 ⇒ LTM 为空，STM 也不应有 ⇒ 整体为空（不报错）。"""
+        import numpy as np
+
+        from app.memory_module import retriever as retriever_mod
+
+        storage, db = mem_env
+        unit = [1.0, 0.0, 0.0, 0.0]
+        monkeypatch.setattr(
+            retriever_mod, "embed_text",
+            lambda t: np.array([unit], dtype=np.float32),
+        )
+        base = datetime(2026, 10, 7, 12, 0, 0)
+        for i in range(1, 4):
+            self._insert_with_embedding(
+                db, test_user.id, f"all-excluded-{i}", i,
+                base + timedelta(seconds=i), unit,
+            )
+
+        response = _retrieve(storage, test_user.id, mode="vector", exclude=[1, 2, 3])
+        assert response.strategy_used != "error"
+        assert response.memories == []

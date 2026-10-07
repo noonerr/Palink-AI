@@ -130,10 +130,16 @@ class MemoryRetriever:
                 
                 if semantic_candidates:
                     # D3: LTM 侧同样排除最近消息镜像
+                    # [TUPLE-UNPACK-FIX 2026-10-07] semantic_search 返回的是
+                    # List[Tuple[MemoryEntry, float]]，逐项必须按 (mem, sim) 解包。
+                    # 旧写法对元组取 .message_id ⇒ AttributeError ⇒ 被本函数 except 兜住
+                    # 返回空结果 ⇒ **记忆注入恒为 0**（连 STM 一起丢）。
+                    # 已坏 5 周（2026-08-29 ff9c1e7 引入）。下游 _score_candidates /
+                    # _compute_context_proximity 都是正确解包写法，可对照。
                     if exclude_ids:
                         semantic_candidates = [
-                            m for m in semantic_candidates
-                            if m.message_id not in exclude_ids
+                            (mem, sim) for mem, sim in semantic_candidates
+                            if mem.message_id not in exclude_ids
                         ]
                     scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
                     

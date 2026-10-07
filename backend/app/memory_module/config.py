@@ -40,9 +40,31 @@ class MemoryConfig:
     CHUNK_MIN_CHARS: int = int(os.getenv("MEMORY_CHUNK_MIN_CHARS", "120"))
     # 块上限：超过则句边界强制再分（保证向量聚焦）
     CHUNK_MAX_CHARS: int = int(os.getenv("MEMORY_CHUNK_MAX_CHARS", "450"))
-    # 断点检测：局部峰值需超过的距离绝对下限（配合全体均值过滤噪声峰）；
-    # 对话题跳变数量不敏感（全局阈值法在多跳变短文本上会漏切）
-    CHUNK_DISTANCE_EPSILON: float = float(os.getenv("MEMORY_CHUNK_DIST_EPSILON", "0.12"))
+    # 切分策略：structural = 只用文本里客观存在的结构边界（段落/对话轮/括号动作），
+    # 零嵌入调用；semantic = 每句嵌入找话题断点（旧行为，保留作一键回退）。
+    #
+    # ⚠️ 2026-10-07 实测换默认值为 structural（跨 3 会话 18 条真实长回复，
+    # ground truth 唯一性校验，n=21 真实回指查询 / n=27 片段查询）：
+    #   成本   structural 1631ms/条 vs semantic 3822ms/条（省 57%，少一批嵌入）
+    #   召回   真实用户消息回指前文时 top1 43% vs 33%，top3 81% vs 57%
+    #   ⇒ semantic 更贵**且不更准**。它唯一的优势在"片段查询"口径（78% vs 74%），
+    #   那个口径的查询本身就是块内某句的片段，对"块重新编码"的方案天然不利，
+    #   贴近不了生产（生产查询是用户那句 29 字的话）。
+    CHUNK_STRATEGY: str = os.getenv("MEMORY_CHUNK_STRATEGY", "structural")
+    # structural 策略的目标块长（实际切点落在 [0.55×, 1.35×] 区间的结构边界上）
+    CHUNK_TARGET_CHARS: int = int(os.getenv("MEMORY_CHUNK_TARGET_CHARS", "250"))
+    # 断点检测：距离绝对下限。**注意它只是兜底下限，不是主阈值** ——
+    # semantic_chunker._detect_breakpoints 的判定是 floor = max(epsilon, mean(dists))，
+    # 即 epsilon 一旦低于该文本的 mean，阈值就由 mean 主导（随文本自适应）。
+    #
+    # ⚠️ 2026-10-07 订正（原值 0.12 是把自适应机制废掉的元凶）：
+    #   bge-m3 在本项目语料上相邻句余弦距离实测 max=0.101 / mean=0.070 /
+    #   p99=0.098（n=191），0.12 **比最大值还高** ⇒ 命中率 0.0% ⇒ 断点恒为 0
+    #   ⇒ 语义切分完全失效，实际退化成「按 CHUNK_MAX_CHARS 在句边界硬切」。
+    #   降到 0.05 后进入自适应模式（实测 0.075→0.050 结果完全不动，证明由 mean 主导），
+    #   换嵌入模型也无需重调。详见
+    #   docs/_active/report/REPORT_线上三问题排查_变量展示_记忆注入_功能按钮_2026-10-07.md §8
+    CHUNK_DISTANCE_EPSILON: float = float(os.getenv("MEMORY_CHUNK_DIST_EPSILON", "0.05"))
     # 相似度比较的缓冲窗口（±句数）
     CHUNK_BUFFER_WINDOW: int = int(os.getenv("MEMORY_CHUNK_BUFFER", "1"))
     # 碎句并入阈值（字符）

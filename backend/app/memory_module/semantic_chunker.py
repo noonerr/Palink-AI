@@ -32,6 +32,11 @@ _SENTENCE_RE = re.compile(r"[^。！？!?…；;\n]*(?:[。！？!?…；;]+|\n+
 _TERMINAL_BOUNDARY = "。！？!?…"
 _WEAK_BOUNDARY = "。！？!?…；;\n"
 
+# [CHUNK-STRUCT] 结构边界：空行分段；段内再按"对话/动作起句"细分（三种引号都认，
+# 卡语料里 “” 与 " 混用，全角括号包动作是最常见的轮次标记）
+_PARAGRAPH_RE = re.compile(r"\n\s*\n")
+_DIALOG_START_RE = re.compile(r"(?=（)|(?=“)|(?=\")")
+
 
 def split_sentences(text: str) -> List[str]:
     """把文本切成句子单元（保留终止符与换行，''.join 可还原原文）。
@@ -198,6 +203,64 @@ def _shape_sizes(groups: List[List[str]]) -> List[List[str]]:
     return groups
 
 
+def structural_split(text: str) -> List[str]:
+    """[CHUNK-STRUCT] 结构性边界切分：只用文本里**客观存在**的分隔，不调嵌入。
+
+    边界优先级：空行分段 → 对话引号/括号动作起句 → 句边界（超长块才用）。
+    块长收口在 ``[0.55×, 1.35×] CHUNK_TARGET_CHARS`` 与 ``CHUNK_MAX_CHARS`` 之内，
+    过碎块并入邻居。
+
+    为什么换掉语义断点法（实测见 config.CHUNK_STRATEGY 注释与今日报告）：
+    切细的收益本来就来自"块变小"，与切点是否"语义"关系很小；而语义法每条回复
+    要多发一批句子嵌入（实测 3822ms vs 1631ms），换来的召回反而更差。
+    另外这条路径**不需要模型**，切分本身可离线单测。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    target = int(memory_config.CHUNK_TARGET_CHARS)
+    # 上限同时受 CHUNK_MAX_CHARS 约束：注入侧（utils.build_memory_context）和检索
+    # 预算都按"块 ≤ CHUNK_MAX_CHARS"计量，结构策略不能绕过这条既有契约。
+    hi = min(int(target * 1.35), int(memory_config.CHUNK_MAX_CHARS))
+    lo = min(int(target * 0.55), hi)
+
+    parts = [p.strip() for p in _PARAGRAPH_RE.split(text) if p.strip()] or [text]
+    units: List[str] = []
+    for p in parts:
+        if len(p) > hi:
+            # 段内再按"对话起句 / 括号动作起句"细分；细不出东西就整段留给长度兜底
+            sub = [s for s in _DIALOG_START_RE.split(p) if s.strip()]
+            units.extend(sub if len(sub) > 1 else [p])
+        else:
+            units.append(p)
+
+    blocks: List[str] = []
+    cur = ""
+    for u in units:
+        if cur and len(cur) + len(u) > hi:
+            blocks.append(cur)
+            cur = u
+        else:
+            cur = cur + ("\n" if cur and not cur.endswith("\n") else "") + u
+        while len(cur) > hi:
+            cut = _find_cut_index(cur, hi) or hi
+            blocks.append(cur[:cut])
+            cur = cur[cut:]
+    if cur.strip():
+        blocks.append(cur)
+
+    merged: List[str] = []
+    for b in blocks:
+        b = b.strip()
+        if not b:
+            continue
+        if merged and len(b) < lo and len(merged[-1]) + len(b) <= hi:
+            merged[-1] = merged[-1] + "\n" + b
+        else:
+            merged.append(b)
+    return merged or [text]
+
+
 def semantic_split(
     text: str,
     embed_fn: Optional[Callable[[List[str]], "np.ndarray"]] = None,
@@ -223,6 +286,11 @@ def semantic_split(
     # 句子太少（统计不可靠）或整体仍不超触发阈值 → 不切
     if len(sentences) < 4 or sum(len(s) for s in sentences) < trigger:
         return [text]
+
+    # [CHUNK-STRATEGY] 默认走结构边界切分（零嵌入调用）；semantic 保留作一键回退。
+    # 放在"句子太少不切"之后：两条策略共用同一套短路条件，回退时行为可比。
+    if memory_config.CHUNK_STRATEGY == "structural":
+        return structural_split(text) or [text]
 
     if embed_fn is None:
         from .embedder import embed_text as embed_fn

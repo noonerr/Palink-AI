@@ -22,9 +22,14 @@ from app.services import roleplay_prompt_assembly as rpa
 
 
 def test_branch3_filter_is_character_scoped():
-    """分支3 的过滤条件确实是 character_id 精确等值（没有 OR IS NULL 兜底）。"""
-    src = inspect.getsource(storage_mod.MemoryStorage.semantic_search)
-    assert "AND character_id = :character_id" in src, "分支3 应按 character_id 过滤"
+    """分支3 的过滤条件确实是 character_id 精确等值（没有 OR IS NULL 兜底）。
+
+    ⚠️ 2026-10-07 [VEC-PG]：作用域 WHERE 从 ``semantic_search`` 里的三条 if/elif
+    抽到了 ``_build_scope_filter``（pgvector 路与 Python 回退路共用一份），
+    所以本守卫的取材对象跟着换；断言意图一分未改。
+    """
+    src = inspect.getsource(storage_mod.MemoryStorage._build_scope_filter)
+    assert "character_id = :character_id" in src, "分支3 应按 character_id 过滤"
     assert "OR character_id IS NULL" not in src, (
         "不得加 OR character_id IS NULL —— 那会让未绑角色的记忆对所有角色生效，"
         "正是跨卡串味的形态"
@@ -32,13 +37,29 @@ def test_branch3_filter_is_character_scoped():
 
 
 def test_session_branches_do_not_filter_by_character():
-    """分支1/2 不按 character_id 过滤 —— 否则存量 NULL 行会被滤掉。"""
-    src = inspect.getsource(storage_mod.MemoryStorage.semantic_search)
-    # char_clause 只在 (character_id and not session_id) 时才非空
-    assert "if (character_id and not session_id)" in src, (
-        "char_clause 的生效条件必须要求「没有 session_id」，"
-        "否则有会话的正常链路会被按角色过滤"
+    """分支1/2 不按 character_id 过滤 —— 否则存量 NULL 行会被滤掉。
+
+    形状断言（``if (character_id and not session_id)``）在抽取后已不成立，
+    这里改成**行为断言**：同时传 session_id 与 character_id 时，
+    WHERE 里必须一个 character 条件都没有（等价于旧 char_clause 恒空）。
+    """
+    storage = storage_mod.MemoryStorage.__new__(storage_mod.MemoryStorage)
+    where, params = storage._build_scope_filter(
+        user_id=1, session_id="sess-1", branch_ids=None,
+        character_id="char-1", branch_scopes=None,
     )
+    assert "character_id" not in where, (
+        f"有 session_id 的链路被加了角色过滤，存量 character_id=NULL 的行会失联：{where}"
+    )
+    assert "character_id" not in params
+
+    # 反向对照：没有 session_id 时角色过滤必须出现（否则就是跨卡串味）
+    where2, params2 = storage._build_scope_filter(
+        user_id=1, session_id=None, branch_ids=None,
+        character_id="char-1", branch_scopes=None,
+    )
+    assert "character_id = :character_id" in where2
+    assert params2["character_id"] == "char-1"
 
 
 def test_character_pathways_always_supply_session_id():

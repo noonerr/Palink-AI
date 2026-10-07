@@ -47,6 +47,19 @@ def fast_config(monkeypatch):
     monkeypatch.setattr(memory_config, "CHUNK_DISTANCE_EPSILON", 0.12)
 
 
+@pytest.fixture(autouse=True)
+def _force_semantic_strategy(monkeypatch):
+    """本文件的主题就是**语义断点算法**（mock embed_fn 验断点/合并/调用次数），
+    所以整份钉在 `CHUNK_STRATEGY="semantic"` 上。
+
+    ⚠️ 2026-10-07：默认策略已改为 `structural`（实测更便宜且真实回指召回更好，
+    见 docs/_active/report/REPORT_记忆向量提取与注入改造_2026-10-07.md §4）。
+    structural 路径自己的行为在 `tests/test_memory_chunk_strategy.py` 里钉，
+    别把两边的判据混到这里 —— 这里"嵌入被调用 1 次"是断言而不是多余开销。
+    """
+    monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "semantic")
+
+
 def _two_topic_vectors(n_a: int, n_b: int, dim: int = 64):
     """前 n_a 句返回向量 a，后 n_b 句返回正交向量 b。"""
     rng = np.random.default_rng(42)
