@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from ..memory_module.service import MemoryService
+from ..memory_module.config import memory_config as _memory_config
 from ..models import Character, GroupChat, GroupChatSession, CharacterChatSession, User, UserSetting, ContextTemplate, Persona, InstructTemplate, PromptPreset
 from ..models.character import CharacterChatMessage
 from .inference_dispatcher import complete_text_completion
@@ -42,7 +43,12 @@ from ..services.character_message_builder import build_character_chat_messages
 from ..services.plotline_service import build_plotline_context
 from ..services.worldbook_service import build_worldbook_context, WorldbookContextResult
 from ..services.macro_service import MacroEnv, evaluate_macros, evaluate_macros_in_messages
-from ..utils import build_memory_context, balance_custom_tags, normalize_image_url
+from ..utils import (
+    build_memory_context,
+    balance_custom_tags,
+    clean_memory_content,
+    normalize_image_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -4036,9 +4042,30 @@ async def _assemble_roleplay_prompt_impl(
         context_window_override=_get_openai_max_context_override(
             user_setting, req.model, req.char.id if req.char else None),
     )
+    _memory_budget = _resolve_memory_max_tokens(user_setting)
+    # [MEM-BUDGET-CLAMP 2026-10-09] 档位预算不得吃掉 prompt 总预算。
+    # 档位表上限 6000，而用户设置缺失时默认 1500；但 prompt 总预算
+    # （context_window − max_tokens − reserve）在小窗口模型 / 长 max_tokens 下
+    # 可能只剩两三千。此时记忆区按档位吃满会把历史挤没——记忆区是"补充"，
+    # 历史才是主线。夹到总预算的 40%（另一个 40% 留给历史，其余给卡片/世界书）。
+    # 记忆档位语义在**正常窗口**下逐字不变（预算远大于档位时不触发）。
+    _mem_cap = int(_memory_token_budget * _MEMORY_BUDGET_MAX_SHARE)
+    if _mem_cap > 0 and _memory_budget > _mem_cap:
+        logger.warning(
+            "[MEM-BUDGET-CLAMP] 记忆档位预算 %d 超过 prompt 总预算 %d 的 %.0f%%（上限 %d），"
+            "已夹到上限——避免记忆区挤占对话历史",
+            _memory_budget, _memory_token_budget,
+            _MEMORY_BUDGET_MAX_SHARE * 100, _mem_cap,
+        )
+        _memory_budget = _mem_cap
+    report.append(PromptAssemblyReportItem(
+        "memory_budget", "included",
+        detail=f"resolved={_memory_budget},prompt_budget={_memory_token_budget}",
+        tokens_estimate=_memory_budget,
+    ))
     await _append_memory_context(
         req, deps, memory_mode, dynamic_context_parts, report,
-        memory_max_tokens=_resolve_memory_max_tokens(user_setting),
+        memory_max_tokens=_memory_budget,
         token_budget=_memory_token_budget,
         system_prompt=system_prompt,
         history_reserve=_get_history_reserve(user_setting),
@@ -5062,16 +5089,45 @@ def _st_vector_data_active(db, user_id: int) -> bool:
 
 # ── [分层记忆 Phase 1] 实体卡 / 长会话门控 / 注入预算档位 ──
 # spec: docs/SPEC_分层记忆注入_2026-09-02.md §4.1 / §4.1b（2026-09-03 施工）。
-# 档位：0=紧凑 750 / 1=标准 1500（默认=历史硬编码值，存量零变化）/
-# 2=加量 3000 / 3=尽量多 6000。超预算时 _apply_token_budget 兜底裁剪
+# 档位：0=紧凑 750 / 1=标准 4000（默认）/ 2=加量 6000 / 3=尽量多 8000。
+# 〔2026-10-10 订正〕本行原写「1=标准 1500（默认=历史硬编码值，存量零变化）/
+# 2=加量 3000 / 3=尽量多 6000」，与紧随其下的 2026-10-09 重定记录**自相矛盾**，现同步为终值。
+# 超预算时 _apply_token_budget 兜底裁剪
 # （记忆区优先级低于人设/最近历史），放大档位不会撑爆 prompt。
-_MEMORY_BUDGET_LEVEL_TOKENS = (750, 1500, 3000, 6000)
+# ⚠️ 2026-10-09 重定档位（原 `(750, 1500, 3000, 6000)`，默认 1500）。
+# 依据 p55 五档细扫（53 题 × 5 档，deepseek-flash 判分，逐题配对）：
+#   750 0.500 / 1500 0.509 / 2500 0.575 / **4000 0.698** / 6000 0.679
+#   4000 vs 1500 = **+0.189，z=3.04，p=0.0024**（高度显著）
+#   4000 复跑得 0.604（同配置两轮 0.698/0.604 ⇒ 跑间噪声约 ±0.09），
+#   两轮均值 0.651 仍明显高于 1500 的 0.509。
+#   6000 与 4000 差 -0.019（z=-0.34，p=0.73）⇒ **两者等效的平台**，
+#   但 6000 多花约 47% 的 prompt token ⇒ 取 4000 作默认。
+# ⇒ 本表第二项（默认档，index 1）由 1500 改为 **4000**。
+#
+# 这与 2026-10-09 早先报告「1500 是甜点、放大反而掉分 -0.08」**相反**，原因是
+# 那份是**修复前**测的：检索不精准时，放大预算等于多塞噪声，故越大越差；
+# 查询构造 + 关键词路两项修复落地后，多给预算才是真信息 ⇒ 甜点上移。
+# **结论：预算甜点依赖检索精度，检索修好后必须重扫，不能沿用旧结论。**
+_MEMORY_BUDGET_LEVEL_TOKENS = (750, 4000, 6000, 8000)
+# [MEM-BUDGET-CLAMP 2026-10-09] 记忆区最多占 prompt 总预算的多少。
+#
+# ⚠️ 2026-10-09 订正：此处原写「实测记忆区注入 2455~2709 tok」，**该数字是错的**。
+# 它来自 p51 探针，而 p51 复用了上一轮脚本遗留的 `MemoryService` 60 秒缓存
+# （命中后返回的是上一次的 `[Relevant Memories]` 段）。用 `enable_cache=False`
+# 复测：档位 1500 + 邻居扩展 30% ⇒ 实际 **1943 tok / 20 条**，不是 2455~2709。
+# 教训：量记忆注入量之前必须先关缓存，否则量到的是上一轮的残渣。
+#
+# 夹取的本意不变：小窗口模型（如 8K）下 prompt 总预算可能只剩两三千，
+# 此时记忆区按档位吃满会把历史挤没 —— 记忆是"补充"，历史是主线，
+# 故夹一个上限防止挤占。**正常窗口（≥32K）下预算远大于档位，不触发。**
+_MEMORY_BUDGET_MAX_SHARE = 0.4
 # 实体卡压平文本上限（token），超限逐行截断并 report。
 _MEMORY_ENTITY_CARD_MAX_TOKENS = 400
 
 
 def _resolve_memory_max_tokens(user_setting: Optional[Any]) -> int:
-    """[PHASE-1] 档位 → 记忆区注入 token 上限。NULL/越界/无属性 = 标准档 1500。"""
+    """[PHASE-1] 档位 → 记忆区注入 token 上限。NULL/越界/无属性 = 标准档 4000
+    （2026-10-10 订正：原写 1500，档位表 2026-10-09 已重定为 (750,4000,6000,8000)）。"""
     try:
         lvl = getattr(user_setting, "memory_budget_level", None)
         if isinstance(lvl, int) and 0 <= lvl < len(_MEMORY_BUDGET_LEVEL_TOKENS):
@@ -5377,6 +5433,110 @@ def _resolve_history_window_limit(req: Any) -> int:
     return base
 
 
+# [MEM-QUERY] 语义检索的查询窗口：取最近几条消息拼成查询。
+# 原先只用「本轮用户一句话」当查询，实测用户消息平均 29 字（101 条里 12 条不足
+# 10 字）。拿 29 字去召回整段剧情里的旧语义块，命中集基本靠碰 —— 同一轮换用
+# 「最近 4 条拼接」实测 top8 里 6 条发生变化，且相似度区间从
+# 1.0000~0.6208（自评命中自己）收窄到 0.8869~0.7668（真有信息量）。
+# 口径与世界书向量检索同源（SPEC_世界书向量召回接通与防护：查询文本 = 最近 4 条消息拼接）。
+_MEM_QUERY_WINDOW_MESSAGES = 4
+# 查询文本上限：嵌入模型的输入截断前先收口，避免长轮次把查询撑成整段历史
+_MEM_QUERY_MAX_CHARS = 600
+
+# [MEM-QUERY-2026-10-09] 查询侧才需要剥的行内标签：声音/语气指令。
+# 只用于查询文本（入库侧不剥，因为实测重嵌前后检索指标完全一致，不值得动存量）。
+_RE_QUERY_VOICE_TAG = re.compile(r"【[^】]{0,12}声音[^】]{0,40}】")
+
+
+def _clean_query_text(text: str) -> str:
+    """[MEM-QUERY-2026-10-09] 查询侧文本纯化。
+
+    记忆**入库**侧走的是 `utils.clean_memory_content`（已剥 `<UpdateVariable>` /
+    `<thinking>` / 排版 HTML / 表格空壳），但**查询**侧一直是消息原文 —— 两边不同源。
+    实测本会话 227 条记忆里功能标签与残余 HTML 均为 0 条，脏的只有查询：
+    窗口查询 600 字里中位夹着 3 处 `【声音：…】`／标签。
+
+    这里只多剥一项 `【声音：…】`（入库侧没剥，但它对检索无信息量：实测把库重新
+    纯化并重嵌 227 条后指标**一行没变**，所以不值得为它重嵌存量，只在查询侧剥）。
+
+    纯化查询的独立贡献：中位排名 17 → 13（2026-10-09 p40 变体②）。
+    """
+    s = clean_memory_content(text)
+    s = _RE_QUERY_VOICE_TAG.sub("", s)
+    return s.strip()
+
+
+def _build_memory_query(db, session_id, branch_id, current_message: str) -> str:
+    """[MEM-QUERY] 构造语义检索查询；失败原样返回本轮消息。
+
+    ⚠️ **2026-10-09 实测订正**（详见
+    `docs/_active/report/REPORT_记忆最优解复核_关键词路与查询构造_2026-10-09.md`）：
+
+    原实现「最近 N 条拼接 + 尾截 600」**比只用本轮消息更差** —— 那 600 字里本轮
+    问题只占 **3.4%**（n=50 中位），96% 是上一条 assistant 回复的尾巴，还夹着
+    `<UpdateVariable>` 与 `【声音：…】`。同一批题上：
+
+        窗口查询        top1  6.2%   单次 3009ms
+        本轮消息(清洗后) top1 22.9%   单次  619ms   ← 更准且快 4.8 倍
+
+    默认模式 `current`：用**清洗后的本轮消息**；仅当它过短（< `MEMORY_QUERY_MIN_CHARS`
+    字，生产实测 12/101 条用户消息不足 10 字）时，才回退拼接最近 1 条消息的尾部补足
+    语境。旧行为由 `MEMORY_QUERY_MODE=window` 一键恢复。
+    """
+    base = (current_message or "").strip()
+    if _memory_config.QUERY_MODE != "window":
+        cleaned = _clean_query_text(base)
+        if len(cleaned) >= _memory_config.QUERY_MIN_CHARS or not cleaned:
+            return cleaned or base
+        # 过短：补最近 1 条消息的尾部（不是整条，避免再次稀释）
+        try:
+            q = db.query(CharacterChatMessage.content).filter(
+                CharacterChatMessage.session_id == session_id,
+            )
+            if branch_id:
+                q = q.filter(CharacterChatMessage.branch_id == branch_id)
+            else:
+                q = q.filter(CharacterChatMessage.branch_id == None)  # noqa: E711
+            prev = q.order_by(
+                CharacterChatMessage.created_at.desc(), CharacterChatMessage.id.desc()
+            ).limit(1).scalar()
+        except Exception as prev_err:
+            logger.debug("memory query fallback lookup failed: %s", prev_err)
+            prev = None
+        prev_tail = _clean_query_text(prev or "")[-_memory_config.QUERY_FALLBACK_CHARS:]
+        # 本轮消息常常**已经落库**（成为"最近一条"）⇒ 不剥就会拼两遍，
+        # 白白把查询的一半预算还给同一句话（旧窗口实现里有同款去重，别丢）。
+        if prev_tail and cleaned and prev_tail.endswith(cleaned):
+            prev_tail = prev_tail[: -len(cleaned)].rstrip()
+        return (prev_tail + "\n" + cleaned).strip() if prev_tail else cleaned
+    # ── window：2026-10-07 的旧行为（保留作一键回退）──
+    try:
+        q = db.query(CharacterChatMessage.content, CharacterChatMessage.role).filter(
+            CharacterChatMessage.session_id == session_id,
+        )
+        if branch_id:
+            q = q.filter(CharacterChatMessage.branch_id == branch_id)
+        else:
+            q = q.filter(CharacterChatMessage.branch_id == None)  # noqa: E711
+        recent = q.order_by(
+            CharacterChatMessage.created_at.desc(), CharacterChatMessage.id.desc()
+        ).limit(_MEM_QUERY_WINDOW_MESSAGES).all()
+    except Exception as query_err:
+        # 与同函数 exclude-recent 的口径一致：查不到就不改行为，不静默清空查询
+        logger.debug("memory query window lookup failed: %s", query_err)
+        return base
+
+    parts = [str(r[0] or "").strip() for r in reversed(recent) if str(r[0] or "").strip()]
+    if base and (not parts or parts[-1][:80] != base[:80]):
+        parts.append(base)
+    if not parts:
+        return base
+    text = "\n".join(parts)
+    if len(text) > _MEM_QUERY_MAX_CHARS:
+        text = text[-_MEM_QUERY_MAX_CHARS:]
+    return text
+
+
 async def _append_memory_context(
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
@@ -5595,9 +5755,17 @@ async def _append_memory_context(
             _mem_char = getattr(req, "char", None)
             _mem_char_id = getattr(_mem_char, "id", None) if _mem_char is not None else None
             memory_character_id = str(_mem_char_id) if _mem_char_id else None
+            # [MEM-QUERY] 智能卡触发时查询已由卡片上下文给定；普通轮次改用
+            # 最近几条消息拼出的窗口查询（见 _build_memory_query 的实测理由）。
+            _mem_query = (
+                req.smart_card_context if req.smart_card_trigger
+                else _build_memory_query(
+                    req.db, req.session_id, req.branch_id, req.message
+                )
+            )
             mem_ctx = await mem_svc.get_context(
                 user_id=req.user.id,
-                query=req.smart_card_context if req.smart_card_trigger else req.message,
+                query=_mem_query,
                 session_id=req.session_id,
                 max_tokens=memory_max_tokens,
                 # scopes 优先；未提供 scopes 的调用方沿用旧 branch_ids 行为。
@@ -5609,7 +5777,15 @@ async def _append_memory_context(
                 character_id=memory_character_id,
             )
             if mem_ctx and mem_ctx.memories:
-                memory_text = build_memory_context(mem_ctx, max_tokens=memory_max_tokens)
+                # [NEIGHBOR-BUDGET 2026-10-09] 渲染预算要跟着邻居扩展一起放大，
+                # 否则多捞回来的相邻块会在 build_memory_context 里被"整条跳过"
+                # 重新砍掉——而且砍的是排序最后的（= 最新的 = STM），等于白捞。
+                _mem_render_tokens = memory_max_tokens
+                if _memory_config.NEIGHBOR_EXPAND and _memory_config.NEIGHBOR_EXTRA_RATIO > 0:
+                    _mem_render_tokens += int(
+                        memory_max_tokens * _memory_config.NEIGHBOR_EXTRA_RATIO
+                    )
+                memory_text = build_memory_context(mem_ctx, max_tokens=_mem_render_tokens)
                 if memory_text:
                     memory_text = deps.replace_placeholders(memory_text, user_nickname, req.char.name or "")
                     dynamic_context_parts.append(memory_text)

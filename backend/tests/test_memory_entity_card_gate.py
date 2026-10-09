@@ -5,7 +5,8 @@ spec: docs/SPEC_分层记忆注入_2026-09-02.md §4.1 / §4.1b。
 覆盖面：
 纯函数：
 1. _flatten_stat_data：嵌套压平 / _ 开头跳过 / 空值跳过 / list 连接 / 非 dict 输入
-2. _resolve_memory_max_tokens：0-3 档 → 750/1500/3000/6000；NULL/越界/无属性 → 1500
+2. _resolve_memory_max_tokens：0-3 档 → 750/4000/6000/8000（2026-10-09 p55 细扫重定，
+   默认档 1 由 1500 改为实测最优的 4000）；NULL/越界/无属性 → 4000
 3. _memory_gate_should_skip：装得下跳过 / 装不下检索 / 等值边界跳过（保守）
 4. 迁移条目：_RUNTIME_COMPAT_COLUMNS 含 user_settings.memory_budget_level
 集成（_append_memory_context，Fake MemoryService 隔离检索层）：
@@ -13,7 +14,8 @@ spec: docs/SPEC_分层记忆注入_2026-09-02.md §4.1 / §4.1b。
 6. 非 MVU 卡 → 无实体卡
 7. memory_mode=disabled → 全跳
 8. 门控：预算充裕跳过检索并 report；预算紧张照常检索；token_budget=None 兼容
-9. 档位透传：level=2 → get_context 收到 max_tokens=3000
+9. 档位透传：level=2 → get_context 收到 max_tokens=6000（2026-10-10 订正：原写 3000，
+   档位表 2026-10-09 重定为 (750,4000,6000,8000)）
 10. 实体卡超限截断 → report detail=truncated
 """
 
@@ -136,17 +138,19 @@ class TestFlattenStatData:
 
 
 class TestResolveMemoryMaxTokens:
-    @pytest.mark.parametrize("level,expected", [(0, 750), (1, 1500), (2, 3000), (3, 6000)])
+    # 档位表 2026-10-09 重定：(750, 4000, 6000, 8000)，默认档（index 1）= 4000。
+    # 依据 p55 细扫：4000 实测最优（见 roleplay_prompt_assembly 该常量处注释）。
+    @pytest.mark.parametrize("level,expected", [(0, 750), (1, 4000), (2, 6000), (3, 8000)])
     def test_levels(self, level, expected):
         assert rpa._resolve_memory_max_tokens(SimpleNamespace(memory_budget_level=level)) == expected
 
     @pytest.mark.parametrize("bad", [None, 99, -1, "2"])
     def test_fallbacks(self, bad):
-        assert rpa._resolve_memory_max_tokens(SimpleNamespace(memory_budget_level=bad)) == 1500
+        assert rpa._resolve_memory_max_tokens(SimpleNamespace(memory_budget_level=bad)) == 4000
 
     def test_no_attr_and_none_setting(self):
-        assert rpa._resolve_memory_max_tokens(SimpleNamespace()) == 1500
-        assert rpa._resolve_memory_max_tokens(None) == 1500
+        assert rpa._resolve_memory_max_tokens(SimpleNamespace()) == 4000
+        assert rpa._resolve_memory_max_tokens(None) == 4000
 
 
 class TestMemoryGate:
@@ -323,7 +327,7 @@ class TestGateIntegration:
 
 
 class TestLevelPassthrough:
-    @pytest.mark.parametrize("level,expected", [(0, 750), (2, 3000), (3, 6000)])
+    @pytest.mark.parametrize("level,expected", [(0, 750), (2, 6000), (3, 8000)])
     def test_level_reaches_get_context(self, gate_env, level, expected):
         db = gate_env
         _seed_session(db)
@@ -497,4 +501,4 @@ class TestSchemaDefense:
 
     def test_out_of_range_normalized_by_api(self):
         # API 层防呆在 users.py PUT（99→1），读侧 _resolve_memory_max_tokens 再兜一层
-        assert rpa._resolve_memory_max_tokens(SimpleNamespace(memory_budget_level=99)) == 1500
+        assert rpa._resolve_memory_max_tokens(SimpleNamespace(memory_budget_level=99)) == 4000

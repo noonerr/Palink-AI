@@ -474,6 +474,14 @@ def build_memory_context(memory_ctx, max_tokens: Optional[int] = None) -> str:
                 text = _truncate_by_sentence(text, max_chars)
             # [TAG-BALANCE-GUARD] 记忆块可能从标签中间切开，注入前修平
             text = balance_custom_tags(text)
+            # ⚠️ [TOKEN-口径 2026-10-09] `len // 2` 是**内部口径**，不是真实 token。
+            # 实测（p59，用上游 API 的 usage 对拍）：中文约 **0.66 token/字**，
+            # 而这里按 0.5 token/字算 ⇒ **低估约 1.37 倍**，即「设定 4000 实际注入
+            # 约 5490 真实 token」。**这是已知且刻意保留的**：
+            # 档位表 `_MEMORY_BUDGET_LEVEL_TOKENS` 的最优值（4000）就是在这个口径下
+            # 扫出来的（p55）。若把这里"修正"成真实口径而不动档位值，实际注入量会
+            # 从 5490 掉回 4000，等于把预算偷偷缩小 27% ⇒ **分数会退步**。
+            # 要改口径必须**同时**把档位值按 1.37 等比放大，二者是绑定的。
             cost = len(text) // 2
             if max_tokens is not None and used + cost > max_tokens and mem_lines:
                 continue  # 预算不足：整条跳过，不制造残缺片段
