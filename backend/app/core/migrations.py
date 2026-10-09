@@ -122,7 +122,8 @@ _RUNTIME_COMPAT_COLUMNS = (
     # monthly_reset = 每自然月自动清零 used_tokens；period_month = 当前计数月（YYYY-MM）。
     ("user_quotas", "monthly_reset", sa.Boolean()),
     ("user_quotas", "period_month", sa.String()),
-    # [分层记忆 Phase 1] 记忆区注入预算档位（0-3，NULL=标准档 1500），
+    # [分层记忆 Phase 1] 记忆区注入预算档位（0-3，NULL=标准档 4000；
+    # 〔2026-10-10 订正〕原写 1500，2026-10-09 已随档位表改为 4000），
     # 见 UserSetting.memory_budget_level 注释与 docs/SPEC_分层记忆注入_2026-09-02.md §4.1。
     ("user_settings", "memory_budget_level", sa.Integer()),
     # [PROMPT-EVERY-TURN 2026-10-02] 卡脚本上报快照的内容来源键（alembic 0066）：

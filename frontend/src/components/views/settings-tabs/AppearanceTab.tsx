@@ -50,7 +50,9 @@ export function AppearanceTab({
   );
   const [showModelReasoning, setShowModelReasoning] = useState<boolean>(true);
   const [memoryMode, setMemoryMode] = useState<string>('rule');
-  // 分层记忆 Phase 1：记忆区注入预算档位（0=紧凑750/1=标准1500/2=加量3000/3=尽量多6000）
+  // 分层记忆 Phase 1：记忆区注入预算档位（0=紧凑750/1=标准4000/2=加量6000/3=尽量多8000）
+  // 〔2026-10-10 订正〕档位表 2026-10-09 由 (750,1500,3000,6000) 重定为 (750,4000,6000,8000)。
+  // 档位号语义不变，前端只透传 level，无逻辑改动。
   const [memoryBudgetLevel, setMemoryBudgetLevel] = useState<number>(1);
   const [promptLanguage, setPromptLanguage] = useState<string>('auto');
   // MVU 副 AI 变量更新（2026-08-19）：主模型未输出变量块时用副模型补
