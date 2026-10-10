@@ -268,3 +268,54 @@ class TestLtmExcludeWithRealEmbeddings:
         response = _retrieve(storage, test_user.id, mode="vector", exclude=[1, 2, 3])
         assert response.strategy_used != "error"
         assert response.memories == []
+
+
+class TestStmCompensation:
+    """[CHUNK-SENTENCE 2026-10-11] STM 补位必须按「每条消息的块数」放大。
+
+    背景（生产实测，2026-10-11）：一条回复切 4~12 条记忆，而补位原先只补
+    `len(exclude_ids)` 条（隐含假设"一条消息一条记忆"）⇒ 取回的全是排除集内的块，
+    过滤后 **STM = 0 条**，`rule` 模式（STM 是其唯一内容）等于没有记忆注入。
+    实测会话 `f25daab6`：`get_recent(limit=17)` 取回 17 条、**17 条全部命中排除集**。
+    成本实测：limit 10 → 0.6ms / 17 → 0.5ms / 72 → 1.1ms，可忽略。
+    """
+
+    def test_sentence_factor_compensates(self, mem_env, test_user, monkeypatch):
+        storage, db = mem_env
+        seen = {}
+
+        def _spy(**kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr(storage, "get_recent", _spy)
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+
+        _retrieve(storage, test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
+
+        expected = (
+            memory_config.SENTENCE_STM_LIMIT
+            + 5 * memory_config.SENTENCE_STM_EXCLUDE_FACTOR
+        )
+        assert seen["limit"] == expected, (
+            f"句级补位应为 {expected}"
+            f"（{memory_config.SENTENCE_STM_LIMIT} + 5×{memory_config.SENTENCE_STM_EXCLUDE_FACTOR}），"
+            f"实际 {seen['limit']}"
+        )
+
+    def test_block_factor_matches_legacy_formula(self, mem_env, test_user, monkeypatch):
+        """★ 回退到块级时补位公式必须与改动前**逐字一致**（`5 + len(exclude)`）。"""
+        storage, db = mem_env
+        seen = {}
+
+        def _spy(**kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr(storage, "get_recent", _spy)
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+
+        _retrieve(storage, test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
+
+        assert memory_config.BLOCK_STM_EXCLUDE_FACTOR == 1, "块级系数必须为 1 才能保持等价"
+        assert seen["limit"] == 5 + 5, "块级下必须是 5 + len(exclude)，与改动前一致"

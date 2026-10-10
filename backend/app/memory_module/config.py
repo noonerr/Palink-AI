@@ -161,10 +161,35 @@ class MemoryConfig:
     # 12 句 × 约 30 字 ≈ 360 字，覆盖 2~3 轮，占记忆预算（4000 内部单位）不到 10%。
     SENTENCE_STM_LIMIT: int = int(os.getenv("MEMORY_SENTENCE_STM_LIMIT", "12"))
     BLOCK_STM_LIMIT: int = int(os.getenv("MEMORY_BLOCK_STM_LIMIT", "5"))
-    # 语义检索候选池。句级后单条信息量约为块级的 1/8~1/10
-    # （块级平均 295 字 vs 句级约 30 字），50 条候选 ≈ 原来的 6 个块
-    # ⇒ 句级提到 120 才与原信息量可比。纯内存打分，成本可忽略。
-    SENTENCE_CANDIDATE_LIMIT: int = int(os.getenv("MEMORY_SENTENCE_CANDIDATE_LIMIT", "120"))
+    # STM 补位系数：**每条被排除消息平均占多少条记忆**，用于把"排除集过滤后
+    # STM 被吃光"补回来（见 retriever 的 `limit=recent_limit + len(exclude) * 系数`）。
+    #
+    # ⚠️ 这是既有缺陷的修复，不是句级引入的：生产实测（2026-10-11，会话
+    # f25daab6，排除最近 5 条消息）取 17 条**全部命中排除集 ⇒ STM 剩余 0 条**；
+    # 块级时代 `limit = 5 + 5 = 10` 同样全中 ⇒ 也是 0。差别只是句级把目标从
+    # 5 条抬到 12 条，缺口更大、`rule` 模式（STM 是唯一内容）更加形同虚设。
+    # 块级 1 = 保持改动前公式逐字不变；句级 12 = 一条长回复约 12 句（上限 40
+    # 由 SENTENCE_MAX_CHUNKS 约束，取中位而非上限以免单次取数过大）。
+    # 成本实测（同会话）：limit 10 → 0.6ms、17 → 0.5ms、72 → 1.1ms，可忽略。
+    SENTENCE_STM_EXCLUDE_FACTOR: int = int(
+        os.getenv("MEMORY_SENTENCE_STM_EXCLUDE_FACTOR", "12")
+    )
+    BLOCK_STM_EXCLUDE_FACTOR: int = int(os.getenv("MEMORY_BLOCK_STM_EXCLUDE_FACTOR", "1"))
+    # 语义检索候选池（粗筛出参与排序的条数；最终注入多少由 token 预算决定）。
+    #
+    # ⚠️ 2026-10-11 复核订正：初版取 120，**依据算错了**。原注释写"120 条 ≈ 块级
+    # 50 条的信息量"，但 50×295 字 = 14750 字 ≠ 120×30 字 = 3600 字，差 4 倍。
+    # 按"注入字数对齐"重算：块级 50 条候选最终注入 26 条 × 295 字 = 7670 字
+    # （受 token 预算限制），句级要注入同量字数需 7670/30 ≈ **256** 条；
+    # 另按预算直接算：剩余预算约 3820 内部单位 ÷ 15 单位/条 ≈ **254** 条。两者一致。
+    # ⇒ 取 **260**。
+    #
+    # 不放大就会让候选池成为瓶颈：120 条 × 15 单位 = 1800 单位，只用到 4000 档
+    # 预算的 45%，**实际注入 token 反而低于块级**（块级 26 条 = 3822 单位），
+    # 与"句级化是为了更好利用预算"的初衷相反。
+    # 成本：库内精确扫描取 top-260 vs top-120 差异在毫秒级（实测 top-50 为 14.0ms）；
+    # 融合与打分都是纯内存操作，可忽略。
+    SENTENCE_CANDIDATE_LIMIT: int = int(os.getenv("MEMORY_SENTENCE_CANDIDATE_LIMIT", "260"))
     BLOCK_CANDIDATE_LIMIT: int = int(os.getenv("MEMORY_BLOCK_CANDIDATE_LIMIT", "50"))
 
     @property
@@ -183,6 +208,14 @@ class MemoryConfig:
     @property
     def EFFECTIVE_STM_LIMIT(self) -> int:
         return self.SENTENCE_STM_LIMIT if self.IS_SENTENCE_LEVEL else self.BLOCK_STM_LIMIT
+
+    @property
+    def EFFECTIVE_STM_EXCLUDE_FACTOR(self) -> int:
+        return (
+            self.SENTENCE_STM_EXCLUDE_FACTOR
+            if self.IS_SENTENCE_LEVEL
+            else self.BLOCK_STM_EXCLUDE_FACTOR
+        )
 
     @property
     def EFFECTIVE_CANDIDATE_LIMIT(self) -> int:

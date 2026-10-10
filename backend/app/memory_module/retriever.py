@@ -53,12 +53,22 @@ class MemoryRetriever:
             recent_limit = memory_config.EFFECTIVE_STM_LIMIT
             # D3 修复: ST protect 语义 —— 排除最近消息的记忆镜像（调用方传入最近
             # N 条消息 id；命中 message_id 的条目不注入，历史窗口已含原文）。
-            # 多取 len(exclude_ids) 条补位，保证过滤后 STM 数量稳定。
+            #
+            # [CHUNK-SENTENCE 2026-10-11] 补位量必须乘「每条被排除消息平均占多少条记忆」：
+            # 原先只补 len(exclude_ids) 条（隐含假设"一条消息一条记忆"），而生产里每条
+            # 回复切 4~12 条 ⇒ 补位严重不足。**生产实测**（会话 f25daab6，排除最近 5 条
+            # 消息）：取 17 条**全部命中排除集**，过滤后 STM = 0 条 —— `rule` 模式
+            # （STM 是其唯一内容）等于完全没有记忆注入。块级时代 limit=10 同样全中。
+            # 块级系数 1 使公式逐字回到改动前；句级 12 按"一条长回复约 12 句"取中位。
             exclude_ids = set(request.exclude_message_ids or [])
+            _stm_fetch = (
+                recent_limit
+                + len(exclude_ids) * memory_config.EFFECTIVE_STM_EXCLUDE_FACTOR
+            )
             stm_memories = self.storage.get_recent(
                 user_id=request.user_id,
                 session_id=request.session_id,
-                limit=recent_limit + len(exclude_ids),
+                limit=_stm_fetch,
                 branch_ids=request.branch_ids,
                 character_id=request.character_id,
                 branch_scopes=request.branch_scopes,
@@ -86,7 +96,7 @@ class MemoryRetriever:
 
             # ── rule 模式：纯上下文，只返回最近记忆 ──
             if request.memory_mode == "rule":
-                stm_memories.sort(key=lambda x: x.created_at or datetime.min)
+                stm_memories.sort(key=lambda x: (x.created_at or datetime.min, x.id))
                 user_profile = None
                 if request.include_profile:
                     user_profile = self.storage.get_user_profile(request.user_id)
@@ -104,7 +114,7 @@ class MemoryRetriever:
             # 如果 STM 已经占满窗口，直接返回 STM
             if remaining_tokens <= 0:
                 logger.info(f"短期记忆已占满窗口 ({current_tokens} tokens)，跳过长期检索")
-                stm_memories.sort(key=lambda x: x.created_at or datetime.min)
+                stm_memories.sort(key=lambda x: (x.created_at or datetime.min, x.id))
                 return ContextResponse(
                     memories=stm_memories,
                     user_profile=self.storage.get_user_profile(request.user_id) if request.include_profile else None,
@@ -152,16 +162,26 @@ class MemoryRetriever:
                     # 走下面纯粹的 _score_candidates，与 2026-10-09 前逐条等价。
                     kw_candidates: List[Tuple[MemoryEntry, float]] = []
                     if memory_config.HYBRID_WEIGHT > 0:
+                        # [CHUNK-SENTENCE 2026-10-11] 关键词路的池子必须与向量路对齐。
+                        # 两路结果要 RRF 融合，池子一大一小会让小的一路系统性吃亏：
+                        # 只出现在关键词路、且排名靠后的条目，其 kw 名次分天然低于
+                        # 向量路同排名条目 ⇒ 明明字面命中却挤不进融合结果。
+                        # 句级后单条信息量降到 1/8~1/10，50 条 ≈ 原来的 6 个块，
+                        # 故与向量路同步放大。块级下 max(50, 50) = 50，与改动前逐字一致。
+                        _kw_pool = max(
+                            int(memory_config.HYBRID_KW_CANDIDATES),
+                            memory_config.EFFECTIVE_CANDIDATE_LIMIT,
+                        )
                         kw_candidates = self.storage.keyword_search(
                             user_id=request.user_id,
                             query_text=request.query,
-                            limit=50,
+                            limit=_kw_pool,
                             min_coverage=memory_config.HYBRID_KW_MIN_COVERAGE,
                             session_id=request.session_id,
                             branch_ids=request.branch_ids,
                             character_id=request.character_id,
                             branch_scopes=request.branch_scopes,
-                            candidates=memory_config.HYBRID_KW_CANDIDATES,
+                            candidates=_kw_pool,
                         )
                         if exclude_ids and kw_candidates:
                             kw_candidates = [
@@ -209,8 +229,12 @@ class MemoryRetriever:
                 final_map[m.id] = m
             final_memories = list(final_map.values())
             
-            # 按时间正序排列（旧 -> 新），符合 LLM 阅读习惯
-            final_memories.sort(key=lambda x: x.created_at or datetime.min)
+            # 按时间正序排列（旧 -> 新），符合 LLM 阅读习惯。
+            # [CHUNK-SENTENCE 2026-10-11] 排序键必须带 id 兜底：同一条回复切出的多个
+            # 句级块在同一事务里插入，CURRENT_TIMESTAMP 完全相同 ⇒ 只按时间排序会让
+            # 12 句话以"分数顺序"而非"原文顺序"注入（块级时代 4 块影响小，句级放大 3 倍）。
+            # id 自增且与 #idx 同序（store_chunks 按序插入），补上即恢复原文顺序。
+            final_memories.sort(key=lambda x: (x.created_at or datetime.min, x.id))
             
             total_tokens = sum(m.tokens_count or (len(m.content) // 2) for m in final_memories)
             
