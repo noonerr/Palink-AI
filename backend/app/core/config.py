@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     CHAT_HISTORY_LIMIT: int = 24
     CHARACTER_CHAT_HISTORY_LIMIT: int = 24
 
+    # [MVU-LOOKBACK 2026-10-05] 提示词装配回溯「消息级变量快照」的楼层上限。
+    # 变量镜像存在每条消息的 extra.variables，装配时从最新往前找最近一个非空快照
+    # （见 roleplay_prompt_assembly._load_effective_stat_data）。
+    # 此前该值是硬编码的 30（同文件 CHARACTER_CHAT_HISTORY_LIMIT 反而是可配置的，口径不一致）。
+    # ⚠️ 与变量清理联动：mvu_cleanup 的「要保留变量的最近楼层数」必须 ≥ 本值，
+    # 否则被清理的楼层会滑进回看窗口 → 找不到快照 → 静默回落到会话级。
+    # 改本值时必须同步核对清理侧保留楼层数，两者不可各写各的常量。
+    MVU_STAT_LOOKBACK_LIMIT: int = 30
+
     # [ST-ALIGN P0-1] 记忆自动封存开关。
     # ST 1.18 由 memory 扩展按 promptInterval / context 阈值滚动摘要，长会话不会无限涨。
     # Palink 此前 check_and_auto_compress 只有定义、零调用方，记忆只增不减直到撞上下文窗口。

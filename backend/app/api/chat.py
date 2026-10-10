@@ -415,27 +415,41 @@ async def chat_stream(
                     logger.warning(f"Quota deduction failed: {quota_error}")
 
                 if memory_mode != "disabled" and result.full_content and not memory_stored:
+                    # [PERF-EMB-NONBLOCK] store_memory 内含**同步 httpx 嵌入调用**（长回复批量
+                    # 实测约 1 秒），原先直接在 async 生成器里跑 ⇒ 整个 worker 的事件循环停 1 秒，
+                    # 同 worker 上其他用户的流一起卡。挪到线程池；事务与异常语义原样保留。
+                    def _write_turn_memory() -> None:
+                        if result.full_content.strip().startswith("Error:"):
+                            return
+                        mem_svc = MemoryService(save_db)
+                        if not mem_svc.is_available():
+                            return
+                        # [MEM-SAME-SOURCE] 与角色聊天入口同口径：记忆正文一律存清洗后的
+                        # 文本（实测 150 条真实用户消息清洗前后 100% 相同，只影响首尾空白），
+                        # 顺带让「本轮这句」的两次嵌入是同一串字，[EMB-DEDUP] 才接得住。
+                        mem_svc.store_memory(
+                            user.id, session_id, "user",
+                            clean_memory_content(req.message).strip(),
+                        )
+                        # [MEM-CLEAN] assistant 入库前必须清洗：模型输出的
+                        # <thinking> 思维链 / <UpdateVariable> 功能块不能进记忆
+                        # （2026-09-23 发现普通聊天这条路径漏了清洗，与角色聊天
+                        # 的 websocket / character_ext 入口不一致；store_memory
+                        # 内部不做清洗，全靠调用点自觉）。
+                        mem_svc.store_memory(
+                            user.id, session_id, "assistant",
+                            clean_memory_content(result.full_content),
+                        )
+                        save_db.commit()
+
                     try:
-                        if not result.full_content.strip().startswith("Error:"):
-                            mem_svc = MemoryService(save_db)
-                            if mem_svc.is_available():
-                                mem_svc.store_memory(user.id, session_id, "user", req.message)
-                                # [MEM-CLEAN] assistant 入库前必须清洗：模型输出的
-                                # <thinking> 思维链 / <UpdateVariable> 功能块不能进记忆
-                                # （2026-09-23 发现普通聊天这条路径漏了清洗，与角色聊天
-                                # 的 websocket / character_ext 入口不一致；store_memory
-                                # 内部不做清洗，全靠调用点自觉）。
-                                mem_svc.store_memory(
-                                    user.id, session_id, "assistant",
-                                    clean_memory_content(result.full_content),
-                                )
-                                save_db.commit()
-                                memory_stored = True
-                                # [ST-ALIGN P0-1] 记忆封存：落库后按阈值自动压缩，
-                                # 对齐 ST 1.18 的滚动摘要兜底，避免长会话记忆只增不减。
-                                await maybe_auto_compress(
-                                    save_db, user.id, session_id, memory_mode=memory_mode
-                                )
+                        await asyncio.to_thread(_write_turn_memory)
+                        memory_stored = True
+                        # [ST-ALIGN P0-1] 记忆封存：落库后按阈值自动压缩，
+                        # 对齐 ST 1.18 的滚动摘要兜底，避免长会话记忆只增不减。
+                        await maybe_auto_compress(
+                            save_db, user.id, session_id, memory_mode=memory_mode
+                        )
                     except Exception as e:
                         save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")

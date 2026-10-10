@@ -72,6 +72,51 @@ class MemoryConfig:
     # 检索命中块时是否自动携带前后相邻块
     NEIGHBOR_EXPAND: bool = os.getenv("MEMORY_NEIGHBOR_EXPAND", "true").lower() == "true"
 
+    # ── 检索查询构造（[MEM-QUERY-2026-10-09] 实测订正，详见
+    #   docs/_active/report/REPORT_记忆最优解复核_关键词路与查询构造_2026-10-09.md）──
+    # 2026-10-07 定的「最近 4 条拼接 + 尾截 600」实测**更差**：那 600 字里本轮问题
+    # 只占 3.4%（n=50 中位），其余是上一条回复的尾巴（还夹着 <UpdateVariable> 与
+    # 【声音：…】）。同一批题上：窗口查询 top1 6.2%，换成「本轮消息」22.9%，
+    # 单次耗时 3009ms → 619ms（要嵌的文本从 600 字降到 30 字）。
+    #   current = 只用本轮消息（清洗后）；过短时才回退拼接最近 1 条
+    #   window  = 2026-10-07 的旧行为（一键回退开关）
+    QUERY_MODE: str = os.getenv("MEMORY_QUERY_MODE", "current")
+    # 回退阈值：本轮消息清洗后不足该字数才拼接上下文（生产用户消息中位 29 字，
+    # 12/101 条不足 10 字 —— 太短的句子单独嵌入确实没有信息量）
+    QUERY_MIN_CHARS: int = int(os.getenv("MEMORY_QUERY_MIN_CHARS", "15"))
+    # 回退时拼接的上文长度上限（字符，取最近 1 条消息的**尾部**）
+    QUERY_FALLBACK_CHARS: int = int(os.getenv("MEMORY_QUERY_FALLBACK_CHARS", "120"))
+
+    # ── 关键词路（[MEM-HYBRID 2026-10-09]）──
+    # 纯向量路会漏掉专名/数字/改口这类「字面重合但语义向量接近」的情况。
+    # 实测两条路是**相乘**关系：只修查询 top1 22.9%，只加关键词路 6.2%，
+    # 两者都做 47.9%（注入命中 31.2% → 81.2%，中位排名 17 → 2）。
+    #   0    = 关闭（行为与改动前完全一致，一键回退）
+    #   0.7  = 实测推荐值（p47：48 道原题 + 48 道同义改写题双题集扫描）
+    #          w_kw   0.0   0.2   0.35  0.5   0.7   1.0
+    #          原题  22.9% 41.7% 41.7% 41.7% 41.7% 43.8%   ← top1
+    #          改写  20.8% 27.1% 29.2% 31.2% 33.3% 31.2%   ← top1
+    #          取"两套题里较差的那一侧"最大化 ⇒ 0.7（33.3%）。
+    #          注意：原题集是从原文句子生成的，天然字面重合度高，纯关键词在上面
+    #          还能到 58%，但同义改写后掉到 31% —— 单看原题集定权重会过拟合，
+    #          所以额外造了改写题集来反向校验。
+    HYBRID_WEIGHT: float = float(os.getenv("MEMORY_HYBRID_WEIGHT", "0.7"))
+    # 关键词路取多少条候选参与融合（pg_trgm 粗筛，再在 Python 侧用 bigram 精排）
+    HYBRID_KW_CANDIDATES: int = int(os.getenv("MEMORY_HYBRID_KW_CANDIDATES", "50"))
+    # 关键词分下限（查询字符 bigram 被该行覆盖的比例；低于此值视为无字面关联）
+    HYBRID_KW_MIN_COVERAGE: float = float(os.getenv("MEMORY_HYBRID_KW_MIN_COV", "0.12"))
+    # RRF 平滑常数（经典 60；越大越接近"只看排名先后"）
+    HYBRID_RRF_K: int = int(os.getenv("MEMORY_HYBRID_RRF_K", "60"))
+
+    # ── 邻居扩展独立预算（[MEM-NEIGHBOR 2026-10-09]）──
+    # _expand_chunk_neighbors 原先与检索**共用** request.max_tokens，而预算本来就被
+    # 填满（实测 1480/1500）⇒ 恒 `total + t > max_tokens` ⇒ **一条都补不进来**
+    # （实测 retriever 10 条 → get_context 10 条，+0）。切开的块因此永远只有半截。
+    # 这里给它独立额度 = max_tokens × 该比例；0 = 关闭（回到旧行为）。
+    NEIGHBOR_EXTRA_RATIO: float = float(os.getenv("MEMORY_NEIGHBOR_EXTRA_RATIO", "0.3"))
+    # 独立额度的硬上限（条数），防止长会话把记忆区撑大
+    NEIGHBOR_MAX_ADDS: int = int(os.getenv("MEMORY_NEIGHBOR_MAX_ADDS", "4"))
+
     # ── NULL 向量自动回填（[EMB-BACKFILL] 2026-10-07，backfill.py）──
     # 轮询间隔秒数；<=0 关闭回填线程。宽限期内（默认 300s）的 NULL 行不回填——
     # 正常路径 store() 的异步首算几秒内就会补上，回填不抢活、避免双算。

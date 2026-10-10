@@ -1250,10 +1250,19 @@ class MvuEngine:
         *,
         first_mes: str | None = None,
         alternate_greetings=None,
-    ) -> tuple[dict, list[str]]:
+    ) -> tuple[dict, list[str], list[dict]]:
         """解析 AI 回复中的 <UpdateVariable> 并应用到 *current_variables*。
 
-        返回 (新 variables, 变更日志)。
+        返回 ``(新 variables, 变更日志, 应用的补丁)``。
+
+        第三个返回值是**按顺序展平的 JSON Patch 列表**（多块时按块序拼接 ——
+        与逐块 apply 等价，因为 apply_patches 本身就是顺序处理）。
+        它的用途是**留存补丁以支撑「清理后重演恢复」**：正文里的
+        ``<UpdateVariable>`` 在后端落库前会被剥离且不留原文，所以恢复不能像
+        MVU 插件那样重新解析正文（见 ``mvu_cleanup.py`` 文件头）。
+        调用方把它写进 ``msg.extra["mvu_patch"]``；清理只动 ``extra["variables"]``，
+        天然不会碰到补丁。
+
         若 current_variables 为空且有 schema，先兜底初始化（同样接受列值入参）。
         """
         if not isinstance(current_variables, dict):
@@ -1269,11 +1278,13 @@ class MvuEngine:
 
         blocks = extract_update_variable_blocks(reply_text)
         if not blocks:
-            return current_variables, []
+            return current_variables, [], []
 
         new_vars = current_variables
         all_logs: list[str] = []
+        applied: list[dict] = []
         for block_idx, patches in enumerate(blocks):
             new_vars, logs = apply_patches(new_vars, patches)
             all_logs.extend(f"[block{block_idx}] {l}" for l in logs)
-        return new_vars, all_logs
+            applied.extend(patches)
+        return new_vars, all_logs, applied

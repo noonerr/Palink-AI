@@ -39,6 +39,12 @@ class UserSettingUpdate(BaseModel):
     # MVU 副 AI 变量更新（2026-08-19）：副模型 ID（空=不启用）+ 开关。
     mvu_secondary_model: Optional[str] = None
     mvu_secondary_enabled: Optional[bool] = None
+    # [MVU-SECONDARY-PARAMS 2026-10-05] 副模型采样参数 + 重试次数。
+    # None = 不改（PUT）/ 用代码内默认（GET 读模型列）。写入侧做防呆夹紧：
+    # temperature 0-2 / max_tokens 256-8192 / retries 0-3。
+    mvu_secondary_temperature: Optional[float] = None
+    mvu_secondary_max_tokens: Optional[int] = None
+    mvu_secondary_retries: Optional[int] = None
     # 分层记忆 Phase 1：记忆区注入预算档位（0-3，None=不改）。
     memory_budget_level: Optional[int] = None
 

@@ -551,9 +551,17 @@ def apply_mvu_reply_to_session(
     character_id: Optional[str],
     session_id: str,
     reply_text: str,
-) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+) -> Tuple[Optional[Dict[str, Any]], List[str], List[Dict[str, Any]]]:
     """MVU 变量引擎共用入口：解析 reply_text 中的 <UpdateVariable> JSON Patch
     并落库到会话 chat_metadata.variables。
+
+    返回 ``(新 variables, 变更日志, 应用的补丁)``。
+
+    **第三个返回值（补丁）是「清理后可恢复」的前提**：MVU 插件的清理敢摘掉
+    老楼层的 stat_data，是因为它能重新解析楼层**正文**里的变量指令来重演；
+    而我们的正文在落库前已剥离 ``<UpdateVariable>`` 且不留原文，所以改为
+    **把补丁留存到 ``msg.extra["mvu_patch"]``**，重演时直接应用（结果等价）。
+    详见 ``app/services/mvu_cleanup.py`` 文件头。
 
     WS 主路径（websocket.py persist_snapshot）与 SSE 生成收尾（普通对话/
     regenerate/swipe/continue 四入口）同调本函数，调用契约（对齐 WS 既有行为）：
@@ -609,7 +617,7 @@ def apply_mvu_reply_to_session(
         .first()
     )
     if sess is None:
-        return None, []
+        return None, [], []
     cur_meta: Dict[str, Any] = {}
     if sess.chat_metadata:
         try:
@@ -626,14 +634,13 @@ def apply_mvu_reply_to_session(
             first_mes=getattr(_mvu_char, "first_mes", None),
             alternate_greetings=getattr(_mvu_char, "alternate_greetings", None),
         )
-    new_vars, logs = MvuEngine.update_from_reply(
+    new_vars, logs, patches = MvuEngine.update_from_reply(
         cur_vars,
         reply_text,
         char_ext_raw,
         first_mes=getattr(_mvu_char, "first_mes", None),
         alternate_greetings=getattr(_mvu_char, "alternate_greetings", None),
     )
-
 
     # [MVU-SHAPE-GUARD 2026-10-05] 应用补丁后，按卡片 schema 的**形状**归一化一次。
     #
@@ -666,9 +673,8 @@ def apply_mvu_reply_to_session(
     except Exception:
         logger.warning("MVU stat_data 归一化失败（已跳过，不影响主流程）", exc_info=True)
 
-
     cur_meta["variables"] = new_vars
     sess.chat_metadata = json.dumps(cur_meta, ensure_ascii=False)
     if logs:
         logger.info("MVU variables updated: %s", "; ".join(logs[:8]))
-    return new_vars, logs
+    return new_vars, logs, patches

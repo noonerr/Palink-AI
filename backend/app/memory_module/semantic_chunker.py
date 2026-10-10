@@ -31,6 +31,15 @@ _SENTENCE_RE = re.compile(r"[^。！？!?…；;\n]*(?:[。！？!?…；;]+|\n+
 
 _TERMINAL_BOUNDARY = "。！？!?…"
 _WEAK_BOUNDARY = "。！？!?…；;\n"
+# [CHUNK-SOFTCUT 2026-10-09] 三级边界：句号、分号、换行都找不到时退到这里，
+# 而不是硬切。审计 137 处内部切点里有 6 处（4.4%）落在词/子句正中间，典型如
+# 「…蹭着。\n舔穴」被切成两块——前半句和后半句分属两条记忆，各自都读不通，
+# 检索命中任一条都只能拿到半截事实。逗号/顿号/引号/空格虽然不是句边界，但
+# 至少是**可停顿处**，比切在"舔/穴"之间强。
+_SOFT_BOUNDARY = "，,、：:；;）)】］」』》〉”\"'…—～~ 　\t"
+# 弱边界的取舍：切点必须落在后半段。为了不在词中间断而切出一个只有 20% 长度
+# 的半空块，等于把"读不通"换成"信息量少"，不见得划算。
+_SOFT_MIN_RATIO = 0.5
 
 # [CHUNK-STRUCT] 结构边界：空行分段；段内再按"对话/动作起句"细分（三种引号都认，
 # 卡语料里 “” 与 " 混用，全角括号包动作是最常见的轮次标记）
@@ -84,8 +93,9 @@ def split_sentences(text: str) -> List[str]:
 
 
 def _find_cut_index(text: str, max_len: int) -> int:
-    """在 max_len 内找最靠后的句边界作为切割点；找不到则硬切。
+    """在 max_len 内找最靠后的边界作为切割点；实在找不到才硬切。
 
+    三级降级：句终止符 → 分号/换行 → 逗号/顿号/引号/空格（须落在后半段）。
     返回切割下标（>0 才有效；返回 0 表示无法切，调用方应放弃再分）。
     """
     head = text[:max_len]
@@ -93,6 +103,10 @@ def _find_cut_index(text: str, max_len: int) -> int:
         idx = max(head.rfind(ch) for ch in boundary)
         if idx > 0:
             return idx + 1
+    # 三级：弱标点/空白/成对引号右半（见 _SOFT_BOUNDARY 注释里的实测理由）
+    idx = max(head.rfind(ch) for ch in _SOFT_BOUNDARY)
+    if idx > 0 and (idx + 1) >= max_len * _SOFT_MIN_RATIO:
+        return idx + 1
     return max_len if len(text) > max_len else 0
 
 

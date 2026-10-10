@@ -141,4 +141,8 @@ class ContextResponse(BaseModel):
     # "user"       = 两者都无 —— **降级**（用户级全量召回，跨角色串味风险面）
     # 静默降级是本项目既往教训，故显式回传供调用方判断。
     scope: str = "session"
+    # [NEIGHBOR-DETERMINISM 2026-10-09] 检索的**相关度序**（LTM 强→弱，再拼 STM）。
+    # memories 是按时间排的显示序，不能拿来决定"邻居扩展先补哪一条"——见
+    # MemoryService._expand_chunk_neighbors 的注释（同一问题两次跑补进不同邻居）。
+    relevance_order: List[MemoryEntry] = []
 

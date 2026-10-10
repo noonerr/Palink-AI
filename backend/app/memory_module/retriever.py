@@ -141,7 +141,37 @@ class MemoryRetriever:
                             (mem, sim) for mem, sim in semantic_candidates
                             if mem.message_id not in exclude_ids
                         ]
-                    scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
+
+                    # [HYBRID-KW 2026-10-09] 关键词路：与向量路互补，RRF 融合。
+                    # 开关 = memory_config.HYBRID_WEIGHT：置 0 则整条路不调用，
+                    # 走下面纯粹的 _score_candidates，与 2026-10-09 前逐条等价。
+                    kw_candidates: List[Tuple[MemoryEntry, float]] = []
+                    if memory_config.HYBRID_WEIGHT > 0:
+                        kw_candidates = self.storage.keyword_search(
+                            user_id=request.user_id,
+                            query_text=request.query,
+                            limit=50,
+                            min_coverage=memory_config.HYBRID_KW_MIN_COVERAGE,
+                            session_id=request.session_id,
+                            branch_ids=request.branch_ids,
+                            character_id=request.character_id,
+                            branch_scopes=request.branch_scopes,
+                            candidates=memory_config.HYBRID_KW_CANDIDATES,
+                        )
+                        if exclude_ids and kw_candidates:
+                            kw_candidates = [
+                                (mem, cov) for mem, cov in kw_candidates
+                                if mem.message_id not in exclude_ids
+                            ]
+
+                    if kw_candidates:
+                        scored_candidates = self._fuse_rrf(
+                            semantic_candidates, kw_candidates, stm_ids,
+                            w_kw=memory_config.HYBRID_WEIGHT,
+                            k=memory_config.HYBRID_RRF_K,
+                        )
+                    else:
+                        scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
                     
                     # 按综合分数排序
                     scored_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -158,6 +188,13 @@ class MemoryRetriever:
                         else:
                             break
             
+            # [NEIGHBOR-DETERMINISM 2026-10-09] 记录**相关度序**（LTM 强 → 弱，
+            # 再拼 STM）。合并后的 final_memories 是时间序，用于注入排版没问题，
+            # 但"邻居扩展该先补哪一条"必须按相关度：否则 max_adds 封顶生效时，
+            # 谁先被扩到取决于 set/dict 迭代顺序，同一问题两次跑会得到不同的
+            # 邻居集合（实测 3167 / 4028 字符）。
+            relevance_order = ltm_memories + stm_memories
+
             # 3. 合并最终结果 (LTM + STM)
             combined_memories = ltm_memories + stm_memories
             
@@ -182,6 +219,7 @@ class MemoryRetriever:
                 total_tokens=total_tokens,
                 strategy_used="dual_path_stm_ltm",
                 scope=scope,
+                relevance_order=relevance_order,
             )
             
         except Exception as e:
@@ -195,6 +233,65 @@ class MemoryRetriever:
                 scope=scope,
             )
     
+    def _fuse_rrf(
+        self,
+        semantic_candidates: List[Tuple[MemoryEntry, float]],
+        kw_candidates: List[Tuple[MemoryEntry, float]],
+        stm_ids: set,
+        w_kw: float,
+        k: int,
+    ) -> List[Tuple[MemoryEntry, float]]:
+        """[HYBRID-KW 2026-10-09] 倒数排名融合（Reciprocal Rank Fusion）。
+
+        只吃**名次**不吃分数：向量相似度（0~1 的余弦）和关键词覆盖率（0~1 的
+        字面占比）不是同一量纲，直接加权相加等于让覆盖率这种"天然偏低"的信号
+        永远输给余弦。RRF 把两路各自排序后按名次融合，是这类跨量纲融合里最稳
+        的做法（Cormack et al. 2009，k=60 为原论文推荐的平滑常数）。
+
+        score = 1/(k + rank_dense) + w_kw × 1/(k + rank_kw)
+
+        - ``w_kw`` = 0 时**本函数不会被调用**（调用方直接走 _score_candidates），
+          所以这里的 w_kw 恒 > 0。
+        - 只在两路 top-50 的并集上算：粗筛/阈值之外的条目名次差到不影响结果，
+          却会把分母推大、稀释头部差异。
+        - 命中 STM 的条目直接剔除（与 _score_candidates 同口径，避免重复注入）。
+
+        融合后**不再叠 _score_candidates 的 importance/上下文邻近度加权**：p41
+        实测就是用纯 RRF 名次装配的，再叠一层等于引入未经验证的排序因素。
+        """
+        dense_pool = [m for m, _ in semantic_candidates]
+        kw_pool = [m for m, _ in kw_candidates]
+
+        dense_rank = {m.id: r for r, m in enumerate(dense_pool)}
+        kw_rank = {m.id: r for r, m in enumerate(kw_pool)}
+
+        by_id: Dict[int, MemoryEntry] = {}
+        for m in dense_pool:
+            by_id[m.id] = m
+        for m in kw_pool:
+            # 关键词路构造的条目 embedding 为 None；若同一条两路都命中，
+            # 保留带向量的那个（下游去重/装配都不用向量，但留着更保值）
+            if m.id not in by_id or by_id[m.id].embedding is None:
+                by_id[m.id] = m
+
+        scored: List[Tuple[MemoryEntry, float]] = []
+        for mid, mem in by_id.items():
+            if mid in stm_ids:
+                continue
+            rd = dense_rank.get(mid)
+            rk = kw_rank.get(mid)
+            if rd is None and rk is None:
+                continue
+            s = 0.0
+            if rd is not None:
+                s += 1.0 / (k + rd)
+            if rk is not None:
+                s += w_kw * 1.0 / (k + rk)
+            scored.append((mem, s))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
+
     def _score_candidates(
         self,
         semantic_candidates: List[Tuple[MemoryEntry, float]],

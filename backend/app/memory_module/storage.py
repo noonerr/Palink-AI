@@ -3,7 +3,7 @@
 支持 SQLite + 本地向量计算 或 PostgreSQL + pgvector
 """
 
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Set
 from sqlalchemy.orm import Session
 from sqlalchemy import text, desc, bindparam
 from datetime import datetime, timedelta
@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 import json
+import re
 import threading
 
 from .models import MemoryEntry, UserProfile
@@ -49,6 +50,54 @@ def _parse_chunk_meta(topics) -> Optional[Tuple[str, int, int]]:
     if not turn_hash or idx < 0:
         return None
     return turn_hash, idx, total
+
+
+# ── [HYBRID-KW 2026-10-09] 关键词路 ─────────────────────────────────────────
+# 为什么需要第二条路：向量路对"专有名词/数字/动作细节"这类**字面锚点**不敏感。
+# 实测（p46/p47，同一会话 227 条记忆、48 道题 + 48 道同义改写题）：
+#   纯向量 top1 22.9%（改写题 20.8%）；加关键词路后 41.7%（改写题 33.3%）。
+# 实现分两级：SQL 侧用 pg_trgm 的 similarity() 做**粗筛**（实测 8.9ms/次，取
+# top-50 时 gold 有 86% 落在粗筛集内），Python 侧再用字符二元组覆盖率**精排**。
+# 不做全库 Python 扫描：那在生产行数上不可接受；粗筛漏掉的极端个案由向量路兜底。
+
+_RE_NONWORD = re.compile(r"[\s\W_]+", re.UNICODE)
+# 粗筛 SQL 会全表算 trigram 距离；超过此行数直接放弃关键词路（退化为纯向量，
+# 与本模块一贯的"宁缺勿错、降级要留痕"一致）
+_KW_SCAN_CAP = 20000
+# 送进 similarity() 的查询文本上限（超长查询只会拖慢，不会更准）
+_KW_QUERY_MAX_CHARS = 500
+
+
+def _bigram_set(text: str) -> Set[str]:
+    """字符二元组集合（剔除空白/标点）。
+
+    CJK 无空格分词边界，二元组是最小的可用字面单元：既能匹配"翅膀/尾巴"这类
+    实词，也不会像单词匹配那样被一个标点打断。单字查询退化为一元组，空串返回
+    空集（调用方据此跳过整条路）。
+    """
+    t = _RE_NONWORD.sub("", str(text or ""))
+    if not t:
+        return set()
+    if len(t) == 1:
+        return {t}
+    return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def _detect_pg_trgm(db) -> bool:
+    """[HYBRID-KW] 探测 pg_trgm 扩展是否可用（只读 pg_extension，进程级缓存一次）。
+
+    判假时关键词路整条关闭 —— 不是报错，而是**静默退回纯向量**并在日志留一行。
+    理由同 _detect_vector_column：探测失败让检索变成 500 是最差结果。
+    """
+    try:
+        if getattr(getattr(db.get_bind(), "dialect", None), "name", "") != "postgresql":
+            return False
+        row = db.execute(
+            text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row)
 
 
 def _dim_mismatch_reason(emb_list) -> Optional[str]:
@@ -225,6 +274,8 @@ _is_postgres_cached = None
 # [VEC-PG] embedding 列是否已是 pgvector vector(N)（None=未探测）。
 # 与 is_postgres 同为进程级缓存：列类型只在迁移/运维手里变，不会每次查询都变。
 _vector_column_cached: Optional[bool] = None
+# [HYBRID-KW] pg_trgm 扩展是否可用（None=未探测）。同列类型，进程级缓存一次。
+_trgm_cached: Optional[bool] = None
 _migration_done = False
 _storage_lock = threading.Lock()
 
@@ -369,6 +420,21 @@ class MemoryStorage:
             if _vector_column_cached is None:
                 _vector_column_cached = _detect_vector_column(self.db)
             return _vector_column_cached
+
+    def _pg_trgm_available(self) -> bool:
+        """[HYBRID-KW] 实例侧包装：非 PostgreSQL 恒 False，PostgreSQL 走进程级缓存探测。"""
+        global _trgm_cached
+        if not self.is_postgres:
+            return False
+        with _storage_lock:
+            if _trgm_cached is None:
+                _trgm_cached = _detect_pg_trgm(self.db)
+                if not _trgm_cached:
+                    logger.warning(
+                        "[HYBRID-KW] 未检测到 pg_trgm 扩展，关键词路永久关闭，"
+                        "记忆检索退化为纯向量（CREATE EXTENSION pg_trgm 可恢复）"
+                    )
+            return _trgm_cached
 
     def _migrate_embedding_column(self) -> None:
         """[VEC-PG] 把历史 TEXT / float[] 形态的 embedding 列转成 vector(dim)，幂等。
@@ -1154,6 +1220,116 @@ class MemoryStorage:
             self.db.rollback()
             return []
     
+    def keyword_search(
+        self,
+        user_id: int,
+        query_text: str,
+        limit: int = None,
+        min_coverage: float = None,
+        session_id: Optional[str] = None,
+        branch_ids: Optional[List[str]] = None,
+        character_id: Optional[str] = None,
+        branch_scopes: Optional[List[Tuple[str, Optional[int]]]] = None,
+        candidates: int = None,
+    ) -> List[Tuple[MemoryEntry, float]]:
+        """[HYBRID-KW 2026-10-09] 关键词路：pg_trgm 粗筛 + 字符二元组覆盖率精排。
+
+        只返回**字面锚点**命中的记忆，与 ``semantic_search`` 语义互补，由
+        ``MemoryRetriever`` 用 RRF 融合。单看这一路的 top1 高于向量路（实测
+        58% vs 22%），但它只认"用词相同"，问法一换就塌（同义改写题上 31%），
+        所以**永远不会单独使用**，只作为融合的一项。
+
+        两级实现的原因：
+        - 一级 SQL 粗筛（pg_trgm ``similarity``）：避免把整库内容拉进 Python。
+          实测单会话 227 行 8.9ms；top-50 粗筛集内 gold 命中率 86%，剩下的 14%
+          由向量路兜底——粗筛只负责"别太贵"，不负责"别漏"。
+        - 二级 Python 精排（二元组覆盖率）：trigram 相似度对 CJK 长文本区分度差，
+          直接拿它排序会把"整段都很像"的块排到前面。覆盖率的分母是**查询**的
+          二元组数，所以长记忆不会因为"字多"而虚高——这一点是关键词路能用的关键。
+
+        返回:
+            [(记忆条目, 覆盖率 0~1), ...] 按覆盖率降序；不可用时返回 []
+            （无 pg_trgm / 查询无有效字面 / 作用域过大），调用方退化为纯向量。
+        """
+        limit = limit or memory_config.MAX_MEMORIES_PER_QUERY
+        min_coverage = (
+            min_coverage if min_coverage is not None
+            else memory_config.HYBRID_KW_MIN_COVERAGE
+        )
+        candidates = candidates or memory_config.HYBRID_KW_CANDIDATES
+
+        qt = str(query_text or "").strip()
+        qb = _bigram_set(qt)
+        if not qb:
+            return []
+        if not self._pg_trgm_available():
+            return []
+
+        try:
+            where_sql, params = self._build_scope_filter(
+                user_id=user_id, session_id=session_id, branch_ids=branch_ids,
+                character_id=character_id, branch_scopes=branch_scopes,
+            )
+            # 粗筛要全表算 trigram 距离，行数过大时不划算：宁可整条路放弃。
+            # （与回退路 _scan_cap 同一原则：能力不够时降级并留痕，不硬撑。）
+            n_row = self.db.execute(text(
+                f"SELECT count(*) FROM conversation_memories WHERE {where_sql}"
+            ), params).fetchone()
+            if n_row and int(n_row[0] or 0) > _KW_SCAN_CAP:
+                logger.warning(
+                    "[HYBRID-KW] 作用域内 %s 行 > 粗筛上限 %s：本次跳过关键词路，"
+                    "退化为纯向量检索", n_row[0], _KW_SCAN_CAP,
+                )
+                return []
+
+            q = dict(params)
+            q["qtext"] = qt[:_KW_QUERY_MAX_CHARS]
+            q["lim"] = int(candidates)
+            rows = self.db.execute(text(f"""
+                SELECT {self._MEMORY_SELECT_COLS}
+                FROM conversation_memories
+                WHERE {where_sql} AND content IS NOT NULL
+                ORDER BY similarity(content, :qtext) DESC
+                LIMIT :lim
+            """), q).fetchall()
+
+            out: List[Tuple[MemoryEntry, float]] = []
+            for row in rows:
+                coverage = len(qb & _bigram_set(row.content)) / len(qb)
+                if coverage < min_coverage:
+                    continue
+                out.append((
+                    MemoryEntry(
+                        id=row.id,
+                        user_id=row.user_id,
+                        session_id=row.session_id,
+                        branch_id=row.branch_id,
+                        message_id=getattr(row, "message_id", None),
+                        role=row.role,
+                        content=row.content,
+                        importance_score=row.importance_score,
+                        topics=json.loads(row.topics) if row.topics else [],
+                        tokens_count=row.tokens_count or 0,
+                        created_at=row.created_at,
+                        embedding=None,  # 关键词路不需要向量，省掉解析开销
+                    ),
+                    float(coverage),
+                ))
+
+            out.sort(key=lambda x: x[1], reverse=True)
+            if out:
+                logger.info(
+                    "关键词检索完成: 粗筛 %d → 过阈值 %d 条，最高覆盖率 %.2f",
+                    len(rows), len(out), out[0][1],
+                )
+            return out[:limit]
+
+        except Exception as e:
+            # 关键词路是**增益项**不是主路径：它挂了必须让向量路继续跑，
+            # 绝不能像语义检索失败那样吞掉整次召回。故这里只警告、不回滚事务语义。
+            logger.warning(f"[HYBRID-KW] 关键词检索失败（退化为纯向量）: {e}")
+            return []
+
     def get_recent(
         self,
         user_id: int,

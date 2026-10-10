@@ -15,11 +15,56 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# [MVU-SECONDARY-PARAMS 2026-10-05] 副模型采样参数与重试的**唯一真源**。
+# 此前 temperature=0.2 / max_tokens=2048 在本文件里写死、且无重试。
+# 现在可由 UserSetting 覆盖（api/users.py 读写、api/character_ext.py 注入），
+# 但默认值与夹紧区间定义在这里 —— 任何地方要用都必须 import，不要另抄一份。
+DEFAULT_SECONDARY_TEMPERATURE: float = 0.2
+DEFAULT_SECONDARY_MAX_TOKENS: int = 2048
+DEFAULT_SECONDARY_RETRIES: int = 1  # 「额外」重试次数（总尝试 = retries + 1）
+
+TEMPERATURE_RANGE: tuple[float, float] = (0.0, 2.0)
+MAX_TOKENS_RANGE: tuple[int, int] = (256, 8192)
+RETRIES_RANGE: tuple[int, int] = (0, 3)
+
+
+def clamp_secondary_temperature(value: Any) -> float:
+    """夹到 [0, 2]；不可解析 → 默认值。"""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SECONDARY_TEMPERATURE
+    if num != num:  # NaN
+        return DEFAULT_SECONDARY_TEMPERATURE
+    lo, hi = TEMPERATURE_RANGE
+    return max(lo, min(hi, num))
+
+
+def clamp_secondary_max_tokens(value: Any) -> int:
+    """夹到 [256, 8192]；不可解析 → 默认值。"""
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SECONDARY_MAX_TOKENS
+    lo, hi = MAX_TOKENS_RANGE
+    return max(lo, min(hi, num))
+
+
+def clamp_secondary_retries(value: Any) -> int:
+    """夹到 [0, 3]；不可解析 → 默认值。"""
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SECONDARY_RETRIES
+    lo, hi = RETRIES_RANGE
+    return max(lo, min(hi, num))
 
 # 副 AI 系统指令：要求副模型只输出 <UpdateVariable> 块，不写剧情。
 _SECONDARY_SYSTEM_PROMPT = """你是一个角色扮演变量状态更新器。你的唯一任务：根据给定的【当前变量状态】和【最新剧情】，判断哪些变量发生了变化，并输出一个 <UpdateVariable> 块。
@@ -99,11 +144,24 @@ async def run_secondary_mvu(
     story_text: str,
     schema_defaults: dict,
     timeout: float = 60.0,
+    temperature: float = DEFAULT_SECONDARY_TEMPERATURE,
+    max_tokens: int = DEFAULT_SECONDARY_MAX_TOKENS,
+    retries: int = DEFAULT_SECONDARY_RETRIES,
 ) -> tuple[dict, list[str]]:
     """调用副模型生成 <UpdateVariable> 块并解析。
 
     返回 (patches, logs)。patches 为解析出的 JSON Patch 数组（可能为空）。
     任何失败都返回 ([], [])，不抛异常（静默兜底）。
+
+    [MVU-SECONDARY-PARAMS 2026-10-05] 新增三个可选参数，**默认值与原写死值一致**
+    （0.2 / 2048 / 1 次额外重试），故存量调用方行为不变、无需改动：
+      - temperature / max_tokens：透传给 complete_text_completion（已做夹紧）。
+      - retries：「额外」重试次数。**只对"调用抛异常"重试**（网络抖动 / 超时 /
+        上游 5xx）；模型正常返回但内容为空、或没有可解析块时**不重试** ——
+        那两种情况重试大概率还是同样结果，白烧额度。
+
+    返回值形状保持 ``tuple[dict, list[str]]`` 不变（未改成三态），
+    以免破坏现有调用方的解包；"失败 vs 无变化"的区分留给后续批次（见 SPEC 批次 C）。
     """
     # [MVU-SECONDARY-GUARD] 无 schema 且无 stat_data 结构 = 角色卡没有变量系统，
     # 副 AI 不介入，避免对无变量系统的卡乱生成变量（特调/乱输出防护）。
@@ -119,26 +177,51 @@ async def run_secondary_mvu(
     from app.services.inference_dispatcher import complete_text_completion
     from app.services.mvu_engine import extract_update_variable_blocks
 
+    _temperature = clamp_secondary_temperature(temperature)
+    _max_tokens = clamp_secondary_max_tokens(max_tokens)
+    _retries = clamp_secondary_retries(retries)
+    _attempts = _retries + 1
+
     messages = _build_secondary_messages(stat_data, story_text, schema_defaults)
-    try:
-        resp = await complete_text_completion(
-            model_id=secondary_model,
-            messages=messages,
-            temperature=0.2,  # 变量解析用低温度，保证稳定
-            max_tokens=2048,
-            timeout=timeout,
-        )
-    except Exception as exc:
-        logger.warning("MVU secondary AI call failed: %s", exc)
+
+    # ── 调用（仅对异常重试） ──────────────────────────────────────────────
+    resp: Optional[dict] = None
+    for _attempt in range(_attempts):
+        try:
+            resp = await complete_text_completion(
+                model_id=secondary_model,
+                messages=messages,
+                temperature=_temperature,  # 变量解析用低温度，保证稳定
+                max_tokens=_max_tokens,
+                timeout=timeout,
+            )
+            break
+        except Exception as exc:
+            if _attempt + 1 < _attempts:
+                _backoff = min(2.0 * (2 ** _attempt), 8.0)
+                logger.warning(
+                    "MVU secondary AI call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    _attempt + 1, _attempts, _backoff, exc,
+                )
+                await asyncio.sleep(_backoff)
+                continue
+            logger.warning(
+                "MVU secondary AI call failed after %d attempt(s): %s", _attempts, exc,
+            )
+            return [], []
+
+    if resp is None:  # 理论不可达（循环里必 break 或 return），防御性兜底
         return [], []
 
     content = resp.get("content") or ""
     if not content.strip():
+        # 模型正常返回但内容为空 —— 不重试（重试大概率同样结果）
         logger.warning("MVU secondary AI returned empty content")
         return [], []
 
     blocks = extract_update_variable_blocks(content)
     if not blocks:
+        # 有输出但无块 —— 不重试（模型确实认为没有变化）
         logger.warning("MVU secondary AI output has no parseable UpdateVariable block")
         return [], []
 

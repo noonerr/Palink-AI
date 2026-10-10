@@ -5149,38 +5149,55 @@ async def _character_chat_impl(
                         pass
 
                 if memory_mode != "disabled" and result.full_content:
+                    # [PERF-EMB-NONBLOCK] 记忆写入内含**同步 httpx 嵌入调用**（实测一条长回复
+                    # 切 4 块批量嵌约 1 秒，见 _BACKUPS/2026-10-09_向量A批_*/BACKUP_INFO.md）。
+                    # 原先直接在 async 生成器里跑 ⇒ 整个 worker 的事件循环停 1 秒，
+                    # 同一 worker 上其他用户的流一起卡。挪到线程池执行；
+                    # 判定顺序 / 事务边界 / 异常回滚语义与原实现逐项一致。
+                    def _write_turn_memory() -> None:
+                        if result.full_content.strip().startswith("Error:"):
+                            return
+                        mem_svc = MemoryService(save_db)
+                        if not mem_svc.is_available():
+                            return
+                        # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id
+                        # 先删后写（幂等）；无本轮用户消息的场景 id 为 None 跳过删除。
+                        if not smart_card_trigger and req.message.strip():
+                            if sse_user_message_id is not None:
+                                delete_by_message_id(save_db, session_id, sse_user_message_id)
+                            mem_svc.store_memory(
+                                user_id=user.id,
+                                session_id=session_id,
+                                role="user",
+                                # [MEM-SAME-SOURCE] 与检索查询同源：查询侧一直存的是
+                                # 清洗后的正文，入库侧却是原文。实测 150 条真实用户消息
+                                # 清洗前后 100% 相同（只影响首尾空白/功能标签），
+                                # 所以这里归一化**不改变任何记忆内容**，
+                                # 但让「本轮这句」两次嵌入变成同一串字 ⇒ [EMB-DEDUP]
+                                # 能接住，每轮少发一次请求（省约 190ms + 1.2 核·秒）。
+                                content=clean_memory_content(req.message).strip(),
+                                branch_id=branch_id,
+                                message_id=sse_user_message_id,
+                                # [T-跨卡串味修复] char 即本会话归属角色
+                                character_id=str(char.id),
+                            )
+                        # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
+                        if assistant_message_id is not None:
+                            delete_by_message_id(save_db, session_id, assistant_message_id)
+                        mem_svc.store_memory(
+                            user_id=user.id,
+                            session_id=session_id,
+                            role="assistant",
+                            content=clean_memory_content(result.full_content),
+                            branch_id=branch_id,
+                            message_id=assistant_message_id,
+                            # [T-跨卡串味修复] char 即本会话归属角色
+                            character_id=str(char.id),
+                        )
+                        save_db.commit()
+
                     try:
-                        if not result.full_content.strip().startswith("Error:"):
-                            mem_svc = MemoryService(save_db)
-                            if mem_svc.is_available():
-                                # [MEM-UPSERT] 记忆 = 消息当前内容的镜像：同 message_id
-                                # 先删后写（幂等）；无本轮用户消息的场景 id 为 None 跳过删除。
-                                if not smart_card_trigger and req.message.strip():
-                                    if sse_user_message_id is not None:
-                                        delete_by_message_id(save_db, session_id, sse_user_message_id)
-                                    mem_svc.store_memory(
-                                        user_id=user.id,
-                                        session_id=session_id,
-                                        role="user",
-                                        content=req.message,
-                                        branch_id=branch_id,
-                                        message_id=sse_user_message_id,
-                                        # [T-跨卡串味修复] char 即本会话归属角色
-                                        character_id=str(char.id),
-                                    )
-                                # [MEMORY-POLLUTION-FIX] assistant 入库前清洗功能块/思维链
-                                if assistant_message_id is not None:
-                                    delete_by_message_id(save_db, session_id, assistant_message_id)
-                                mem_svc.store_memory(
-                                    user_id=user.id,
-                                    session_id=session_id,
-                                    role="assistant",
-                                    content=clean_memory_content(result.full_content),
-                                    branch_id=branch_id,
-                                    message_id=assistant_message_id,
-                                    character_id=str(char.id),
-                                )
-                                save_db.commit()
+                        await asyncio.to_thread(_write_turn_memory)
                     except Exception as e:
                         save_db.rollback()
                         logger.warning(f"Memory storage failed: {e}")
@@ -5943,21 +5960,27 @@ async def _run_action_stream(
                 # 覆盖：continue 追加重叠(P3)、swipe 重roll 旧内容残留(P4)；
                 # user 轮不受动作流改写 → 无 user 记忆写入。
                 if message_id is not None and memory_mode != "disabled":
-                    try:
+                    # [PERF-EMB-NONBLOCK] 同 event_generator：动作流（regenerate / swipe /
+                    # continue）的记忆写入内含同步嵌入调用，不能占着事件循环跑。
+                    def _write_action_memory() -> None:
                         mem_svc = MemoryService(save_db)
-                        if mem_svc.is_available():
-                            delete_by_message_id(save_db, session_id, message_id)
-                            mem_svc.store_memory(
-                                user_id=user.id,
-                                session_id=session_id,
-                                role="assistant",
-                                content=clean_memory_content(final_content or ""),
-                                branch_id=branch_id,
-                                message_id=message_id,
-                                # [T-跨卡串味修复] char 形参即本会话归属角色
-                                character_id=str(char.id) if char is not None else None,
-                            )
-                            save_db.commit()
+                        if not mem_svc.is_available():
+                            return
+                        delete_by_message_id(save_db, session_id, message_id)
+                        mem_svc.store_memory(
+                            user_id=user.id,
+                            session_id=session_id,
+                            role="assistant",
+                            content=clean_memory_content(final_content or ""),
+                            branch_id=branch_id,
+                            message_id=message_id,
+                            # [T-跨卡串味修复] char 形参即本会话归属角色
+                            character_id=str(char.id) if char is not None else None,
+                        )
+                        save_db.commit()
+
+                    try:
+                        await asyncio.to_thread(_write_action_memory)
                     except Exception as mem_err:
                         save_db.rollback()
                         logger.warning(f"[MEM-UPSERT] action stream memory update failed: {mem_err}")

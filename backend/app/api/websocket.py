@@ -757,7 +757,7 @@ async def run_character_chat_generation(
                 # 读写已抽到共用函数 apply_mvu_reply_to_session
                 # （character_message_builder.py），SSE 四入口与 WS 同调，勿在此
                 # 处再展开一份实现。
-                new_vars, mvu_logs = apply_mvu_reply_to_session(
+                new_vars, mvu_logs, mvu_patches = apply_mvu_reply_to_session(
                     save_db,
                     char.id if char is not None else None,
                     session_id,
@@ -772,6 +772,12 @@ async def run_character_chat_generation(
                     msg_extra["variables"] = new_vars
                     mvu_latest_variables = new_vars
                     mvu_variables_saved = True
+                    # [MVU-CLEANUP 2026-10-05] 留存本轮补丁：变量清理会摘掉老楼层的
+                    # stat_data，而正文里的 <UpdateVariable> 已剥离且不留原文 ——
+                    # 恢复（重演）只能靠这份补丁。清理只动 extra["variables"]，
+                    # 天然不会碰到它。详见 app/services/mvu_cleanup.py。
+                    if mvu_patches:
+                        msg_extra["mvu_patch"] = mvu_patches
             except Exception as mvu_err:
                 logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
         elif mvu_latest_variables is not None:
@@ -893,6 +899,13 @@ async def run_character_chat_generation(
         except Exception as persist_error:
             save_db.rollback()
             logger.warning("Failed to persist character chat snapshot: %s", persist_error)
+
+    # [MVU-CLEANUP 2026-10-05] 自动清理变量 —— 等价 MVU 插件在 MESSAGE_RECEIVED 上的
+    # 「每 5 楼清一段」。消息已在上面提交，此处楼层数是最新的。
+    # 详见 app/services/mvu_cleanup.py。
+    from ..services.mvu_cleanup import run_auto_cleanup_for_session
+
+    run_auto_cleanup_for_session(save_db, session_id)
 
     async def maybe_broadcast_image_event():
         # [P4-模型自主出图] 先把模型请求取出来：gate 归本次生成独占，下面的提前

@@ -72,9 +72,18 @@ class UserSetting(Base):
     # mvu_secondary_enabled 为 False = 关闭（即使配了模型也不跑）。
     mvu_secondary_model = Column(String, nullable=True)
     mvu_secondary_enabled = Column(Boolean, default=False)
+    # [MVU-SECONDARY-PARAMS 2026-10-05] 副模型采样参数与重试次数。
+    # 此前 temperature=0.2 / max_tokens=2048 在 mvu_secondary.py 里写死、且无重试。
+    # 三项均 nullable：NULL = 用代码内默认（0.2 / 2048 / 1），存量行为零变化。
+    # 上限由写入侧夹紧（见 api/users.py），避免手滑把 token 拉到爆额度。
+    mvu_secondary_temperature = Column(Float, nullable=True)
+    mvu_secondary_max_tokens = Column(Integer, nullable=True)
+    mvu_secondary_retries = Column(Integer, nullable=True)
     # 分层记忆 Phase 1（2026-09-03）：记忆区注入预算档位。
-    # 0=紧凑750 / 1=标准1500（默认，与历史硬编码一致，存量零变化）/
-    # 2=加量3000 / 3=尽量多6000。NULL 视为 1；越界值由写入侧归 1。
+    # 0=紧凑750 / 1=标准4000（默认）/ 2=加量6000 / 3=尽量多8000。
+    # NULL 视为 1；越界值由写入侧归 1。
+    # 〔2026-10-10 订正〕默认档 1 已于 2026-10-09 由 1500 改为 4000（p55 实测最优：
+    # 4000 vs 1500 = +0.189、p=0.0024），档位表同步为 (750, 4000, 6000, 8000)。
     # 放大档位是安全的：_apply_token_budget 会兜底裁剪（记忆区优先级
     # 低于人设与最近历史，预算不够时先被裁），不会撑爆 prompt。
     memory_budget_level = Column(Integer, nullable=True)

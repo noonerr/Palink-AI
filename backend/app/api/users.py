@@ -7,6 +7,16 @@ from ..core.cache import cached, invalidate_cache
 from ..api.dependencies import get_current_user
 from ..models import User, UserSetting
 from ..schemas import UserSettingUpdate
+# [MVU-SECONDARY-PARAMS 2026-10-05] 副模型采样参数的默认值与夹紧函数取自
+# services/mvu_secondary.py（唯一真源），本文件不另抄一份常量。
+from ..services.mvu_secondary import (
+    DEFAULT_SECONDARY_MAX_TOKENS,
+    DEFAULT_SECONDARY_RETRIES,
+    DEFAULT_SECONDARY_TEMPERATURE,
+    clamp_secondary_max_tokens,
+    clamp_secondary_retries,
+    clamp_secondary_temperature,
+)
 
 router = APIRouter(prefix="/api/users/me", tags=["user-settings"])
 
@@ -57,6 +67,11 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "power_user": setting.power_user if setting.power_user is not None else "{}",
         "mvu_secondary_model": setting.mvu_secondary_model,
         "mvu_secondary_enabled": setting.mvu_secondary_enabled if setting.mvu_secondary_enabled is not None else False,
+        # [MVU-SECONDARY-PARAMS 2026-10-05] 未设置时回落到代码内默认值，
+        # 前端可直接展示"当前实际生效值"。
+        "mvu_secondary_temperature": setting.mvu_secondary_temperature if setting.mvu_secondary_temperature is not None else DEFAULT_SECONDARY_TEMPERATURE,
+        "mvu_secondary_max_tokens": setting.mvu_secondary_max_tokens if setting.mvu_secondary_max_tokens is not None else DEFAULT_SECONDARY_MAX_TOKENS,
+        "mvu_secondary_retries": setting.mvu_secondary_retries if setting.mvu_secondary_retries is not None else DEFAULT_SECONDARY_RETRIES,
         "memory_budget_level": setting.memory_budget_level if setting.memory_budget_level is not None else 1,
     }
 
@@ -107,6 +122,15 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
         setting.mvu_secondary_model = req.mvu_secondary_model or None
     if req.mvu_secondary_enabled is not None:
         setting.mvu_secondary_enabled = req.mvu_secondary_enabled
+    # [MVU-SECONDARY-PARAMS 2026-10-05] 采样参数防呆夹紧（同 memory_budget_level 口径）：
+    # temperature 0-2 / max_tokens 256-8192 / retries 0-3。
+    # 越界或不可解析一律夹/回落到默认值，避免手滑把 token 拉到爆额度。
+    if req.mvu_secondary_temperature is not None:
+        setting.mvu_secondary_temperature = clamp_secondary_temperature(req.mvu_secondary_temperature)
+    if req.mvu_secondary_max_tokens is not None:
+        setting.mvu_secondary_max_tokens = clamp_secondary_max_tokens(req.mvu_secondary_max_tokens)
+    if req.mvu_secondary_retries is not None:
+        setting.mvu_secondary_retries = clamp_secondary_retries(req.mvu_secondary_retries)
     if req.memory_budget_level is not None:
         # 分层记忆 Phase 1：档位防呆，越界值归标准档 1
         setting.memory_budget_level = req.memory_budget_level if req.memory_budget_level in (0, 1, 2, 3) else 1

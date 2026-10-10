@@ -211,9 +211,23 @@ class MemoryService:
 
             result = await asyncio.to_thread(self.retriever.retrieve, request)
 
-            # 方案 B：命中语义块时自动携带前后相邻块（预算内），保证上下文完整
+            # 方案 B：命中语义块时自动携带前后相邻块，保证上下文完整
+            # [NEIGHBOR-BUDGET 2026-10-09] **必须给邻居单开预算**：
+            # 旧实现把 request.max_tokens 直接传下去，而检索已经把窗口填到接近
+            # 满额，于是 `total + t > max_tokens` 恒真 ⇒ 实测 24 次检索全部 +0
+            # 条（p43）。后果比"没做扩展"更糟：注入的是被切开的半截段落，
+            # 前半句在、后半句不在，模型只能脑补。现在按 NEIGHBOR_EXTRA_RATIO
+            # 主预算之外再加一小段，并用 NEIGHBOR_MAX_ADDS 封顶（防一次检索
+            # 顺着邻居链把整段历史拖进来）。两者置 0 即回到旧行为。
             if memory_config.NEIGHBOR_EXPAND and result.memories:
-                result = self._expand_chunk_neighbors(result, request.max_tokens)
+                _base = int(request.max_tokens or 0)
+                _extra = int(_base * max(0.0, memory_config.NEIGHBOR_EXTRA_RATIO))
+                result = self._expand_chunk_neighbors(
+                    result,
+                    _base + _extra,
+                    max_adds=int(memory_config.NEIGHBOR_MAX_ADDS),
+                    priority_order=list(result.relevance_order or []) or None,
+                )
 
             if self.enable_cache:
                 await self._set_cache(cache_key, result, ttl=60)
@@ -231,8 +245,31 @@ class MemoryService:
                 scope=self.storage.resolve_search_scope(session_id, character_id),
             )
 
-    def _expand_chunk_neighbors(self, result: ContextResponse, max_tokens: int) -> ContextResponse:
-        """对命中的语义块做邻居扩展（idx±1，同 turn_hash），受 token 预算约束。"""
+    def _expand_chunk_neighbors(
+        self,
+        result: ContextResponse,
+        max_tokens: int,
+        max_adds: int = 0,
+        priority_order: Optional[list] = None,
+    ) -> ContextResponse:
+        """对命中的语义块做邻居扩展（idx±1，同 turn_hash），受 token 预算约束。
+
+        Args:
+            max_tokens: **已含邻居附加预算**的总上限（由调用方按
+                ``NEIGHBOR_EXTRA_RATIO`` 放大后传入，见 get_context）。
+            max_adds: 本次最多新增几块。0 = 不限（旧行为）。限制的原因：
+                一次命中常带出 idx±1，两块的邻居又各自带出邻居，无封顶时
+                单次检索可能拖进整段历史，把预算挤爆。
+
+        [NEIGHBOR-DETERMINISM 2026-10-09] **必须按检索得分序扩展**。
+        ``result.memories`` 里的顺序是**时间序**（retriever 末尾 sort by
+        created_at），不是相关度序；而 max_adds 的封顶一旦生效，"轮到谁先被
+        扩展"就由迭代顺序决定 ⇒ 同一问题两次检索可能补进**不同**的邻居块
+        （实测同一问题两趟注入 3167 / 4028 字符，差一条 462 tok 的块）。
+        邻居扩展的语义是"把最相关的那条记忆补完整"，所以按相关度序才对：
+        这里用检索返回的原始顺序作为得分序代理（调用方在合并时也是时间序，
+        故额外接收 preferred_order）。
+        """
         try:
             from .storage import _parse_chunk_meta
 
@@ -244,11 +281,18 @@ class MemoryService:
             total = result.total_tokens or sum(
                 m.tokens_count or (len(m.content) // 2) for m in result.memories
             )
+            # priority_order 未给（直接调用的测试/旧调用方）时退回时间序，
+            # 行为与本次修复前一致。
+            priority_order = priority_order if priority_order else list(result.memories)
             additions: Dict[int, Any] = {}
-            for mem in list(result.memories):
-                if _parse_chunk_meta(mem.topics) is None:
+            for mem in priority_order:
+                if max_adds and len(additions) >= max_adds:
+                    break
+                if mem.id not in ids or _parse_chunk_meta(mem.topics) is None:
                     continue
                 for nb in self.storage.get_adjacent_chunks(mem):
+                    if max_adds and len(additions) >= max_adds:
+                        break
                     if nb.id in ids or nb.id in additions:
                         continue
                     t = nb.tokens_count or (len(nb.content) // 2)
