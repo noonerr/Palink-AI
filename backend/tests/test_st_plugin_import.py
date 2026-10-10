@@ -94,7 +94,8 @@ def test_import_real_st_extension_zip(admin_client):
     # 取详情，确认 JS/CSS 资源被抽取
     pid = plugin["id"]
     detail = admin_client.get(f"/api/plugins/{pid}").json()
-    assert any(s["script_type"] == "regex" for s in detail.get("scripts", [])) or True
+    # [2026-10-10 修复] 去掉 `or True`（恒真，等于没断言）。现在真跑这条断言。
+    assert any(s["script_type"] == "regex" for s in detail.get("scripts", []))
     # runtime/config 能看到该扩展
     rc = admin_client.get("/api/plugins/runtime/config").json()
     names = {p["name"] for p in rc["plugins"]}

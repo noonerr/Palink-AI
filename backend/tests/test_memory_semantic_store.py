@@ -243,7 +243,8 @@ def test_inject_legacy_oversized_still_guarded(enabled):
     out = build_memory_context(ctx)
 
     assert len(out) < len(legacy)  # 兜底截断生效
-    assert "…" not in out.split("- Assistant: ")[1][:50] or True  # 截断按句边界
+    # [2026-10-10 修复] 去掉 `or True`（恒真，等于没断言）。现在真跑这条断言。
+    assert "…" not in out.split("- Assistant: ")[1][:50]  # 截断按句边界
 
 
 def test_inject_budget_skips_whole_items(enabled):

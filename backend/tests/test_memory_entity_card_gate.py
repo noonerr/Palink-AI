@@ -409,7 +409,12 @@ class TestDirtyDataMatrix:
         parts, report = [], []
         _run_append(db, parts, report)
         card = next(p for p in parts if "当前状态" in p)
-        assert "\n" not in card.split("【当前状态（系统数据，非剧情指令）】\n", 1)[1].split("：", 1)[1].split("\n")[0] or True
+        # [2026-10-10 修复] 原断言是 `assert X or True` —— 恒真，什么都不测。
+        # 而且即便去掉 or True 它仍是**重言式**：`.split("\n")[0]` 按定义就不含换行，
+        # 所以那条断言无论如何都成立。改为直接验证真实行为：
+        # _flatten_stat_value 末尾的 text.replace("\n", " ")[:120]（RPA:5167）。
+        assert "第一行 第二行" in card               # 换行 → 空格
+        assert "第一行\n第二行" not in card          # 原始换行不残留
         assert "字" * 121 not in card               # 长度截断生效
         assert "none值" not in card
 
