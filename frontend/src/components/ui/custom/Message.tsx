@@ -18,10 +18,12 @@ import { WebSearchResults } from './WebSearchResults';
 import type { Message as MessageType, Model } from '@/types';
 import DOMPurify from 'dompurify';
 import { CharacterCardRenderer, InlineHtmlRenderer, type SmartCardAction, looksLikeSmartCardHtml } from './CharacterCardRenderer';
+import { resolveCardVariables } from './cardVariables';
 import { InlineCardRenderer, type InlineCardRendererProps } from './InlineCardRenderer';
 import { shouldUseInlineCardRendering } from './smart-card-runtime/inline/inline-flags';
 import { StatusBarPanel, type CharacterStatusBar } from './StatusBarPanel';
 import TavernHelperPanel from './TavernHelperPanel';
+import VariableChangePanel from './VariableChangePanel';
 import { extractCharacterStatusBars } from '@/lib/statusBar';
 // 【报错提示 1.5】识别 extra.ignore=true 的失败占位节点
 import { isSystemNoteMessage } from '@/lib/systemMessage';
@@ -658,43 +660,49 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
     if (!el || typeof IntersectionObserver === 'undefined') return undefined;
     // rootMargin 一屏缓冲：上下各扩一个视口高度，快速滚动时提前唤醒/延迟休眠
     const buffer = Math.max(window.innerHeight || 0, 480);
-    const dormantRef = { current: false };
-    const repaintKick = () => {
-      // [P1 2026-10-06] / [PERF-2026-10-07 修正] 唤醒重绘踢。
-      //
-      // 原因：卡片 iframe 在休眠态完成加载后，揭开子树时部分引擎不会重新光栅化，
-      // 表现为正文退化成空白，重新进入视口也不自愈。
-      //
-      // ⚠️ 原实现用 `transform: translateZ(0)` 翻转 —— 该手法是**合成器加速**路径，
-      // 恰恰可能被合成器跳过而不触发重绘，是它经典的失效模式（10-06 报告自己也标注
-      // "未做真机验证"）。这里改用 `display` 双帧切换：display:none → '' 必然触发
-      // 完整重排 + 重绘，绕不过合成器优化。
-      // 仍不重载 iframe（display:none 不卸载文档），不产生新导航，
-      // 不违反 iOS 幽灵历史约束。
-      requestAnimationFrame(() => {
-        const host = containerRef.current;
-        if (!host) return;
-        const inner = host.firstElementChild as HTMLElement | null;
-        if (!inner) return;
-        inner.style.display = 'none';
-        requestAnimationFrame(() => {
-          inner.style.display = '';
-        });
-      });
-    };
+    // [PERF-2026-10-07 回归修复] 唤醒重绘踢（repaintKick）已删除。
+    //
+    // 删除理由（两条，任一条独立成立）：
+    //
+    // 1) 它声称要修的现象不存在。`REPORT_历史消息样式丢失_深度窗根因_2026-10-07.md`
+    //    已证明"历史消息样式丢失"的真根因是角色卡正则的 maxDepth 深度窗，窗口外的
+    //    消息压根没有生成 iframe —— 没有 iframe 可休眠、可重绘，这个踢在结构上就
+    //    不可能修好它声称要修的东西。且 `content-visibility: hidden` 已在本轮移除，
+    //    "浏览器跳过整棵子树渲染"这个载体随之消失；只剩 `visibility: hidden` 时，
+    //    从 hidden 切到 visible 必然走主线程重绘，无需外力触发。
+    //
+    // 2) 它自己会制造自激闪烁。原实现把内层 div `display: none` 一帧再恢复，而该元素
+    //    同时是下面这个 IntersectionObserver 的观察目标：display:none 让高度瞬间归零
+    //    → 观察器立刻报"离开视口" → 走休眠分支（此刻 offsetHeight 为 0，dormantHeight
+    //    被置 null）→ 高度恢复后观察器又报"进入视口" → 又 kick → 无限循环。
+    //    真机表现为：卡片外框位置/高度不变，框内正文在"有→无→有"之间持续闪。
+    //    `transform` 版本不破坏布局所以没暴露这个问题，改成 `display` 才引爆。
+    //
+    // ⚠️ 若将来真机复测发现"休眠唤醒后正文空白"回归，**禁止再用 display 切换**：
+    // 它一定破坏布局并再次触发上面的观察器闭环。改用不改变几何的手段（例如只对
+    // iframe 自身触发一次重排，或 visibility 翻转 + 读一次 offsetHeight 强制同步
+    // 布局），并先确认观察器不会再收到 not-intersecting。
+    let dormantNow = false;
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        if (entry.isIntersecting) {
-          if (dormantRef.current) repaintKick();
-          dormantRef.current = false;
-          setDormant(false);
-        } else {
+        const shouldSleep = !entry.isIntersecting;
+        // 状态未变化 → 直接忽略。观察器在 rootMargin 边界附近会因布局的微小变化反复
+        // 上报同一状态；无守卫时每次上报都要走一遍休眠/唤醒副作用（含 setState）。
+        if (shouldSleep === dormantNow) continue;
+        if (shouldSleep) {
+          // 测不到高度就休眠 = 该消息行在文档流里塌陷，滚动条长度会突变。宁可不休眠，
+          // 也不要制造一次布局抖动（配合 `overflow-anchor: none` 时，滚动位置不会被
+          // 浏览器补偿）。
           const measured = el.offsetHeight > 0
             ? el.offsetHeight
             : Math.round(entry.boundingClientRect.height);
-          setDormantHeight(measured > 0 ? measured : null);
-          dormantRef.current = true;
+          if (measured <= 0) continue;
+          dormantNow = true;
+          setDormantHeight(measured);
           setDormant(true);
+        } else {
+          dormantNow = false;
+          setDormant(false);
         }
       }
     }, { rootMargin: `${buffer}px 0px ${buffer}px 0px` });
@@ -878,6 +886,27 @@ function MessageInner({
       null,
     [message.extra, _sessionVariables],
   );
+
+  // 「变量变化」面板的数据对：本楼快照 vs 最近一条更早的快照。
+  //
+  // ⚠️ 这里**不复用上面的 statData** —— 它带 `_sessionVariables` 兜底（会话级最新值），
+  // 若用它做"本楼"、用消息级做"上一楼"，无快照的历史消息会显示出一份**虚假的差异**。
+  // 因此两边都必须来自消息级快照（后端每轮落库的 `msg.extra.variables`）：
+  //   - 本楼没有自己的快照 → 整块不显示（返回 null）
+  //   - 往前找最近一条有快照的消息当基准；找不到 → 不显示
+  // **宁可不显示，也不谎报变化。**
+  const variableChangePair = useMemo(() => {
+    if (!Array.isArray(_chatMessages) || typeof messageIndex !== 'number') return null;
+    const curr = (_chatMessages[messageIndex] as any)?.extra?.variables?.stat_data;
+    if (!curr || typeof curr !== 'object') return null;
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      const stat = (_chatMessages[i] as any)?.extra?.variables?.stat_data;
+      if (stat && typeof stat === 'object') {
+        return { prev: stat as Record<string, unknown>, curr: curr as Record<string, unknown> };
+      }
+    }
+    return null;
+  }, [_chatMessages, messageIndex]);
 
   const { thinkingContent, displayContent, userTextContent, userImages, statusBars } = useMemo(() => {
     const content = message.content || '';
@@ -1335,23 +1364,13 @@ function MessageInner({
     !isUser && typeof messageIndex === 'number' && messageIndex === 0 && !cardAllowsImmersive
     && !htmlNeedsIframe(pipelineResult?.content || pipelineResult?.markdownContent || displayContent);
 
-  // 视口外跳过布局/绘制（.mes-render-skip）：仅用于"较早的纯文本/markdown 消息"。
-  // 排除项：智能卡/HTML 卡（isHtmlOrCard）、TavernHelper 面板、状态栏脚本、NSFW 状态栏、
-  // 沉浸式全屏卡——这些路径含 iframe 或脚本，跳过渲染会破坏 iframe 高度测量同步与
-  // 插件 DOM 测量。最近 6 条消息不跳过，避免流式更新与贴底滚动时高度估算抖动。
-  // 派生输入（streaming/isLast/messageIndex/totalMessages/message.content/
-  // characterExtensions）均已在 React.memo 比较器中比较，memo 语义不受影响。
-  const canSkipOffscreenRender =
-    !streaming
-    && !isLast
-    && typeof messageIndex === 'number'
-    && typeof _totalMessages === 'number'
-    && messageIndex < _totalMessages - 6
-    && !isHtmlOrCard
-    && !tavernHelper
-    && !hasStatusBarScript
-    && statusBars.length === 0
-    && !cardAllowsImmersive;
+  // [离屏跳绘机制已删除 2026-10-05] 原此处有 canSkipOffscreenRender 判定
+  //（!streaming && !isLast && messageIndex < _totalMessages - 6 && !isHtmlOrCard && …），
+  // 配合 index.css 的 .mes-render-skip 用 content-visibility 跳过视口外消息的绘制。
+  // 删除原因：① 规则挂在消息行上会连卡片 iframe 一起跳过绘制 ⇒ 智能卡离屏后退化为纯文字；
+  // ② 跳过条件依赖 isHtmlOrCard，而该判定只认 div/span/iframe 等渲染后标签、不认 <now_plot>
+  // 包裹，跑在渲染之前输入却是模型原文 ⇒ 所有带卡片的 AI 消息都被误判成「纯文本」而被跳过。
+  // 现离屏休眠由 SmartCardDormancyGate 独占（IntersectionObserver + 上下各一屏缓冲，只隐藏不卸载）。
 
   // 【报错提示 1.5】extra.ignore === true 的失败占位节点：
   // 不再伪装成 AI 回复，改用「系统提示」外观（左侧红条 + 前景文字 + 图标）。
@@ -1400,7 +1419,11 @@ function MessageInner({
         isUser && "justify-end",
         isItemSelected && "bg-primary/5 rounded-lg p-1 -m-1",
         isInDeleteMode && "cursor-pointer",
-        canSkipOffscreenRender && "mes-render-skip",
+        // [离屏跳绘机制已删除 2026-10-05] 原此处有 `canSkipOffscreenRender && "mes-render-skip"`：
+        // 用 content-visibility 让视口外消息跳过绘制。规则挂在消息行上会连卡片 iframe 一起跳过
+        // ⇒ 智能卡离屏后退化为纯文字；且跳过条件依赖 isHtmlOrCard，而该判定（Message.tsx:216）
+        // 只认渲染后标签、不认 <now_plot> 包裹 ⇒ 带卡片的 AI 消息全被误判为「纯文本」而被跳过。
+        // 离屏休眠改由 SmartCardDormancyGate 独占（IntersectionObserver + 一屏缓冲，只隐藏不卸载）。
         // [批次B] 隐藏消息半透明（对齐 ST isHidden 视觉），保留完整交互可再次点击取消
         isHidden && "opacity-50"
       )}
@@ -1429,7 +1452,11 @@ function MessageInner({
         chatStyle === 'bubbles' && !isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]"
       )}>
         {!isUser && chatStyle !== 'document' && showCharacterAvatar && (
-          <div className="w-9 h-9 rounded-2xl overflow-hidden flex-shrink-0">
+          // [窄屏宽度] 消息头像列：窄屏（<768px）由 index.css 的
+          // `.rp-mes-avatar` 规则隐藏 —— 36px 头像 + 12px gap 在手机上占掉近
+          // 13% 屏宽，正文列与卡片 iframe 被压到 80%/72%，长文每行折行更多、
+          // 内容高度暴涨。窄屏隐藏后正文列到 ~97%。
+          <div className="rp-mes-avatar w-9 h-9 rounded-2xl overflow-hidden flex-shrink-0">
             {characterAvatar ? (
               <img src={characterAvatar} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
             ) : (
@@ -1537,24 +1564,28 @@ function MessageInner({
               // --rp-color-main-text（= --SmartThemeBodyColor），与 ST 默认消息一致。
               // 有 @bubble 等特效时由插件/角色卡渲染，Palink 不干预。
               // 字体用内联 style 设置（Tailwind 任意值无法安全解析 var() 逗号）。
+              // [窄屏宽度] 横向内边距按百分比给，不用固定 px：固定值在窄屏会把正文列
+              // 挤到屏宽 70% 左右（396px 屏实测 276/396），卡片 iframe 更窄 → 每行折行更多
+              // → 正文总高暴涨 → 撞高度上限被截断。百分比下窄屏自动放宽到 ~90%，
+              // 宽屏则等比放大，边距观感与固定 px 基本一致。
               "text-[15px] leading-relaxed w-full max-w-full break-words overflow-hidden relative",
               isUser
                 ? chatStyle === 'bubbles'
-                  ? 'px-5 py-3 bg-slate-900 text-white rounded-3xl rounded-br-lg border border-[var(--rp-color-ui-border)]'
+                  ? 'px-[5%] py-3 bg-slate-900 text-white rounded-3xl rounded-br-lg border border-[var(--rp-color-ui-border)]'
                   : chatStyle === 'document'
-                    ? 'px-3 py-2 bg-transparent text-[var(--rp-color-main-text)] border-b border-[var(--rp-color-ui-border)]'
+                    ? 'px-[3%] py-2 bg-transparent text-[var(--rp-color-main-text)] border-b border-[var(--rp-color-ui-border)]'
                     : useNativeStRendering
-                      ? 'px-5 py-3 text-[var(--rp-color-main-text)]'
-                      : 'px-5 py-3 bg-slate-900 text-white rounded-3xl rounded-br-lg'
+                      ? 'px-[5%] py-3 text-[var(--rp-color-main-text)]'
+                      : 'px-[5%] py-3 bg-slate-900 text-white rounded-3xl rounded-br-lg'
                 : chatStyle === 'bubbles'
-                  ? 'px-5 py-3 bg-[var(--rp-color-bot-msg)] text-[var(--rp-color-main-text)] rounded-3xl rounded-bl-lg border border-[var(--rp-color-ui-border)]'
+                  ? 'px-[5%] py-3 bg-[var(--rp-color-bot-msg)] text-[var(--rp-color-main-text)] rounded-3xl rounded-bl-lg border border-[var(--rp-color-ui-border)]'
                   : chatStyle === 'document'
-                    ? 'px-3 py-2 bg-transparent text-[var(--rp-color-main-text)] border-b border-[var(--rp-color-ui-border)]'
+                    ? 'px-[3%] py-2 bg-transparent text-[var(--rp-color-main-text)] border-b border-[var(--rp-color-ui-border)]'
                     : useNativeStRendering
-                      ? 'px-5 py-3 text-[var(--rp-color-main-text)]'
+                      ? 'px-[5%] py-3 text-[var(--rp-color-main-text)]'
                       : shouldUseSegments
-                        ? 'px-5 py-3 space-y-0.5'
-                        : 'px-5 py-3 text-[var(--rp-color-main-text)]',
+                        ? 'px-[5%] py-3 space-y-0.5'
+                        : 'px-[5%] py-3 text-[var(--rp-color-main-text)]',
               isMixedDeleteMode && isItemSelected && "ring-2 ring-primary"
             )}>
               {!isUser && contrastAdjustedCount > 0 && !contrastBadgeDismissed && (
@@ -1661,7 +1692,12 @@ function MessageInner({
                       alternateGreetings: _characterAlternateGreetings,
                       sessionId: _sessionId ? String(_sessionId) : undefined,
                       characterExtensions: _characterExtensions as any,
-                      variables: (message.extra?.variables as any) ?? _sessionVariables ?? { stat_data: {} },
+                      // [MVU-STATUSBAR-LIVE 2026-10-05] 会话级实时变量优先，该楼快照兜底。
+                      // 此前优先取 message.extra.variables（该楼冻结快照）→ 变量更新后
+                      // context 不变 → postContextToFrame 按签名去重不发 → iframe 收不到
+                      // context-update → VARIABLE_UPDATE_ENDED 不 emit → 卡片状态栏的
+                      // eventOn 回调永不执行 → 面板停在首帧。详见 cardVariables.ts 文件头。
+                      variables: resolveCardVariables(_sessionVariables, message.extra?.variables),
                     }}
                   />
                 </SmartCardDormancyGate>
@@ -1709,6 +1745,18 @@ function MessageInner({
                   // POST /api/character-sessions/{sid}/variables/patch 已就绪）。
                   // 拿不到时面板保持纯只读，不会出现点了没反应的按钮。
                   sessionId={_sessionId ? String(_sessionId) : null}
+                />
+              )}
+              {/* [变量可见性 2026-10-05] 变量变化记录：把后端已解析并剥离的
+                  <UpdateVariable> 改动摊开给用户看（旧值 → 新值）。
+                  与上面的「当前值」面板互补，故**不受 hasStatusBarScript 限制** ——
+                  带原生状态栏的卡同样需要看到"这一轮改了什么"。
+                  数据全部来自消息级快照，无快照时组件自身返回 null（不占位）。 */}
+              {variableChangePair && (
+                <VariableChangePanel
+                  prevStatData={variableChangePair.prev}
+                  statData={variableChangePair.curr}
+                  defaultCollapsed={!isLast}
                 />
               )}
             </div>

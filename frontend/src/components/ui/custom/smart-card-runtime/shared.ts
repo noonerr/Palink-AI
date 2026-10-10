@@ -13,7 +13,14 @@ export const REMAINING_MARKDOWN_PLUGINS = [remarkGfm, remarkMath];
 export const REMAINING_REHYPE_PLUGINS = [rehypeKatex];
 export const INLINE_MIN_HEIGHT = 32;
 export const IFRAME_DEFAULT_HEIGHT = 220;
-export const IFRAME_MAX_HEIGHT = 5000;
+// [高度上限 2026-10-05] 由 5000 抬到 50000：窄屏（如 396px）正文折行暴涨，
+// 长卡内容轻易超过 5000 → 被夹到上限后 overflow:hidden 裁掉且卡片自身不滚
+// （完整网页文档走 injectIntoFullDocument，那条 body{overflow-y:auto} 兜底只给
+// 片段卡用），尾部永远看不到。原值是 vh 布局正反馈的兜底闸，但防正反馈本身不依赖它：
+// 帧内 measure() 的 vhDriven 分支已排除 fixed 装饰层、用 realContent 上报，
+// 父侧 realContentFlag>0 时不再用 maxMeasuredHeight 封底，正反馈被切断于源头。
+// 本值只是最后一道兜底，故可放宽；仍保留上限以防真实失控。
+export const IFRAME_MAX_HEIGHT = 50000;
 export const IFRAME_INLINE_MAX_HEIGHT = IFRAME_MAX_HEIGHT;
 export const IFRAME_VIEWPORT_MIN_HEIGHT = 320;
 export const IFRAME_VIEWPORT_MAX_INITIAL_HEIGHT = 680;

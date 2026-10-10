@@ -888,7 +888,19 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [MVU-EVENTS 2026-10-05] MVU 事件键
     if (messageId === undefined || messageId === null || messageId === '') return messages;
     if (Number.isInteger(Number(messageId)) && Number(messageId) >= 0) {
       const byIndex = messages[Number(messageId)];
-      return byIndex ? [byIndex] : [];
+      if (byIndex) return [byIndex];
+      // [P0-FIX 2026-10-06] 下标落空时回退按 id 匹配，与 SillyTavernCompatRuntime 的
+      // getCompatChatMessages（09-30 已修）对齐。ST 语义里 messageId 是聊天数组下标，
+      // 但 Palink 的 ctx.messageId 是数据库行 id（实测如 2740），而卡脚本的惯用写法是
+      // getChatMessages(getCurrentMessageId())[0].message —— 只按下标取值必然落空并返回
+      // 空数组，卡侧就报「无法加载状态数据 (messages empty)」。
+      // 为什么必须修在这份而不是 compatV2 那份：帧内 shim 拼接顺序是 legacy 在前
+      // （CharacterCardRenderer 的 shim = legacyShim + compatV2Shim），legacy 已把
+      // window.getChatMessages 挂上，compatV2 的 typeof window.getChatMessages 短路
+      // 会优先调它 —— compatV2 里那份带修复的实现永远轮不到。
+      const byId = messages.filter((message) => String(message.id) === String(messageId) || String(message.message_id) === String(messageId));
+      if (byId.length > 0) return byId;
+      return [];
     }
     return messages.filter((message) => String(message.id) === String(messageId) || String(message.message_id) === String(messageId));
   };

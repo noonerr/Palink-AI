@@ -2456,14 +2456,18 @@ html.palink-dock-kb-hide nav[data-dock="true"] > div[data-dock="true"] {
   }
 }
 
-/* 长对话滚动性能：视口外的历史纯文本消息跳过布局与绘制（content-visibility）。
-   auto 关键字让浏览器记住元素上次实际渲染的尺寸，未渲染过时用 240px 估算，
-   减少滚动条抖动。仅用于不含智能卡/iframe 的较早消息（判定见 Message.tsx），
-   含 iframe 的卡片依赖高度测量与脚本存活，不做跳过；最近消息保持全量渲染。 */
-.mes-render-skip {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 240px;
-}
+/* [离屏跳绘机制已删除 2026-10-05]
+   原 .mes-render-skip { content-visibility: auto; contain-intrinsic-size: auto 240px; }
+   用于长对话里跳过视口外消息的布局绘制，但有两处不可接受的问题：
+   ① 样式丢失：规则挂在**消息行**上，卡片 iframe 就在该行内，一并被跳过绘制 ⇒
+      智能卡离屏后退化为纯文字，入视口才恢复（用户实测：滚动看是纯文本、点进看有格式）。
+   ② 判定不可靠：跳过条件 `!isHtmlOrCard` 依赖 `isHtmlCardContent`（Message.tsx），
+      它只认 div/span/iframe 等**渲染后**标签，不认 <now_plot> 包裹；而该判定跑在
+      渲染之前、输入是模型原文 ⇒ 所有带卡片的 AI 消息都被误判成「纯文本」而被跳过。
+   ST 侧对照：`.mes` 无任何虚拟化；唯一的 content-visibility 挂在从未被使用的 `.auto_hide`。
+   替代：智能卡的离屏休眠由 `SmartCardDormancyGate`（Message.tsx）负责 ——
+   IntersectionObserver + 上下各一屏缓冲，且只隐藏 DOM 不卸载（卸载会让 iframe 重导航，
+   iOS 会攒幽灵历史条目）。 */
 
 /* ─── 视口拖拽调整期间禁用全站过渡 ───
    dock 让位(80vw)、正文右移(80%)、侧栏等 transform 带百分比/vw 的元素，
@@ -2478,17 +2482,37 @@ html.palink-resizing *::after {
 /* ─── 移动端消息列水平居中 ───
    角色聊天里 AI 消息的左侧头像列（36px）把 mes_block 气泡列推向右侧，
    右侧只剩 ~4px 视觉贴边（390px 屏实测：气泡列 40..386，中心 213 vs 屏幕中心 195）。
-   给 mes_block 补 36px 对称右边距 → 左右各留 40px，气泡列正对屏幕中央。
+   给 mes_block 补对称右边距 → 左右各留等量，气泡列正对屏幕中央。
    仅移动端断点（<768，与 useIsMobile 同口径）；桌面端不受影响。
 
-   ⚠ 补偿必须与头像列同时成立：Message.tsx:1298 的 36px 头像列是
+   [窄屏宽度 2026-10-05 第一次调整] 36px → 百分比：固定值在更窄的屏上占比过大，
+   与正文列的百分比内边距叠加后正文列会被压到屏宽 60% 以下。
+
+   [窄屏宽度 2026-10-05 第二次调整 · 头像隐藏] 396px 屏实测：头像列 36px +
+   gap 12px = 48px，占屏宽 12%；正文列只剩 80%、卡片 iframe 只剩 72%，
+   长文每行折行更多 → 内容高度暴涨（此前撞高度上限被截断）。
+   故窄屏（<768px）**整列隐藏头像**，正文列到 ~97%、iframe 到 ~89%。
+   隐藏后左侧不再有占位，本条居中补偿必须同时失效 —— 否则退化成纯单边内缩
+   （气泡整体偏左，历史事故：724px 视口下文字左缩进 123px / 右 77px）。
+   ⇒ 补偿改挂在「宽屏 + 确有头像列」两个条件下：`.rp-mes-avatar` 存在即有头像列，
+   窄屏该元素被 display:none，:has() 判定随之落空，补偿自动关闭，无需两条规则互相撤销。
+
+   ⚠ 补偿必须与头像列同时成立：Message.tsx 的头像列是
    `!isUser && chatStyle!=='document' && showCharacterAvatar` 条件渲染的，
-   而 mes_block 是它唯一的后续兄弟。故用 :not(:first-child) 精确判定
-   「左侧确有头像列」；否则（角色 UI 配置关掉头像）这 36px 会退化成
-   纯单边内缩 → 实测 724px 视口下文字左缩进 123px / 右 77px，气泡整体偏左。 */
+   而 mes_block 是它唯一的后续兄弟。 */
 @media (max-width: 767px) {
-  .rp-chat-area .mes .mes_block:not(:first-child) {
-    padding-right: 36px;
+  /* 窄屏隐藏头像列：正文列与卡片占满屏宽 */
+  .rp-chat-area .mes .rp-mes-avatar {
+    display: none;
+  }
+  .rp-chat-area .mes .mes_block {
+    padding-right: 0;
+  }
+}
+
+@media (min-width: 768px) {
+  .rp-chat-area .mes .mes_block:has(.rp-mes-avatar) {
+    padding-right: 9.2%;
   }
 }
 

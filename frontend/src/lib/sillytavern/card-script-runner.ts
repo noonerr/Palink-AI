@@ -328,17 +328,49 @@ export function ensureCardScriptBridge(bridge: CardScriptBridge): void {
       }
     };
   }
-  // Palink 尚未开放「卡脚本回写会话变量」的通道：先做显式降级登记，
-  // 让插件管理页的降级统计能看到，而不是静默失效（同 compat-stub-registry 的立项理由）。
-  if (typeof w.setVariables !== 'function') {
-    w.setVariables = function setVariables() {
-      recordStubHit('setVariables', '卡内脚本回写会话变量未开放（Palink 变量更新走后端 MVU 链路）');
+  // Palink 尚未开放「卡内脚本回写」的通道：一律做**显式降级登记**，让插件管理页的
+  // 降级统计能看到，而不是静默失效或裸 ReferenceError（同 compat-stub-registry 的立项理由）。
+  //
+  // [写口族补全 2026-10-05] 原实现只登记了 setVariables / setVariable 两个名字，
+  // 而 MVU 变量框架（卡脚本 `backend/data/smart_card_assets/0c646fb31a…js`，307,179 B）
+  // 实际调用的是这一整族：replaceVariables ×7、updateVariablesWith ×8、deleteVariable ×1、
+  // insertOrAssignVariables ×1、setChatMessage ×1（计数为实测 `grep -o` 统计）。
+  // 这些名字在本轨**全是裸 undefined** → MVU 的更新管线每轮抛 ReferenceError
+  // （是"崩溃"而不是"降级"），与"写口族已登记降级"的既有口径不一致，故按同一口径补齐。
+  //
+  // 语义：**只登记、不写入**。Palink 的变量更新走后端 mvu_engine（生成时解析
+  // <UpdateVariable> 并落库）、正文也由后端剥离后写入 —— 卡脚本再写一遍会形成双写。
+  // 真实写入通道的开放属独立议题，见
+  // `docs/REPORT_MVU变量框架与Palink自有变量体系重叠专题_2026-10-04.md` §8 的 P2 项。
+  const WRITE_DEGRADED_REASON =
+    '卡内脚本回写未开放（Palink 的变量更新与正文写入走后端链路，避免双写）';
+  const degradedWrite = (name: string, ret: () => unknown) =>
+    function palinkDegradedWrite() {
+      recordStubHit(name, WRITE_DEGRADED_REASON);
+      return ret();
     };
+  // 异步族：TavernHelper 契约返回 Promise，用 resolved Promise 兜底，
+  // 避免调用方 `await`/`.then()` 拿到 undefined 再炸一次（换汤不换药的第二个坑）。
+  const ASYNC_WRITE_NAMES = [
+    'setVariables',
+    'setVariable',
+    'replaceVariables',
+    'updateVariablesWith',
+    'insertOrAssignVariables',
+    'setChatMessage',
+  ] as const;
+  for (const name of ASYNC_WRITE_NAMES) {
+    if (typeof w[name] !== 'function') {
+      w[name] = degradedWrite(name, () => Promise.resolve());
+    }
   }
-  if (typeof w.setVariable !== 'function') {
-    w.setVariable = function setVariable() {
-      recordStubHit('setVariable', '卡内脚本回写会话变量未开放（Palink 变量更新走后端 MVU 链路）');
-    };
+  // 同步族：deleteVariable 的 TavernHelper 契约返回 `{variables, delete_occurred}`，
+  // 用**同形状的空结果**兜底，而不是 Promise —— 调用方可能直接读字段。
+  if (typeof w.deleteVariable !== 'function') {
+    w.deleteVariable = degradedWrite('deleteVariable', () => ({
+      variables: {},
+      delete_occurred: false,
+    }));
   }
 }
 
