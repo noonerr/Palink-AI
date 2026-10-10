@@ -1,5 +1,14 @@
 # Palink-AI 原生酒馆层实现计划
 
+> ⚠️ **2026-10-08 标注：本文已整体作废**（原文保留以供追溯）。
+> **理由**：本文规划的「原生酒馆层」即 `st-native`（iframe 嵌入完整 SillyTavern），
+> 该模式已于 **2026-09-03 删除完毕**（commit `aeb8348` / `4eadb86`；
+> 权威 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`）。
+> 当前唯一维护模式是 **`palink-native`**（见根目录 `AGENTS.md`）。
+> **不要按本文领任务或改代码。**
+> ⚠️ 注意：Palink 仍有名为「酒馆助手」的**插件链**（`tavern_helper` 型插件，属 `palink-native`），
+> 它与本文的 st-native 是两回事，勿混为一谈（命名陷阱，见 `AGENTS.md` §5）。
+
 > 生成时间: 2026-06-12
 > 目标: 参考SillyTavern架构，在Palink-AI本体预留接口，实现原生酒馆层
 

@@ -17,6 +17,34 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [未开工·待拍板] 向量记忆替代上下文历史 — 四步落地清单（2026-10-09 实测结论）
+
+- **背景**：用户问三件事（现有向量记忆精准度够不够用 / 「每句语义匹配收益不如现在」是否属实 /
+  记忆能否媲美历史全注入）。已用真实会话（`f25daab6…`，91 条消息 / 227 条记忆）跑完端到端实测。
+- **权威件**：[`docs/_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md`](docs/_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md)
+  （完整过程见同目录 `REPORT_向量记忆能否替代上下文_三问实测_2026-10-09.md`）
+- **结论**：现在这套记忆**不能**替代历史（0.130 vs 全历史 0.370 = 35%）；
+  改好的（句级 + 修正查询）**基本能**（0.340 = 92%，token 仅 14%）。
+  ⚠️ **生产现状（24 条历史 + 记忆）是性价比最差档**（0.180 / 20658 tok）——
+  砍历史 + 用好记忆可同时更便宜且更准。
+- **四步（顺序不可反）**：
+  1. **修 `_build_memory_query`**（零成本）：实测「问题只占查询 4%」，其余是上一条回复尾巴
+     ⇒ top1 8.3%→25%、快 3.9 倍。⚠️ **该函数属装配链，动它需用户授权**。
+     ⚠️ 此举**否证 10-07 报告 §3**（「查询太薄所以拼接」与「零额外嵌入调用」两条论断均不成立）。
+  2. **记忆改句级**（**唯一需写代码的一步**，`memory_module` 写入 + 检索；生产 `retriever` 尚不支持）：
+     端到端 0.210→0.340，写库嵌入仅 +30%。
+  3. **提记忆预算** 1500→3000~6000：注入命中 33%→67%，几乎无总成本代价（记忆仅占 prompt 4%）。
+     〔2026-10-10 订正/收口：本项**已落地**，但终值不是 3000~6000 而是 **4000** ——
+     p55 预算五档细扫（53 题）750 **0.500** / 1500 0.509 / 2500 0.575 / **4000 0.698（+0.189，p=0.0024）** / 6000 0.679（与 4000 等效平台、多花 47% prompt）⇒ 默认档 1 = 4000。
+     档位表 `_MEMORY_BUDGET_LEVEL_TOKENS` 已改为 `(750, 4000, 6000, 8000)`。
+     同轮另**否证第 4 步**：历史 24→91 条收益 **+0.000**（全历史档 20 题答案原文就在窗口内，得分仍与 24 条档相同），
+     故「砍历史」不再有前置收益可捡。详见 `docs/_active/report/REPORT_记忆预算与历史配比_全记录_2026-10-10.md`。〕
+  4. **做完 1~3 再砍历史** 24→6：合计省 ~62% token 且更准。⛔ 先砍历史会让角色变笨（0.180→0.080）。
+- **顺手纠正一个流传说法**：「每句语义匹配收益不如现在」**只对了一半** ——
+  检索侧逐句拆开检索确实更差（top1 8.3%→4.2%），但**每句存一条向量反而更准**（前人未测过）。
+- ⚠️ **可信边界**：单会话单卡、判分仍是 LLM（未人工抽样）、生成用 `deepseek-chat` 而非生产
+  `deepseek-flash`、未测角色连贯性。**第一批 26 题已作废**（答案在角色卡里，地板被抬高到 0.33）。
+
 ### [已完成·已上线] 向量链路优化三件套 + 10-07 记忆批代存档（2026-10-07 晚）
 
 - **背景**：用户要求分析向量链路并优化。结论：大头已被前几轮修坑批吃掉，剩三件实事。
@@ -1235,7 +1263,7 @@
 - **查证实锤（2026-09-02）**: ①装配侧唯一活链路 = RPA:4905 `_append_memory_context` → `get_context`（向量+STM，exclude_recent/缓存键）→ `build_memory_context`(1500 tok)；②`memory_module/` 内 ai_summary_service / compression_service / lifecycle_service / context_manager 四个摘要压缩文件全是**死代码**（MemoryLifecycleService 与 SmartContextManager 零外部调用者，从未接线；处置=不复活，新写照 mvu_secondary 模式，死代码留清理批次）；③MVU stat_data 逐会话躺在 `chat_metadata.variables`，但装配侧只注入 `<UpdateVariable>` 更新指令、从不注入当前值（模型每轮盲猜状态）；④`mvu_secondary` 后台副 AI 模式（设置开关+异步挂载+失败静默降级）是现成施工模板
 - **三层账本**: 层1 实体卡（stat_data 压平注入记忆区，跟随 MVU 卡+memory_mode 自动启用，不新增设置项）=几十行接线、零风险、**短会话也纯赚，随时可开工**；层1b 长会话门控（trim 裁剪历史>0 才启用 get_context，会话历史在窗口内时记忆区=窗口原文纯冗余且第 6 条起双份，省 ~1500 tok/轮，几行代码，**与层1 同批施工**）；层2 全局梗概（每 N 轮后台蒸馏 ~300 tok 恒定，存 chat_metadata.memory_gist 不动 schema，增量改写）=**等长会话"忘了"体感或 trim 裁剪信号再立项**；层3 recall 门控+reranker（fastembed TextCrossEncoder bge-reranker-base，+420-500MB 需懒加载+开关）=最后备件。**已评估否决三条替代**（spec §4.2 第 8 条，防重踩）：梗概搭副 AI 车（跟随主模型遵循率=概率性触发）；入库相似度去重（撞 message_id 镜像不变式）；模型工具化自检索（读取侧不确定性）
 - **红线**: 不碰 get_context 检索逻辑与向量写入链路；失败静默降级宁缺勿错；梗概有损但原文永在向量库可回捞；改后端须 docker compose build backend 方生效
-- **施工记录（2026-09-03，已完成部署）**: 三件落地——①实体卡（stat_data 压平注入记忆区顶部，report key=memory_entity_card，400 tok 逐行截断；陷阱：`_card_has_mvu_scripts` RPA 模块级不存在、须函数内局部导入否则 NameError 被吞，见 spec §9）②1b 长会话门控（信号修正=预算预判对比——palink-native 无历史裁剪、spec 原 trim 信号不存在已记档；`func.sum(func.length)` 聚合+is_hidden NULL 兼容；估算失败照常检索宁误开；token_budget=None 兼容旧路径）③记忆档位（750/1500/3000/6000，UserSetting.memory_budget_level + _RUNTIME_COMPAT_COLUMNS 补列 + SettingsView 四档 UI，越界防呆归 1，默认 1 存量零变化）。验证：新增 tests/test_memory_entity_card_gate.py 27 例；全量 pytest **1321 passed/45 skipped/0 failed**（基线 1289 零新增失败）；tsc 干净；npm build + compose build 前后端 + up -d 全 healthy；GUARD 标记在位；DB 列实测生效；API 闭环（PUT 2→GET 2、PUT 99→GET 1 防呆、PUT 1 恢复）。⏸ 待用户体感验收：MVU 卡对话装配报告应现 memory_entity_card included、短会话应现 memory skipped(gate)、设置页四档即时生效；梗概层等长会话信号再立项。备份：git stash 963e6d5（非侵入）+ `D:\项目\Palink-AI-backup-pre-memory-20260903\`
+- **施工记录（2026-09-03，已完成部署）**: 三件落地——①实体卡（stat_data 压平注入记忆区顶部，report key=memory_entity_card，400 tok 逐行截断；陷阱：`_card_has_mvu_scripts` RPA 模块级不存在、须函数内局部导入否则 NameError 被吞，见 spec §9）②1b 长会话门控（信号修正=预算预判对比——palink-native 无历史裁剪、spec 原 trim 信号不存在已记档；`func.sum(func.length)` 聚合+is_hidden NULL 兼容；估算失败照常检索宁误开；token_budget=None 兼容旧路径）③记忆档位（750/4000/6000/8000〔2026-10-10 订正：原文 750/1500/3000/6000，2026-10-09 已重定，默认档 4000〕，UserSetting.memory_budget_level + _RUNTIME_COMPAT_COLUMNS 补列 + SettingsView 四档 UI，越界防呆归 1，默认 1 存量零变化）。验证：新增 tests/test_memory_entity_card_gate.py 27 例；全量 pytest **1321 passed/45 skipped/0 failed**（基线 1289 零新增失败）；tsc 干净；npm build + compose build 前后端 + up -d 全 healthy；GUARD 标记在位；DB 列实测生效；API 闭环（PUT 2→GET 2、PUT 99→GET 1 防呆、PUT 1 恢复）。⏸ 待用户体感验收：MVU 卡对话装配报告应现 memory_entity_card included、短会话应现 memory skipped(gate)、设置页四档即时生效；梗概层等长会话信号再立项。备份：git stash 963e6d5（非侵入）+ `D:\项目\Palink-AI-backup-pre-memory-20260903\`
 - **加固轮（2026-09-03，用户指令"小概率事件也要测"）**: 系统枚举边界+查证，两项实施修复+一项测试抓到的修正——①群聊实体卡缺口（查证：群聊与普通聊天共用装配主函数、消息落 character_chat_sessions 故门控有效；但群聊 MVU 变量存 GroupChat.chat_metadata、原只读会话表→群聊静默无实体卡。新 helper `_load_session_stat_data` 群聊优先/会话回退/脏形态全防御）②门控估算补当前消息长度（消除偏小→误跳过的系统性偏差）③深度语义修正（深层叶子字符串绕过原限制漏入实体卡，改"组>字段>内联子字段"三层、更深的整支丢弃）。加固测试 +22 例（脏 metadata 9 形态/深嵌套 5 层/脏值净化/只读保证 chat_metadata 分毫不动/NULL content 行/分支口径只算分支/群聊三态/pydantic "2"→2 与 2.5→422）；明确排除项（interceptor 偏大=安全方向/并发写=DB 快照兜底/宏注入=白名单系统）记 spec §10。验证：套件 49/49 + 全量 **1343 passed/45 skipped/0 failed**；backend 重建 healthy、helper 镜像内在位。
 - **独立复核轮（2026-09-03，用户指令"再仔细检测一遍"）**: 审计调用点唯一性/标题服务隔离/索引命中/None 防御全过；**抓到并修复一个真缺陷——裸查询 PG 事务中毒**：实体卡与门控查询原在既有 begin_nested 保护之外，生产 PG 的 abort 语义下任何 DB 异常（连接抖动/表锁等小概率）会把 session 打成 failed，后续装配所有 DB 访问连锁抛 InFailedSqlTransaction。已在生产 PG 连接实弹复现（只读：stmt1 失败→stmt2 POISONED）。修复：两查询各包独立 SAVEPOINT（同既有检索区模式），两级降级语义不变；SAVEPOINT 回滚失败时外层 db.rollback() 兜底（装配无未提交写，安全）。**单测盲区记档**：SQLite 对此时宽容测不出差异，回归保护靠生产同构验证（本轮已做）+真 DB 异常恢复测试（DROP TABLE→检索照常+session 未污染）。验证：套件 50/50 + 全量 **1344 passed/45 skipped/0 failed**；backend 重建 healthy。详见 spec §11。
 

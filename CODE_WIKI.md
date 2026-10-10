@@ -1,5 +1,41 @@
 # Palink-AI 项目代码百科
 
+> ⚠️ **2026-10-10 标注：本文已严重过时，勿作为现状依据**（原文保留以供追溯）。
+>
+> **规模类 / 基础设施类陈述已失真，不要照做**：
+>
+> | 项 | 本文声称 | 实测（2026-10-10） |
+> |---|---|---|
+> | 数据库表 | 16 张（见 §数据库模型，第 493–514 行） | **47 个**不同的 `__tablename__` |
+> | API 路由模块 | 14 个（见 §后端架构 5.，第 120–135 行） | **47 处** `APIRouter(`（分布在 43 个 `.py` 文件，已排除 `.mimosa` 快照） |
+> | 数据库 | PostgreSQL + pgvector | 默认 `sqlite:///./data/palink.db`（`backend/app/core/config.py:61`）；全仓 `import pgvector` / `from pgvector` **零命中** |
+> | `ACCESS_TOKEN_EXPIRE_MINUTES` | 1440（24 小时，第 91 行） | **720**（12 小时），`backend/app/core/config.py:16` 实为 `60 * 12` |
+> | 文件链接 | — | **23 条** `file:///c:\Users\Pall\OneDrive\桌面\Palink-AI\...` 死链（仓库实际在 `d:\项目\Palink-AI`） |
+>
+> 复核命令（可自查）：
+> ```bash
+> grep -rhoP '__tablename__\s*=\s*["'"'"'][^"'"'"']+' backend/app | sort -u | wc -l   # 47
+> grep -rn "APIRouter(" backend/app --include=*.py | grep -v "\.mimosa" | wc -l       # 47
+> grep -rn "from pgvector\|import pgvector" .                                          # 0
+> grep -o 'file:///c:[^)]*' CODE_WIKI.md | wc -l                                       # 23
+> ```
+>
+> **表名张冠李戴**（5 处）：本文写的 `chat_sessions` → 实际 `sessions`；`chat_messages` → `messages`；
+> `system_settings` → `settings`；`memory_entries` → `conversation_memories`；
+> `character_chat_branches` → 实际 `character_chat_session_branches`。
+>
+> **已被三份文档判为「隔离后删」，判了三次、一次没执行**：
+> `docs/架构审查与缺陷总表_2026-10-03.md:99`、`docs/_archive/2026-10/SPEC_palink-new合并回主区_2026-10-03.md:161`、
+> `docs/_archive/2026-10/功能审查报告_2026-10-04.md:85`（同批同判的 `overview.md`、`SILLYTAVERN_NATIVE_LAYER_PLAN.md`
+> 已各自在文首加注，唯独本文没标）。
+>
+> ✅ **仍然正确、可放心引用的部分**（勿一并误判为错）：
+> 版本号 **0.21.2（前端）/ v12.7（后端 API）**（`frontend/package.json:4`、`backend/app/main.py:310`）、
+> `CHAT_HISTORY_LIMIT=24`（`backend/app/core/config.py:29`）、
+> `MEMORY_VECTOR_DIMENSION=512`（`backend/app/memory_module/config.py:13`）。
+>
+> **不要按本文的规模类 / 基础设施类陈述领任务或改代码。** 现状依据请用 `AGENTS.md`、`TODOS.md` 及 `docs/` 下的近期文档。
+
 ## 项目概述
 
 Palink-AI 是一个企业级 AI 协作平台，支持多模型对接、角色扮演对话、工作空间管理和记忆系统等功能。项目采用前后端分离架构，后端基于 FastAPI 构建，前端使用 React + TypeScript 开发。
