@@ -5108,7 +5108,20 @@ def _st_vector_data_active(db, user_id: int) -> bool:
 # 那份是**修复前**测的：检索不精准时，放大预算等于多塞噪声，故越大越差；
 # 查询构造 + 关键词路两项修复落地后，多给预算才是真信息 ⇒ 甜点上移。
 # **结论：预算甜点依赖检索精度，检索修好后必须重扫，不能沿用旧结论。**
-_MEMORY_BUDGET_LEVEL_TOKENS = (750, 4000, 6000, 8000)
+# ⚠️ [单位契约 2026-10-10] 本表的单位是**内部口径**，**不是真实 token**。
+#   换算关系：1 内部单位 = `len(text) // 2`（见 utils.py 的 cost 计算），
+#   而中文实测约 0.66 token/字 ⇒ 1 内部单位 ≈ **1.37 真实 token**。
+#   ⇒ 本表写 4000，实际注入约 **5490 真实 token**。
+#
+#   **为什么叫 INTERNAL_UNITS 而不叫 TOKENS**（原名是 _MEMORY_BUDGET_LEVEL_TOKENS）：
+#   原名让"4000"看起来像真实 token 预算，会诱导后人按真实 token 推理，
+#   进而误判 prompt 占用。改名后名字不再撒谎，**数值一个字没改、行为零变更**。
+#
+# ⚠️ **本表与 utils.py 的计量口径是绑定的，改一个必须同时改另一个**：
+#   若把 cost 改成真实 token 估算（0.66/字）而不同步放大本表，
+#   实际注入量会从 5490 掉回 4000，等于偷偷缩小预算 27% ⇒ 分数退步。
+#   反之若只放大本表不改 cost，预算会翻倍。二者必须等比联动（×1.37）。
+_MEMORY_BUDGET_LEVEL_INTERNAL_UNITS = (750, 4000, 6000, 8000)
 # [MEM-BUDGET-CLAMP 2026-10-09] 记忆区最多占 prompt 总预算的多少。
 #
 # ⚠️ 2026-10-09 订正：此处原写「实测记忆区注入 2455~2709 tok」，**该数字是错的**。
@@ -5126,15 +5139,22 @@ _MEMORY_ENTITY_CARD_MAX_TOKENS = 400
 
 
 def _resolve_memory_max_tokens(user_setting: Optional[Any]) -> int:
-    """[PHASE-1] 档位 → 记忆区注入 token 上限。NULL/越界/无属性 = 标准档 4000
-    （2026-10-10 订正：原写 1500，档位表 2026-10-09 已重定为 (750,4000,6000,8000)）。"""
+    """[PHASE-1] 档位 → 记忆区注入上限。NULL/越界/无属性 = 标准档 4000
+    （2026-10-10 订正：原写 1500，档位表 2026-10-09 已重定为 (750,4000,6000,8000)）。
+
+    ⚠️ **返回值的单位是「内部口径」，不是真实 token**（2026-10-10 正名）：
+    1 内部单位 ≈ 1.37 真实 token（中文实测 0.66 token/字，而此口径按 0.5 算）。
+    ⇒ 返回 4000 意味着实际注入约 5490 真实 token。
+    详见本文件 `_MEMORY_BUDGET_LEVEL_INTERNAL_UNITS` 上方的单位契约注释。
+    函数名保留 `max_tokens` 是历史原因（调用点散见装配链），勿据函数名推断真实 token。
+    """
     try:
         lvl = getattr(user_setting, "memory_budget_level", None)
-        if isinstance(lvl, int) and 0 <= lvl < len(_MEMORY_BUDGET_LEVEL_TOKENS):
-            return _MEMORY_BUDGET_LEVEL_TOKENS[lvl]
+        if isinstance(lvl, int) and 0 <= lvl < len(_MEMORY_BUDGET_LEVEL_INTERNAL_UNITS):
+            return _MEMORY_BUDGET_LEVEL_INTERNAL_UNITS[lvl]
     except Exception:
         pass
-    return _MEMORY_BUDGET_LEVEL_TOKENS[1]
+    return _MEMORY_BUDGET_LEVEL_INTERNAL_UNITS[1]
 
 
 def _flatten_stat_value(value: Any, _depth: int = 0) -> str:

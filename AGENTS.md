@@ -29,6 +29,22 @@
 3. **Palink 前端插件体系（插件沙箱、regex 引擎、generate\_interceptor、`st-plugins/`** **目录）全部属于** **`palink-native`**，与已删的 st-native 无关。
 4. 提示词装配唯一模式是 `palink-native`（`silly_tavern_mode` 列已删，装配无模式分支），不要无授权改动装配链。
 5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）、`lib/group-chat/`（第一方 UI 已删但它经 `getContext.ts` 活着，勿连带误删）。
+6. ⚠️ **「ST 双轨已删」≠「ST 兼容层可删」**（2026-10-10 订正，依据：
+   `docs/_active/report/REPORT_悲观刻薄审计_第二次全仓体检_2026-10-10-new.md` 文首订正）。
+   已删除的是 **st-native（iframe 嵌入完整 ST）** 与 **st-compat（服务端 ST 1.18 装配）**
+   两个**模式**；但 **"Palink 原生模式"的卡片渲染底座，本身就是一个 SillyTavern 兼容运行时**，
+   后端仍在提供卡片 runtime 所需的 ST 风格端点。这些是**在用的生产代码，不是残留**。
+   引用链（动它们之前**必须**先查）：
+   - `CharacterCardRenderer.tsx:10` → import `buildSillyTavernCompatRuntimeV2Shim`（`:435` 调用）
+   - `smart-card-runtime/helpers.ts:6` → import `LEGACY_ST_SIM_SEGMENT`
+   - `api/__init__.py:37/55` → 注册 `silly_tavern_router`（带 `csrf_guard`）
+   - `RoleplayEngineTab.tsx:173` → 实调 `POST /api/settings/get`
+   ⇒ **禁止以"ST 已删"为由删除** `SillyTavernCompatRuntime.ts`(6961 行)、
+     `legacy-st-sim.ts`(2452 行)、`api/silly_tavern.py`(6247 行)。
+     要做瘦身就**逐个端点查调用方**（`grep -rn "<path>" frontend/src backend/app`），
+     **不要按名字删、不要整文件删**。
+   ⇒ 同理，审计报告里凡涉及"删"的建议，动工前先做引用链复核 ——
+     **"看起来像残留"和"真的是残留"之间，隔着一个 grep。**
 
 ## 待办（跨 agent 协作）
 
@@ -47,6 +63,54 @@
 - 前端 ST 插件 runtime：`frontend/src/utils/sillyTavernPluginRuntime.ts`
 
 ## 验证
+
+### ⚠️ 验证纪律（2026-10-10 立 · 强制 · 违反视为事故）
+
+> **为什么立这条**：本仓曾出现 `backend/pytest_gate3.log` 末行
+> `1903 passed, 48 skipped, 384 warnings, 84 errors` 被当作「门禁通过」存档。
+> **工具一直在报警（pytest 退出码 = 1），是人只读了 passed 数字。**
+> 详见 `docs/_active/report/REPORT_悲观审计_项目可信度体检_2026-10-10.md`、
+> 施工方案见 `docs/_active/spec/SPEC_验证体系修复_2026-10-10.md`。
+
+1. **唯一门禁入口**：`bash scripts/gate.sh`（全跑）／`bash scripts/gate.sh backend|frontend|docs`。
+   任一阶段非 0 → 脚本退出 1。**不要用散装命令自己拼门禁。**
+2. **退出码就是结论**。实测（2026-10-10）：pytest 在 `1 passed, 1 error` 时退出码 = **1**。
+   所以下列三种写法一律禁止，**谁加回去谁就是把门禁变回安慰剂**：
+   - `|| true`
+   - `continue-on-error: true`
+   - `--continue-on-collection-errors`
+3. **验收口径只认两个数**：`failed = 0` 且 `errors = 0`。
+   **passed 的数字不是验收线**（它随并行会话增长而漂，今天 1999 明天可能 2100）。
+4. **遇到批量 setup error，先查守卫，不要先猜外部依赖**（2026-10-10 血的教训）：
+   第一步就是 `grep -n "SystemExit\|safe-delete" <日志>`。
+   本仓已知机制：安全删除守卫按**单次批量删除 ≥ 50 个文件**拦截并抛 `SystemExit`，
+   临时目录被删到一半 → 后续用例在 setup 阶段连带崩
+   （历史上一次产生 **1 个 SystemExit + 83 个 AssertionError**）。
+   **永远不要把 pytest 的 `--basetemp` 指进仓库内** —— `backend/.pytest_tmp` 已入 `.gitignore`，
+   它就是上述 84 errors 的病灶。
+5. **禁止用 skip 掩盖失败**。下列三样是历史遗留（正在清理），**不得新增同款**：
+   - 「import 失败 → 整文件 `pytestmark = skipif(not _IMPORT_OK)`」——曾覆盖 38 个文件，
+     等于把**编译错误降级为 skip**，模块一改名整个文件静默消失。
+   - 「源码文件不存在 → `pytest.skip`」——曾 46 处，Python 测试去 grep 前端文件在不在，
+     **测的是「文件在不在」，不是「行为对不对」**。
+   - 「假理由空壳」——曾 28 处，写 `requires DB session`，
+     而 `backend/tests/conftest.py:84` 的 `db_session` fixture 有 55 个文件正在正常用。
+   **真跑不了就删掉用例，不要留 skip 占位充数。**
+6. **改了 `docs/` 就跑 `python scripts/docs/gen_docs_catalog.py`**（提交前），
+   至少 `--check` 必须是 `OK`。CI 有 docs job，STALE 会让它红。
+7. **CI**：`.github/workflows/ci.yml`（后端 pytest / 前端 tsc+vitest / 文档目录）。
+   ⚠️ **2026-10-10 订正**：该文件**此前从未进过版本库**（`git ls-files .github` 返回空），
+   只存在于本地磁盘 ⇒ 在任何 CI 平台上**从未真正运行过**。
+   这是"200+ 项改动长期未提交却无人拦下"的直接原因之一：**当时根本没有门禁在跑**。
+   已于 2026-10-10 批次 C（`c7ef194`）首次入库；`scripts/gate.sh` 同样是从未入库过的
+   （同批发现），已在 `ddcef2e` 入库。
+   ⇒ 判据：**不要因为"文档写了有 CI"就以为有 CI**。
+   验证方式：`git ls-files .github` 与 `git ls-files scripts/gate.sh`。
+   后端 CI 用 `backend/requirements-test.txt`（已剥离需 C++ 编译的 `llama-cpp-python`
+   与体积大的 `faster-whisper`，依据是二者在 `app/` 里均为**函数内惰性** import、`tests/` 零引用）。
+   **生产镜像仍用 `requirements.txt` 完整版** —— 两份都要维护，往 test 版加依赖前先确认是顶层还是惰性 import。
+8. **判定「修好了」必须用与生产一致的入口复核**，不能用单点探针。
+   （2026-10-10 踩过：单独跑两个文件 28 passed 就宣布「84 errors 已修复」，全量跑照样红。）
 
 - 后端：`cd backend && python -m pytest tests/`
 
