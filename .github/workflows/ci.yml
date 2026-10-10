@@ -1,0 +1,132 @@
+# CI — Palink-AI 验证门禁
+#
+# 【这个文件为什么存在】
+# 2026-10-10 审计发现：本项目此前没有任何 CI，也没有任何覆盖率门槛。
+# 唯一被称为"门禁"的产物是手工跑出来的日志文件，其中
+#   backend/pytest_gate3.log  → 1903 passed, 48 skipped, 84 errors
+#   backend/pytest_gate2.log  → 2 failed, 1981 passed, 51 skipped
+# 84 个是 setup 阶段就崩、测试体一行没跑；2 个是实打实的 failed。
+# 两份日志都被当作"通过"存档了 —— 因为人只读 passed 数字，不看退出码。
+#
+# 【本 CI 靠什么拦截这类问题】
+# 实测（2026-10-10）：pytest 在 `1 passed, 1 error` 时退出码 = 1，
+# 在 `2 failed` 时退出码 = 1。也就是说 **pytest 命令行天然就会拦截 errors/failed**，
+# CI 只需不吞退出码即可。因此本文件里：
+#   - 绝不出现 `|| true`
+#   - 绝不出现 `continue-on-error: true`
+#   - 绝不出现 `--continue-on-collection-errors`
+# 谁加回去，谁就是把门禁重新变成安慰剂。改这个文件前请先读上面这段。
+#
+# 【本机 vs CI 的差异（2026-10-10 已重新定位，下面这段旧结论作废）】
+# 旧结论：safe-delete 守卫「只影响 3 个用例」（test_admin_image_cleanup 两例 +
+#        test_c_batch_security_hygiene 一例），单独跑全绿，全量跑才红。
+# 新结论（读 backend/pytest_gate3.log 实证）：**84 个 error 里只有 1 个是真的**。
+#   E   SystemExit: 1
+#   [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]
+#     {"count":58,"threshold":50,"scope":"turn",
+#      "targets":["\\\\?\\D:\\项目\\Palink-AI\\backend\\.pytest_tmp"]}
+# 真实链路：有人把 pytest 的 basetemp 指进了**仓库内**（backend/.pytest_tmp）
+#   → 清理时一次删 58 个文件被守卫拦下 → SystemExit:1
+#   → 临时目录被删到一半 → 后面 83 个用例在 setup 阶段连带 AssertionError。
+# 所以触发条件是「basetemp 落在仓库内」，不是「那 3 个用例本身有问题」；
+# 受影响的用例有 84 个，集中在 image / media / cleanup 类测试，
+# 与 test_token_counter_service.py、test_unified_model_registry_thin.py 无关。
+#
+# GitHub Actions 上没有该守卫，且默认 basetemp 在系统 temp（仓库外），
+# 这 84 例**不会**在 CI 上出现。若 CI 上真看到同类 error，那是真问题，别套旧结论。
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端 · pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+        # 装的是 requirements-test.txt，**不是** requirements.txt。
+        # 差别：去掉了 llama-cpp-python==0.3.34（需 C++ 编译）与 faster-whisper==1.2.1。
+        # 依据（2026-10-10 静态核实）：tests/ 零处 import 这两者；
+        # app/services/llama_runtime.py:53/64、app/services/stt_service.py:17 都是
+        # 函数内**惰性** import，模块被导入时不会拉起它们。
+        # ⚠️ 若哪天把它们提到顶层 import，CI 会 ModuleNotFoundError —— 改代码的人负责同步本文件。
+        #
+        # 万一仍卡在装依赖，退路：走上游预编译 wheel
+        #   pip install -r requirements-test.txt \
+        #     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+        # 但按上面的核实，CI 根本不需要 llama，走这条路说明核实失效了，先查惰性 import 有没有被改。
+
+      - name: 跑后端测试
+        working-directory: backend
+        run: python -m pytest tests/ -q
+        # 测试用 sqlite:// 内存库（tests/conftest.py:72），不需要 postgres 服务。
+        #
+        # ⚠️ 不要给 pytest 传指向仓库内的 --basetemp。
+        # 2026-10-10 已定位：backend/pytest_gate3.log 里 84 个 error 的根因不是代码，
+        # 是有人把 basetemp 指到了仓库内（backend/.pytest_tmp），清理时一次性删 58 个文件
+        # 撞上环境的安全删除守卫（阈值 50/轮）→ SystemExit:1 → 临时目录半残
+        # → 后续 83 个用例在 setup 阶段连带崩。默认 basetemp 在系统 temp，不会触发。
+
+  frontend:
+    name: 前端 · tsc + vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 类型检查
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: 跑前端测试
+        working-directory: frontend
+        run: npx vitest run
+        # 2026-09-23 起 vitest 是唯一入口；旧的 npm run test:contract 已删除，
+        # 不要把它加回来。浏览器环境由 vitest.config.ts 的 environment: 'jsdom'
+        # + src/test/setup-browser-globals.ts 提供。
+
+  docs:
+    name: 文档目录一致性
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 校验 _CATALOG.md 未过期
+        run: python scripts/docs/gen_docs_catalog.py --check
+        # 补上 AGENTS.md 立了但没人执行的规矩：动了 docs/ 就得刷新目录。
+        # 2026-10-10 实测该 check 为 STALE（在我新增文档之前就已过期）。
+        # 失败时按提示跑 `python scripts/docs/gen_docs_catalog.py` 刷新即可。

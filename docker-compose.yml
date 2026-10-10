@@ -11,7 +11,18 @@ services:
       # excludedportrange protocol=tcp 实测）→ 容器起来但**没有发布宿主端口**，宿主机
       # curl 13000 拒连，浏览器验证做不了。改挂 14000（当前所有保留段之上、且未被监听）。
       # 复核方法：docker ps 的 PORTS 列应出现 0.0.0.0:14000->8080，而不是只有 8080/tcp。
-      - "14000:8080"
+      # [TEMP-PORT 2026-10-09] 14000 又落进本次开机的保留段 13940-14039（实测
+      # `netsh int ipv4 show excludedportrange protocol=tcp`；本次是 Docker Desktop
+      # 引擎非正常停止后重启，WinNAT 重新划段把 14000 吞了）→ docker 绑定报
+      # "bind: An attempt was made to access a socket in a way forbidden…"，
+      # 容器卡在 Created、隧道无处路由、站点整体不可达。改挂 14700（当前所有保留段
+      # 之上、实测未被监听）。⚠️ 只影响**宿主本地访问**：Cloudflare 快速隧道走的是
+      # 容器网络里的 frontend:8080，公网地址与本行无关。
+      # 恢复原样：把下面一行换回 - "14000:8080"，并 `docker compose up -d --force-recreate frontend`。
+      # ⚠️ 已知连带：backend/scripts/_accept_mvu_realrun.py:15 硬编码 BASE=:14000，
+      #    换端口期间该验收脚本需同步改，或用公网地址跑。
+      - "14700:8080"
+      # - "14000:8080"
       # - "13000:8080"
       # - "3000:8080"
     depends_on:
@@ -71,8 +82,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 4G
+          # [AUTOTUNE 2026-10-07] 由 scripts/autotune.py 写入 .env；缺省沿用原值
+          cpus: ${PALINK_OLLAMA_CPUS:-2.0}
+          memory: ${PALINK_OLLAMA_MEMORY:-4G}
         reservations:
           memory: 512M
 
@@ -89,9 +101,11 @@ services:
       - gateway
     ports:
       # 管理后台入口，**仅绑定 127.0.0.1 回环**，不在局域网暴露。
-      # 宿主机侧刻意避开 3000：该端口落在 Windows 保留段(2934-3033)，docker 无法绑定
-      # （同 frontend 的 TEMP-PORT 处置，见 TODOS.md「环境注意」）。
-      - "127.0.0.1:13001:3000"
+      # [PORT 2026-10-05] 原 13001 落在 Windows 保留段 12940-13039，docker 静默绑不上
+      # （容器 healthy 但 PORTS 列只有 3000/tcp、宿主机 curl 拒连）。现端口 15001 同时避开
+      # 两段：保留段之上，且高于临时端口段上沿 15000（netsh int ipv4 show dynamicport tcp）。
+      # 复核：docker ps 的 PORTS 应出现 127.0.0.1:15001->3000。
+      - "127.0.0.1:15001:3000"
     expose:
       - "3000"
     volumes:
@@ -171,13 +185,16 @@ services:
       - WORKSPACE_ANALYZE_MAX_CHARS=12000
       - UVICORN_TIMEOUT=600
       - UVICORN_KEEPALIVE_TIMEOUT=600
-      - APP_PERFORMANCE_PROFILE=eco
-      - APP_MIN_WORKERS=1
-      - APP_MAX_WORKERS=1
-      - UVICORN_WORKERS_MAX=1
-      - APP_MEMORY_RESERVE_MB=1536
-      - APP_MEMORY_PER_WORKER_MB=900
-      - APP_CPU_THREADS_PER_WORKER_MAX=4
+      # [AUTOTUNE 2026-10-07] 以下 7 项不再写死，改由 scripts/autotune.py
+      # 按本机 CPU/内存写入 .env（缺省值 = 改之前的保守值，行为不变）。
+      # 换机器后只需 `python scripts/autotune.py` 再 `docker compose up -d`。
+      - APP_PERFORMANCE_PROFILE=${APP_PERFORMANCE_PROFILE:-eco}
+      - APP_MIN_WORKERS=${APP_MIN_WORKERS:-1}
+      - APP_MAX_WORKERS=${APP_MAX_WORKERS:-1}
+      - UVICORN_WORKERS_MAX=${UVICORN_WORKERS_MAX:-1}
+      - APP_MEMORY_RESERVE_MB=${APP_MEMORY_RESERVE_MB:-1536}
+      - APP_MEMORY_PER_WORKER_MB=${APP_MEMORY_PER_WORKER_MB:-900}
+      - APP_CPU_THREADS_PER_WORKER_MAX=${APP_CPU_THREADS_PER_WORKER_MAX:-4}
       - DB_POOL_AUTO_TUNE=true
       - DB_CONNECTION_BUDGET=40
       - DB_POOL_RECYCLE_SECONDS=1800
@@ -213,10 +230,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
+          # [AUTOTUNE 2026-10-07] 由 scripts/autotune.py 写入 .env；缺省沿用原值
+          cpus: ${PALINK_BACKEND_CPUS:-2.0}
+          memory: ${PALINK_BACKEND_MEMORY:-2G}
         reservations:
-          memory: 512M
+          memory: ${PALINK_BACKEND_RESERVE:-512M}
 
   db:
     image: pgvector/pgvector:pg15
@@ -246,8 +264,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1G
+          # [AUTOTUNE 2026-10-07] 由 scripts/autotune.py 写入 .env；缺省沿用原值
+          cpus: ${PALINK_DB_CPUS:-1.0}
+          memory: ${PALINK_DB_MEMORY:-1G}
         reservations:
           memory: 256M
 

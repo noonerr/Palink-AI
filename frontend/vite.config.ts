@@ -61,10 +61,18 @@ export default defineConfig({
     minify: 'terser',
     terserOptions: {
       compress: {
-        // [N-19] 生产构建移除全部 console.*（terser 仅在 build 期生效，dev 不受影响）
-        drop_console: true,
+        // [N-19 修复 2026-10-10] 生产构建只移除 console.log/debug/info，
+        // **保留 console.error / console.warn**（terser 仅在 build 期生效，dev 不受影响）。
+        //
+        // ⛔ 不要改回 `drop_console: true` —— 那是无差别删除，会把 error/warn 一起删掉。
+        // 历史事故：线上用户报错时浏览器控制台一条日志都没有，完全无法诊断；而项目里
+        // 大量真实故障路径（流式中止、会话加载失败、generationEngine 参数缺失等）依赖
+        // console.error/warn 输出，与 sillytavern 模板字符串内代码（编译器不可见）叠加后
+        // 排障成本极高。
+        // 正确做法：用 pure_funcs 标记这些函数为「无副作用的纯函数」从而被摇掉，
+        // 它只作用于显式列出的成员，不会波及 console.error / console.warn。
         drop_debugger: true,
-        pure_funcs: ['console.log', 'console.info'],
+        pure_funcs: ['console.log', 'console.debug', 'console.info'],
         passes: 2,
       },
       mangle: {

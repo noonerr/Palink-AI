@@ -221,6 +221,11 @@ _backup/
 .omo/
 _tmp_*.txt
 backend/_tmp_*.py
+# 2026-10-10 审计：pytest 的 basetemp 曾被指进仓库内（backend/.pytest_tmp），
+# 该目录是 pytest_gate3.log 里 84 errors 的病灶 —— 安全删除守卫按"单次 ≥50 文件"
+# 拦截批量删除，临时目录被删到一半后，后续用例在 setup 阶段连带崩（1 SystemExit + 83 AssertionError）。
+# 它当时未被忽略，以未跟踪目录形式污染 git status。**永远不要把 --basetemp 指进仓库内。**
+backend/.pytest_tmp/
 frontend/scripts/_shim_check_probe.*
 
 # 2026-08-29 分段提交：插件脚本 dump 与审计截图（一次性调试产物，体积大）

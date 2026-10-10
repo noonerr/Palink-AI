@@ -123,7 +123,14 @@ if ! is_pos_int "${AVAILABLE_MEMORY_MB:-}"; then
   AVAILABLE_MEMORY_MB=2048
 fi
 
-MEMORY_RESERVE_MB="${APP_MEMORY_RESERVE_MB:-1536}"
+# [AUTOTUNE 2026-10-07] 未显式指定时按容器内存限额的 20% 自动算。
+# 原固定值 1536 在大容器上过于保守、在小容器上又过大，
+# 是"再大的机器也只能算出 1 个 worker"的直接原因之一。
+if is_pos_int "${APP_MEMORY_RESERVE_MB:-}"; then
+  MEMORY_RESERVE_MB="$APP_MEMORY_RESERVE_MB"
+else
+  MEMORY_RESERVE_MB=$((AVAILABLE_MEMORY_MB / 5))
+fi
 if ! is_pos_int "${MEMORY_RESERVE_MB:-}"; then
   MEMORY_RESERVE_MB=1536
 fi
@@ -151,9 +158,20 @@ if is_pos_int "${APP_MAX_WORKERS:-}" && [ "$APP_MAX_WORKERS" -gt 0 ] && [ "$APP_
   WORKERS_MAX="$APP_MAX_WORKERS"
 fi
 
-PERFORMANCE_PROFILE="$(printf '%s' "${APP_PERFORMANCE_PROFILE:-balanced}" | tr '[:upper:]' '[:lower:]')"
+PERFORMANCE_PROFILE="$(printf '%s' "${APP_PERFORMANCE_PROFILE:-}" | tr '[:upper:]' '[:lower:]')"
 WORKER_CPU_DIVISOR="${APP_WORKER_CPU_DIVISOR:-}"
 if ! is_pos_int "${WORKER_CPU_DIVISOR:-}"; then
+  # [AUTOTUNE 2026-10-07] 未指定档位（空 / auto）时按容器内存自动选，
+  # 不再一律退回 balanced —— 小机器应该 eco，大机器应该 throughput。
+  if [ -z "$PERFORMANCE_PROFILE" ] || [ "$PERFORMANCE_PROFILE" = "auto" ]; then
+    if [ "$AVAILABLE_MEMORY_MB" -lt 3072 ]; then
+      PERFORMANCE_PROFILE="eco"
+    elif [ "$AVAILABLE_MEMORY_MB" -lt 6144 ]; then
+      PERFORMANCE_PROFILE="balanced"
+    else
+      PERFORMANCE_PROFILE="throughput"
+    fi
+  fi
   case "$PERFORMANCE_PROFILE" in
     throughput)
       WORKER_CPU_DIVISOR=2
