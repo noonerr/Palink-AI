@@ -1,0 +1,46 @@
+# 测试/CI 专用依赖（2026-10-10 从 requirements.txt 拆出）
+#
+# 为什么单独一份：
+#   requirements.txt 里的 llama-cpp-python==0.3.34 需要 C++ 编译，
+#   faster-whisper==1.2.1 体积大且带 onnxruntime 传递依赖。
+#   CI 只为了跑 pytest，装这两个会让首次 CI 卡在编译上。
+#
+# 拆的**依据**（已静态核实，不是猜）：
+#   - 全仓 tests/ 没有任何一处 import llama_cpp / faster_whisper。
+#   - app/services/llama_runtime.py:53,64 的 llama_cpp 是**函数内惰性 import**，
+#     app/services/stt_service.py:17 的 faster_whisper 同样是惰性 import。
+#     两个模块被 import 时都不会立刻拉起这两个库 ⇒ 测试不需要装它们。
+#   - 测试用 sqlite:// 内存库（tests/conftest.py:72），不需要 psycopg2 之外的外部服务。
+#
+# ⚠️ 维护约束：往这里加依赖前先确认它是**顶层 import**还是惰性 import。
+#     只要某个被测试导入的模块把它提到顶层，本文件就必须同步补上，
+#     否则 CI 会以 ModuleNotFoundError 失败。
+#
+# ⚠️ 本文件只用于 CI / 本地跑测试。生产镜像继续用 requirements.txt（完整版）。
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+websockets==16.1.1
+sqlalchemy==2.0.51
+alembic==1.19.1
+psycopg2-binary==2.9.12
+pgvector==0.5.0
+python-multipart==0.0.32
+openai==2.53.0
+edge-tts==7.2.8
+pydantic-settings==2.15.0
+PyJWT[crypto]==2.13.0
+cryptography==50.0.0
+bcrypt==5.0.0
+psutil==7.2.2
+numpy==2.2.6
+Pillow==12.3.0
+fastembed==0.8.0
+httpx==0.28.1
+beautifulsoup4==4.15.0
+mcp[cli]==2.0.0
+pytest==9.1.1
+tiktoken==0.13.0
+sentencepiece==0.2.2
+tokenizers==0.23.1
+PyYAML==6.0.3
