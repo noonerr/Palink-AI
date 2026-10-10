@@ -99,31 +99,49 @@
 | 门禁耗时 | 3m52s 失败 → **2m26s 通过** |
 | 工作区 | **208 项 → 0** |
 
-**批次 A 提交后（Docker 尚可用时）做过一次终极验收**：
-`git archive HEAD backend/app` 与生产容器逐文件比对 9 个文件，
-归一化行尾后**全部 SAME** ⇒ 生产后端代码可从 git 重建。
+**终极验收（HEAD vs 生产容器，11 个文件）**：**SAME=9 / DIFF=2**，判定通过。
+9 个 SAME 中含 `mvu_cleanup.py`（625 行，此前从未进过版本库）。
+2 个 DIFF 已逐行证实为「改名 + 注释」，**行为零变更**（详见 §5）。
+⇒ **生产后端代码可从 git 重建。**
 
 ---
 
-## §5 ⚠️ 未完成的一项（被环境阻塞，需你处理）
+## §5 ✅ 终极验收已补做完成（Docker 恢复后，2026-10-11）
 
-**Docker Desktop 在修复中途掉线**（`npipe:////./pipe/dockerDesktopLinuxEngine` 不可达），
-容器侧命令全部返回空 ⇒ **最终的「HEAD vs 容器 md5」复验没做成**。
+**结果：`SAME=9 / DIFF=2`** —— 判定为**通过**。
 
-已验证的替代证据：`HEAD == 工作区`（逐文件 md5 相同）。
-
-**Docker 恢复后请补做**：
-
-```bash
-export MSYS_NO_PATHCONV=1
-rm -rf /tmp/palink-head && mkdir -p /tmp/palink-head
-git archive HEAD backend/app | tar -x -C /tmp/palink-head
-# 逐文件比对（容器侧必须在容器内算 md5，见 §7 注意事项）
+```
+SAME  memory_module/retriever.py        SAME  api/chat.py
+SAME  api/character_ext.py              SAME  services/character_message_builder.py
+SAME  core/config.py                    SAME  services/mvu_cleanup.py
+SAME  memory_module/service.py          DIFF  services/roleplay_prompt_assembly.py
+SAME  services/mvu_engine.py            DIFF  utils.py
+SAME  memory_module/config.py
 ```
 
-并按需重建镜像（本轮改了 `roleplay_prompt_assembly.py` / `utils.py`，
-虽为纯改名+注释、行为零变更，但按 `AGENTS.md` 纪律「提交 ≠ 上线」，
-要严格一致需 `docker compose build backend && up -d backend`）。
+### 2 个 DIFF 已逐行证实「行为零变更」
+
+不是缺陷，是「我改了源码但尚未重建镜像」的正常状态：
+
+| 文件 | 差异 | 实证 |
+|---|---|---|
+| `roleplay_prompt_assembly.py` | 32 行 | 仅 **4 行改名**（常量定义 + 3 处引用）+ 28 行注释/docstring。数值 `(750, 4000, 6000, 8000)` **一字未改** |
+| `utils.py` | 22 行 | `diff` 剔除注释行后**空** ⇒ **纯注释，零代码改动** |
+
+交叉验证：容器内 `grep -c "_MEMORY_BUDGET_LEVEL_TOKENS"` = **4**（旧名仍在），
+`grep -c "_MEMORY_BUDGET_LEVEL_INTERNAL_UNITS"` = **0**（新名未进去）
+⇒ 正好对应"改了源码、未重建镜像"。
+
+### 唯一剩余的一致化动作（可选，非必须）
+
+要让容器与 HEAD **逐字节一致**，需重建后端镜像：
+
+```bash
+docker compose build backend && docker compose up -d backend
+```
+
+⚠️ 会短暂中断后端服务。**由于本次改动行为零变更，不重建也没有任何功能差异** ——
+建议等到下一批后端改动时一并重建，避免为纯注释重启生产。
 
 ---
 
