@@ -208,10 +208,19 @@ class _BoomSession:
 
 
 class TestBuildMemoryQuery:
-    """[MEM-QUERY] 检索查询由"本轮一句话"改为"最近几条拼接"。
+    """[MEM-QUERY] 检索查询的构造。
 
-    实测依据：用户消息平均 29 字，单句查询的 top8 里出现 1.0000 的自镜像命中；
-    换成窗口查询后召回集 6/8 变化、相似度区间收窄（1.0000~0.6208 → 0.8869~0.7668）。
+    ⚠️ 默认口径在 2026-10-09 **被实测推翻并反转**：
+    2026-10-07 的"最近 4 条拼接 + 尾截 600"实测**比只用本轮消息更差** ——
+    那 600 字里本轮问题只占 3.4%（n=50 中位），96% 是上一条 assistant 回复的
+    尾巴（还夹着 <UpdateVariable> / 【声音：…】）。同一批 50 道题：
+    窗口查询 top1 6.2%、注入命中 31.2%；改成本轮消息后 top1 22.9%、
+    注入命中 66%，且单次耗时 3009ms → 619ms。
+
+    故本类的断言按新模式 `current` 写；**旧窗口行为不再消失**，
+    由 `MEMORY_QUERY_MODE=window` 一键恢复，并在
+    `test_window_concatenates_recent_messages_in_order` 里继续钉住。
+    依据见 docs/_active/report/REPORT_记忆最优解复核_关键词路与查询构造_2026-10-09.md
     """
 
     @staticmethod
@@ -261,13 +270,31 @@ class TestBuildMemoryQuery:
         db.flush()
         return sess.id, br.id
 
-    def test_window_concatenates_recent_messages_in_order(self, db_session, test_user):
+    def test_window_concatenates_recent_messages_in_order(self, db_session, test_user, monkeypatch):
+        """MEMORY_QUERY_MODE=window ⇒ 2026-10-07 的旧行为（一键回退落点）。"""
+        from app.memory_module.config import memory_config
+
+        monkeypatch.setattr(memory_config, "QUERY_MODE", "window")
         build, _ = self._import()
         sess_id, br_id = self._seed(db_session, test_user)
         q = build(db_session, sess_id, br_id, "现在去哪找药")
         assert q.index("她受伤了") < q.index("别说话，先包扎") < q.index("现在去哪找药"), (
             f"查询窗口必须按时间正序、本轮消息在最后：{q!r}"
         )
+
+    def test_current_mode_uses_only_this_turn_message(self, db_session, test_user, monkeypatch):
+        """默认 `current`：查询就只装本轮问题，不带上一条回复的尾巴。
+
+        这是 2026-10-09 实测订正后的默认行为（旧口径的稀释来源）。
+        """
+        from app.memory_module.config import memory_config
+
+        monkeypatch.setattr(memory_config, "QUERY_MODE", "current")
+        monkeypatch.setattr(memory_config, "QUERY_MIN_CHARS", 5)
+        build, _ = self._import()
+        sess_id, br_id = self._seed(db_session, test_user)
+        q = build(db_session, sess_id, br_id, "现在去哪找药")
+        assert q == "现在去哪找药", f"默认模式不该拼接上文：{q!r}"
 
     def test_current_message_already_persisted_is_not_duplicated(self, db_session, test_user):
         """消息已落库时不能把同一句话拼两遍（白占嵌入输入）。"""

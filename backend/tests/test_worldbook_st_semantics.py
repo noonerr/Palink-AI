@@ -28,7 +28,9 @@ Palink 将 ``selective_logic`` 应用于**主关键词**（次关键词固定为
 
 import json
 import os
+import random
 import sys
+import uuid
 
 import pytest
 
@@ -37,6 +39,9 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from app.core.security import get_password_hash  # noqa: E402
+from app.models import Character, User  # noqa: E402
+from app.models.character import CharacterChatSession  # noqa: E402
 from app.models.worldbook import WorldBook, WorldBookStage  # noqa: E402
 from app.services.worldbook_service import (  # noqa: E402
     DEFAULT_BUDGET,
@@ -1024,137 +1029,680 @@ class TestSecondaryKeys:
 
 
 # ---------------------------------------------------------------------------
-# 第三层：完整引擎验证（需要 DB session，占位 skip）
-# 这些测试验证 build_worldbook_context 端到端语义，需要初始化 DB。
-# 占位以保留测试场景覆盖；接入测试 DB 后移除 skip 即可执行。
+# 第三层：完整引擎验证（真实 DB session）
+#
+# 2026-10-10 补实：原先这里 28 个用例全是 ``pytest.skip("requires DB session")``
+# 空壳。该 skip 理由是假的——``tests/conftest.py:84`` 的 ``db_session`` fixture
+# 一直可用（SQLite in-memory，函数级隔离）。现全部改写为真实断言：
+# 建库（User / Character / CharacterChatSession / WorldBook / WorldBookStage）
+# → 调用 ``build_worldbook_context`` → 断言 debug_report 状态与具体值。
+#
+# 断言一律按 ``worldbook_service.py`` 的**实际实现**编写，不按旧 docstring 的
+# 想象语义；凡与旧 docstring 冲突处都在用例内标注了实现行号。
 # ---------------------------------------------------------------------------
+def _mk_world(db_session, st_entries, *, tag="t", budget_tokens=None, budget_cap=0):
+    """建好一整套世界书依赖并返回 (user, char, session_id, book_id)。
+
+    书绑定到本会话角色（``character_id=char.id`` → lore source="character"），
+    符合 [WB-CHAR-ISOLATION 2026-10-03] 之后「未绑定的书不注入」的契约
+    （见 worldbook_service.py:1949-1973）。
+    """
+    book_id = f"wb-{tag}-{uuid.uuid4().hex[:8]}"
+    sess_id = f"sess-{tag}-{uuid.uuid4().hex[:8]}"
+
+    user = User(
+        username=f"wbse-{tag}-{uuid.uuid4().hex[:8]}",
+        hashed_password=get_password_hash("TestPassword1"),
+        role="user",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+
+    char = Character(
+        id=f"wbse-c-{tag}-{uuid.uuid4().hex[:8]}",
+        user_id=user.id,
+        name="WbSeChar",
+    )
+    db_session.add(char)
+    db_session.flush()
+
+    db_session.add(CharacterChatSession(
+        id=sess_id, user_id=user.id, character_id=char.id, title="wbse",
+    ))
+    db_session.add(WorldBook(
+        id=book_id,
+        user_id=user.id,
+        name=f"wbse-book-{tag}",
+        character_id=char.id,
+        budget_tokens=budget_tokens,
+        budget_cap=budget_cap,
+    ))
+    db_session.flush()
+
+    for raw in st_entries:
+        entry = dict(raw)
+        entry["_world_book_id"] = book_id
+        db_session.add(make_stage(entry))
+    db_session.commit()
+    return user, char, sess_id, book_id
+
+
+def _run(db_session, user, char, sess_id, messages, **kwargs):
+    """调用真实引擎 ``build_worldbook_context`` 并提交（供多轮用例复用会话）。"""
+    result = build_worldbook_context(
+        db_session,
+        sess_id,
+        user.id,
+        recent_messages=[{"role": "user", "content": m} for m in messages],
+        character=char,
+        **kwargs,
+    )
+    # 提交以便 TimedEffectsManager 下一轮能读到本轮写入的 sticky/cooldown 状态
+    db_session.commit()
+    return result
+
+
+def _report_of(result, entry_id):
+    """取该条目**最后一条**报告（递归每轮会产生一条，末态才是真实结果）。"""
+    reports = [r for r in result.debug_report if r.entry_id == entry_id]
+    return reports[-1] if reports else None
+
+
+def _activated_ids(result):
+    return [r.entry_id for r in result.debug_report if r.status == "activated"]
+
+
+def _pick_highest_weight(population, weights=None, cum_weights=None, k=1):
+    """``random.choices`` 的确定性替身：恒取权重最大者（用于分组加权断言）。"""
+    ws = weights or [1] * len(population)
+    idx = max(range(len(population)), key=lambda i: ws[i])
+    return [population[idx]] * k
+
+
 class TestConstantEntry:
-    def test_constant_entry_always_activates(self, constant_entry):
-        """常量条目应始终激活，无论 recent_messages 内容。"""
-        pytest.skip("requires DB session")
+    def test_constant_entry_always_activates(self, db_session, constant_entry):
+        """常量条目应始终激活，无论 recent_messages 内容。
+
+        实现依据: worldbook_service.py:906-920 —— ``if entry.constant`` 位于
+        关键词匹配之前，直接 activated(reason="constant")。
+        """
+        user, char, sess, _ = _mk_world(db_session, [constant_entry], tag="const")
+
+        # 1) 有无关消息
+        r1 = _run(db_session, user, char, sess, ["今天天气不错，跟关键词毫无关系"])
+        rep1 = _report_of(r1, "1")
+        assert rep1.status == "activated"
+        assert rep1.reason == "constant"
+        # constant_entry.position = WI_POS_BEFORE_CHAR(0) → 进 entries_by_position[0]
+        assert r1.entries_by_position == {0: ["Always active content"]}
+        assert r1.text == "[World Lore]\nAlways active content"
+
+        # 2) 空消息列表：常量条目同样必须激活
+        r2 = _run(db_session, user, char, sess, [])
+        rep2 = _report_of(r2, "1")
+        assert rep2.status == "activated"
+        assert rep2.reason == "constant"
+        assert r2.entries_by_position == {0: ["Always active content"]}
 
 
 class TestPrimaryKeyMatch:
-    def test_primary_key_match_activates(self, primary_key_entry):
-        """主关键词命中应激活条目。"""
-        pytest.skip("requires DB session")
+    def test_primary_key_match_activates(self, db_session, primary_key_entry):
+        """主关键词命中应激活条目。
+
+        实现依据: worldbook_service.py:993-1003（``_match_primary_keys``，
+        ST 固定 AND_ANY：任一 primary key 命中即通过）。
+        """
+        user, char, sess, _ = _mk_world(db_session, [primary_key_entry], tag="pk")
+
+        hit = _run(db_session, user, char, sess, ["a dragon flies overhead"])
+        rep = _report_of(hit, "2")
+        assert rep.status == "activated"
+        assert rep.reason == "keyword_match"
+        assert "dragon" in rep.matched_keywords
+        # position=WI_POS_BEFORE_CHAR(0)
+        assert hit.entries_by_position == {0: ["Dragon info"]}
+
+        miss = _run(db_session, user, char, sess, ["nothing relevant at all"])
+        rep_miss = _report_of(miss, "2")
+        assert rep_miss.status == "skipped"
+        assert rep_miss.reason == "primary_keys_mismatch"
+        assert miss.entries_by_position == {}
 
 
 class TestSelectiveLogic:
-    def test_selective_and_any(self, selective_and_any_entry):
-        """选择性 AND_ANY：主+次关键词均命中才激活（Palink 语义）。"""
-        pytest.skip("requires DB session")
+    def test_selective_and_any(self, db_session, selective_and_any_entry):
+        """选择性 AND_ANY：主关键词命中 + 任一次关键词命中才激活。
 
-    def test_selective_not_any(self, selective_not_any_entry):
-        """选择性 NOT_ANY：无次关键词命中时激活（Palink 次关键词 OR）。"""
-        pytest.skip("requires DB session")
+        实现依据: worldbook_service.py:1005-1019 + :592-594
+        （``_match_secondary_keys`` AND_ANY 短路：任一次关键词命中即通过）。
+        """
+        user, char, sess, _ = _mk_world(db_session, [selective_and_any_entry], tag="sel")
+
+        hit = _run(db_session, user, char, sess, ["the dragon breathes fire"])
+        rep = _report_of(hit, "3")
+        assert rep.status == "activated"
+        assert rep.reason == "keyword_match"
+        assert "dragon" in rep.matched_keywords
+        assert "fire" in rep.matched_keywords
+
+        # 主关键词命中但次关键词一个都不中 → 不激活
+        miss = _run(db_session, user, char, sess, ["the dragon sleeps quietly"])
+        rep_miss = _report_of(miss, "3")
+        assert rep_miss.status == "skipped"
+        assert rep_miss.reason == "secondary_keys_mismatch"
+
+    def test_selective_not_any(self, db_session, selective_not_any_entry):
+        """选择性 NOT_ANY：次关键词全部不匹配才激活，任一命中即抑制。
+
+        实现依据: worldbook_service.py:602-603（``logic == NOT_ANY`` →
+        ``return not has_any_match``）。
+        """
+        user, char, sess, _ = _mk_world(db_session, [selective_not_any_entry], tag="sna")
+
+        # 没有 unicorn → NOT_ANY 通过
+        hit = _run(db_session, user, char, sess, ["a dragon appears"])
+        rep = _report_of(hit, "4")
+        assert rep.status == "activated"
+        assert rep.reason == "keyword_match"
+        assert rep.matched_keywords == ["dragon"]
+
+        # 出现 unicorn → NOT_ANY 不通过
+        miss = _run(db_session, user, char, sess, ["a dragon and a unicorn"])
+        rep_miss = _report_of(miss, "4")
+        assert rep_miss.status == "skipped"
+        assert rep_miss.reason == "secondary_keys_mismatch"
 
 
 class TestProbability:
-    def test_probability_zero_never_activates(self, probability_zero_entry):
-        """概率为 0 的条目即使关键词命中也不应激活。"""
-        pytest.skip("requires DB session")
+    def test_probability_zero_never_activates(self, db_session, probability_zero_entry, monkeypatch):
+        """概率为 0 的条目即使关键词命中也不应激活。
 
-    def test_probability_hundred_always_activates(self, probability_hundred_entry):
-        """概率为 100 的条目满足关键词条件时必然激活。"""
-        pytest.skip("requires DB session")
+        实现依据: worldbook_service.py:1021-1041 —— ``use_prob and prob < 100``
+        时滚动 ``random.random() * 100``，``roll >= prob`` 即跳过。
+        """
+        monkeypatch.setattr(random, "random", lambda: 0.5)  # roll = 50
+        user, char, sess, _ = _mk_world(db_session, [probability_zero_entry], tag="p0")
+
+        result = _run(db_session, user, char, sess, ["a rare sighting"])
+        rep = _report_of(result, "5")
+        assert rep.status == "skipped"
+        assert rep.reason == "probability=0%,roll=50"
+        assert rep.probability_roll == 50
+        # 未激活 → 不进入任何位置分组
+        assert result.depth_entries == []
+        assert result.entries_by_position == {}
+        assert result.text is None
+
+    def test_probability_hundred_always_activates(self, db_session, probability_hundred_entry):
+        """概率为 100 的条目满足关键词条件时必然激活（且不滚动随机数）。
+
+        实现依据: worldbook_service.py:1025 —— ``prob < 100`` 为假时整段跳过，
+        因此 ``probability_roll`` 保持默认 None。
+        """
+        user, char, sess, _ = _mk_world(db_session, [probability_hundred_entry], tag="p100")
+
+        result = _run(db_session, user, char, sess, ["a common sighting"])
+        rep = _report_of(result, "6")
+        assert rep.status == "activated"
+        assert rep.reason == "keyword_match"
+        assert rep.probability_roll is None
+        assert result.depth_entries == [(4, "Always triggers when matched", 0)]
+
+        miss = _run(db_session, user, char, sess, ["nothing here"])
+        assert _report_of(miss, "6").reason == "primary_keys_mismatch"
 
 
 class TestRecursion:
-    def test_recursion_activation(self, recursion_chain_a, recursion_chain_b):
-        """递归激活：A 内容包含 B 的关键词，B 应在递归扫描中被激活。"""
-        pytest.skip("requires DB session")
+    def test_recursion_activation(self, db_session, recursion_chain_a, recursion_chain_b):
+        """递归激活：A 内容包含 B 的关键词，B 应在递归扫描中被激活。
 
-    def test_prevent_recursion(self, prevent_recursion_entry):
-        """prevent_recursion 条目自身正常激活，内容不进入递归扫描 buffer（A3 语义修正）。"""
-        pytest.skip("requires DB session")
+        实现依据: worldbook_service.py:1155-1172 —— 每轮把已激活条目的内容
+        （非 exclude/prevent）追加为一条 system 消息，进入下一轮 haystack。
+        """
+        user, char, sess, _ = _mk_world(
+            db_session, [recursion_chain_a, recursion_chain_b], tag="rec",
+        )
 
-    def test_delay_until_recursion(self, delay_until_recursion_entry):
-        """delay_until_recursion 延迟到指定递归深度才可激活。"""
-        pytest.skip("requires DB session")
+        result = _run(db_session, user, char, sess, ["we enter the castle"])
 
-    def test_exclude_recursion(self, exclude_recursion_entry):
-        """exclude_recursion 条目内容不计入递归扫描文本。"""
-        pytest.skip("requires DB session")
+        # A（uid 10）在 depth=0 命中 "castle"
+        rep_a = _report_of(result, "10")
+        assert rep_a.status == "activated"
+        assert rep_a.recursion_depth == 0
+        assert rep_a.matched_keywords == ["castle"]
+
+        # B（uid 11）在 depth=1 由 A 的内容 "The castle has a dungeon." 命中
+        rep_b = _report_of(result, "11")
+        assert rep_b.status == "activated"
+        assert rep_b.recursion_depth == 1
+        assert rep_b.matched_keywords == ["dungeon"]
+
+        assert _activated_ids(result) == ["10", "11"]
+        assert result.depth_entries == [
+            (4, "The castle has a dungeon.", 0),
+            (4, "The dungeon is dark.", 0),
+        ]
+
+    def test_prevent_recursion(self, db_session, prevent_recursion_entry):
+        """prevent_recursion 条目自身正常激活，内容不进入递归扫描 buffer。
+
+        实现依据: worldbook_service.py:1161-1163 —— 收集 new_content_parts 时
+        跳过 ``prevent_recursion`` 条目；条目本身不被跳过（A3，注释 :788-790）。
+        """
+        # 下游条目以 prevent 条目内容里的 "depth" 为关键词：只有当 prevent
+        # 条目内容真的进入递归 buffer 时才可能被激活。
+        downstream = {
+            "uid": 201,
+            "key": ["depth"],
+            "keysecondary": [],
+            "comment": "downstream",
+            "content": "Downstream depth lore",
+            "position": WI_POS_AT_DEPTH,
+            "depth": 4,
+        }
+        user, char, sess, _ = _mk_world(
+            db_session, [prevent_recursion_entry, downstream], tag="prev",
+        )
+
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        # 1) prevent 条目自身正常激活（A3 语义）
+        rep = _report_of(result, "12")
+        assert rep.status == "activated"
+        assert rep.reason == "keyword_match"
+        assert rep.recursion_depth == 0
+
+        # 2) 其内容 "Only at depth 0" 未进入递归 buffer → 下游条目始终未命中
+        rep_down = _report_of(result, "201")
+        assert rep_down.status == "skipped"
+        assert rep_down.reason == "primary_keys_mismatch"
+        # 从未进入 depth=1，说明递归在第一轮后就 break（:1165-1167）
+        assert all(r.recursion_depth == 0 for r in result.debug_report)
+        assert result.depth_entries == [(4, "Only at depth 0", 0)]
+
+    def test_delay_until_recursion(self, db_session, delay_until_recursion_entry):
+        """delay_until_recursion 延迟到指定递归深度才可激活。
+
+        实现依据: worldbook_service.py:792-803 —— ``delay_until > 0 and
+        recursion_depth < delay_until`` → skipped，reason 带 current 深度。
+        """
+        # 造一条 3 层递归链，让 delayed 条目在第 2 层才首次被评估
+        chain_a = {
+            "uid": 101, "key": ["castle"], "keysecondary": [],
+            "comment": "chain A", "content": "The castle has a tower.",
+            "order": 3, "position": WI_POS_AT_DEPTH, "depth": 4,
+        }
+        chain_b = {
+            "uid": 102, "key": ["tower"], "keysecondary": [],
+            "comment": "chain B", "content": "The tower hides a dragon.",
+            "order": 2, "position": WI_POS_AT_DEPTH, "depth": 4,
+        }
+        delayed = dict(delay_until_recursion_entry, order=1)
+
+        user, char, sess, _ = _mk_world(
+            db_session, [chain_a, chain_b, delayed], tag="dur",
+        )
+
+        result = _run(db_session, user, char, sess, ["we enter the castle"])
+
+        delayed_reports = [r for r in result.debug_report if r.entry_id == "13"]
+        # depth=0 / depth=1 各被拦一次
+        assert [r.recursion_depth for r in delayed_reports] == [0, 1, 2]
+        assert delayed_reports[0].status == "skipped"
+        assert delayed_reports[0].reason == "delay_until_recursion=2,current=0"
+        assert delayed_reports[1].status == "skipped"
+        assert delayed_reports[1].reason == "delay_until_recursion=2,current=1"
+        # depth=2 放行并命中 B 内容里的 "dragon"
+        assert delayed_reports[2].status == "activated"
+        assert delayed_reports[2].reason == "keyword_match"
+        assert delayed_reports[2].matched_keywords == ["dragon"]
+
+    def test_exclude_recursion(self, db_session, exclude_recursion_entry):
+        """exclude_recursion 条目内容不计入递归扫描文本。
+
+        实现依据:
+        - worldbook_service.py:1161-1163 —— 内容不入 new_content_parts；
+        - worldbook_service.py:808-818 —— depth>0 时该条目本身也被跳过。
+        """
+        # 下游条目以 exclude 条目内容里的 "seed" 为关键词
+        downstream = {
+            "uid": 202, "key": ["seed"], "keysecondary": [],
+            "comment": "downstream", "content": "Downstream seed lore",
+            "order": 1, "position": WI_POS_AT_DEPTH, "depth": 4,
+        }
+        user, char, sess, _ = _mk_world(
+            db_session,
+            [dict(exclude_recursion_entry, order=2), downstream],
+            tag="exrec",
+        )
+
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        # 1) depth=0 正常激活
+        rep = _report_of(result, "14")
+        assert rep.status == "activated"
+        assert rep.recursion_depth == 0
+
+        # 2) 内容 "Won't seed further recursion" 未进入递归 buffer → 下游不激活
+        rep_down = _report_of(result, "202")
+        assert rep_down.status == "skipped"
+        assert rep_down.reason == "primary_keys_mismatch"
+        assert result.depth_entries == [(4, "Won't seed further recursion", 0)]
 
 
 class TestGroupWeighted:
-    def test_group_weighted_choice(self, group_weighted_entries):
-        """分组加权：同组非 override 时只保留一个（按权重随机）。"""
-        pytest.skip("requires DB session")
+    def test_group_weighted_choice(self, db_session, group_weighted_entries, monkeypatch):
+        """分组加权：同组非 override 时按 group_weight 随机选一个，其余淘汰。
 
-    def test_group_override_keeps_all(self, group_override_entry):
-        """group_override=True 时分组内条目全部保留。"""
-        pytest.skip("requires DB session")
+        实现依据: ``_apply_group_scoring`` worldbook_service.py:1787-1801 ——
+        ``random.choices(random_candidates, weights=weights, k=1)``，
+        未中选者 status="eliminated" / reason="group_scoring_eliminated"。
+        权重取值: ``(e.group_weight if (e.group_weight or 0) > 0 else 100)``（:1788）。
+        """
+        from app.services import worldbook_service as wbs
 
-    def test_min_activations_not_met(self, min_activations_entries):
-        """min_activations 未满足时整组被淘汰。"""
-        pytest.skip("requires DB session")
+        # 用确定性替身替换 random.choices：恒选权重最大者（uid20 weight=80 > uid21 weight=20）
+        monkeypatch.setattr(wbs.random, "choices", _pick_highest_weight)
+
+        user, char, sess, _ = _mk_world(db_session, group_weighted_entries, tag="gw")
+        result = _run(db_session, user, char, sess, ["weather report"])
+
+        rep20 = _report_of(result, "20")
+        rep21 = _report_of(result, "21")
+        assert rep20.status == "activated", "权重最大者应被选中"
+        assert rep21.status == "eliminated"
+        assert rep21.reason == "group_scoring_eliminated"
+
+    def test_group_override_keeps_all(self, db_session, group_override_entry):
+        """group_override=True 的**实际**语义（与旧 docstring 不符，按实现写）。
+
+        ⚠️ 旧 docstring 写「分组内条目全部保留」，但实现是 ST 1.18.0 groupOverride：
+        ``_apply_group_scoring`` worldbook_service.py:1732-1746 —— 组内**有任意**
+        override 条目时，选 **order 最小**的 override 作为**唯一 winner**，
+        淘汰组内其他全部条目（含非 override）。故本用例构造一个同组非 override
+        sibling，断言它被淘汰 —— 这才真正验证 override 语义（单条目时两种解释结果相同）。
+        """
+        sibling = {
+            **group_override_entry,
+            "uid": 23,
+            "comment": "non-override sibling",
+            "content": "Sibling content",
+            "group_override": False,
+            "group_weight": 100,
+        }
+        user, char, sess, _ = _mk_world(
+            db_session, [group_override_entry, sibling], tag="gov"
+        )
+        result = _run(db_session, user, char, sess, ["weather"])
+
+        status = {r.entry_id: (r.status, r.reason) for r in result.debug_report}
+        winners = [eid for eid, (st, _) in status.items() if st == "activated"]
+        assert len(winners) == 1, f"override 组应只留唯一 winner，实际 {winners}"
+        loser = [eid for eid in ("22", "23") if eid != winners[0]][0]
+        assert status[loser] == ("eliminated", "group_override_eliminated")
+
+    def test_min_activations_not_met(self, db_session, min_activations_entries):
+        """min_activations 未满足时整组被淘汰。
+
+        实现依据: ``_apply_group_scoring`` worldbook_service.py:1748-1761 ——
+        ``min_required`` 取组内最大 min_activations（:1750-1754），
+        已激活条目数 ``len(group_entries) < min_required`` 则整组 eliminated，
+        reason 为 f-string ``min_activations_not_met(required=..,actual=..)``（:1760）。
+
+        构造：两个条目 key 分别是 alpha / beta，消息只含 "alpha"
+        ⇒ 只有 uid30 激活 ⇒ 组内激活数 1 < 2 ⇒ 淘汰。
+        """
+        user, char, sess, _ = _mk_world(db_session, min_activations_entries, tag="ma")
+        result = _run(db_session, user, char, sess, ["alpha"])
+
+        rep30 = _report_of(result, "30")
+        assert rep30.status == "eliminated"
+        assert rep30.reason.startswith("min_activations_not_met(required=2,actual=1)"), \
+            f"reason 应说明 required/actual，实际 {rep30.reason!r}"
 
 
 class TestDepthInsertion:
-    def test_depth_insertion(self, depth_insertion_entry):
-        """深度插入：条目应出现在 depth_entries 中对应深度。"""
-        pytest.skip("requires DB session")
+    def test_depth_insertion(self, db_session, depth_insertion_entry):
+        """深度插入：条目应出现在 depth_entries 中对应深度。
 
-    def test_position_before(self, position_before_entry):
-        """position=before 应进入 entries_by_position[0]。"""
-        pytest.skip("requires DB session")
+        实现依据: build_worldbook_context worldbook_service.py:2161-2169 ——
+        ``_depth_value = 4 if entry.depth is None else entry.depth``（**depth=0 是合法值**，
+        不能写成 `entry.depth or 4`，那是已修过的 2026-10-05 缺陷），
+        追加三元组 ``(depth, content, role)``，role 默认 0=system。
+        """
+        user, char, sess, _ = _mk_world(db_session, [depth_insertion_entry], tag="dep")
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
 
-    def test_position_outlet(self, position_outlet_entry):
-        """position=outlet 应进入 outlet_entries[outlet_name]。"""
-        pytest.skip("requires DB session")
+        assert _report_of(result, "40").status == "activated"
+        assert result.depth_entries == [(2, "Injected at depth 2", 0)], \
+            f"depth=2 的条目应落 (2, content, 0)，实际 {result.depth_entries}"
+
+    def test_position_before(self, db_session, position_before_entry):
+        """position=before(0) 应进入 entries_by_position[0]。
+
+        实现依据: worldbook_service.py:2177-2178 —— 非 AT_DEPTH/EM_*/OUTLET 的
+        position 一律 ``entries_by_position.setdefault(pos, []).append(content)``。
+        """
+        user, char, sess, _ = _mk_world(db_session, [position_before_entry], tag="pbf")
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        assert _report_of(result, "41").status == "activated"
+        assert result.entries_by_position == {0: ["Before char content"]}, \
+            f"实际 {result.entries_by_position}"
+
+    def test_position_outlet(self, db_session, position_outlet_entry):
+        """position=outlet(7) 应进入 outlet_entries[outlet_name]。
+
+        实现依据: worldbook_service.py:2174-2176 ——
+        ``outlet_name = (entry.outlet_name or "default").strip() or "default"``，
+        再 ``outlet_entries.setdefault(outlet_name, []).append(content)``。
+        """
+        user, char, sess, _ = _mk_world(db_session, [position_outlet_entry], tag="out")
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        assert _report_of(result, "42").status == "activated"
+        assert result.outlet_entries == {"lore_box": ["Outlet content"]}, \
+            f"实际 {result.outlet_entries}"
 
 
 class TestBudgetExclusion:
-    def test_budget_exclusion(self, budget_huge_entry):
-        """超出 token budget 的条目应被 trim（status=trimmed）。"""
-        pytest.skip("requires DB session")
+    def test_budget_exclusion(self, db_session, budget_huge_entry):
+        """超出 token budget 的条目应被 trim（status=trimmed）。
+
+        实现依据: ``_apply_budget`` worldbook_service.py:1387-1394 ——
+        ``used + est > max_tokens`` 时 status="trimmed"，
+        reason=f"budget_exceeded (est=.., used=.., max=..)"（:1393）。
+        本用例把书级预算压到 100，条目 content 约 5000 tokens ⇒ 必然超。
+        """
+        user, char, sess, _ = _mk_world(
+            db_session, [budget_huge_entry], tag="bud", budget_tokens=100
+        )
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        rep = _report_of(result, "50")
+        assert rep.status == "trimmed", f"应被预算裁掉，实际 {rep.status}"
+        assert rep.reason.startswith("budget_exceeded"), f"实际 reason={rep.reason!r}"
+        # 被裁掉的条目不应进入最终文本
+        assert "word word" not in (result.text or "")
 
     def test_budget_percentage_and_cap(self, world_book_with_budget):
-        """budget_tokens='10%' + budget_cap=500 应解析为 min(10%·ctx, 500)。"""
-        # 纯函数层面已覆盖 _resolve_budget；此为引擎级占位
-        pytest.skip("requires DB session")
+        """budget_tokens='10%' + budget_cap=500 ⇒ min(10%·ctx, 500)。
+
+        实现依据: ``_resolve_budget`` worldbook_service.py:1331-1346 ——
+        百分比按 max_context_tokens 折算（:1336-1337），
+        再 ``cap > 0 and resolved > cap`` 时钳到 cap（:1344-1346）。
+
+        诚实标注：本用例直接调纯函数，**不经过引擎**（原注释即说「纯函数层面已覆盖」）。
+        引擎级端到端（书级 budget_tokens 真的生效）由上一个用例覆盖。
+        """
+        from app.services.worldbook_service import _resolve_budget
+
+        # 10% of 10000 = 1000，被 cap=500 钳住
+        assert _resolve_budget("10%", 500, 10000, 16000) == 500
+        # 无 cap 时按百分比
+        assert _resolve_budget("10%", 0, 10000, 16000) == 1000
+        # cap 大于百分比结果时不生效
+        assert _resolve_budget("10%", 5000, 10000, 16000) == 1000
+        # 固定值
+        assert _resolve_budget("800", 0, 10000, 16000) == 800
+        # 空值回退 default
+        assert _resolve_budget(None, 0, 10000, 16000) == 16000
 
 
 class TestTimedEffects:
-    def test_sticky_keeps_active(self, sticky_entry):
-        """sticky 激活后在剩余轮次内保持激活。"""
-        pytest.skip("requires DB session")
+    def test_sticky_keeps_active(self, db_session, sticky_entry):
+        """sticky 激活后在剩余轮次内保持激活（无条件激活，跳过关键词匹配）。
 
-    def test_cooldown_blocks(self, cooldown_entry):
-        """cooldown 激活后在冷却轮次内不可再次激活。"""
-        pytest.skip("requires DB session")
+        实现依据: ``_scan_entries`` worldbook_service.py:922-940 ——
+        ``is_sticky_active`` 为真时直接 activated，**reason="sticky_active"**，
+        并续期（``record_activation``）。
+        第 1 轮命中关键词激活；第 2 轮消息**不含** "dragon"，但 sticky_remaining>0
+        ⇒ 仍应 activated(reason="sticky_active")。
+        """
+        user, char, sess, _ = _mk_world(db_session, [sticky_entry], tag="stk")
 
-    def test_delay_blocks_initial(self, delay_entry):
-        """delay 前 N 轮不可激活。"""
-        pytest.skip("requires DB session")
+        r1 = _run(db_session, user, char, sess, ["a dragon appears"])
+        assert _report_of(r1, "80").status == "activated"
+
+        # 第 2 轮：消息与关键词无关，靠 sticky 保持
+        r2 = _run(db_session, user, char, sess, ["nothing relevant here"])
+        rep2 = _report_of(r2, "80")
+        assert rep2.status == "activated", "sticky 期内应无条件激活"
+        assert rep2.reason == "sticky_active"
+
+    def test_cooldown_blocks(self, db_session, cooldown_entry):
+        """cooldown 激活后在冷却轮次内不可再次激活。
+
+        实现依据: ``TimedEffectsManager.can_activate`` worldbook_service.py:220-223
+        （``cooldown_remaining > 0 and not is_sticky_active`` → False）+
+        ``_scan_entries`` :851-872 生成 reason="timed_effect:cooldown=N"（:860-861）。
+        """
+        user, char, sess, _ = _mk_world(db_session, [cooldown_entry], tag="cd")
+
+        r1 = _run(db_session, user, char, sess, ["a dragon appears"])
+        assert _report_of(r1, "81").status == "activated"
+
+        r2 = _run(db_session, user, char, sess, ["a dragon appears again"])
+        rep2 = _report_of(r2, "81")
+        assert rep2.status == "skipped", "冷却期内不应再次激活"
+        assert rep2.reason.startswith("timed_effect:cooldown="), \
+            f"实际 reason={rep2.reason!r}"
+
+    def test_delay_blocks_initial(self, db_session, delay_entry):
+        """delay 前 N 轮不可激活（ST chat_length 绝对语义）。
+
+        实现依据: ``can_activate`` worldbook_service.py:212-213 ——
+        ``entry.delay > 0 and effective_chat_length < entry.delay`` → False；
+        reason 由 ``_scan_entries`` :854-858 拼成 "timed_effect:delay=2,chat_length=1"。
+        注意 delay 判定是**无状态**的（D-1 修复，2026-08-23），不依赖 state 行。
+        """
+        user, char, sess, _ = _mk_world(db_session, [delay_entry], tag="dly")
+
+        # chat_length=1 < delay=2 ⇒ 本轮抑制
+        r = _run(db_session, user, char, sess, ["a dragon appears"], chat_length=1)
+        rep = _report_of(r, "82")
+        assert rep.status == "skipped"
+        assert rep.reason.startswith("timed_effect:delay="), f"实际 reason={rep.reason!r}"
+
+        # chat_length=5 >= delay=2 ⇒ 解除抑制
+        r2 = _run(db_session, user, char, sess, ["a dragon appears"], chat_length=5)
+        assert _report_of(r2, "82").status == "activated", "超过 delay 后应可激活"
 
 
 class TestDecorators:
-    def test_decorator_activate(self, decorator_activate_entry):
-        """@@activate 强制激活（跳过关键词匹配）。"""
-        pytest.skip("requires DB session")
+    def test_decorator_activate(self, db_session, decorator_activate_entry):
+        """@@activate 强制激活（跳过关键词匹配）。
 
-    def test_decorator_dont_activate(self, decorator_dont_activate_entry):
-        """@@dont_activate 强制跳过。"""
-        pytest.skip("requires DB session")
+        实现依据: ``_scan_entries`` worldbook_service.py:890-904 ——
+        ``decorators.get('activate')`` 为真时直接 activated，
+        **reason="decorator_activate"**（:898），且 key 为空也不影响。
+        """
+        user, char, sess, _ = _mk_world(db_session, [decorator_activate_entry], tag="da")
+        # 消息与任何关键词都无关（该条目 key 本来就是空）
+        result = _run(db_session, user, char, sess, ["unrelated text"])
+
+        rep = _report_of(result, "70")
+        assert rep.status == "activated"
+        assert rep.reason == "decorator_activate"
+
+    def test_decorator_dont_activate(self, db_session, decorator_dont_activate_entry):
+        """@@dont_activate 强制跳过（即使关键词命中）。
+
+        实现依据: ``_scan_entries`` worldbook_service.py:879-889 ——
+        ``dont_activate`` 或 ``exclude`` 为真时 skipped，
+        reason 在两者间二选一（:886）：exclude 优先为 "decorator_exclude"，
+        否则 "decorator_dont_activate"。
+        """
+        user, char, sess, _ = _mk_world(
+            db_session, [decorator_dont_activate_entry], tag="dd"
+        )
+        # 关键词 "dragon" 命中，但装饰器应压制
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        rep = _report_of(result, "71")
+        assert rep.status == "skipped"
+        assert rep.reason == "decorator_dont_activate", f"实际 reason={rep.reason!r}"
 
 
 class TestDisabledEntry:
-    def test_disabled_skipped(self, disabled_entry):
-        """disable=True 的条目应被跳过（reason=disabled）。"""
-        pytest.skip("requires DB session")
+    def test_disabled_skipped(self, db_session, disabled_entry):
+        """disable=True 的条目应被跳过（reason=disabled）。
+
+        实现依据: ``_scan_entries`` worldbook_service.py:778-787 ——
+        检查的是 ``entry.enabled is False``；而 ``make_stage`` :139 把 ST 的
+        ``disable`` 映射为 ``enabled = not bool(disable)``，故 fixture 的
+        ``"disable": True`` ⇒ ``enabled=False``。该检查位于扫描最前，优先于一切。
+        """
+        user, char, sess, _ = _mk_world(db_session, [disabled_entry], tag="dis")
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        rep = _report_of(result, "72")
+        assert rep.status == "skipped"
+        assert rep.reason == "disabled"
 
 
 class TestTriggersAndFilter:
-    def test_triggers_mismatch(self, triggers_entry):
-        """triggers 与 trigger_type 不匹配时跳过。"""
-        pytest.skip("requires DB session")
+    def test_triggers_mismatch(self, db_session, triggers_entry):
+        """triggers 与 trigger_type 不匹配时跳过。
 
-    def test_character_filter_mismatch(self, character_filter_entry):
-        """character_filter 与当前角色 name/tag 不匹配时跳过。"""
-        pytest.skip("requires DB session")
+        实现依据: ``_scan_entries`` worldbook_service.py:820-831 ——
+        条件为 ``triggers and trigger_type and trigger_type not in triggers``，
+        **必须显式传 trigger_type 才会触发**（不传时该检查整体短路、条目照常参与关键词匹配）。
+        reason = f"trigger_mismatch:{trigger_type}"（:828）。
+        """
+        user, char, sess, _ = _mk_world(db_session, [triggers_entry], tag="trg")
+
+        # 该条目 triggers=["to_title"]，传 trigger_type="normal" ⇒ 不匹配
+        r_mismatch = _run(
+            db_session, user, char, sess, ["a dragon appears"], trigger_type="normal"
+        )
+        rep = _report_of(r_mismatch, "90")
+        assert rep.status == "skipped"
+        assert rep.reason == "trigger_mismatch:normal", f"实际 reason={rep.reason!r}"
+
+        # 传匹配的 trigger_type="to_title" ⇒ 不跳过，正常走关键词匹配
+        r_match = _run(
+            db_session, user, char, sess, ["a dragon appears"], trigger_type="to_title"
+        )
+        assert _report_of(r_match, "90").status == "activated"
+
+    def test_character_filter_mismatch(self, db_session, character_filter_entry):
+        """character_filter 与当前角色 name/tag 不匹配时跳过。
+
+        实现依据: ``_scan_entries`` worldbook_service.py:833-849 ——
+        当前角色名不在 filter 里、且没有任何 tag 命中时 skipped，
+        reason="character_filter_mismatch"（:846）。
+        fixture 的 filter=["Aria"]，而 ``_mk_world`` 建的角色名是 "WbSeChar" ⇒ 不匹配。
+        """
+        user, char, sess, _ = _mk_world(
+            db_session, [character_filter_entry], tag="cf"
+        )
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        rep = _report_of(result, "91")
+        assert rep.status == "skipped"
+        assert rep.reason == "character_filter_mismatch"
 
 
 class TestDebugReportFields:
@@ -1197,13 +1745,40 @@ class TestDebugReportFields:
         assert r.matched_keywords == []
         assert r.tokens_estimate == 0
 
-    def test_engine_report_contains_depth_and_position(self, primary_key_entry):
-        """端到端：activated 报告应携带 recursion_depth 与 position。"""
-        pytest.skip("requires DB session")
+    def test_engine_report_contains_depth_and_position(self, db_session, primary_key_entry):
+        """端到端：activated 报告应携带 recursion_depth 与 position。
 
-    def test_engine_report_contains_probability_roll(self, probability_zero_entry):
-        """端到端：因概率被跳过的报告应携带 probability_roll。"""
-        pytest.skip("requires DB session")
+        实现依据: ``_scan_entries`` worldbook_service.py:773
+        （``_entry_position_map = {e.id: e.position for e in entries}``）
+        与 :1066-1068 的扫描后回填循环：
+        ``_r.recursion_depth = recursion_depth`` / ``_r.position = _entry_position_map.get(_r.entry_id)``。
+        初始扫描传 recursion_depth=0，故此处应为 0 而非 dataclass 默认的 -1。
+        position 取的是**条目自身**的 position（本 fixture 为 ``WI_POS_BEFORE_CHAR``=0），
+        不是 WI_POS_AT_DEPTH —— 别照 AT_DEPTH 想当然。
+        """
+        user, char, sess, _ = _mk_world(db_session, [primary_key_entry], tag="rdp")
+        result = _run(db_session, user, char, sess, ["a dragon appears"])
+
+        rep = _report_of(result, "2")
+        assert rep.status == "activated"
+        assert rep.recursion_depth == 0, \
+            f"初始扫描应为 0（-1 是 dataclass 默认值，说明回填没跑到），实际 {rep.recursion_depth}"
+        assert rep.position == WI_POS_BEFORE_CHAR, f"实际 {rep.position}"
+
+    def test_engine_report_contains_probability_roll(self, db_session, probability_zero_entry, monkeypatch):
+        """端到端：因概率被跳过的报告应携带 probability_roll。
+
+        实现依据: worldbook_service.py:1037 —— 概率滚动命中时
+        ``WorldbookEntryReport(..., probability_roll=int(roll))``。
+        固定 ``random.random() -> 0.5`` ⇒ roll = 50。
+        """
+        monkeypatch.setattr(random, "random", lambda: 0.5)
+        user, char, sess, _ = _mk_world(db_session, [probability_zero_entry], tag="pr")
+
+        result = _run(db_session, user, char, sess, ["a rare sighting"])
+        rep = _report_of(result, "5")
+        assert rep.status == "skipped"
+        assert rep.probability_roll == 50, f"实际 {rep.probability_roll}"
 
 
 class TestWorldbookContextResult:

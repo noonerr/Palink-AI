@@ -542,54 +542,34 @@ class TestP16ImpersonateCommand:
 # P1-3: MESSAGE_STREAMING_STARTED/STOPPED 事件触发（前端契约）
 # ---------------------------------------------------------------------------
 class TestP13StreamingEvents:
-    """验证前端 runtime.ts 中流式事件触发（通过检查文件内容）。"""
-
-    @staticmethod
-    def _resolve_runtime_ts() -> str:
-        """宿主仓库布局优先，其次容器只读挂载点（C7/N-17）。"""
-        candidates = [
-            os.path.normpath(os.path.join(
-                _BACKEND_DIR, "..", "frontend", "src", "lib", "sillytavern", "runtime.ts",
-            )),
-            "/opt/frontend-src/src/lib/sillytavern/runtime.ts",
-        ]
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        return candidates[0]
-
-    def test_runtime_ts_emits_streaming_started(self):
-        """runtime.ts 包含 message_streaming_started 事件触发。"""
-        runtime_path = self._resolve_runtime_ts()
-        if not os.path.exists(runtime_path):
-            pytest.skip(f"runtime.ts 不存在: {runtime_path}")
-        content = open(runtime_path, encoding="utf-8").read()
-        assert "message_streaming_started" in content, "runtime.ts 应触发 message_streaming_started 事件"
-
-    def test_runtime_ts_emits_streaming_stopped(self):
-        """runtime.ts 包含 message_streaming_stopped 事件触发。"""
-        runtime_path = self._resolve_runtime_ts()
-        if not os.path.exists(runtime_path):
-            pytest.skip(f"runtime.ts 不存在: {runtime_path}")
-        content = open(runtime_path, encoding="utf-8").read()
-        assert "message_streaming_stopped" in content, "runtime.ts 应触发 message_streaming_stopped 事件"
+    # 【测试诚实化 2026-10-10】原 test_runtime_ts_emits_streaming_started /
+    # test_runtime_ts_emits_streaming_stopped 及辅助 _resolve_runtime_ts 已删除。
+    #
+    # 理由：它们在 **Python** 测试里 open() **前端** runtime.ts，断言文件文本里含某个事件名字符串。
+    # 断言的是「文本在不在」，不是「事件有没有真的被 emit」—— 把字符串写进注释就能骗过它，
+    # 文件一挪位置又变成静默 skip。属纯伪测试。
+    #
+    # 真回归保护应放在前端侧：vitest 里 mock 事件总线，断言 dispatchEvent('message_streaming_started')
+    # 被真实调用。见 frontend/src/lib/sillytavern/__tests__/。
+    """（原前端文本断言已删除，理由见类内注释。）"""
 
 
 # ---------------------------------------------------------------------------
 # P1-6: is_hidden 消息过滤（验证 character_message_builder 中的过滤逻辑）
 # ---------------------------------------------------------------------------
 class TestP16IsHiddenFilter:
-    """验证 is_hidden 消息过滤逻辑。"""
-
-    def test_character_message_builder_filters_is_hidden(self):
-        """character_message_builder.py 包含 is_hidden 过滤逻辑。"""
-        builder_path = os.path.join(
-            _BACKEND_DIR, "app", "services", "character_message_builder.py",
-        )
-        if not os.path.exists(builder_path):
-            pytest.skip(f"character_message_builder.py 不存在")
-        content = open(builder_path, encoding="utf-8").read()
-        assert "is_hidden" in content, "character_message_builder.py 应包含 is_hidden 过滤"
+    # 【测试诚实化 2026-10-10】原 test_character_message_builder_filters_is_hidden 已删除。
+    #
+    # 理由：它只断言 character_message_builder.py **文件文本里含 "is_hidden" 这个词**，
+    # 与「隐藏消息到底有没有被过滤掉」毫无关系。
+    #
+    # 真实过滤逻辑在 `character_message_builder.py:225`：
+    #     history = [m for m in history if not getattr(m, "is_hidden", False)]
+    # 但它内嵌在 `build_character_chat_messages` 里（18 个参数 + 4 个注入的 callable），
+    # 轻量真测需构造完整 session/character/message 链并 mock 4 个回调，成本超出本批范围。
+    # ⇒ **列入待办**：用 `conftest.py:84` 的 `db_session` 构造「1 条 is_hidden + 1 条正常」，
+    #    再调该函数断言隐藏消息未进入装配结果。在重建之前，这里不放任何伪断言。
+    """（原 is_hidden 文本断言已删除，理由见类内注释。）"""
 
 # ---------------------------------------------------------------------------
 # P1-7: extensionPrompt store 合并（验证 CharacterCardRenderer 注册合并读取）
@@ -597,77 +577,60 @@ class TestP16IsHiddenFilter:
 class TestP17ExtensionPromptStoreMerge:
     """验证两套 extensionPrompt store 合并读取。"""
 
-    def test_character_card_renderer_registers_get_extension_prompts(self):
-        """CharacterCardRenderer 渲染链注册 getExtensionPrompts 合并读取。
-
-        【B】判定（断言跟随机械拆分现状，2026-08-25 甄别）：
-        CharacterCardRenderer.tsx 已被 scripts/_p1-split.mjs 机械拆分（文件头自述
-        AUTO-GENERATED），原单文件内的纯函数块整体迁入 smart-card-runtime/ 子目录，
-        P1-7 的 getExtensionPrompts 注册逻辑现落在
-        smart-card-runtime/frame-shim/legacy-st-sim.ts（源注释即「P1-7 修复」）与
-        smart-card-runtime/SillyTavernCompatRuntime.ts（getExtensionPromptsCompat），
-        且 CharacterCardRenderer.tsx 经 buildSillyTavernCompatRuntimeV2Shim import 保持
-        引用链完整。基线 commit（7d5dea1）中的该文件同样不含标记，证明断言在拆分时
-        即失效、非近期产品回退。故断言改为扫描主文件 + 拆分落点目录树。
-        """
-        frontend_custom_candidates = [
-            os.path.normpath(os.path.join(
-                _BACKEND_DIR, "..", "frontend", "src", "components", "ui", "custom",
-            )),
-            "/opt/frontend-src/src/components/ui/custom",
-        ]
-        frontend_custom_dir = next(
-            (p for p in frontend_custom_candidates if os.path.isdir(p)),
-            frontend_custom_candidates[0],
-        )
-        renderer_path = os.path.join(frontend_custom_dir, "CharacterCardRenderer.tsx")
-        runtime_dir = os.path.join(frontend_custom_dir, "smart-card-runtime")
-        if not os.path.exists(renderer_path):
-            pytest.skip(f"CharacterCardRenderer.tsx 不存在")
-        scan_targets = [renderer_path]
-        if os.path.isdir(runtime_dir):
-            for root, _dirs, files in os.walk(runtime_dir):
-                for name in files:
-                    if name.endswith((".ts", ".tsx")):
-                        scan_targets.append(os.path.join(root, name))
-        found_in = []
-        for path in scan_targets:
-            content = open(path, encoding="utf-8").read()
-            if "getExtensionPrompts" in content or "__palink_extension_prompts" in content:
-                found_in.append(os.path.relpath(path, frontend_custom_dir))
-        assert found_in, \
-            "CharacterCardRenderer 渲染链（含 smart-card-runtime/ 拆分落点）应保留 " \
-            "getExtensionPrompts / __palink_extension_prompts 合并读取逻辑"
+    # 【测试诚实化 2026-10-10】原 test_character_card_renderer_registers_get_extension_prompts 已删除。
+    #
+    # 理由：它在 Python 测试里 os.walk() 整个前端目录树，断言**前端源码文本里**出现
+    # "getExtensionPrompts" 或 "__palink_extension_prompts" 字符串。
+    # 原 docstring 自己就承认这是「断言跟随机械拆分现状」——即断言是为了适配文件拆分而
+    # 被迫放宽的，这类断言跟随的是**文件布局**而不是**行为**，拆一次文件就失效一次。
+    # 它无法发现「合并读取逻辑被删掉但字符串残留在注释里」这类真实回归。
+    #
+    # 真回归保护应放在前端侧（vitest 断言 getExtensionPrompts 的真实合并行为）。
+    # 与同批 Agent 对 P2-1/2/3/5 的处置口径一致：无法发现真实回归的断言，删掉而不是留着。"""
 
 
 # ---------------------------------------------------------------------------
 # P1-8: global variables 同步层（验证 silly_tavern.py 包含变量端点）
 # ---------------------------------------------------------------------------
 class TestP18GlobalVariablesSync:
-    """验证 ST 兼容变量端点同步层。"""
+    """验证 ST 兼容变量端点同步层。
+
+    【测试诚实化 2026-10-10】原断言是「open() silly_tavern.py 再 grep 文本」——
+    把字符串留在注释里就能绿。现改为对 **运行时 router 对象** 与 **真实模块导入** 断言：
+    端点被删、模型被移走都会真红。
+    """
 
     def test_st_variable_endpoints_exist(self):
-        """silly_tavern.py 包含 /api/variables/* 端点。"""
-        st_path = os.path.join(_BACKEND_DIR, "app", "api", "silly_tavern.py")
-        if not os.path.exists(st_path):
-            pytest.skip("silly_tavern.py 不存在")
-        content = open(st_path, encoding="utf-8").read()
-        assert "/api/variables" in content, "silly_tavern.py 应包含 /api/variables 端点"
+        """silly_tavern router 应真实注册 /api/variables/global/* 三个端点。"""
+        from app.api.silly_tavern import router
+
+        paths = {getattr(r, "path", "") for r in router.routes}
+        for expected in (
+            "/api/variables/global/get",
+            "/api/variables/global/set",
+            "/api/variables/global/delete",
+        ):
+            assert expected in paths, f"silly_tavern router 未注册端点 {expected}"
 
     def test_global_variable_model_imported(self):
-        """silly_tavern.py 导入了 GlobalVariable 模型。"""
-        st_path = os.path.join(_BACKEND_DIR, "app", "api", "silly_tavern.py")
-        if not os.path.exists(st_path):
-            pytest.skip("silly_tavern.py 不存在")
-        content = open(st_path, encoding="utf-8").read()
-        assert "GlobalVariable" in content, "silly_tavern.py 应导入 GlobalVariable 模型"
+        """GlobalVariable 模型应可从 app.models.chat_variable 真实导入。"""
+        from app.models.chat_variable import GlobalVariable
+
+        assert hasattr(GlobalVariable, "__tablename__"), \
+            "GlobalVariable 应是 SQLAlchemy 声明式模型（须有 __tablename__）"
 
 
 # ---------------------------------------------------------------------------
 # P1-9: expressions 情感分类端点
 # ---------------------------------------------------------------------------
 class TestP113ElevenlabsEndpoints:
-    """验证 7 个 /api/speech/elevenlabs/* 端点。"""
+    """验证 7 个 /api/speech/elevenlabs/* 端点。
+
+    【测试诚实化 2026-10-10】原三条断言全是「open() silly_tavern.py 再数文本」，
+    其中 `test_elevenlabs_endpoints_proxies_to_st_sidecar` 更是用 `content.find()`
+    截取字符串区间再 grep —— 纯文本游戏。现全部改为对**运行时 router 对象**与
+    **真实模块导入**断言。
+    """
 
     _EXPECTED_ENDPOINTS = [
         "/api/speech/elevenlabs/voices",
@@ -680,35 +643,30 @@ class TestP113ElevenlabsEndpoints:
     ]
 
     def test_all_elevenlabs_endpoints_exist(self):
-        """silly_tavern.py 应包含全部 7 个 elevenlabs 端点。"""
-        st_path = os.path.join(_BACKEND_DIR, "app", "api", "silly_tavern.py")
-        if not os.path.exists(st_path):
-            pytest.skip("silly_tavern.py 不存在")
-        content = open(st_path, encoding="utf-8").read()
-        for endpoint in self._EXPECTED_ENDPOINTS:
-            assert f'"{endpoint}"' in content, \
-                f"silly_tavern.py 应包含 {endpoint} 端点"
+        """silly_tavern router 应真实注册全部 7 个 elevenlabs 端点。"""
+        from app.api.silly_tavern import router
 
-    def test_elevenlabs_endpoints_proxies_to_st_sidecar(self):
-        """所有 elevenlabs 端点应通过 _forward_extensions_to_st_native 代理。"""
-        st_path = os.path.join(_BACKEND_DIR, "app", "api", "silly_tavern.py")
-        if not os.path.exists(st_path):
-            pytest.skip("silly_tavern.py 不存在")
-        content = open(st_path, encoding="utf-8").read()
-        # 查找 elevenlabs 端点区域
-        elevenlabs_start = content.find("/api/speech/elevenlabs/voices")
-        # 找到最后一个 elevenlabs 端点
-        elevenlabs_end = content.rfind("/api/speech/elevenlabs/recognize")
-        assert elevenlabs_start != -1 and elevenlabs_end != -1
-        elevenlabs_section = content[elevenlabs_start:elevenlabs_end + 500]
-        assert "_forward_extensions_to_st_native" in elevenlabs_section, \
-            "elevenlabs 端点应通过 _forward_extensions_to_st_native 代理到 ST sidecar"
+        paths = {getattr(r, "path", "") for r in router.routes}
+        missing = [e for e in self._EXPECTED_ENDPOINTS if e not in paths]
+        assert not missing, f"silly_tavern router 缺少端点: {missing}"
+
+    def test_elevenlabs_proxy_function_importable(self):
+        """代理函数 _forward_extensions_to_st_native 应可从 silly_tavern 真实导入。
+
+        诚实标注：本断言只保证「代理函数存在且可调用」，
+        **不保证 7 个端点都真的调用了它**（那需要逐个端点的集成测试，本批未做）。
+        但已强于原来的文本区间 grep。
+        """
+        from app.api.silly_tavern import _forward_extensions_to_st_native
+
+        assert callable(_forward_extensions_to_st_native)
 
     def test_elevenlabs_endpoints_count(self):
-        """应有 7 个 elevenlabs 端点定义。"""
-        st_path = os.path.join(_BACKEND_DIR, "app", "api", "silly_tavern.py")
-        if not os.path.exists(st_path):
-            pytest.skip("silly_tavern.py 不存在")
-        content = open(st_path, encoding="utf-8").read()
-        count = content.count("/api/speech/elevenlabs/")
-        assert count >= 7, f"应至少有 7 个 /api/speech/elevenlabs/ 端点定义，实际 {count}"
+        """silly_tavern router 里 elevenlabs 端点应不少于 7 个。"""
+        from app.api.silly_tavern import router
+
+        count = sum(
+            1 for r in router.routes
+            if "elevenlabs" in str(getattr(r, "path", ""))
+        )
+        assert count >= 7, f"应至少注册 7 个 elevenlabs 端点，实际 {count}"

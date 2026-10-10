@@ -293,7 +293,7 @@ class TestMvuEngineWrappers:
 
     def test_update_from_reply_fallback_init_uses_columns(self):
         ext = {"tavern_helper": _tavern_helper()}
-        new_vars, logs = MvuEngine.update_from_reply(
+        new_vars, logs, _patches = MvuEngine.update_from_reply(
             {"stat_data": {}},
             '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/露缇雅/状态/爱意","value":6}]</JSONPatch></UpdateVariable>',
             ext,
@@ -307,6 +307,6 @@ class TestMvuEngineWrappers:
         """老调用方（单参数位置传参）不得被关键字参数改动破坏。"""
         ext = {"tavern_helper": _tavern_helper()}
         assert MvuEngine.init_session_variables(ext)["stat_data"]["露缇雅"]["状态"]["魔力值"] == 100
-        new_vars, logs = MvuEngine.update_from_reply({"stat_data": {"露缇雅": {"状态": {"爱意": 1}}}}, "无更新", ext)
+        new_vars, logs, _patches = MvuEngine.update_from_reply({"stat_data": {"露缇雅": {"状态": {"爱意": 1}}}}, "无更新", ext)
         assert new_vars["stat_data"]["露缇雅"]["状态"]["爱意"] == 1
         assert logs == []

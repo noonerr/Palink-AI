@@ -359,7 +359,7 @@ class TestMvuEngine:
         ext = {"tavern_helper": {"scripts": [{"content": _CATGIRL_SCHEMA_SCRIPT}], "variables": {}}}
         cur = {"stat_data": {"桃汐": {"好感度": 50, "关系": "青梅竹马"}}}
         reply = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/桃汐/好感度","value":5},{"op":"replace","path":"/桃汐/关系","value":"恋人"}]</JSONPatch></UpdateVariable>'
-        new_vars, logs = MvuEngine.update_from_reply(cur, reply, ext)
+        new_vars, logs, _patches = MvuEngine.update_from_reply(cur, reply, ext)
         assert new_vars["stat_data"]["桃汐"]["好感度"] == 55
         assert new_vars["stat_data"]["桃汐"]["关系"] == "恋人"
         assert len(logs) > 0
@@ -367,7 +367,7 @@ class TestMvuEngine:
     def test_update_from_reply_no_update_variable(self):
         ext = {"tavern_helper": {"scripts": [{"content": _CATGIRL_SCHEMA_SCRIPT}], "variables": {}}}
         cur = {"stat_data": {"桃汐": {"好感度": 50}}}
-        new_vars, logs = MvuEngine.update_from_reply(cur, "普通回复无变量更新", ext)
+        new_vars, logs, _patches = MvuEngine.update_from_reply(cur, "普通回复无变量更新", ext)
         assert new_vars["stat_data"]["桃汐"]["好感度"] == 50
         assert logs == []
 
@@ -376,7 +376,7 @@ class TestMvuEngine:
         ext = {"tavern_helper": {"scripts": [{"content": _CATGIRL_SCHEMA_SCRIPT}], "variables": {}}}
         cur = {"stat_data": {}}
         reply = '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/桃汐/好感度","value":5}]</JSONPatch></UpdateVariable>'
-        new_vars, logs = MvuEngine.update_from_reply(cur, reply, ext)
+        new_vars, logs, _patches = MvuEngine.update_from_reply(cur, reply, ext)
         # 兜底初始化为 50，再 delta 5 → 55
         assert new_vars["stat_data"]["桃汐"]["好感度"] == 55
 
@@ -386,7 +386,7 @@ class TestMvuEngine:
             '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/a","value":1}]</JSONPatch></UpdateVariable>'
             '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/a","value":2}]</JSONPatch></UpdateVariable>'
         )
-        new_vars, logs = MvuEngine.update_from_reply(cur, reply, {})
+        new_vars, logs, _patches = MvuEngine.update_from_reply(cur, reply, {})
         assert new_vars["stat_data"]["a"] == 3
         assert len(logs) == 2
 
@@ -396,13 +396,13 @@ class TestMvuEngine:
             '<UpdateVariable><JSONPatch>[bad json]</JSONPatch></UpdateVariable>'
             '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/a","value":5}]</JSONPatch></UpdateVariable>'
         )
-        new_vars, logs = MvuEngine.update_from_reply(cur, reply, {})
+        new_vars, logs, _patches = MvuEngine.update_from_reply(cur, reply, {})
         assert new_vars["stat_data"]["a"] == 6
 
     def test_update_does_not_mutate_input(self):
         cur = {"stat_data": {"a": 1}}
         reply = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/a","value":99}]</JSONPatch></UpdateVariable>'
-        new_vars, _ = MvuEngine.update_from_reply(cur, reply, {})
+        new_vars, _, _patches = MvuEngine.update_from_reply(cur, reply, {})
         assert cur["stat_data"]["a"] == 1
         assert new_vars["stat_data"]["a"] == 99
 

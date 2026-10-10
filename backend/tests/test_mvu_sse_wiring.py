@@ -161,7 +161,7 @@ def _install_mvu_stub(monkeypatch, return_stat=None):
         import copy
 
         vars_payload = {"stat_data": copy.deepcopy(return_stat or _POST_MVU_STAT)}
-        return vars_payload, ["[block0] replace /好感度 → ok"]
+        return vars_payload, ["[block0] replace /好感度 → ok"], []
 
     monkeypatch.setattr(character_ext, "apply_mvu_reply_to_session", _stub)
     return recorder
@@ -195,7 +195,7 @@ def test_apply_mvu_reply_updates_stat_data_and_session_metadata(db_session):
 
     user, char, session, _ = _make_world(db_session, with_assistant_msg=False)
 
-    new_vars, logs = apply_mvu_reply_to_session(db_session, char.id, session.id, _FAKE_REPLY)
+    new_vars, logs, _patches = apply_mvu_reply_to_session(db_session, char.id, session.id, _FAKE_REPLY)
 
     assert new_vars is not None
     assert new_vars["stat_data"]["好感度"] == 54
@@ -224,7 +224,7 @@ def test_apply_mvu_reply_inits_vars_when_metadata_empty(db_session):
     session.chat_metadata = None
     db_session.commit()
 
-    new_vars, logs = apply_mvu_reply_to_session(db_session, char.id, session.id, _FAKE_REPLY)
+    new_vars, logs, _patches = apply_mvu_reply_to_session(db_session, char.id, session.id, _FAKE_REPLY)
 
     assert new_vars["stat_data"]["好感度"] == 54
     assert new_vars["stat_data"]["性欲值"] == 24
@@ -241,7 +241,7 @@ def test_apply_mvu_reply_inits_vars_when_metadata_empty(db_session):
 def test_apply_mvu_reply_missing_session_returns_none(db_session):
     """会话不存在 → (None, [])，调用方据此跳过 extra.variables 回写（WS 同款语义）。"""
     user, char, session, _ = _make_world(db_session, with_assistant_msg=False)
-    new_vars, logs = apply_mvu_reply_to_session(db_session, char.id, "no-such-session", _FAKE_REPLY)
+    new_vars, logs, _patches = apply_mvu_reply_to_session(db_session, char.id, "no-such-session", _FAKE_REPLY)
     assert new_vars is None
     assert logs == []
 
