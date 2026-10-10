@@ -2,7 +2,8 @@
 
 背景: 角色卡内嵌世界书（character_book）导入时，ST 导出格式字段
 （keys / secondary_keys / enabled）被按旧内部格式（key / keysecondary / disable）
-读取，导致关键词全部丢失、禁用条目被错误启用（见 docs/st-prompt-alignment-fix-spec.md P2）。
+读取，导致关键词全部丢失、禁用条目被错误启用
+（见 docs/_archive/2026-08/st-prompt-alignment-fix-spec.md P2）。
 
 本脚本遍历 characters.extensions.palink_raw_card_data（或 extensions.character_book），
 按 comment 匹配同名 world_book_stages，回填 keys / secondary_keys / enabled。
