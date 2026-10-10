@@ -108,6 +108,17 @@ def _retrieve(storage, user_id, mode="rule", exclude=None, query="memory"):
 
 
 class TestExcludeRecentMirrors:
+    @pytest.fixture(autouse=True)
+    def _pin_block_level(self, monkeypatch):
+        """把切分策略钉在块级 —— 本类测的是**排除集语义**，基线是"最近 5 条"。
+
+        [CHUNK-SENTENCE 2026-10-11] 句级下 ``EFFECTIVE_STM_LIMIT`` = 12，
+        本类 7 条测试数据会被全部取回，原断言（最近 5 条）失去区分度。
+        钉住块级可让本类继续只测"排除集逻辑"，不随粒度参数漂移；
+        句级下的参数值本身由 `test_memory_chunk_strategy.py::TestSentenceSplit` 锁。
+        """
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+
     def test_rule_mode_excludes_recent_mirrors(self, mem_env, test_user):
         """排除最近 2 条镜像 → 返回其余 5 条（recent_limit 数量稳定）。"""
         storage, db = mem_env

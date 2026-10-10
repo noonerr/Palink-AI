@@ -46,8 +46,11 @@ class MemoryRetriever:
         # [T-跨卡串味修复] 本次召回作用域，三条返回路径共用（可观测性）。
         scope = _resolve_search_scope(request.session_id, request.character_id)
         try:
-            # 1. 获取短期记忆 (STM) - 最近 5 条
-            recent_limit = 5
+            # 1. 获取短期记忆 (STM) —— 最近 N 条。
+            # [CHUNK-SENTENCE 2026-10-11] N 按切分粒度取（块级 5 / 句级 12）：
+            # 句级下"最近 5 条"很可能全部来自同一条回复的 5 句话，覆盖不了最近几轮，
+            # 与 STM 的设计意图（近期上下文）相悖。回退到块级时 N 自动回到 5。
+            recent_limit = memory_config.EFFECTIVE_STM_LIMIT
             # D3 修复: ST protect 语义 —— 排除最近消息的记忆镜像（调用方传入最近
             # N 条消息 id；命中 message_id 的条目不注入，历史窗口已含原文）。
             # 多取 len(exclude_ids) 条补位，保证过滤后 STM 数量稳定。
@@ -120,7 +123,9 @@ class MemoryRetriever:
                 semantic_candidates = self.storage.semantic_search(
                     user_id=request.user_id,
                     query_embedding=query_embedding_list,
-                    limit=50,
+                    # [CHUNK-SENTENCE 2026-10-11] 候选池按粒度取（块级 50 / 句级 120）：
+                    # 句级后单条信息量约为块级的 1/8~1/10，50 条 ≈ 原来的 6 个块。
+                    limit=memory_config.EFFECTIVE_CANDIDATE_LIMIT,
                     min_similarity=memory_config.MIN_SIMILARITY,
                     session_id=request.session_id,
                     branch_ids=request.branch_ids,

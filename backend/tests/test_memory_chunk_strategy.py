@@ -38,9 +38,18 @@ LONG_TEXT = "\n\n".join([_para("窗边", 6), _para("医院", 7), _para("夜里",
 
 
 class TestStrategyDefault:
-    def test_default_is_structural(self):
-        assert memory_config.CHUNK_STRATEGY == "structural", (
-            "默认策略必须是 structural —— 它同时是更便宜(−57%)与更准(43% vs 33%)那条"
+    def test_default_is_sentence(self):
+        """默认策略 = 句级（2026-10-11 起）。
+
+        ⚠️ 本断言 2026-10-11 由 structural 改为 sentence —— 这是**预期的行为变更**，
+        不是回归。依据 `REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md` §四
+        第 2 步：块级"一条 295 字里多句共享一个平均向量"导致重点被稀释，
+        实测端到端 0.210 → 0.340（+0.130 > 跑间噪声 ±0.09）。
+        块级仍可 `MEMORY_CHUNK_STRATEGY=structural` 一键回退，
+        回退后 EFFECTIVE_* 属性自动回到块级值（见 TestSentenceSplit）。
+        """
+        assert memory_config.CHUNK_STRATEGY == "sentence", (
+            "默认策略应为句级；要回到块级请设 MEMORY_CHUNK_STRATEGY=structural"
         )
 
     def test_target_bounds_derive_from_config(self):
@@ -92,6 +101,76 @@ class TestStructuralSplit:
         assert len(body) > int(memory_config.CHUNK_TARGET_CHARS * 1.35)
         chunks = SC.structural_split(body)
         assert len(chunks) >= 2
+
+
+class TestSentenceSplit:
+    """[CHUNK-SENTENCE 2026-10-11] 句级切分（当前默认策略）。
+
+    施工件：`docs/_active/spec/SPEC_句级记忆切分_2026-10-11.md`。
+    本类锁四件事：①默认确实是句级且比块级细 ②零嵌入调用
+    ③内容一字不丢（记忆=消息镜像不变式）④超限退回块级、回退开关等价。
+    """
+
+    def test_sentence_is_finer_than_structural(self, monkeypatch):
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        n_sentence = len(SC.semantic_split(LONG_TEXT))
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+        n_struct = len(SC.semantic_split(LONG_TEXT))
+        assert n_sentence > n_struct, (
+            f"句级必须比块级切得更细，否则策略没生效（句级 {n_sentence} vs 块级 {n_struct}）"
+        )
+
+    def test_never_calls_embedder(self, monkeypatch):
+        """★ 句级路径必须零嵌入调用（与 structural 同性质，切分本身不花钱）。"""
+        def _boom(_):
+            raise AssertionError("sentence 路径不该调嵌入器")
+
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        assert len(SC.semantic_split(LONG_TEXT, embed_fn=_boom)) > 1
+
+    def test_short_text_short_circuits(self, monkeypatch):
+        """不足 CHUNK_TRIGGER_CHARS 的短回复整条存，不切。"""
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        short = "今天天气真好。我要去吃饭。你吃了吗？"
+        assert SC.semantic_split(short) == [short]
+
+    def test_no_content_lost(self, monkeypatch):
+        """切分只重排空白，正文一个字都不能丢（记忆=消息镜像的不变式）。"""
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        chunks = SC.sentence_split(LONG_TEXT)
+        assert len(chunks) > 1
+        joined = "".join(chunks)
+        for i in range(0, len(LONG_TEXT) - 20, 37):
+            frag = LONG_TEXT[i:i + 20]
+            if frag.strip() and "\n" not in frag:
+                assert frag in joined, f"片段丢失：{frag!r}"
+
+    def test_overflow_falls_back_to_structural(self, monkeypatch):
+        """超上限必须**整体退回结构切分**（不是截断 —— 截断会丢内容）。"""
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        monkeypatch.setattr(memory_config, "SENTENCE_MAX_CHUNKS", 5)
+        body = "".join(f"第{i}句话在这里，用来把句数顶过上限。" for i in range(30))
+        chunks = SC.sentence_split(body)
+        assert len(chunks) <= 5, f"超限未退回结构切分：{len(chunks)} 条"
+        assert "".join(chunks).replace("\n", "") == body.replace("\n", ""), "退回时丢了内容"
+
+    def test_rollback_restores_block_params(self, monkeypatch):
+        """★ 回退开关必须是**等价开关**：三个检索参数都要回到块级值。
+
+        若只把切分策略改回块级、而邻居半径/STM 条数/候选池仍是句级值，
+        回退就不是"回到改动前"，而是"换了一套新行为"（仓库既有教训）。
+        """
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+        assert memory_config.IS_SENTENCE_LEVEL is True
+        assert memory_config.EFFECTIVE_NEIGHBOR_RADIUS == memory_config.SENTENCE_NEIGHBOR_RADIUS
+        assert memory_config.EFFECTIVE_STM_LIMIT == memory_config.SENTENCE_STM_LIMIT
+        assert memory_config.EFFECTIVE_CANDIDATE_LIMIT == memory_config.SENTENCE_CANDIDATE_LIMIT
+
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+        assert memory_config.IS_SENTENCE_LEVEL is False
+        assert memory_config.EFFECTIVE_NEIGHBOR_RADIUS == 1
+        assert memory_config.EFFECTIVE_STM_LIMIT == 5
+        assert memory_config.EFFECTIVE_CANDIDATE_LIMIT == 50
 
 
 class TestSemanticRollback:

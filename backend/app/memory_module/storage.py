@@ -801,13 +801,20 @@ class MemoryStorage:
             self.db.rollback()
             return []
 
-    def get_adjacent_chunks(self, mem: MemoryEntry) -> List[MemoryEntry]:
-        """取同轮(turn_hash)中 idx±1 的相邻块（缺失侧静默跳过）。"""
+    def get_adjacent_chunks(self, mem: MemoryEntry, radius: int = 1) -> List[MemoryEntry]:
+        """取同轮(turn_hash)中 idx±radius 的相邻块（缺失侧静默跳过）。
+
+        [CHUNK-SENTENCE 2026-10-11] radius 可配，**默认 1 = 改动前的行为**（块级）。
+        句级下由调用方传 ``EFFECTIVE_NEIGHBOR_RADIUS``（2）：一条记忆只有一句话，
+        只补 ±1 句仍是"三句碎片"读不通，±2 才接近一个语义单元。
+        扩展总量仍由 ``NEIGHBOR_MAX_ADDS``（现 4）封顶，不会因半径放大而失控。
+        """
         meta = _parse_chunk_meta(mem.topics)
         if meta is None:
             return []
         turn_hash, idx, _total = meta
-        target_idxs = {idx - 1, idx + 1}
+        _r = max(1, int(radius))
+        target_idxs = {idx + d for d in range(-_r, _r + 1) if d != 0}
         like_pat = f'%"#turn:{turn_hash}"%'
         try:
             if self.is_postgres:

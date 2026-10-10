@@ -290,7 +290,11 @@ class MemoryService:
                     break
                 if mem.id not in ids or _parse_chunk_meta(mem.topics) is None:
                     continue
-                for nb in self.storage.get_adjacent_chunks(mem):
+                # [CHUNK-SENTENCE 2026-10-11] 半径按当前切分粒度取（句级 2 / 块级 1），
+                # 保证回退到块级时邻居行为逐字回到改动前。
+                for nb in self.storage.get_adjacent_chunks(
+                    mem, radius=memory_config.EFFECTIVE_NEIGHBOR_RADIUS
+                ):
                     if max_adds and len(additions) >= max_adds:
                         break
                     if nb.id in ids or nb.id in additions:

@@ -296,9 +296,17 @@ class TestNeighborExpansionBudget:
         )
 
     def test_shared_budget_adds_nothing(self, svc, monkeypatch):
-        """★ 旧行为复现：预算已满 ⇒ 一条邻居都补不进来（返回原对象）。"""
+        """★ 旧行为复现：预算已满 ⇒ 一条邻居都补不进来（返回原对象）。
+
+        ⚠️ 本类所有 `get_adjacent_chunks` 桩都必须接受 `radius` 关键字
+        （写成 `lambda m, radius=1: ...`）：[CHUNK-SENTENCE 2026-10-11] 起生产调用为
+        `get_adjacent_chunks(mem, radius=EFFECTIVE_NEIGHBOR_RADIUS)`，
+        只收一个位置参数的桩会 TypeError，被 `_expand_chunk_neighbors` 的 except
+        静默吞掉 ⇒ 表现为"一条邻居都没补进来"。**注意本用例会因此假通过**
+        （它期望 +0 条，与"桩炸掉"的结果恰好相同），所以改签名时别只看它绿不绿。
+        """
         monkeypatch.setattr(
-            svc.storage, "get_adjacent_chunks", lambda m: [_chunk(90 + m.id, "邻居", 150, 9)]
+            svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(90 + m.id, "邻居", 150, 9)]
         )
         out = svc._expand_chunk_neighbors(self._resp(), 1500)
         assert len(out.memories) == 3, "旧口径下邻居扩展恒 +0 条"
@@ -306,7 +314,7 @@ class TestNeighborExpansionBudget:
     def test_extra_enlarged_budget_adds_neighbors(self, svc, monkeypatch):
         """独立预算（1500×1.3=1950）⇒ 3 条邻居都装得下。"""
         monkeypatch.setattr(
-            svc.storage, "get_adjacent_chunks", lambda m: [_chunk(90 + m.id, "邻居", 150, 9)]
+            svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(90 + m.id, "邻居", 150, 9)]
         )
         out = svc._expand_chunk_neighbors(self._resp(), 1950, max_adds=4)
         assert len(out.memories) == 6, f"应为 3+3，实际 {len(out.memories)}"
@@ -316,7 +324,7 @@ class TestNeighborExpansionBudget:
     def test_extra_enlarged_budget_still_token_bounded(self, svc, monkeypatch):
         """放大了也不是无限：装不下的邻居照样被拒（1500+150+150=1800，第 3 条超 1950）。"""
         monkeypatch.setattr(
-            svc.storage, "get_adjacent_chunks", lambda m: [_chunk(90 + m.id, "邻居", 300, 9)]
+            svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(90 + m.id, "邻居", 300, 9)]
         )
         out = svc._expand_chunk_neighbors(self._resp(), 1950, max_adds=4)
         assert len(out.memories) == 4
@@ -325,7 +333,7 @@ class TestNeighborExpansionBudget:
     def test_max_adds_caps_the_expansion(self, svc, monkeypatch):
         """封顶存在的原因：邻居的邻居可以一直串下去，会把记忆区撑爆。"""
         monkeypatch.setattr(
-            svc.storage, "get_adjacent_chunks", lambda m: [_chunk(90 + m.id, "邻居", 150, 9)]
+            svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(90 + m.id, "邻居", 150, 9)]
         )
         out = svc._expand_chunk_neighbors(self._resp(), 100000, max_adds=2)
         assert len(out.memories) == 5, f"3 条基础上最多 +2，实际 {len(out.memories)}"
@@ -345,7 +353,7 @@ class TestNeighborExpansionBudget:
         nb_of = {1: _chunk(91, "甲的邻居", 50, 9), 2: _chunk(92, "乙的邻居", 50, 9)}
         monkeypatch.setattr(
             svc.storage, "get_adjacent_chunks",
-            lambda m: [nb_of[m.id]] if m.id in nb_of else [],
+            lambda m, radius=1: [nb_of[m.id]] if m.id in nb_of else [],
         )
 
         # 相关度序 = 乙优先 ⇒ 补进乙的邻居
@@ -370,7 +378,7 @@ class TestNeighborExpansionBudget:
         resp = ContextResponse(memories=[mem_a, mem_b], total_tokens=200)
         monkeypatch.setattr(
             svc.storage, "get_adjacent_chunks",
-            lambda m: [_chunk(90 + m.id, "邻居", 50, 9)],
+            lambda m, radius=1: [_chunk(90 + m.id, "邻居", 50, 9)],
         )
         out = svc._expand_chunk_neighbors(resp, 100000, max_adds=1)
         assert len(out.memories) == 3
@@ -378,7 +386,7 @@ class TestNeighborExpansionBudget:
     def test_no_chunk_metadata_short_circuits(self, svc, monkeypatch):
         """非分块记忆（无 #chunk）不做邻居扩展。"""
         monkeypatch.setattr(
-            svc.storage, "get_adjacent_chunks", lambda m: [_chunk(99, "邻居", 10, 9)]
+            svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(99, "邻居", 10, 9)]
         )
         resp = ContextResponse(
             memories=[MemoryEntry(id=1, user_id=1, session_id=SESSION_ID, role="assistant",

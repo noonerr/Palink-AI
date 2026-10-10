@@ -158,8 +158,12 @@ def test_expand_neighbors_adds_within_budget(enabled):
     hit = _chunk_entry(2, idx=1, content="命中块")
     prev_nb = _chunk_entry(1, idx=0, content="前块")
     next_nb = _chunk_entry(3, idx=2, content="后块")
+    # [CHUNK-SENTENCE 2026-10-11] 桩必须接受 radius 关键字：
+    # 生产调用已改为 get_adjacent_chunks(mem, radius=EFFECTIVE_NEIGHBOR_RADIUS)，
+    # 只收一个位置参数的 lambda 会 TypeError，被 _expand_chunk_neighbors 的
+    # except 静默吞掉 → 表现为"邻居一条都没补进来"（假失败）。
     svc.storage.get_adjacent_chunks.side_effect = (
-        lambda m: [prev_nb, next_nb] if m.id == 2 else []
+        lambda m, radius=1: [prev_nb, next_nb] if m.id == 2 else []
     )
     result = ContextResponse(
         memories=[hit], user_profile=None, total_tokens=50, strategy_used="dual_path"
@@ -199,6 +203,35 @@ def test_expand_neighbors_dedup_existing(enabled):
     out = svc._expand_chunk_neighbors(result, max_tokens=500)
 
     assert {m.id for m in out.memories} == {1, 2, 10}
+
+
+def test_neighbor_radius_follows_strategy(enabled, monkeypatch):
+    """[CHUNK-SENTENCE 2026-10-11] 邻居半径必须随切分策略走（句级 2 / 块级 1）。
+
+    只验"半径真的传到了 storage" —— SQL 侧范围由 radius 参数本身保证
+    （`target_idxs = {idx ± 1..r}`）。本用例的意义是防"属性定义了但调用点没接上"
+    这类静默失效：一旦漏接，回退开关就不再是等价开关。
+    """
+    svc = _make_service()
+    seen = {}
+
+    def _spy(m, radius=1):
+        seen["radius"] = radius
+        return []
+
+    monkeypatch.setattr(svc.storage, "get_adjacent_chunks", _spy)
+    hit = _chunk_entry(2, idx=1, content="命中块")
+    result = ContextResponse(
+        memories=[hit], user_profile=None, total_tokens=50, strategy_used="dual_path"
+    )
+
+    monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
+    svc._expand_chunk_neighbors(result, max_tokens=500)
+    assert seen["radius"] == memory_config.SENTENCE_NEIGHBOR_RADIUS
+
+    monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+    svc._expand_chunk_neighbors(result, max_tokens=500)
+    assert seen["radius"] == memory_config.BLOCK_NEIGHBOR_RADIUS == 1
 
 
 def test_expand_skipped_for_plain_memories(enabled):

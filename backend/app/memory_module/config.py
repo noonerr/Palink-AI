@@ -40,7 +40,8 @@ class MemoryConfig:
     CHUNK_MIN_CHARS: int = int(os.getenv("MEMORY_CHUNK_MIN_CHARS", "120"))
     # 块上限：超过则句边界强制再分（保证向量聚焦）
     CHUNK_MAX_CHARS: int = int(os.getenv("MEMORY_CHUNK_MAX_CHARS", "450"))
-    # 切分策略：structural = 只用文本里客观存在的结构边界（段落/对话轮/括号动作），
+    # 切分策略：sentence = 按句切（每句一条向量，2026-10-11 起默认）；
+    # structural = 只用文本里客观存在的结构边界（段落/对话轮/括号动作），
     # 零嵌入调用；semantic = 每句嵌入找话题断点（旧行为，保留作一键回退）。
     #
     # ⚠️ 2026-10-07 实测换默认值为 structural（跨 3 会话 18 条真实长回复，
@@ -50,7 +51,21 @@ class MemoryConfig:
     #   ⇒ semantic 更贵**且不更准**。它唯一的优势在"片段查询"口径（78% vs 74%），
     #   那个口径的查询本身就是块内某句的片段，对"块重新编码"的方案天然不利，
     #   贴近不了生产（生产查询是用户那句 29 字的话）。
-    CHUNK_STRATEGY: str = os.getenv("MEMORY_CHUNK_STRATEGY", "structural")
+    #
+    # ⚠️ 2026-10-11 默认值再改为 sentence（"向量记忆替代上下文"四步清单第 2 步，
+    # 用户授权；施工件 docs/_active/spec/SPEC_句级记忆切分_2026-10-11.md）。
+    #   块级的问题是"一条 295 字里多句共享一个平均向量"，重点被稀释。实测
+    #   （REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md，50 题端到端）：
+    #     6 条历史 + 块级 + 修查询 = 0.210；换成句级 = **0.340**（+0.130 > 噪声 ±0.09）；
+    #     上限（91 条全历史）= 0.370 ⇒ 句级已摸到天花板附近。
+    #   成本（2026-10-11 生产容器实测）：写库嵌入 +25~40%（4×272 字 1850ms vs
+    #     35×34 字 2270~2640ms，绝对值 <1s，且发生在生成完成后的落库阶段）；
+    #     检索侧向量扫描 227 行 2.2ms → 2270 行 14.0ms（×10 放大实测），
+    #     叠加查询构造修复后整条检索仍由 1654ms 降至 438ms。
+    #   回退：MEMORY_CHUNK_STRATEGY=structural —— 检索侧参数随 EFFECTIVE_* 属性
+    #     自动回到块级值（见文件末尾的"按粒度自适应"注释）。
+    #   ⚠️ 勿宣称"达到全历史的 92%"：0.340 vs 0.370 只差 0.030 < 噪声 ±0.09。
+    CHUNK_STRATEGY: str = os.getenv("MEMORY_CHUNK_STRATEGY", "sentence")
     # structural 策略的目标块长（实际切点落在 [0.55×, 1.35×] 区间的结构边界上）
     CHUNK_TARGET_CHARS: int = int(os.getenv("MEMORY_CHUNK_TARGET_CHARS", "250"))
     # 断点检测：距离绝对下限。**注意它只是兜底下限，不是主阈值** ——
@@ -123,7 +138,60 @@ class MemoryConfig:
     EMBED_BACKFILL_INTERVAL: float = float(os.getenv("MEMORY_EMBED_BACKFILL_INTERVAL", "600"))
     EMBED_BACKFILL_BATCH: int = int(os.getenv("MEMORY_EMBED_BACKFILL_BATCH", "32"))
     EMBED_BACKFILL_GRACE_SECONDS: float = float(os.getenv("MEMORY_EMBED_BACKFILL_GRACE", "300"))
-    
+
+    # ── [CHUNK-SENTENCE 2026-10-11] 句级切分 + "按粒度自适应"的检索参数 ──
+    #
+    # **为什么检索侧参数要跟着切分策略走**：回退开关的语义必须是"回到改动前的行为"。
+    # 若把邻居范围 / STM 条数 / 候选池写死成句级值，回退到 structural 后块级也会用新值，
+    # 回退就不是等价开关 —— 仓库既有教训：`test_structural_and_semantic_produce_comparable_sizes`
+    # 就是为"回退必须是等价开关"立的。故三组参数各存块级值与句级值，由 EFFECTIVE_* 属性取用。
+    #
+    # 单轮最多切几句。超限**整体退回结构切分**，而不是截断 ——
+    # 截断会丢内容，破坏"记忆 = 消息镜像"的不变式（见 mirror.py 顶部声明）。
+    # 取值依据：实测 35 条 × 34 字嵌入约 2.3s 可接受；而 3000 字回复约 100 句，
+    # 若直切则单轮写入条数与嵌入耗时双双失控。
+    SENTENCE_MAX_CHUNKS: int = int(os.getenv("MEMORY_SENTENCE_MAX_CHUNKS", "40"))
+    # 邻居扩展范围（±N 条）。块级一条 = 一个完整语义单元，±1 够；
+    # 句级一条 = 一句话，±1 仍是"三句碎片"读不通，±2 才接近一个语义单元。
+    # 两者都被 NEIGHBOR_MAX_ADDS（现 4）封顶，不会因半径放大而失控。
+    SENTENCE_NEIGHBOR_RADIUS: int = int(os.getenv("MEMORY_SENTENCE_NEIGHBOR_RADIUS", "2"))
+    BLOCK_NEIGHBOR_RADIUS: int = int(os.getenv("MEMORY_BLOCK_NEIGHBOR_RADIUS", "1"))
+    # 短期记忆（无条件注入的最近 N 条）。句级下"最近 5 条"很可能全部来自同一条
+    # 回复的 5 句话，覆盖不了最近几轮 —— 与 STM 的设计意图（近期上下文）相悖。
+    # 12 句 × 约 30 字 ≈ 360 字，覆盖 2~3 轮，占记忆预算（4000 内部单位）不到 10%。
+    SENTENCE_STM_LIMIT: int = int(os.getenv("MEMORY_SENTENCE_STM_LIMIT", "12"))
+    BLOCK_STM_LIMIT: int = int(os.getenv("MEMORY_BLOCK_STM_LIMIT", "5"))
+    # 语义检索候选池。句级后单条信息量约为块级的 1/8~1/10
+    # （块级平均 295 字 vs 句级约 30 字），50 条候选 ≈ 原来的 6 个块
+    # ⇒ 句级提到 120 才与原信息量可比。纯内存打分，成本可忽略。
+    SENTENCE_CANDIDATE_LIMIT: int = int(os.getenv("MEMORY_SENTENCE_CANDIDATE_LIMIT", "120"))
+    BLOCK_CANDIDATE_LIMIT: int = int(os.getenv("MEMORY_BLOCK_CANDIDATE_LIMIT", "50"))
+
+    @property
+    def IS_SENTENCE_LEVEL(self) -> bool:
+        """当前是否为句级切分。供检索侧按粒度取参（回退时自动回到块级值）。"""
+        return self.CHUNK_STRATEGY == "sentence"
+
+    @property
+    def EFFECTIVE_NEIGHBOR_RADIUS(self) -> int:
+        return (
+            self.SENTENCE_NEIGHBOR_RADIUS
+            if self.IS_SENTENCE_LEVEL
+            else self.BLOCK_NEIGHBOR_RADIUS
+        )
+
+    @property
+    def EFFECTIVE_STM_LIMIT(self) -> int:
+        return self.SENTENCE_STM_LIMIT if self.IS_SENTENCE_LEVEL else self.BLOCK_STM_LIMIT
+
+    @property
+    def EFFECTIVE_CANDIDATE_LIMIT(self) -> int:
+        return (
+            self.SENTENCE_CANDIDATE_LIMIT
+            if self.IS_SENTENCE_LEVEL
+            else self.BLOCK_CANDIDATE_LIMIT
+        )
+
     @classmethod
     def is_enabled(cls) -> bool:
         return cls.ENABLED

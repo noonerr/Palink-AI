@@ -13,6 +13,13 @@
 - 纯 numpy 断点计算，无新依赖
 - embed_fn 可注入（测试无需真实 Ollama）
 - 短文本短路返回单块，零额外成本
+
+⚠️ 2026-10-11 起 **默认策略是句级（sentence）**，不是本文件最早实现的断点法：
+    - `sentence_split`   每句一条（默认；复用 `split_sentences`，零嵌入调用）
+    - `structural_split` 结构边界块级（2026-10-07 ~ 10-11 的默认，零嵌入调用）
+    - 断点法（`semantic_split` 主流程）保留作一键回退，需嵌入
+    三条路径共用 `semantic_split` 的入口与短路条件，由 `CHUNK_STRATEGY` 分派。
+    依据见 `docs/_active/spec/SPEC_句级记忆切分_2026-10-11.md`。
 """
 
 import logging
@@ -275,6 +282,42 @@ def structural_split(text: str) -> List[str]:
     return merged or [text]
 
 
+def sentence_split(text: str) -> List[str]:
+    """[CHUNK-SENTENCE 2026-10-11] 按句切分：每句一条记忆（每句一个独立向量）。
+
+    为什么复用 ``split_sentences`` 而不写新算法 —— 它已具备本策略所需的全部性质：
+
+      1. 保留句终止符与换行，``''.join(chunks)`` 可还原原文
+         （"记忆 = 消息镜像"的不变式，见 mirror.py 顶部声明）；
+      2. 碎句（< ``CHUNK_MIN_SENTENCE_CHARS``=20 字）自动并入下一句 ——
+         天然过滤"嗯。""好的。"这类无信息量短句，无需额外规则；
+      3. 单句超 ``CHUNK_MAX_CHARS``（450 字）在句边界强制再分，
+         不会产出撑爆注入预算的巨物；
+      4. 纯正则实现，**零嵌入调用**（与 structural 同性质），可离线单测。
+
+    与 structural 的差别只有一个：**不把句子合并到 250 字的目标块长**。
+    收益正是来自"块变小"（实测端到端 0.210 → 0.340），代价是条目数放大。
+
+    条数上限 ``SENTENCE_MAX_CHUNKS``：超限时**整体退回结构切分**，而不是截断 ——
+    截断会丢内容，破坏"记忆 = 消息镜像"的不变式；而结构切分产出的是同样内容的
+    另一种粒度（块级），条数可控、语义上仍是这份回复的镜像。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    sentences = split_sentences(text)
+    if not sentences:
+        return [text]
+    cap = int(memory_config.SENTENCE_MAX_CHUNKS)
+    if cap > 0 and len(sentences) > cap:
+        logger.info(
+            "[CHUNK-SENTENCE] 句数 %d 超过上限 %d，退回结构切分（避免单轮写入与嵌入耗时失控）",
+            len(sentences), cap,
+        )
+        return structural_split(text) or [text]
+    return sentences
+
+
 def semantic_split(
     text: str,
     embed_fn: Optional[Callable[[List[str]], "np.ndarray"]] = None,
@@ -301,8 +344,13 @@ def semantic_split(
     if len(sentences) < 4 or sum(len(s) for s in sentences) < trigger:
         return [text]
 
-    # [CHUNK-STRATEGY] 默认走结构边界切分（零嵌入调用）；semantic 保留作一键回退。
-    # 放在"句子太少不切"之后：两条策略共用同一套短路条件，回退时行为可比。
+    # [CHUNK-STRATEGY] 三条策略共用同一套短路条件（都放在"句子太少不切"之后），
+    # 保证互为回退时行为可比：
+    #   sentence   = 每句一条（2026-10-11 起默认，零嵌入调用）
+    #   structural = 结构边界块级（零嵌入调用）
+    #   semantic   = 断点法（旧行为，保留作一键回退，需嵌入）
+    if memory_config.CHUNK_STRATEGY == "sentence":
+        return sentence_split(text) or [text]
     if memory_config.CHUNK_STRATEGY == "structural":
         return structural_split(text) or [text]
 
