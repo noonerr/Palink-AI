@@ -1,5 +1,13 @@
 # ST 后端兼容性差距清单（角色扮演后端 ↔ ST 后端，仅二端交集）
 
+> ⚠️ **2026-10-08 标注：本文已整体作废**（原文保留以供追溯）。
+> **理由**：本文对齐的目标是 `st-compat` 装配后端（服务端 ST 1.18.0 对齐装配），
+> 该模式已于 **2026-09-03 删除完毕**（commit `091023e`；
+> 权威 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`）。
+> 当前唯一维护模式是 **`palink-native`**（装配入口 `backend/app/services/roleplay_prompt_assembly.py`，见 `AGENTS.md`）。
+> **不要按本清单补后端接口**——清单里"缺失"的端点大多随 st-compat 一起删了，补回来等于复活已删模式。
+> 若确实需要某个 ST 生态端点（如 `/api/sd/*`），请另立议题按 `palink-native` 语义评估。
+
 > 范围限定：**仅**影响「Palink 角色扮演/角色聊天后端」与「SillyTavern 1.18.0 后端」接口的部分。
 > 不涉及 Palink 的记忆/向量、图生图、TTS、用户系统、支付等其他组件后端。
 > 分析基于：Palink `backend/app/...` 当前代码 + `SillyTavern-1.18.0` 源码（`src/` 后端与 `public/scripts/` 前端）逐行核对。

@@ -1,5 +1,16 @@
 # Palink 最小 ST Host Contract (v1)
 
+> ⚠️ **2026-10-08 标注：本文已整体作废**（原文保留以供追溯）。
+> **理由**：本文首句自述「供 `st-native` / bridge / `compat` 三层运行时使用」，
+> 而 `st-compat` 与 `st-native` 双轨已于 **2026-09-03 删除完毕**
+> （三笔 commit：`091023e` 阶段1 后端装配、`aeb8348` 阶段2 前端/静态/nginx、`4eadb86` 阶段3 路由/部署/源码副本；
+> 权威施工 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`）。
+> 当前唯一维护模式是 **`palink-native`**（见根目录 `AGENTS.md`）。
+> **不要按本文领任务或改代码。** 本契约描述的"最小 API 表面"现已由
+> `frontend/src/utils/sillyTavernPluginRuntime.ts`（经典轨）与
+> `frontend/src/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime.ts`（iframe 轨）分别承载，
+> 现状见 `docs/_active/report/REPORT_Palink对ST与酒馆助手API适配度检测_2026-10-08.md`。
+
 ## 目标
 
 本文档定义 Palink 作为 SillyTavern (ST) Host 时，必须暴露的最小 API 表面。供 st-native / bridge / compat 三层运行时使用。

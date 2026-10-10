@@ -1,5 +1,12 @@
 # Palink ST Runtime Implementation Plan
 
+> ⚠️ **2026-10-08 标注：本文已整体作废**（原文保留以供追溯）。
+> **理由**：本文目标是「构建 Palink 托管的 SillyTavern 兼容运行时」，即 `st-compat` / `st-native` 双轨；
+> 该双轨已于 **2026-09-03 删除完毕**（commit `091023e` / `aeb8348` / `4eadb86`；
+> 权威 spec：`docs/SPEC_ST双轨剥离删除_st-compat与st-native_2026-09-03.md`）。
+> 当前唯一维护模式是 **`palink-native`**（见根目录 `AGENTS.md`）。
+> **不要按本文领任务、排期或改代码。**
+
 ## Goal
 
 Build a Palink-managed SillyTavern-compatible runtime while keeping Palink in
