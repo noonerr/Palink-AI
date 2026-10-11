@@ -38,18 +38,22 @@ LONG_TEXT = "\n\n".join([_para("窗边", 6), _para("医院", 7), _para("夜里",
 
 
 class TestStrategyDefault:
-    def test_default_is_sentence(self):
-        """默认策略 = 句级（2026-10-11 起）。
+    def test_default_is_structural(self):
+        """默认策略 = 块级。
 
-        ⚠️ 本断言 2026-10-11 由 structural 改为 sentence —— 这是**预期的行为变更**，
-        不是回归。依据 `REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md` §四
-        第 2 步：块级"一条 295 字里多句共享一个平均向量"导致重点被稀释，
-        实测端到端 0.210 → 0.340（+0.130 > 跑间噪声 ±0.09）。
-        块级仍可 `MEMORY_CHUNK_STRATEGY=structural` 一键回退，
-        回退后 EFFECTIVE_* 属性自动回到块级值（见 TestSentenceSplit）。
+        ⚠️ 2026-10-11 曾短暂改为 sentence，**当日即被实战配对评测否证并改回**：
+        P64（真实会话 f25daab6，57 题取两组都有 gold 的 36 道，同源语料、n 相同）
+        块级 top3 52.8% vs 句级 27.8%、中位排名 3.0 vs 12.5（块级更好 25 题 vs 8 题），
+        且 **18 道题（33%）在句级下定位不到证据**（evidence 被句级边界切断）。
+        复跑报告引用的 p38 脚本也对不上（该脚本句级 top1 13.8%、块级 9.1%，
+        报告称 29.6% 疑似引用了宽松口径）。
+        依据见 `config.py` 的 CHUNK_STRATEGY 注释与
+        `SPEC_句级记忆切分_2026-10-11.md` §十二。
+        句级实现**完整保留**：`MEMORY_CHUNK_STRATEGY=sentence` 可一键切回。
         """
-        assert memory_config.CHUNK_STRATEGY == "sentence", (
-            "默认策略应为句级；要回到块级请设 MEMORY_CHUNK_STRATEGY=structural"
+        assert memory_config.CHUNK_STRATEGY == "structural", (
+            "默认策略应为块级（2026-10-11 实战评测否证了句级）；"
+            "要试句级请设 MEMORY_CHUNK_STRATEGY=sentence"
         )
 
     def test_target_bounds_derive_from_config(self):
