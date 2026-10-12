@@ -19,6 +19,7 @@ from ..core.cache import cached, invalidate_cache, invalidate_user_cache
 from ..api.dependencies import get_current_user
 from ..models import User, Character, CharacterPluginStorage
 from ..models.plugin import Plugin, CharacterPluginState
+from ..utils import format_upload_limit_mb, read_upload_with_limit
 from .smart_card_assets import schedule_smart_card_source_prefetch
 
 # ── [PLUGIN-ON-DEMAND] 角色卡级插件按需启用（2026-09-26）────────────────────
@@ -156,7 +157,6 @@ _MAX_CHARACTER_IMPORT_UPLOAD_SIZE = 50 * 1024 * 1024
 _MAX_PRESET_UPLOAD_SIZE = 5 * 1024 * 1024
 _MAX_BATCH_IMPORT_UPLOAD_SIZE = 100 * 1024 * 1024
 _MAX_BATCH_IMPORT_FILE_COUNT = 1000
-_UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 # 角色列表裁剪字段（fields=basic 时排除这些大字段）
 # 列表 UI 仅使用 id/name/avatar/description/tags/is_processing/processing_status/
@@ -173,20 +173,12 @@ _CHARACTER_LIST_MAX_PAGE_SIZE = 200
 
 
 async def _read_upload_with_limit(file: UploadFile, max_size: int) -> bytes:
-    chunks: list[bytes] = []
-    total_read = 0
-    while True:
-        chunk = await file.read(_UPLOAD_READ_CHUNK_SIZE)
-        if not chunk:
-            break
-        total_read += len(chunk)
-        if total_read > max_size:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Uploaded file is too large (max {max_size // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """判定逻辑收口到 utils.read_upload_with_limit，此处仅保留本端点的文案。"""
+    return await read_upload_with_limit(
+        file,
+        max_size,
+        detail=f"Uploaded file is too large (max {format_upload_limit_mb(max_size)}MB)",
+    )
 
 @router.get("")
 @cached(ttl_seconds=30, key_prefix="character_list")

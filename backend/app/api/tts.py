@@ -45,14 +45,17 @@ from ..services.tts_service import (
     _call_xiaomi_mimo_tts,
     _call_custom_api_tts,
 )
-from ..utils import normalize_upload_filename
+from ..utils import (
+    format_upload_limit_mb,
+    normalize_upload_filename,
+    read_upload_with_limit,
+)
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 logger = logging.getLogger(__name__)
 
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 MAX_CLONE_SAMPLE_BYTES = 20 * 1024 * 1024
-UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 TTS_AUDIO_RATE_LIMIT_REQUESTS = 20
 TTS_AUDIO_RATE_LIMIT_WINDOW_SECONDS = 60
 AUDIO_SIGNATURES = {
@@ -182,17 +185,12 @@ def _provider_supports_clone(provider_id: str) -> bool:
 
 
 async def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
-    chunks = []
-    total = 0
-    while True:
-        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(status_code=413, detail="声音样本最大支持 20MB")
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """判定逻辑收口到 utils.read_upload_with_limit，此处仅按实际限额生成文案。"""
+    return await read_upload_with_limit(
+        file,
+        max_bytes,
+        detail=f"声音样本最大支持 {format_upload_limit_mb(max_bytes)}MB",
+    )
 
 
 def _public_providers_for_user(user: User) -> list[dict]:

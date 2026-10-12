@@ -9,7 +9,7 @@ import socket
 import uuid
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from .core import settings
 
@@ -523,6 +523,47 @@ def normalize_upload_filename(filename: Optional[str]) -> str:
         name_part = name_part[: max_name_len - len(ext_part)]
         cleaned = name_part + ext_part
     return cleaned
+
+
+# ── 上传读取统一入口（2026-10-12）──────────────────────────────────────────
+# 原先 7 个模块各复制一份「分块读取 + 超限抛 413」的循环（限额判定分散在 7 处）：
+#   api/backgrounds.py、character.py、expressions.py、stt.py、tts.py
+#     的 _read_upload_with_limit
+#   api/live2d_pool.py、plugins.py 的 _read_upload_limited
+# 现在只此一处实现；各端点的限额数值仍由各自模块决定，仅判定逻辑收口。
+# 未收口：api/silly_tavern.py::_st_read_upload（ST 兼容面，需单独拍板）、
+#         services/local_model_registry.py（A 套本地 LLM，TODOS 阻塞中）。
+
+DEFAULT_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def format_upload_limit_mb(max_bytes: int) -> int:
+    """字节数 → 整数 MB，供 413 文案使用。"""
+    return max_bytes // (1024 * 1024)
+
+
+async def read_upload_with_limit(
+    file: UploadFile,
+    max_bytes: int,
+    *,
+    detail: str,
+    chunk_size: int = DEFAULT_UPLOAD_READ_CHUNK_BYTES,
+) -> bytes:
+    """分块读取 UploadFile，累计超过 max_bytes 立即抛 413（不留半成品）。
+
+    detail 由调用方给出，以保留各端点原有的 413 文案。
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=detail)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 _DANGEROUS_EXTENSIONS = {

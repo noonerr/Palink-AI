@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse
 
 from ..core.config import settings
+from ..utils import format_upload_limit_mb, read_upload_with_limit
 from .dependencies import get_admin, get_current_user
 
 logger = logging.getLogger(__name__)
@@ -225,20 +226,12 @@ async def delete_model(
 
 
 async def _read_upload_limited(file: UploadFile, max_bytes: int = _MAX_UPLOAD_BYTES) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Uploaded file too large (max {max_bytes // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """判定逻辑收口到 utils.read_upload_with_limit，此处仅保留本端点的默认限额与文案。"""
+    return await read_upload_with_limit(
+        file,
+        max_bytes,
+        detail=f"Uploaded file too large (max {format_upload_limit_mb(max_bytes)}MB)",
+    )
 
 
 def _extract_zip(content: bytes, target: Path) -> None:

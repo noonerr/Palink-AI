@@ -27,7 +27,7 @@ from ..database import get_db
 from .character_ext import invalidate_regex_pattern_cache
 from ..core.cache import cached, invalidate_cache
 # URL 安装的 SSRF 校验口径与头像拉取（3710837 先例）同源
-from ..utils import _is_public_http_url
+from ..utils import _is_public_http_url, format_upload_limit_mb, read_upload_with_limit
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +43,15 @@ _PLUGIN_IMPORT_MAX_UNCOMPRESSED = 100 * 1024 * 1024   # 解压总量 100MB
 
 
 async def _read_upload_limited(file: UploadFile, max_bytes: int = _PLUGIN_IMPORT_MAX_FILE_BYTES) -> bytes:
-    """S-9 修复: 分块读取上传文件并限制总大小，避免 file.read() 无上限。"""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Uploaded file too large (max {max_bytes // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """S-9 修复: 分块读取上传文件并限制总大小，避免 file.read() 无上限。
+
+    判定逻辑收口到 utils.read_upload_with_limit，此处仅保留本端点的默认限额与文案。
+    """
+    return await read_upload_with_limit(
+        file,
+        max_bytes,
+        detail=f"Uploaded file too large (max {format_upload_limit_mb(max_bytes)}MB)",
+    )
 
 
 class RegexImportPayload(BaseModel):

@@ -23,6 +23,7 @@ from ..api.dependencies import get_current_user
 from ..core import get_db, settings
 from ..models import Character, CharacterExpression, User
 from ..services.expression_service import DEFAULT_EXPRESSIONS, ExpressionService
+from ..utils import format_upload_limit_mb, read_upload_with_limit
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,6 @@ _EXPRESSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 上传图片大小上限（10MB）
 _MAX_EXPRESSION_UPLOAD_SIZE = 10 * 1024 * 1024
-_UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 # content-type -> 扩展名
 _CONTENT_TYPE_EXT = {
@@ -130,20 +130,12 @@ def _custom_expression_url(character_id: str, expression_name: str) -> str:
 
 
 async def _read_upload_with_limit(file: UploadFile) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_READ_CHUNK_SIZE)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _MAX_EXPRESSION_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Expression image too large (max {_MAX_EXPRESSION_UPLOAD_SIZE // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """判定逻辑收口到 utils.read_upload_with_limit，此处仅保留本端点的限额与文案。"""
+    return await read_upload_with_limit(
+        file,
+        _MAX_EXPRESSION_UPLOAD_SIZE,
+        detail=f"Expression image too large (max {format_upload_limit_mb(_MAX_EXPRESSION_UPLOAD_SIZE)}MB)",
+    )
 
 
 # ---------------------------------------------------------------------

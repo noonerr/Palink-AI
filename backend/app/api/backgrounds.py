@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from ..api.dependencies import get_current_user
 from ..core import get_db, settings
 from ..models import Background, CharacterChatSession, User
+from ..utils import format_upload_limit_mb, read_upload_with_limit
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,6 @@ _ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # 上传图片大小上限（10MB）
 _MAX_UPLOAD_SIZE = 10 * 1024 * 1024
-_UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 # 背景图相对 DATA_DIR 的存储子目录
 _BG_SUBDIR = "backgrounds"
@@ -56,21 +56,15 @@ def _relative_path(filename: str) -> str:
 
 
 async def _read_upload_with_limit(file: UploadFile) -> bytes:
-    """读取上传文件内容，超限则抛出 413。"""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_READ_CHUNK_SIZE)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _MAX_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Background image too large (max {_MAX_UPLOAD_SIZE // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """读取上传文件内容，超限则抛出 413。
+
+    判定逻辑收口到 utils.read_upload_with_limit，此处仅保留本端点的限额与文案。
+    """
+    return await read_upload_with_limit(
+        file,
+        _MAX_UPLOAD_SIZE,
+        detail=f"Background image too large (max {format_upload_limit_mb(_MAX_UPLOAD_SIZE)}MB)",
+    )
 
 
 def _resolve_extension(filename: str | None, content_type: str | None) -> str:

@@ -15,27 +15,22 @@ from typing import Optional
 from .dependencies import get_current_user
 from ..models import User
 from ..services.stt_service import stt_service
+from ..utils import format_upload_limit_mb, read_upload_with_limit
 
 router = APIRouter(prefix="/api", tags=["speech-to-text"])
 logger = logging.getLogger(__name__)
 
 MAX_STT_AUDIO_BYTES = 25 * 1024 * 1024  # 25MB
-UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 ALLOWED_STT_EXTENSIONS = {".webm", ".wav", ".mp3", ".ogg", ".m4a"}
 
 
 async def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
-    chunks = []
-    total = 0
-    while True:
-        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(status_code=413, detail="音频文件过大（最大 25MB）")
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """判定逻辑收口到 utils.read_upload_with_limit，此处仅按实际限额生成文案。"""
+    return await read_upload_with_limit(
+        file,
+        max_bytes,
+        detail=f"音频文件过大（最大 {format_upload_limit_mb(max_bytes)}MB）",
+    )
 
 
 @router.post("/stt")
