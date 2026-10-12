@@ -1381,10 +1381,38 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [MVU-EVENTS 2026-10-05] MVU 事件键
       return '';
     },
   };
-  window.getCharWorldbookNames = window.getCharWorldbookNames || (async () => ({
-    primary: activeWorldbookName,
-    additional: activeWorldbookName ? [activeWorldbookName] : [],
-  }));
+  // [S1-G1 2026-10-13] 形状订正：ST 契约是**同步**返回 { primary: string|null, additional: string[] }。
+  // 依据（三条实测，详见 utils/sillyTavernPluginRuntime.ts [S1-G1] 注释）：
+  //   1. @types/function/worldbook.d.ts:32 声明该函数返回 CharWorldbooks，**非 Promise**；
+  //   2. 真机 MVU 写法 getCharWorldbookNames('current').primary ?? 'unknown' —— 不 await、读 .primary；
+  //   3. JS-Slash-Runner 自家实现就是同步转调 getCharLorebooks。
+  // 此前本处返回 Promise ⇒ 消费者同步读 .primary 恒 undefined ⇒ initialized_lorebooks 退化成 'unknown'。
+  let worldbookNamesWarmStarted = false;
+  const getCharWorldbookNamesCompat = () => {
+    if (!activeWorldbookName && !worldbookNamesWarmStarted) {
+      // 冷缓存自热：帧内名字只在卡自己建过世界书后才有值，首次调用几乎必为空。
+      // 本 API 同步，等不起 —— 后台拉一次把缓存填上，供**后续**调用取到真值。
+      // 只 kick 一次：父侧无世界书时 result.name 恒空，不守卫会每次调用都发一轮 RPC。
+      worldbookNamesWarmStarted = true;
+      requestParent('getCharWorldbook', { args: [] }).then((result) => {
+        if (result && result.success === false) {
+          post({ type: 'log', level: 'warn', message: 'getCharWorldbookNames 冷缓存自热失败，返回空绑定' });
+          return;
+        }
+        const name = result && typeof result === 'object'
+          ? String(result.name || result.world_book_name || result.worldbookName || '').trim()
+          : '';
+        if (name) activeWorldbookName = name;
+      }).catch(() => {
+        post({ type: 'log', level: 'warn', message: 'getCharWorldbookNames 冷缓存自热失败，返回空绑定' });
+      });
+    }
+    return {
+      primary: activeWorldbookName || null,
+      additional: activeWorldbookName ? [activeWorldbookName] : [],
+    };
+  };
+  window.getCharWorldbookNames = window.getCharWorldbookNames || getCharWorldbookNamesCompat;
   window.getCharWorldbook = window.getCharWorldbook || (async (...args) => requestParent('getCharWorldbook', { args }));
   window.createOrReplaceCharWorldbook = window.createOrReplaceCharWorldbook || (async (name, entries, options = {}) => {
     const result = await requestParent('createOrReplaceWorldbook', { name, entries, options, scope: 'character' });

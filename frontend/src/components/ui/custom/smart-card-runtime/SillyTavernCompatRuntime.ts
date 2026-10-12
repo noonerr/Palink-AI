@@ -5390,10 +5390,33 @@ ${IDB_NS_RUNTIME_SOURCE}
     post({ type: 'st:setInputDraft', content: parentElementStore.send_textarea.value });
     return true;
   });
-  ensureFunction('getCharWorldbookNames', async () => ({
-    primary: activeWorldbookName,
-    additional: activeWorldbookName ? [activeWorldbookName] : [],
-  }));
+  // [S1-G1 2026-10-13] 形状订正：ST 契约是**同步**返回 { primary, additional }，非 Promise。
+  // 依据同 frame-shim/legacy-st-sim.ts 的同名注释（真机 MVU 不 await、直接读 .primary）。
+  // 本帧内 legacy 段先注入并占了 window.getCharWorldbookNames，故本实现通常轮不到
+  // （与 getChatMessages 同构）；仍一并订正，防止只改一处导致两轨形状再漂移。
+  let worldbookNamesWarmStarted = false;
+  const getCharWorldbookNamesCompat = () => {
+    if (!activeWorldbookName && !worldbookNamesWarmStarted) {
+      worldbookNamesWarmStarted = true;
+      requestParent('getCharWorldbook', { args: [] }).then((result) => {
+        if (result && result.success === false) {
+          post({ type: 'log', level: 'warn', message: 'getCharWorldbookNames 冷缓存自热失败，返回空绑定' });
+          return;
+        }
+        const name = result && typeof result === 'object'
+          ? String(result.name || result.world_book_name || result.worldbookName || '').trim()
+          : '';
+        if (name) activeWorldbookName = name;
+      }).catch(() => {
+        post({ type: 'log', level: 'warn', message: 'getCharWorldbookNames 冷缓存自热失败，返回空绑定' });
+      });
+    }
+    return {
+      primary: activeWorldbookName || null,
+      additional: activeWorldbookName ? [activeWorldbookName] : [],
+    };
+  };
+  ensureFunction('getCharWorldbookNames', getCharWorldbookNamesCompat);
   ensureFunction('getCharWorldbook', async (...args) => requestParent('getCharWorldbook', { args }));
   ensureFunction('createOrReplaceCharWorldbook', async (name, entries, options = {}) => {
     const result = await requestParent('createOrReplaceWorldbook', { name, entries, options, scope: 'character' });

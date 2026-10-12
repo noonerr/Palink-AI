@@ -1604,12 +1604,12 @@ export class SillyTavernPluginRuntime {
         }
 
         // ── [MVU-UNBLOCK 2026-10-05] 角色绑定世界书的「名字列表」与「单本内容」 ──
-        // 现象（真机 console）：MVU bundle（MagVarUpdate@beta）在**模块顶层初始化**里
-        // 调 getCharWorldbookNames() 读角色世界书绑定，取不到就抛
+        // 现象（真机 console）：MVU bundle（MagVarUpdate@beta）在初始化里调
+        // getCharWorldbookNames('current').primary 读角色世界书绑定，取不到就抛
         //   ReferenceError: getCharWorldbookNames is not defined
-        // 连锁反应：紧接着一条未捕获的
-        //   TypeError: Cannot read properties of undefined (reading 'length')
-        //   → MVU 初始化中断 → 卡内状态栏/变量面板拿不到变量引擎，显示 schema 默认值。
+        // （2026-10-13 订正：原注释记的那条 "Cannot read properties of undefined (reading
+        //  'length')" 是 API 缺失的下游连锁，并非「消费者读 .length」——真机三个 MVU bundle
+        //  里没有一处对返回值读 .length，详见下方 [S1-G1] 注释。勿据此推断契约形状。）
         //
         // 为什么这里以前是空的：本文件 :2067 的 SUPPLIED 白名单只决定 TavernHelper Proxy
         // 「认不认这个键」—— :2123 的 has() 是 IS_SUPPLIED[prop] === true && !!lookup(prop)，
@@ -1621,38 +1621,36 @@ export class SillyTavernPluginRuntime {
         //
         // 数据源复用上面 A3 已有的 __palinkBridge.charLorebooks（真查
         // /api/worldbooks?character_id=…&type=character_book，非空数组假货）。
-        // ST 语义是 Promise，故本族一律返回 Promise。
+        // ⚠️ [S1-G1 2026-10-13 形状订正] 本 API **必须同步返回对象**，不是 Promise、不是 string[]。
+        // 推翻 2026-10-05 此处「ST 语义是 Promise，故返回 Promise<string[]>」的写法，依据三条实测：
+        //   1. ST 官方类型声明 st-plugins/third-party/JS-Slash-Runner-main/@types/function/
+        //      worldbook.d.ts:32 —— declare function getCharWorldbookNames(name): CharWorldbooks；
+        //      type CharWorldbooks = { primary: string | null; additional: string[] };（**无 Promise**）
+        //   2. 真机 MVU bundle（backend/data/smart_card_assets/ 三份，含 573KB 那份）调用形如
+        //      getCharWorldbookNames('current').primary ?? 'unknown' —— **不 await、读 .primary**；
+        //      三份里 "await getCharWorldbookNames" 出现 0 次。
+        //   3. 同仓 JS-Slash-Runner 自家实现 src/function/worldbook.ts:50 就是
+        //      getCharWorldbookNames(name) => getCharLorebooks({ name })（同步、对象形状）。
+        // ⇒ 返回 Promise 时消费者不 await，.primary 恒 undefined，MVU 的 initialized_lorebooks
+        //   键会退化成 'unknown' —— 原写法正是这个症状（比"API 不存在"更隐蔽）。
+        // 数据源与冷缓存策略直接复用上面 A3 的 window.getCharLorebooks：它同步返回桥缓存，
+        // 且缓存角色与当前不符时**后台** refreshCharLorebooks（见 :1590-1594），语义与 ST 一致。
         if (typeof window.getCharWorldbookNames !== 'function') {
-          window.getCharWorldbookNames = function() {
+          window.getCharWorldbookNames = function(name) {
             var bridge = window.__palinkBridge;
-            if (!bridge || typeof bridge.charLorebooks !== 'function') {
+            if (!bridge || typeof bridge.charLorebooks !== 'function'
+                || typeof window.getCharLorebooks !== 'function') {
               if (runtime && typeof runtime.recordStubHit === 'function') {
-                runtime.recordStubHit('getCharWorldbookNames', '角色世界书桥不可用，返回空列表');
+                runtime.recordStubHit('getCharWorldbookNames', '角色世界书桥不可用，返回空绑定');
               }
-              return Promise.resolve([]);
+              return { primary: null, additional: [] };
             }
-            var collect = function() {
-              var books = bridge.charLorebooks() || { primary: null, additional: [] };
-              var names = [];
-              if (books.primary) names.push(books.primary);
-              if (Array.isArray(books.additional)) {
-                books.additional.forEach(function(n) { if (n) names.push(n); });
-              }
-              return names;
+            var books = window.getCharLorebooks(name == null ? {} : { name: name })
+              || { primary: null, additional: [] };
+            return {
+              primary: books.primary == null ? null : String(books.primary),
+              additional: Array.isArray(books.additional) ? books.additional.slice() : [],
             };
-            // MVU 在模块顶层 await 这个 API，而桥缓存是惰性拉取的（见 CharacterChat.tsx:1746
-            // 注释：注入时角色 id 未必已进 context）。首次调用几乎必然撞上冷缓存，
-            // 直接返回 [] 会让 MVU 以为「这张卡没有世界书」——那正是原报错下游的病根。
-            // 故冷缓存时自己拉一次再答（ST 语义本就是 Promise，等得起）。
-            var cached = collect();
-            if (cached.length > 0) return Promise.resolve(cached);
-            var cid = runtime && runtime.context && runtime.context.characterUuid;
-            if (!cid || typeof bridge.refreshCharLorebooks !== 'function') {
-              return Promise.resolve(cached);
-            }
-            return Promise.resolve(bridge.refreshCharLorebooks(String(cid)))
-              .then(collect)
-              .catch(function() { return cached; });
           };
         }
         if (typeof window.getCharWorldbook !== 'function') {
