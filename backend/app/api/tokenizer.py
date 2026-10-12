@@ -132,6 +132,24 @@ def _heuristic_count(text: str) -> int:
     - CJK 字符：约 1 字符 ≈ 1 token
     - 拉丁文/其他：约 4 字符 ≈ 1 token（与前端 _heuristicTokenCount 公式保持一致）
     - other_chars == 0 时仅返回 CJK 计数，避免对纯 CJK 文本多算 1
+
+    ⚠️ [TOK-ZH 待办 2026-10-12] **本公式对中文高估约 41%**：
+    真实 deepseek tokenizer 在中文语料上实测 **0.71 token/字**（本项目 2026-10-12
+    实测 132,174 字 → 85,266 tok），这里按 1.0 算。`count_tokens` 优先走的
+    cl100k_base 更差（1.26 token/字，**高估 95%**）。
+
+    装配侧的预算判断已经改用中文感知系数（中文 0.70 / 非中文 0.38，
+    见 `app/services/st_tokenizer_service.py` 的 `zh_aware_guesstimate`），
+    但**本文件没有跟着改**，原因是它服务的是 **ST 插件/卡脚本兼容面**：
+
+        frontend/src/lib/plugin-system/sandbox.ts 把 ST 的
+        `tokenizers.getTokenCountAsync/getTextTokens` 代理到本端点
+        （`/api/tokenizers/count`、`/encode`），
+
+    而前端 `frontend/src/lib/sillytavern/getContext.ts::_heuristicTokenCount`
+    用的是**同一个公式**。⇒ 要改必须前后端同步改，且要先确认有哪些插件
+    依赖这个数（改了会让插件的"剩余上下文"显示与 ST 原版不同）。
+    这是独立议题，**本次未动**。
     """
     if not text:
         return 0
