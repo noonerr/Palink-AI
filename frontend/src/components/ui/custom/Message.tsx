@@ -19,8 +19,10 @@ import type { Message as MessageType, Model } from '@/types';
 import DOMPurify from 'dompurify';
 import { CharacterCardRenderer, InlineHtmlRenderer, type SmartCardAction, looksLikeSmartCardHtml } from './CharacterCardRenderer';
 import { resolveCardVariables } from './cardVariables';
-import { InlineCardRenderer, type InlineCardRendererProps } from './InlineCardRenderer';
-import { shouldUseInlineCardRendering } from './smart-card-runtime/inline/inline-flags';
+// [S1/T3 2026-10-13] inline 渲染 flag 已废（B3 拍板 ①）：智能卡统一走 iframe 的
+// CharacterCardRenderer，InlineCardRenderer 不再是可达渲染路径（文件留待 S5 一并删）。
+// 此处只取它的 props 类型——SmartCardComponent 的调用点是按这份契约传参的。
+import type { InlineCardRendererProps } from './InlineCardRenderer';
 import { StatusBarPanel, type CharacterStatusBar } from './StatusBarPanel';
 import TavernHelperPanel from './TavernHelperPanel';
 import VariableChangePanel from './VariableChangePanel';
@@ -1133,30 +1135,19 @@ function MessageInner({
     };
   }, []);
 
-  // [双路径] 智能卡渲染路径：普通智能卡按 isLast 分流（最新内联、历史 iframe）。
-  // 但「全屏界面」（cardAllowsImmersive，如开局 launcher/星空启动器）必须始终走
-  // CharacterCardRenderer 的沉浸式全屏分支——InlineCardRenderer 是消息内嵌面板，
-  // 没有全屏能力，会把 100vh 的全屏界面压缩成消息内面板（实测：重置后开局界面
-  // 被内联渲染、immersive=0，全屏丢失）。CharacterCardRenderer 会按内容中每个
-  // HTML 块独立判定沉浸式/内联（launcher 块全屏、状态栏块内联）。
-  // 移动端 WebView 行为差异大，shouldUseInlineCardRendering 恒 false，一律 iframe 防黑屏。
-  // [R-4] 桌面端默认也统一走 iframe（shouldUseInlineCardRendering 需显式 flag 才开启），
-  // 消除"开场白内联、历史 iframe"的脚本全局不共享漂移；全屏 launcher 不受影响。
-  const SmartCardComponent = useMemo<React.ComponentType<InlineCardRendererProps>>(
-    () => {
-      // 开场白（会话第一条 AI 消息，messageIndex===0）强制内联仅在内联 flag 显式
-      // 开启时生效：双路径分流按 isLast 切内联/iframe，发送第二段后开场白 isLast
-      // 变 false 会从内联漂移成 iframe（渲染路径突变）。默认（无 flag）统一 iframe，
-      // 开场白稳定呈现，无漂移。全屏 launcher（cardAllowsImmersive）走沉浸式 iframe
-      // 保留全屏。
-      const isGreeting = !isUser && typeof messageIndex === 'number' && messageIndex === 0;
-      const forceInlineGreeting = isGreeting && !cardAllowsImmersive && shouldUseInlineCardRendering();
-      return (forceInlineGreeting || (shouldUseInlineCardRendering() && isLast && !cardAllowsImmersive)
-        ? InlineCardRenderer
-        : (CharacterCardRenderer as unknown as React.ComponentType<InlineCardRendererProps>));
-    },
-    [isLast, cardAllowsImmersive, isUser, messageIndex],
-  );
+  // [S1/T3 2026-10-13] inline 渲染 flag 已废（三轨并一轨 B3 拍板 ①）。
+  //
+  // 原「双路径」分流（最新消息内联 / 历史消息 iframe，受 inline-flags 的
+  // localStorage 开关 palink_inline_card_rendering 控制）已彻底移除，理由：
+  //   1. 内联渲染把卡片脚本直接跑在主页面全局，是**第三个执行面**——并轨的目标正是
+  //      「不可信代码一律进 iframe + 统一 postMessage 桥」，留着它等于留一条绕过的路；
+  //   2. 该 flag 默认恒 false（isInlineCardRenderingEnabled() 需显式置 1），线上并未在跑，
+  //      敞口是「有人翻开就出现」，废掉的代价≈0（R-4 之后桌面端本就统一走 iframe）；
+  //   3. 全屏界面（cardAllowsImmersive，开局 launcher 等）本来也必须走
+  //      CharacterCardRenderer——内联面板没有全屏能力，会把 100vh 压成消息内面板。
+  // 现在所有端、所有消息位置统一走 CharacterCardRenderer(iframe)，无「开场白内联、
+  // 历史 iframe」的脚本全局漂移问题。inline-flags.ts 随之删除（唯一消费者是这里）。
+  const SmartCardComponent = CharacterCardRenderer as unknown as React.ComponentType<InlineCardRendererProps>;
 
   const contentSegments = useMemo(() => {
     if (isUser || !isCharacterChat) return [];
