@@ -17,6 +17,20 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [进行中] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0 备料已于 2026-10-13 完成）
+
+- **权威方案**：[`docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md`](./docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md)
+- **S0 基线档案**：[`docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md`](./docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md)
+- **S0 完工自检（B1–B9 逐条）**：[`docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md`](./docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md)
+- **进度**：**S0 备料 = 9/9 完成**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，末笔提交 `068acde`。**S1~S5 未开工**，尚无 `s1-done`..`s4-done` tag。
+- **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
+- **下一步（S1 补功能）**：
+  1. 修真缺陷 `legacy-st-sim.ts:1384` `getCharWorldbookNames` 返回 `{primary,additional}`，不符 ST `Promise<string[]>` 契约（砸 MVU 顶层 await 读 `.length`）；同批确认 `SillyTavernCompatRuntime.ts:5393` 同类实现，并补契约测试钉住 `string[]` 形状。**未修前不得静默，须列为已知缺口。**
+  2. **⭐ S1 新增前置（性能实测推出，原方案无此条）**：iframe 生命周期策略 —— 实测边际 **+9~11 MB/iframe、只增不减**，91 条会话 48 iframe = 560MB 堆、每千像素滚动主线程成本 **1.51×**。**必须在 S1 定「懒挂载 + 出视野卸载/冻结」**，不能拖到 S4 拆完再看。
+  3. **B3 inline 变种归宿待拍板**：默认按 **① 强制关闭 inline flag**（inline 卡降为纯显示），见自检报告 §B3。
+  4. **分支出仓**：push origin 或 `git bundle` 存仓库外 —— 目前分支仅存本地，磁盘事故即全丢。
+- ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。
+
 ### [未开工·待拍板] 本地 LLM 全部删除，只保留向量引擎（2026-10-11 用户拍板方向）
 
 - **决策**：本地 LLM 一律不用、后续全部删除；**唯一保留的本地模型 = 向量嵌入引擎**（ollama `bge-m3` 1024 维）。
