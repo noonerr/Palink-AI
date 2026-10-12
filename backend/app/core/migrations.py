@@ -34,6 +34,11 @@ _RUNTIME_COMPAT_COLUMNS = (
     ("character_chat_messages", "extra", sa.Text()),
     ("character_chat_messages", "is_hidden", sa.Boolean()),
     ("character_chat_messages", "is_locked", sa.Boolean()),
+    # [CACHE-OBS 2026-10-12] 上游返回的缓存命中/未命中输入 token 数。
+    # 用来算真实缓存命中率 hit/(hit+miss)，是自适应上下文注入的判据来源；
+    # 此前这两个数被解析丢掉（走 DeepSeek 时恒为 0）且从未落库。
+    ("character_chat_messages", "cache_read_input_tokens", sa.Integer()),
+    ("character_chat_messages", "cache_miss_input_tokens", sa.Integer()),
     ("world_book_stages", "group", sa.String()),
     ("world_book_stages", "extensions_json", sa.Text()),
     ("world_book_stages", "character_filter", sa.Text()),

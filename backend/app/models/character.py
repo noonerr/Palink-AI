@@ -117,6 +117,12 @@ class CharacterChatMessage(Base):
     tokens = Column(Integer, default=0)
     prompt_tokens = Column(Integer, default=0)
     reasoning_tokens = Column(Integer, default=0)
+    # [CACHE-OBS 2026-10-12] 上游 usage 里的缓存命中/未命中输入 token 数。
+    # 命中率 = cache_read / (cache_read + cache_miss)，用于校准上下文注入策略
+    # （追加式的成本优势完全建立在缓存命中上，必须能被真实账单验证）。
+    # 上游不返回时为 0/0（不可与"未命中"混淆：miss=0 表示未知，不是没命中）。
+    cache_read_input_tokens = Column(Integer, default=0)
+    cache_miss_input_tokens = Column(Integer, default=0)
     name = Column(String, nullable=True)
     is_user = Column(Boolean, nullable=True)
     is_system = Column(Boolean, default=False, nullable=False)

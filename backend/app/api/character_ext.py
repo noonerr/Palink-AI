@@ -83,22 +83,8 @@ router_chat = APIRouter(tags=["character-chat"])
 
 logger = logging.getLogger(__name__)
 
+# 注意：_MAX_IMAGE_SIZE 仍被本文件 :2331 的远端图片体积校验使用，勿删。
 _MAX_IMAGE_SIZE = 50 * 1024 * 1024
-_CHUNK_SIZE = 8192
-
-
-def _read_with_size_limit(resp, max_size: int = _MAX_IMAGE_SIZE) -> bytes:
-    chunks = []
-    total_read = 0
-    while True:
-        chunk = resp.read(_CHUNK_SIZE)
-        if not chunk:
-            break
-        total_read += len(chunk)
-        if total_read > max_size:
-            raise ValueError(f"Response body exceeds {max_size // (1024 * 1024)}MB limit")
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 # ───────────────────────────────────────────────
@@ -4889,6 +4875,8 @@ async def _character_chat_impl(
                         model=req.model,
                         tokens=token_count,
                         prompt_tokens=result.prompt_tokens,
+                        cache_read_input_tokens=result.cache_read_input_tokens,
+                        cache_miss_input_tokens=result.cache_miss_input_tokens,
                         reasoning_tokens=result.effective_reasoning_tokens(),
                         **_st_message_kwargs(
                             role="assistant",
@@ -4914,6 +4902,8 @@ async def _character_chat_impl(
                             model=req.model,
                             tokens=token_count,
                             prompt_tokens=result.prompt_tokens,
+                        cache_read_input_tokens=result.cache_read_input_tokens,
+                        cache_miss_input_tokens=result.cache_miss_input_tokens,
                             reasoning_tokens=result.effective_reasoning_tokens(),
                             **_st_message_kwargs(
                                 role="assistant",
@@ -4932,6 +4922,8 @@ async def _character_chat_impl(
                         msg.model = req.model
                         msg.tokens = token_count
                         msg.prompt_tokens = result.prompt_tokens
+                        msg.cache_read_input_tokens = result.cache_read_input_tokens
+                        msg.cache_miss_input_tokens = result.cache_miss_input_tokens
                         msg.reasoning_tokens = result.effective_reasoning_tokens()
                         if not msg.name:
                             msg.name = char.name or "Character"
@@ -6141,6 +6133,8 @@ async def continue_session(
         msg.model = model
         msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
+        msg.cache_read_input_tokens = result.cache_read_input_tokens
+        msg.cache_miss_input_tokens = result.cache_miss_input_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()
         return msg.id, msg.content
@@ -6290,6 +6284,8 @@ async def regenerate_message(
         msg.model = model
         msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
+        msg.cache_read_input_tokens = result.cache_read_input_tokens
+        msg.cache_miss_input_tokens = result.cache_miss_input_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()
         return msg.id, msg.content
@@ -6644,6 +6640,8 @@ async def swipe_message(
         msg.model = model
         msg.tokens = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         msg.prompt_tokens = result.prompt_tokens
+        msg.cache_read_input_tokens = result.cache_read_input_tokens
+        msg.cache_miss_input_tokens = result.cache_miss_input_tokens
         msg.reasoning_tokens = result.effective_reasoning_tokens()
         save_db.commit()
         return msg.id, msg.content

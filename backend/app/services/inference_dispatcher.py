@@ -183,9 +183,16 @@ def _usage_nested_int(usage: Any, parent: str, name: str) -> int:
 
 
 def _build_usage_dict(usage: Any, reasoning_tokens: int = 0) -> Dict[str, int]:
-    cache_read_input_tokens = _usage_int(usage, "cache_read_input_tokens")
-    if not cache_read_input_tokens:
-        cache_read_input_tokens = _usage_nested_int(usage, "prompt_tokens_details", "cached_tokens")
+    # [CACHE-OBS 2026-10-12] 命中数要同时认三种字段名：
+    #   DeepSeek 专有 prompt_cache_hit_tokens / OpenAI-MiMo prompt_tokens_details.cached_tokens
+    #   / Anthropic cache_read_input_tokens。此前只认后两种 ⇒ 走 DeepSeek 时恒为 0。
+    cache_read_input_tokens = (_usage_int(usage, "prompt_cache_hit_tokens")
+                               or _usage_int(usage, "cache_read_input_tokens")
+                               or _usage_nested_int(usage, "prompt_tokens_details", "cached_tokens"))
+    cache_miss_input_tokens = _usage_int(usage, "prompt_cache_miss_tokens")
+    if not cache_miss_input_tokens and cache_read_input_tokens:
+        cache_miss_input_tokens = max(
+            0, _usage_int(usage, "prompt_tokens") - cache_read_input_tokens)
     return {
         "total_tokens": _usage_int(usage, "total_tokens"),
         "prompt_tokens": _usage_int(usage, "prompt_tokens"),
@@ -193,6 +200,7 @@ def _build_usage_dict(usage: Any, reasoning_tokens: int = 0) -> Dict[str, int]:
         "reasoning_tokens": int(reasoning_tokens or 0),
         "cache_creation_input_tokens": _usage_int(usage, "cache_creation_input_tokens"),
         "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_miss_input_tokens": cache_miss_input_tokens,
     }
 
 

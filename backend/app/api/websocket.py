@@ -31,7 +31,7 @@ from ..services.inference_dispatcher import ensure_model_available, stream_text_
 from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.generation_service import _build_logit_bias
 from ..services.inference_queue import inference_queue
-from ..services.stream_builder import StreamResult
+from ..services.stream_builder import StreamResult, extract_cache_tokens
 from ..services.web_search import search_web, format_search_results, get_web_search_config
 from ..services.mcp_service import get_all_tools_openai_format
 from ..services.compact_title_service import extract_response_title, generate_compact_title
@@ -373,9 +373,12 @@ async def run_chat_generation(
                         _details = usage.get("completion_tokens_details") or {}
                         _rt = int(_details.get("reasoning_tokens", 0) or 0)
                     result.reasoning_tokens = _rt
-                    result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                    prompt_details = usage.get("prompt_tokens_details") or {}
-                    result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
+                    # [CACHE-OBS 2026-10-12] 统一走 extract_cache_tokens，
+                    # 兼容 DeepSeek / OpenAI-MiMo / Anthropic 三种字段名。
+                    _rd, _cr, _ms = extract_cache_tokens(usage)
+                    result.cache_read_input_tokens = _rd
+                    result.cache_creation_input_tokens = _cr
+                    result.cache_miss_input_tokens = _ms
                     continue
 
                 if enable_tools:
@@ -1048,9 +1051,12 @@ async def run_character_chat_generation(
                         _details = usage.get("completion_tokens_details") or {}
                         _rt = int(_details.get("reasoning_tokens", 0) or 0)
                     result.reasoning_tokens = _rt
-                    result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                    prompt_details = usage.get("prompt_tokens_details") or {}
-                    result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
+                    # [CACHE-OBS 2026-10-12] 统一走 extract_cache_tokens，
+                    # 兼容 DeepSeek / OpenAI-MiMo / Anthropic 三种字段名。
+                    _rd, _cr, _ms = extract_cache_tokens(usage)
+                    result.cache_read_input_tokens = _rd
+                    result.cache_creation_input_tokens = _cr
+                    result.cache_miss_input_tokens = _ms
                     continue
 
                 reasoning = delta.get("reasoning")

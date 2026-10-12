@@ -6,8 +6,49 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def extract_cache_tokens(usage: Dict[str, Any]) -> tuple:
+    """[CACHE-OBS 2026-10-12] 从各家 usage 里抽出缓存命中/写入/未命中 token 数。
+
+    返回 ``(cache_read, cache_creation, cache_miss)``。
+
+    ⚠️ 为什么需要这个函数：各家字段名**完全不同**，而本项目 2026-10-12 之前
+    只认 OpenAI/Anthropic 风格，导致走 DeepSeek 时缓存命中数**恒为 0**
+    （不是真的没命中，是压根没读到）——所有基于"缓存命中率"的判断因此失真。
+
+    已核实的三种风格（2026-10-11 查证）：
+      - **DeepSeek**（专有）: ``usage.prompt_cache_hit_tokens`` /
+                            ``usage.prompt_cache_miss_tokens``
+      - **OpenAI / 小米 MiMo**: ``usage.prompt_tokens_details.cached_tokens``
+      - **Anthropic**: ``usage.cache_read_input_tokens`` /
+                       ``usage.cache_creation_input_tokens``
+
+    未命中数只有 DeepSeek 直接给；其他家用
+    ``prompt_tokens - cached_tokens`` 推（DeepSeek 给了就优先用它的真值）。
+    """
+    if not usage:
+        return 0, 0, 0
+
+    def _i(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    details = usage.get("prompt_tokens_details") or {}
+    # 命中：DeepSeek 专有 → Anthropic → OpenAI/MiMo
+    read = (_i(usage.get("prompt_cache_hit_tokens"))
+            or _i(usage.get("cache_read_input_tokens"))
+            or _i(details.get("cached_tokens")))
+    creation = _i(usage.get("cache_creation_input_tokens"))
+    # 未命中：DeepSeek 专有；否则用 总输入 - 命中 推
+    miss = _i(usage.get("prompt_cache_miss_tokens"))
+    if not miss and read:
+        miss = max(0, _i(usage.get("prompt_tokens")) - read)
+    return read, creation, miss
+
+
 class StreamResult:
-    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "ext_prompts_evidence", "stream_error")
+    __slots__ = ("full_content", "full_reasoning", "total_tokens", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "cache_miss_input_tokens", "ext_prompts_evidence", "stream_error")
 
     def __init__(self):
         self.full_content = ""
@@ -18,6 +59,10 @@ class StreamResult:
         self.reasoning_tokens = 0
         self.cache_creation_input_tokens = 0
         self.cache_read_input_tokens = 0
+        # [CACHE-OBS 2026-10-12] 未命中缓存的输入 token 数。
+        # 与 cache_read_input_tokens 配对，用来算真实缓存命中率
+        # （hit / (hit+miss)），是自适应上下文注入策略的判据来源。
+        self.cache_miss_input_tokens = 0
         # [PROMPT-EVERY-TURN 2026-10-02] 本轮 extension_prompts received/applied
         # 摘要（dict），由装配层经调用方传入，persist 时落 extra.ext_prompts。
         self.ext_prompts_evidence = None
@@ -123,9 +168,12 @@ async def stream_chat_deltas(
                     _details = usage.get("completion_tokens_details") or {}
                     _rt = int(_details.get("reasoning_tokens", 0) or 0)
                 result.reasoning_tokens = _rt
-                result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                prompt_details = usage.get("prompt_tokens_details") or {}
-                result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
+                # [CACHE-OBS 2026-10-12] 统一走 extract_cache_tokens，
+                # 兼容 DeepSeek / OpenAI-MiMo / Anthropic 三种字段名。
+                _rd, _cr, _ms = extract_cache_tokens(usage)
+                result.cache_read_input_tokens = _rd
+                result.cache_creation_input_tokens = _cr
+                result.cache_miss_input_tokens = _ms
                 continue
 
             if enable_tools:
@@ -171,7 +219,7 @@ async def stream_chat_deltas(
         yield f"data: {json.dumps({'type': 'error', 'error': True, 'message': '模型未返回任何可显示内容，请切换模型或稍后重试。'}, ensure_ascii=False)}\n\n"
 
     if result.total_tokens > 0:
-        yield f"data: {json.dumps({'type': 'usage', 'total_tokens': result.total_tokens, 'prompt_tokens': result.prompt_tokens, 'completion_tokens': result.completion_tokens, 'reasoning_tokens': result.effective_reasoning_tokens(), 'cache_creation_input_tokens': result.cache_creation_input_tokens, 'cache_read_input_tokens': result.cache_read_input_tokens})}\n\n"
+        yield f"data: {json.dumps({'type': 'usage', 'total_tokens': result.total_tokens, 'prompt_tokens': result.prompt_tokens, 'completion_tokens': result.completion_tokens, 'reasoning_tokens': result.effective_reasoning_tokens(), 'cache_creation_input_tokens': result.cache_creation_input_tokens, 'cache_read_input_tokens': result.cache_read_input_tokens, 'cache_miss_input_tokens': result.cache_miss_input_tokens})}\n\n"
 
     # P2 修复: 发射 [DONE] 信号，对齐 OpenAI SSE 标准和 ST sse-stream.js 的流结束检测
     yield "data: [DONE]\n\n"
@@ -200,9 +248,12 @@ async def parse_stream_deltas(
                 _details = usage.get("completion_tokens_details") or {}
                 _rt = int(_details.get("reasoning_tokens", 0) or 0)
             result.reasoning_tokens = _rt
-            result.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-            prompt_details = usage.get("prompt_tokens_details") or {}
-            result.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or prompt_details.get("cached_tokens", 0) or 0)
+            # [CACHE-OBS 2026-10-12] 统一走 extract_cache_tokens，
+            # 兼容 DeepSeek / OpenAI-MiMo / Anthropic 三种字段名。
+            _rd, _cr, _ms = extract_cache_tokens(usage)
+            result.cache_read_input_tokens = _rd
+            result.cache_creation_input_tokens = _cr
+            result.cache_miss_input_tokens = _ms
             continue
 
         if enable_tools:
