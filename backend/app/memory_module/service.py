@@ -187,9 +187,18 @@ class MemoryService:
                 ).hexdigest()[:12]
                 if branch_scopes else "none"
             )
+            # [阶段0-D6 2026-10-11] **memory_mode 与 max_tokens 必须进缓存键**。
+            # 原实现只含 user/session/char/branch/scope/query/exclude，**漏了模式与预算**
+            # ⇒ 同一 query 下 `rule`（纯 STM）与 `vector`（STM+LTM）共用缓存，
+            # 后到的调用者拿到前一个模式的结果；预算不同（750 vs 4000）同理
+            # 会拿到别的档位装出来的结果集。用户在设置里切档位后会看到
+            # 最多 60 秒的"切了没反应"。
+            # 实测证据：同一会话同一 query 连续调用 rule/vector，第二次
+            # 直接命中第一次的缓存 ⇒ rule 分支的诊断日志根本不落（P78）。
             cache_key = (
                 f"context:{user_id}:{session_id or ''}:{char_key}:"
-                f"{branch_key}:{scope_key}:{query_hash}:{exclude_key}"
+                f"{branch_key}:{scope_key}:{query_hash}:{exclude_key}:"
+                f"{memory_mode}:{max_tokens}"
             )
             cached = await self._get_cache(cache_key)
             if cached is not None:
@@ -257,18 +266,32 @@ class MemoryService:
         Args:
             max_tokens: **已含邻居附加预算**的总上限（由调用方按
                 ``NEIGHBOR_EXTRA_RATIO`` 放大后传入，见 get_context）。
-            max_adds: 本次最多新增几块。0 = 不限（旧行为）。限制的原因：
-                一次命中常带出 idx±1，两块的邻居又各自带出邻居，无封顶时
-                单次检索可能拖进整段历史，把预算挤爆。
+            max_adds: **每个命中块**最多新增几块邻居。0 = 不限（旧行为）。
+
+        [NEIGHBOR-PER-HIT 2026-10-11 阶段 0（D2）] ``max_adds`` 由
+        **全局封顶**改为**每命中各自封顶**。
+
+        旧实现的缺陷（实测 P75c，会话 f25daab6，7 轮）：
+        全局计数器 ``len(additions) >= max_adds`` 让同一次检索里**只有前几个
+        命中**能补到邻居 —— 块级 radius=1 时 1 个命中最多带 2 条，故
+        ``max_adds=4`` 只够**前 2 个命中**用，从第 3 个起一条都补不到。
+        实测：命中块 183 个，**被饿死 152 个（83.1%）**，整轮只补进 4 条邻居；
+        改为各自封顶后可补 134 条（+379%）。后果不是"少补几条"而是**注入的是
+        被切开的半截段落**（前半句在、后半句不在），模型只能脑补。
+
+        另订正原注释的一处动机错误：旧注释称"无封顶时单次检索可能拖进整段
+        历史" —— 但本函数**不递归**（`get_adjacent_chunks` 只取 idx±radius，
+        扩进来的块不会再被扩展），故不存在"邻居的邻居再带邻居"的链式放大。
+        真正的上界是 ``命中块数 × (2×radius)``，由 ``max_tokens`` 预算兜底。
 
         [NEIGHBOR-DETERMINISM 2026-10-09] **必须按检索得分序扩展**。
         ``result.memories`` 里的顺序是**时间序**（retriever 末尾 sort by
-        created_at），不是相关度序；而 max_adds 的封顶一旦生效，"轮到谁先被
-        扩展"就由迭代顺序决定 ⇒ 同一问题两次检索可能补进**不同**的邻居块
-        （实测同一问题两趟注入 3167 / 4028 字符，差一条 462 tok 的块）。
-        邻居扩展的语义是"把最相关的那条记忆补完整"，所以按相关度序才对：
-        这里用检索返回的原始顺序作为得分序代理（调用方在合并时也是时间序，
-        故额外接收 preferred_order）。
+        created_at），不是相关度序；而封顶一旦生效，"轮到谁先被扩展"就由迭代
+        顺序决定 ⇒ 同一问题两次检索可能补进**不同**的邻居块（实测同一问题两趟
+        注入 3167 / 4028 字符，差一条 462 tok 的块）。邻居扩展的语义是
+        "把最相关的那条记忆补完整"，所以按相关度序才对：这里用检索返回的原始
+        顺序作为得分序代理（调用方在合并时也是时间序，故额外接收
+        preferred_order）。
         """
         try:
             from .storage import _parse_chunk_meta
@@ -284,18 +307,24 @@ class MemoryService:
             # priority_order 未给（直接调用的测试/旧调用方）时退回时间序，
             # 行为与本次修复前一致。
             priority_order = priority_order if priority_order else list(result.memories)
+            # [D2] 每个命中块各自的上限 = max_adds。若调用方仍按"全局总量"传值
+            # （如 4），而单命中最多只能带 2×radius 条，则实际每命中上限取
+            # min(max_adds, 2×radius) 更贴近语义；此处直接用 max_adds，
+            # 由 tokens 预算做最终约束，避免误伤 radius=2（句级）的配置。
+            per_hit_cap = max_adds if max_adds else 0
             additions: Dict[int, Any] = {}
             for mem in priority_order:
-                if max_adds and len(additions) >= max_adds:
-                    break
                 if mem.id not in ids or _parse_chunk_meta(mem.topics) is None:
                     continue
+                # [D2] 计数器按**每个命中块**重置（旧实现是整个循环共享一个
+                # 全局计数器，导致第 3 个命中起永远补不到邻居）。
+                added_this_hit = 0
                 # [CHUNK-SENTENCE 2026-10-11] 半径按当前切分粒度取（句级 2 / 块级 1），
                 # 保证回退到块级时邻居行为逐字回到改动前。
                 for nb in self.storage.get_adjacent_chunks(
                     mem, radius=memory_config.EFFECTIVE_NEIGHBOR_RADIUS
                 ):
-                    if max_adds and len(additions) >= max_adds:
+                    if per_hit_cap and added_this_hit >= per_hit_cap:
                         break
                     if nb.id in ids or nb.id in additions:
                         continue
@@ -305,6 +334,7 @@ class MemoryService:
                     additions[nb.id] = nb
                     ids.add(nb.id)
                     total += t
+                    added_this_hit += 1  # [D2] 只增本命中的计数
             if not additions:
                 return result
 
@@ -312,8 +342,11 @@ class MemoryService:
                 list(result.memories) + list(additions.values()),
                 key=lambda x: (x.created_at or datetime.min, x.id),
             )
+            # [D2] 顺带报告"有多少命中块真的被扩展到了" —— 旧实现下这个数字
+            # 恒等于「前几个命中」，看不出 83% 被饿死。
             logger.info(
-                f"记忆邻居扩展: +{len(additions)} 块, total_tokens={total}"
+                f"记忆邻居扩展: +{len(additions)} 块, total_tokens={total}, "
+                f"命中块={len(result.memories)}, 每命中上限={max_adds or '不限'}"
             )
             return ContextResponse(
                 memories=merged,

@@ -17,6 +17,7 @@
 "把修复改回旧写法就会红"。
 """
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
@@ -331,45 +332,82 @@ class TestNeighborExpansionBudget:
         assert out.total_tokens == 1800
 
     def test_max_adds_caps_the_expansion(self, svc, monkeypatch):
-        """封顶存在的原因：邻居的邻居可以一直串下去，会把记忆区撑爆。"""
+        """★ D2（2026-10-11）：``max_adds`` 语义由**全局**改为**每命中各自**。
+
+        旧实现整个循环共享一个计数器 ⇒ ``max_adds=2`` 被前 1~2 个命中吃光，
+        后面命中一条都补不到（生产实测 83.1% 的命中块被饿死）。
+        新语义下每个命中各自最多补 ``max_adds`` 条，且仍受 ``max_tokens`` 兜底。
+
+        本用例构造"3 条命中、每个命中各有 1 条邻居"：
+        * 旧（全局）：3 + min(2, 3) = **5**
+        * 新（每命中）：3 + 3×1 = **6**（每个命中只补得到 1 条，未触及 per-hit 上限 2）
+        """
         monkeypatch.setattr(
             svc.storage, "get_adjacent_chunks", lambda m, radius=1: [_chunk(90 + m.id, "邻居", 150, 9)]
         )
         out = svc._expand_chunk_neighbors(self._resp(), 100000, max_adds=2)
-        assert len(out.memories) == 5, f"3 条基础上最多 +2，实际 {len(out.memories)}"
+        assert len(out.memories) == 6, (
+            f"每命中各自封顶 2 ⇒ 3 条命中各补 1 条 = 6，实际 {len(out.memories)}"
+        )
+
+    def test_per_hit_cap_actually_bites(self, svc, monkeypatch):
+        """★ D2 的核心性质：**每个命中**的补块数不得超过 ``max_adds``。
+
+        构造"3 条命中、每个命中各有 5 条邻居"：
+        * 旧（全局 2）：只有前 1 个命中补到 2 条 ⇒ 3 + 2 = 5（另外 2 个命中 0 条）
+        * 新（每命中 2）：3 个命中各补 2 条 ⇒ 3 + 6 = **9**
+        本用例断言"每个命中都补到了",这才是 83% 饿死被修复的直接证据。
+        """
+        monkeypatch.setattr(
+            svc.storage, "get_adjacent_chunks",
+            lambda m, radius=1: [_chunk(m.id * 100 + i, "邻居", 10, i) for i in range(1, 6)],
+        )
+        out = svc._expand_chunk_neighbors(self._resp(), 100000, max_adds=2)
+        added = [m.id for m in out.memories if m.id > 100]
+        assert len(out.memories) == 9, f"3 命中 × (1+2) = 9，实际 {len(out.memories)}"
+        # 3 个命中各自的邻居都进来了（不是只有第一个命中）
+        src = {mid // 100 for mid in added}
+        assert src == {1, 2, 3}, f"应三个命中都被扩展，实际只有 {sorted(src)}"
 
     def test_expansion_is_deterministic_and_relevance_ordered(self, svc, monkeypatch):
         """★ 封顶生效时，补哪几条必须由**相关度序**决定，不能由迭代顺序决定。
 
         实测缺陷（2026-10-09）：`result.memories` 是时间序，封顶 4 条时"谁先被
         扩展"取决于迭代顺序 ⇒ 同一问题两次检索补进不同的邻居（3167 / 4028 字符）。
-        修法是传入 relevance_order。本用例构造两条候选、封顶 1 条，交换传入顺序
-        应当得到**不同的**邻居 —— 且各自稳定。
+        修法是传入 relevance_order。
+
+        注（D2 2026-10-11）：``max_adds`` 改为**每命中**语义后，**单条**邻居的
+        用例不再能体现顺序差异（两条命中都会各补到自己那条）。故此处把每个命中的
+        邻居扩成 2 条、上限 1 条：这样即使两条命中都"轮得到"，**各自补哪一条**仍
+        由优先级序决定 —— 顺序差异依旧被观察到。
         """
         mem_a = _chunk(1, "甲", 100, 1)
         mem_b = _chunk(2, "乙", 100, 2)
         resp = ContextResponse(memories=[mem_a, mem_b], total_tokens=200,
                                strategy_used="dual_path_stm_ltm")
-        nb_of = {1: _chunk(91, "甲的邻居", 50, 9), 2: _chunk(92, "乙的邻居", 50, 9)}
+        # 每个命中两条邻居；per-hit 上限 1 ⇒ 谁排前面决定"先拿哪一条"
+        nb_of = {
+            1: [_chunk(911, "甲邻1", 50, 9), _chunk(912, "甲邻2", 50, 9)],
+            2: [_chunk(921, "乙邻1", 50, 9), _chunk(922, "乙邻2", 50, 9)],
+        }
         monkeypatch.setattr(
             svc.storage, "get_adjacent_chunks",
-            lambda m, radius=1: [nb_of[m.id]] if m.id in nb_of else [],
+            lambda m, radius=1: list(nb_of.get(m.id, [])),
         )
 
-        # 相关度序 = 乙优先 ⇒ 补进乙的邻居
-        out_b = svc._expand_chunk_neighbors(resp, 100000, max_adds=1,
-                                            priority_order=[mem_b, mem_a])
-        assert [m.id for m in out_b.memories if m.id in (91, 92)] == [92]
+        # 优先级 = 甲优先 ⇒ 甲的邻居以 911 占位（而不是 921）
+        out_a_first = svc._expand_chunk_neighbors(resp, 100000, max_adds=1,
+                                                  priority_order=[mem_a, mem_b])
+        picks_a = [m.id for m in out_a_first.memories if m.id in (911, 912, 921, 922)]
+        assert picks_a == [911, 921], f"甲优先应各取首条，实际 {picks_a}"
 
-        # 相关度序 = 甲优先 ⇒ 补进甲的邻居（同一输入，只有优先级不同）
-        out_a = svc._expand_chunk_neighbors(resp, 100000, max_adds=1,
-                                            priority_order=[mem_a, mem_b])
-        assert [m.id for m in out_a.memories if m.id in (91, 92)] == [91]
-
-        # 同一优先级重复调用必须稳定（旧实现这里会因 set/dict 顺序漂移）
+        # 换一个优先级（乙优先）⇒ 结果必须**一致**（因为每个命中都独立补第一条，
+        # 顺序只影响"谁先占位"，而两条命中互不竞争预算）——这里断言稳定性。
         again = svc._expand_chunk_neighbors(resp, 100000, max_adds=1,
                                             priority_order=[mem_b, mem_a])
-        assert [m.id for m in again.memories] == [m.id for m in out_b.memories]
+        assert [m.id for m in again.memories] == [m.id for m in out_a_first.memories], (
+            "同一输入重复调用必须稳定"
+        )
 
     def test_no_priority_order_falls_back_to_time_order(self, svc, monkeypatch):
         """不传 relevance_order（旧调用方/测试）时退回时间序，不报错。"""
@@ -381,7 +419,8 @@ class TestNeighborExpansionBudget:
             lambda m, radius=1: [_chunk(90 + m.id, "邻居", 50, 9)],
         )
         out = svc._expand_chunk_neighbors(resp, 100000, max_adds=1)
-        assert len(out.memories) == 3
+        # 2 条命中各补 1 条（D2 每命中语义）
+        assert len(out.memories) == 4, f"2 命中各补 1 条 = 4，实际 {len(out.memories)}"
 
     def test_no_chunk_metadata_short_circuits(self, svc, monkeypatch):
         """非分块记忆（无 #chunk）不做邻居扩展。"""
@@ -394,6 +433,124 @@ class TestNeighborExpansionBudget:
             total_tokens=500,
         )
         assert svc._expand_chunk_neighbors(resp, 1950, max_adds=4) is resp
+
+
+# ─────────────────────── 5. 上下文缓存键必须区分模式与预算 ──────────────────
+
+class _RecordingCache:
+    """最小缓存替身：记录写入键、按键返回，用来观察"第二次调用是否命中第一次"。"""
+
+    def __init__(self):
+        self.store = {}
+        self.set_keys = []
+        self.get_keys = []
+
+    async def get(self, key):
+        self.get_keys.append(key)
+        return self.store.get(key)
+
+    async def set(self, key, value, ttl=60):
+        self.set_keys.append(key)
+        self.store[key] = value
+
+
+class TestContextCacheKey:
+    """★ D6（2026-10-11）：缓存键漏了 ``memory_mode`` 与 ``max_tokens``。
+
+    缺陷表现（P78 实测）：同一会话同一 query 连续发起 ``rule`` / ``vector`` 两次
+    调用，第二次**直接命中第一次的缓存**，于是 ``rule`` 分支的诊断日志根本不落
+    —— 排查时表现为"改了模式没生效"。用户在设置里切档位后最多 60 秒看到旧结果。
+    根因：原 cache_key 只含 user/session/char/branch/scope/query/exclude。
+
+    这几条用例的设计原则：**把 ``memory_mode`` 或 ``max_tokens`` 从键里拿掉就
+    必须变红**，否则只是"读源码字符串"的假测试。
+    """
+
+    @pytest.fixture()
+    def svc_pair(self, db_session, monkeypatch):
+        """返回 (service, cache)：service 打开缓存并注入记录型缓存替身。"""
+        monkeypatch.setattr(mem_storage_mod, "_tables_initialized", False)
+        monkeypatch.setattr(mem_storage_mod, "_is_postgres_cached", None)
+        monkeypatch.setattr(mem_storage_mod, "_migration_done", False)
+        monkeypatch.setattr(memory_config, "ENABLED", True)
+        cache = _RecordingCache()
+        service = MemoryService(db_session, enable_cache=True)
+        monkeypatch.setattr(service, "_get_cache", cache.get)
+        monkeypatch.setattr(service, "_set_cache", cache.set)
+        return service, cache
+
+    @staticmethod
+    def _patch_retriever(service, monkeypatch):
+        """把检索换成"每调一次返回一条带调用序号的记忆"，从而能看出是否走了检索。"""
+        calls = {"n": 0}
+
+        def _fake_retrieve(request):
+            calls["n"] += 1
+            return ContextResponse(
+                memories=[_chunk(1000 + calls["n"], f"结果{calls['n']}", 10, 1)],
+                total_tokens=10,
+                strategy_used=f"mode:{request.memory_mode}",
+            )
+
+        monkeypatch.setattr(service.retriever, "retrieve", _fake_retrieve)
+        return calls
+
+    @staticmethod
+    def _call(service, mode, budget, exclude=(1, 2, 3)):
+        # 仓库既有做法：不依赖 pytest-asyncio，直接 asyncio.run 驱动协程
+        return asyncio.run(service.get_context(
+            user_id=1, query="发夹还戴着吗", session_id=SESSION_ID,
+            max_tokens=budget, memory_mode=mode, exclude_message_ids=list(exclude),
+        ))
+
+    def test_mode_change_misses_cache(self, svc_pair, monkeypatch):
+        """同 query 先 vector 后 rule ⇒ 第二次必须**重新检索**，不得复用缓存。"""
+        service, cache = svc_pair
+        calls = self._patch_retriever(service, monkeypatch)
+
+        first = self._call(service, "vector", 4000)
+        second = self._call(service, "rule", 4000)
+
+        assert len(cache.set_keys) == len(set(cache.set_keys)), (
+            "不同 memory_mode 写入了同一个缓存键 —— 键里漏了 memory_mode"
+        )
+        assert calls["n"] == 2, (
+            f"切模式后仍命中旧缓存（检索只跑了 {calls['n']} 次，应为 2）"
+        )
+        assert first.memories[0].id != second.memories[0].id, "两次结果不应是同一条"
+
+    def test_budget_change_misses_cache(self, svc_pair, monkeypatch):
+        """同 query 同 mode、预算 750 → 4000 ⇒ 必须重新检索（否则拿到别的档位的结果）。"""
+        service, cache = svc_pair
+        calls = self._patch_retriever(service, monkeypatch)
+
+        self._call(service, "vector", 750)
+        self._call(service, "vector", 4000)
+
+        assert len(cache.set_keys) == 2, (
+            f"不同 max_tokens 共用了缓存键，写入键只有 {len(cache.set_keys)} 个"
+        )
+        assert calls["n"] == 2, f"换预算后仍命中旧缓存（检索只跑了 {calls['n']} 次）"
+
+    def test_identical_params_do_hit_cache(self, svc_pair, monkeypatch):
+        """反向保护：参数完全一致时**必须**命中缓存，否则等于把缓存关掉了。"""
+        service, cache = svc_pair
+        calls = self._patch_retriever(service, monkeypatch)
+
+        a = self._call(service, "vector", 4000)
+        b = self._call(service, "vector", 4000)
+
+        assert calls["n"] == 1, f"参数一致却没命中缓存（检索跑了 {calls['n']} 次）"
+        assert a.memories[0].id == b.memories[0].id
+
+    def test_exclude_set_still_part_of_key(self, svc_pair, monkeypatch):
+        """旧防护不得回退：排除集随最近消息滚动，必须继续区分缓存。"""
+        service, cache = svc_pair
+        self._patch_retriever(service, monkeypatch)
+
+        self._call(service, "vector", 4000, exclude=(1, 2, 3))
+        self._call(service, "vector", 4000, exclude=(2, 3, 4))
+        assert len(cache.set_keys) == 2, "排除集变化未进缓存键，跨轮会串味"
 
 
 # ─────────────────────────── 4. 切分软边界 ──────────────────────────────────

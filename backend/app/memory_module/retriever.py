@@ -59,7 +59,13 @@ class MemoryRetriever:
             # 回复切 4~12 条 ⇒ 补位严重不足。**生产实测**（会话 f25daab6，排除最近 5 条
             # 消息）：取 17 条**全部命中排除集**，过滤后 STM = 0 条 —— `rule` 模式
             # （STM 是其唯一内容）等于完全没有记忆注入。块级时代 limit=10 同样全中。
-            # 块级系数 1 使公式逐字回到改动前；句级 12 按"一条长回复约 12 句"取中位。
+            #
+            # [阶段0-D1 2026-10-11] 系数由实测定标（P73）：assistant 3.73 条/消息、
+            # user 1.00 ⇒ 混合 2.38；最近 5 条消息**实测对应 20 条**记忆行。
+            # 块级系数 1 → 4（`5 + 5×4 = 25 ≥ 20 + 5`）。
+            # ⚠️ 下面再补一层**自适应重取**：系数是静态的，而密度随会话形态漂移。
+            # 只要过滤后仍不足 recent_limit，就按实际密度放大重取一次
+            # （最多 2 次），避免"又调大一个常数、下次还是不够"的循环。
             exclude_ids = set(request.exclude_message_ids or [])
             _stm_fetch = (
                 recent_limit
@@ -86,10 +92,44 @@ class MemoryRetriever:
 
             # D3: 过滤最近消息镜像（message_id 命中排除集；NULL message_id 的
             # 存量行永不排除——按既定边界不做回填）
+            #
+            # [阶段0-D1] 自适应重取：系数（EFFECTIVE_STM_EXCLUDE_FACTOR）是静态的，
+            # 而"每条消息占几条记忆"随会话形态漂移（实测 2.38~3.73 条/消息）。
+            # 若过滤后不足 recent_limit，说明本次会话密度高于系数假设 ⇒ 按
+            # **实测密度**放大重取（最多 2 轮，避免病态会话把取数放大到无界）。
+            # 这样下次不必再手工调大常数。
             if exclude_ids:
                 stm_memories = [
                     m for m in stm_memories if m.message_id not in exclude_ids
-                ][:recent_limit]
+                ]
+                _refetch_round = 0
+                while len(stm_memories) < recent_limit and _refetch_round < 2:
+                    _refetch_round += 1
+                    _survivors = len(stm_memories)
+                    # 本轮被排除的比例 ⇒ 反推总需求；+2 条余量防边界抖动
+                    _ratio = _stm_fetch / _survivors if _survivors else 4
+                    _need = int(recent_limit * max(1.0, _ratio)) + 2
+                    if _need <= _stm_fetch:
+                        _need = _stm_fetch * 2
+                    logger.info(
+                        "[STM-REFETCH] 过滤后 STM=%d < 目标=%d（取数=%d，存活率=%.2f）"
+                        "⇒ 放大重取 %d 条",
+                        _survivors, recent_limit, _stm_fetch,
+                        (_survivors / _stm_fetch) if _stm_fetch else 0, _need,
+                    )
+                    _stm_fetch = _need
+                    stm_memories = self.storage.get_recent(
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        limit=_stm_fetch,
+                        branch_ids=request.branch_ids,
+                        character_id=request.character_id,
+                        branch_scopes=request.branch_scopes,
+                    )
+                    stm_memories = [
+                        m for m in stm_memories if m.message_id not in exclude_ids
+                    ]
+                stm_memories = stm_memories[:recent_limit]
 
             # 计算 STM 占用的 tokens
             current_tokens = sum(m.tokens_count or (len(m.content) // 2) for m in stm_memories)
@@ -100,6 +140,13 @@ class MemoryRetriever:
                 user_profile = None
                 if request.include_profile:
                     user_profile = self.storage.get_user_profile(request.user_id)
+                # [D5] rule 模式是 STM 唯一路径，且历史上曾恒为空（D1）⇒ 必须可观测。
+                logger.info(
+                    "[MEM-DIAG] mode=rule qlen=%d excl=%d fetch=%d → stm=%d units=%d/%d%s",
+                    len(request.query or ""), len(exclude_ids), _stm_fetch,
+                    len(stm_memories), current_tokens, request.max_tokens,
+                    " **STM-EMPTY**" if not stm_memories else "",
+                )
                 return ContextResponse(
                     memories=stm_memories,
                     user_profile=user_profile,
@@ -125,6 +172,10 @@ class MemoryRetriever:
 
             # 2. 获取长期记忆 (LTM)
             ltm_memories = []
+            # [阶段0-D5 2026-10-11] 线上诊断：收集本次检索的关键中间量，
+            # 在返回前落一条汇总日志。此前 retriever 几乎无日志，改完只能
+            # 重跑一次性探针（P67/P76 那类），线上无法自证。
+            _diag = {"sem": 0, "kw": 0, "top1_sim": None, "cand": 0}
             if remaining_tokens > 100 and request.query and len(request.query.strip()) > 1:
                 query_embedding = embed_text(request.query)
                 query_embedding_list = query_embedding.tolist()[0] if len(query_embedding.shape) > 1 else query_embedding.tolist()
@@ -144,6 +195,12 @@ class MemoryRetriever:
                 )
                 
                 if semantic_candidates:
+                    # [D5] 诊断：向量路候选数 + top1 相似度
+                    _diag["sem"] = len(semantic_candidates)
+                    try:
+                        _diag["top1_sim"] = round(float(semantic_candidates[0][1]), 4)
+                    except Exception:
+                        _diag["top1_sim"] = None
                     # D3: LTM 侧同样排除最近消息镜像
                     # [TUPLE-UNPACK-FIX 2026-10-07] semantic_search 返回的是
                     # List[Tuple[MemoryEntry, float]]，逐项必须按 (mem, sim) 解包。
@@ -190,6 +247,7 @@ class MemoryRetriever:
                             ]
 
                     if kw_candidates:
+                        _diag["kw"] = len(kw_candidates)
                         scored_candidates = self._fuse_rrf(
                             semantic_candidates, kw_candidates, stm_ids,
                             w_kw=memory_config.HYBRID_WEIGHT,
@@ -197,6 +255,7 @@ class MemoryRetriever:
                         )
                     else:
                         scored_candidates = self._score_candidates(semantic_candidates, stm_ids)
+                    _diag["cand"] = len(scored_candidates)
                     
                     # 按综合分数排序
                     scored_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -212,7 +271,7 @@ class MemoryRetriever:
                             remaining_tokens -= mem_tokens
                         else:
                             break
-            
+
             # [NEIGHBOR-DETERMINISM 2026-10-09] 记录**相关度序**（LTM 强 → 弱，
             # 再拼 STM）。合并后的 final_memories 是时间序，用于注入排版没问题，
             # 但"邻居扩展该先补哪一条"必须按相关度：否则 max_adds 封顶生效时，
@@ -241,6 +300,21 @@ class MemoryRetriever:
             user_profile = None
             if request.include_profile:
                 user_profile = self.storage.get_user_profile(request.user_id)
+            
+            # [阶段0-D5 2026-10-11] 线上诊断汇总（一条/次检索）。
+            # 作用：改完不必重跑一次性探针（P67/P76 那类），直接从生产日志观测。
+            # 字段：mode / 查询长度 / 排除集 / 向量候选·top1相似度 / 关键词候选 /
+            #       排序候选 → STM·LTM 注入条数 / 注入内部单位 / 是否命中预算上限。
+            _n_inj = len(final_memories)
+            logger.info(
+                "[MEM-DIAG] mode=%s qlen=%d excl=%d | sem=%d top1=%s kw=%d cand=%d "
+                "| stm=%d ltm=%d → inj=%d units=%d/%d%s",
+                request.memory_mode, len(request.query or ""), len(exclude_ids),
+                _diag["sem"], _diag["top1_sim"], _diag["kw"], _diag["cand"],
+                len(stm_memories), len(ltm_memories), _n_inj, total_tokens,
+                request.max_tokens,
+                " BUDGET-FULL" if total_tokens >= request.max_tokens * 0.95 else "",
+            )
             
             return ContextResponse(
                 memories=final_memories,

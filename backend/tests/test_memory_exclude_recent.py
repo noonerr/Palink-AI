@@ -281,41 +281,118 @@ class TestStmCompensation:
     """
 
     def test_sentence_factor_compensates(self, mem_env, test_user, monkeypatch):
+        """句级补位公式 = `SENTENCE_STM_LIMIT + 5 × SENTENCE_STM_EXCLUDE_FACTOR`。
+
+        断言**首次取数**（`calls[0]`）：D2 起的自适应重取会在"过滤后不足"时
+        追加取数，故不能用最后一次调用的 limit 来验公式。
+        """
         storage, db = mem_env
-        seen = {}
+        calls = []
 
         def _spy(**kwargs):
-            seen.update(kwargs)
-            return []
+            calls.append(kwargs["limit"])
+            return []  # 空 ⇒ 重取会追加，但公式只看首轮
 
         monkeypatch.setattr(storage, "get_recent", _spy)
         monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "sentence")
 
-        _retrieve(storage, test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
+        _retrieve(storage, user_id=test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
 
         expected = (
             memory_config.SENTENCE_STM_LIMIT
             + 5 * memory_config.SENTENCE_STM_EXCLUDE_FACTOR
         )
-        assert seen["limit"] == expected, (
-            f"句级补位应为 {expected}"
+        assert calls[0] == expected, (
+            f"句级首次补位应为 {expected}"
             f"（{memory_config.SENTENCE_STM_LIMIT} + 5×{memory_config.SENTENCE_STM_EXCLUDE_FACTOR}），"
-            f"实际 {seen['limit']}"
+            f"实际 {calls[0]}（全部轮次={calls}）"
         )
 
     def test_block_factor_matches_legacy_formula(self, mem_env, test_user, monkeypatch):
-        """★ 回退到块级时补位公式必须与改动前**逐字一致**（`5 + len(exclude)`）。"""
+        """★ 块级补位公式：`STM_LIMIT + len(exclude) × BLOCK_STM_EXCLUDE_FACTOR`。
+
+        [阶段0-D1 2026-10-11] 本用例原先断言「块级系数必须为 1」「limit == 5+5」，
+        即把**缺陷**锁成了契约。实测（P73）系数 1 时取 10 条，而最近 5 条消息
+        实际对应 **20 条**记忆行 ⇒ 过滤后 STM = 0 条，`rule` 模式完全没有记忆注入。
+        系数已由实测定标为 4（`5 + 5×4 = 25 ≥ 20 + 5`）。
+        本用例改为断言「公式形状正确」而非「系数等于某个把 bug 锁住的值」。
+        """
         storage, db = mem_env
-        seen = {}
+        calls = []
 
         def _spy(**kwargs):
-            seen.update(kwargs)
+            calls.append(kwargs["limit"])
             return []
 
         monkeypatch.setattr(storage, "get_recent", _spy)
         monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
 
-        _retrieve(storage, test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
+        _retrieve(storage, user_id=test_user.id, mode="rule", exclude=[1, 2, 3, 4, 5])
 
-        assert memory_config.BLOCK_STM_EXCLUDE_FACTOR == 1, "块级系数必须为 1 才能保持等价"
-        assert seen["limit"] == 5 + 5, "块级下必须是 5 + len(exclude)，与改动前一致"
+        expected = 5 + 5 * memory_config.BLOCK_STM_EXCLUDE_FACTOR
+        assert calls[0] == expected, (
+            f"块级首次补位应为 5 + 5×{memory_config.BLOCK_STM_EXCLUDE_FACTOR} = {expected}，"
+            f"实际 {calls[0]}（全部轮次={calls}）"
+        )
+        assert memory_config.BLOCK_STM_EXCLUDE_FACTOR >= 4, (
+            "块级系数必须 ≥ 4：实测最近 5 条消息含 20 条记忆行，"
+            "系数不足会让过滤后 STM 归零（见 P73/D1）"
+        )
+
+
+class TestStmNeverStarved:
+    """[阶段0-D1 2026-10-11] `rule` 模式 STM 永不因排除集而归零。
+
+    缺陷（生产实测 P74/P73）：`BLOCK_STM_EXCLUDE_FACTOR=1` 时补位取 10 条，
+    而最近 5 条消息实际含 20 条记忆行 ⇒ 全部命中排除集 ⇒ **STM = 0 条**，
+    `rule` 模式（STM 是其唯一内容）等于完全没有记忆注入。
+    修复：①系数定标为 4（`5+5×4=25 ≥ 20+5`）②retriever 加**自适应重取**兜底
+    （密度高于系数假设时按实测存活率放大重取，最多 2 轮）。
+
+    本类锁住「即使密度远超系数假设，STM 也不为空」这个行为。
+    """
+
+    def test_high_density_still_yields_stm(self, mem_env, test_user, monkeypatch):
+        """密度 4 块/消息（超出块级系数假设）时，STM 仍须非空。"""
+        storage, db = mem_env
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+
+        base = datetime(2026, 10, 11, 12, 0, 0)
+        # 10 条消息 × 每条 4 块 = 40 行，message_id = 1..10（每消息 4 行）
+        for msg_id in range(1, 11):
+            for k in range(4):
+                _insert_memory(
+                    db, test_user.id, f"m{msg_id}-chunk{k}",
+                    message_id=msg_id,
+                    created_at=base + timedelta(seconds=msg_id * 10 + k),
+                )
+        # 排除最近 5 条消息（id 6..10）⇒ 它们占 20 行，全在取数窗口内
+        response = _retrieve(storage, test_user.id, mode="rule", exclude=[6, 7, 8, 9, 10])
+
+        assert response.memories, (
+            "STM 不得因排除集而归零 —— 自适应重取应补回其余消息的镜像"
+        )
+        returned_mids = {m.message_id for m in response.memories}
+        assert not (returned_mids & {6, 7, 8, 9, 10}), "排除集内的镜像仍不得注入"
+        assert returned_mids <= {1, 2, 3, 4, 5}
+
+    def test_adaptive_refetch_bounded(self, mem_env, test_user, monkeypatch):
+        """自适应重取必须**有界**：病态会话不得把取数放大到无界。"""
+        storage, db = mem_env
+        calls = []
+
+        def _spy(**kwargs):
+            calls.append(kwargs["limit"])
+            # 永远返回"全在排除集内"的假数据，逼出自适应重取的上限
+            return [
+                type("M", (), {"id": 10_000 + i, "message_id": 99, "created_at": None,
+                               "content": "x", "tokens_count": 1, "topics": None})()
+                for i in range(kwargs["limit"])
+            ]
+
+        monkeypatch.setattr(storage, "get_recent", _spy)
+        monkeypatch.setattr(memory_config, "CHUNK_STRATEGY", "structural")
+        _retrieve(storage, test_user.id, mode="rule", exclude=[99])
+
+        assert len(calls) <= 3, f"重取轮次必须有界（≤3，含首次），实际 {len(calls)} 次: {calls}"
+        assert max(calls) <= 5 * 4 * 8, f"取数不得无界放大，实际峰值 {max(calls)}"
