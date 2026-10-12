@@ -12,6 +12,27 @@
 
 **必读顺序**：本文件 → `AGENTS.md`（项目红线 + 本机命令行环境）→ `TODOS.md` 的「三轨并一轨」条目 → `REPORT_一次性并轨施工方案与回退计划_2026-10-12.md` → `REPORT_S0备料基线与回退演练档案_2026-10-12.md` → `REPORT_S0完工自检_B1-B9_2026-10-13.md`。
 
+> ## ⚠️ 先看这条订正（2026-10-13 02:20，接手 agent 实测后追加）
+>
+> **§2 T1 的技术前提被推翻了，别照原文施工。** 原文称「ST 契约是 `Promise<string[]>`、
+> MVU 在模块顶层 await 后读 `.length`」，实测三条证据都不支持：
+> 1. 本仓自带 ST 官方类型声明 `st-plugins/third-party/JS-Slash-Runner-main/@types/function/worldbook.d.ts:32`
+>    —— `declare function getCharWorldbookNames(name): CharWorldbooks;`
+>    `type CharWorldbooks = { primary: string | null; additional: string[] };` **且不是 Promise**。
+> 2. 真机 MVU bundle（`backend/data/smart_card_assets/` 三份：307KB / 573KB / 137KB）调用形如
+>    `getCharWorldbookNames('current').primary ?? 'unknown'` —— **不 await、读 `.primary`**；
+>    三份里 `await getCharWorldbookNames` 出现次数 = **0**。
+> 3. 同仓 JS-Slash-Runner 自家实现 `src/function/worldbook.ts:50` 就是同步转调 `getCharLorebooks({name})`，
+>    其消费者 `src/function/character.ts:115` 也读 `.primary`。
+>
+> ⇒ 真缺陷是「**三处都返回 Promise，而消费者不 await**」：`.primary` 恒 undefined，
+> MVU 的 `initialized_lorebooks` 键退化成 `'unknown'`。原文说的「对象形状是错的」方向相反；
+> 把 #2/#3 改成 `string[]` 会让 `await` 派也拿错形状。**已在用户裁决下改为「三处同步返回
+> `{primary, additional}`」**（提交 `fe419b7`，22 条契约测试钉住三处）。
+>
+> 教训：交接文档/审计报告里「契约形状」这类可证伪断言，**先去 `backend/data/smart_card_assets/*.js`
+> 搜真机 bundle 再采信**，比读注释可靠。（`backend/data` 是红线目录，只读不改。）
+
 ---
 
 ## 1. 进度与证据（别重复做，也别推翻）
@@ -139,9 +160,9 @@
 
 | # | 缺口 | 位置 | 本期处置 |
 |---|---|---|---|
-| G1 | `getCharWorldbookNames` 返回对象不符 `Promise<string[]>` | `legacy-st-sim.ts:1384`、`SillyTavernCompatRuntime.ts:5393` | **T1，你来修** |
+| G1 | `getCharWorldbookNames` 三处都返回 Promise，而真机消费者同步读 `.primary` ⇒ 恒 undefined | `legacy-st-sim.ts`、`SillyTavernCompatRuntime.ts`、`sillyTavernPluginRuntime.ts` | **T1 已修（`fe419b7`）**：三处统一同步返回 `{primary, additional}`，22 条契约测试钉住。⚠️ 原文「不符 `Promise<string[]>`」的结论已推翻，见文首订正 |
 | G2 | 手势闸门不含 `setChatMessage` / `deleteMessage`，卡片可无手势改写/删除既有消息 | `SmartCardCompatController.ts:57-80`（实际 9 项：原 8 + `clearChat`） | 本期不修，登记。与 `clearChat` 的入选理由自洽性存疑 |
-| G3 | inline 渲染仍是第三套执行面（默认 flag 关闭） | `Message.tsx:1153` + `inline-flags.ts:84` | T3 拍 ① |
+| G3 | inline 渲染仍是第三套执行面（默认 flag 关闭） | `Message.tsx` + `inline-flags.ts` | **T3 已修（`ea15a6f`）**：flag 彻底废除、`inline-flags.ts` 已删、渲染收口 iframe，9 条守卫测试。`InlineCardRenderer.tsx` 与 `inline-script-replay.ts` 留到 S5 一并删 |
 | G4 | 「单文件 ≤1200 行」门禁若按全 src 字面执行，已有 **14 个文件超限**且多数与并轨无关 | `sandbox.ts` 5612、`ModelManagementTab.tsx` 1973 等 | **待拍板**：建议门禁限定为"本次被改动/被拆分的文件" |
 | G5 | `_BACKUPS` 全量备份是**等效满足**（未复制 2.5GB 备份树） | 档案 §2 | 待复核是否接受 |
 | G6 | kill switch 真机验证未做 | 开关：`card-script-runner.ts:34`、`card-idb-namespace.ts:45`；单测已覆盖 | 留至 S3 前 |
