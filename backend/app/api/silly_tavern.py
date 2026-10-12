@@ -5850,12 +5850,62 @@ async def st_chats_rename_session(
     return {"result": "ok"}
 
 
+# ── [ST-COMPAT-HONEST-FAIL] 2026-10-11 ──────────────────────────────────────
+# 下面 5 个路径（set-input / trigger / popup / buttons / messages）
+# 在 **SillyTavern 1.18.0 里根本不存在**，不是兼容层，是本仓自造的：
+#   取证① ST 全仓 grep "chats/popup|chats/buttons|chats/messages|chats/set-input|
+#          chats/trigger"（含 public/ 与 src/）= 零命中；
+#   取证② ST 官方 src/endpoints/chats.js 的实名只有
+#          save / get / rename / delete / export / import / group.* / search / recent。
+# ST 侧对应的是**客户端斜杠命令**（public/scripts/slash-commands.js），不是 HTTP 接口。
+# 而 Palink 这边第一方也不调它们：grep frontend/src 与 st-plugins/ 全部 = 0。
+#
+# 原实现返回 200 {"result":"ok"} 且什么都不做。**危害不是"功能缺失"**
+# （缺失只是少个功能），而是**任何做 ST 兼容度盘点的人，在路由表里看到
+# /api/chats/popup 就会打勾** —— 它把"没做"伪装成"做了"，
+# 兼容性百分比就是这么被喂高的。详见
+# docs/_active/report/REPORT_悲观刻薄审计_第三次独立全仓体检_2026-10-11.md §F2。
+#
+# 现改为**明确失败**并指名 ST 侧的真实去处，让调用方拿到可行动的信号，
+# 而不是拿到成功码后无事发生。
+#
+# ⚠️ 状态码选 404 而不是语义更贴切的 501，是被实测逼出来的修正：
+#   app/main.py:572-586 的 HTTPException 处理器对 **status_code >= 500** 一律
+#   把 detail 换成 "Internal server error"（只留 request_id，真消息进服务端日志）。
+#   实测证据：改成 501 后调用方收到的是 `501 {"detail":"Internal server error"}`
+#   —— 说明文字被吞，"让插件作者知道该用什么"这个目的就落空了。
+#   404 ①低于 500，detail 原样送达；②**恰好等于真 ST 对这些不存在路径的响应**，
+#   所以兼容性上零失真。真 501 反而是 Palink 独有的差异。
+# 路由仍保留注册：test_st_contract.TestSTEndpointNo404.test_no_known_404 断言的是
+# "已注册"（`ep not in registered`），**不是**"返回 200"，故本改动不连带弄红测试。
+_ST_PATHS_NOT_IN_SILLYTAVERN = {
+    "set-input": "setinput",
+    "trigger": "trigger",
+    "popup": "popup",
+    "buttons": "buttons",
+    "messages": "messages",
+}
+
+
+def _st_path_not_in_sillytavern(path_key: str):
+    """这 5 个路径在 ST 1.18.0 中不存在；诚实拒绝而不是伪成功。"""
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"POST /api/chats/{path_key} is not a SillyTavern 1.18.0 endpoint. "
+            f"In ST this is implemented client-side as the slash command "
+            f"/{_ST_PATHS_NOT_IN_SILLYTAVERN[path_key]}, so there is no server-side "
+            f"equivalent to call. Palink does not implement it either."
+        ),
+    )
+
+
 @router.post("/api/chats/set-input")
 async def st_chats_set_input(
     user: User = Depends(get_st_current_user),
 ):
-    """设置输入框内容（/setinput）—— 前端纯展示操作，后端返回 200 stub。"""
-    return {"result": "ok"}
+    """设置输入框内容 —— **ST 1.18.0 无此 HTTP 端点**，见上方说明。"""
+    _st_path_not_in_sillytavern("set-input")
 
 
 @router.post("/api/chats/inject")
@@ -5920,32 +5970,32 @@ async def st_chats_trigger(
     req: ChatTriggerRequest,
     user: User = Depends(get_st_current_user),
 ):
-    """触发生成（/trigger）—— 前端实际发起生成，后端返回 200 stub。"""
-    return {"result": "ok"}
+    """触发生成 —— **ST 1.18.0 无此 HTTP 端点**（Palink 侧 /trigger 是自有斜杠命令）。"""
+    _st_path_not_in_sillytavern("trigger")
 
 
 @router.post("/api/chats/popup")
 async def st_chats_popup(
     user: User = Depends(get_st_current_user),
 ):
-    """显示弹窗（/popup）—— 前端纯展示操作，后端返回 200 stub。"""
-    return {"result": "ok"}
+    """显示弹窗 —— **ST 1.18.0 无此 HTTP 端点**，见 §ST-COMPAT-HONEST-FAIL 说明。"""
+    _st_path_not_in_sillytavern("popup")
 
 
 @router.post("/api/chats/buttons")
 async def st_chats_buttons(
     user: User = Depends(get_st_current_user),
 ):
-    """创建按钮（/buttons）—— 前端纯展示操作，后端返回 200 stub。"""
-    return {"result": "ok"}
+    """创建按钮 —— **ST 1.18.0 无此 HTTP 端点**，见 §ST-COMPAT-HONEST-FAIL 说明。"""
+    _st_path_not_in_sillytavern("buttons")
 
 
 @router.post("/api/chats/messages")
 async def st_chats_messages(
     user: User = Depends(get_st_current_user),
 ):
-    """显示消息（/messages）—— 前端纯展示操作，后端返回 200 stub。"""
-    return {"result": "ok"}
+    """显示消息 —— **ST 1.18.0 无此 HTTP 端点**，见 §ST-COMPAT-HONEST-FAIL 说明。"""
+    _st_path_not_in_sillytavern("messages")
 
 
 # ===========================================================================
