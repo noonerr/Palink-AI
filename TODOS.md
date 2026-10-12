@@ -17,6 +17,51 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [未开工·待拍板] 本地 LLM 全部删除，只保留向量引擎（2026-10-11 用户拍板方向）
+
+- **决策**：本地 LLM 一律不用、后续全部删除；**唯一保留的本地模型 = 向量嵌入引擎**（ollama `bge-m3` 1024 维）。
+- ⚠️ **约束已立即生效**（不等删除）：任何新方案**不得依赖本地 LLM**。
+  永久出局：HyDE / LLM 查询改写 / LLM 生成式摘要 / LLM 上下文锚定重嵌 / 需 LLM 的 rerank。
+  替代方向只能是：向量嵌入 + 关键词（pg_trgm/bigram）+ RRF + **纯规则**变换。
+  已同步写入 `.workbuddy-ai/memory/MEMORY.md`（长期约定）。
+- ⚠️ **连带后果**：零付费 + 零本地 LLM ⇒ **端到端评测无法执行**（生成回答必须调付费 API 或本地 LLM）。
+  记忆实验口径改为**纯检索层**（判据 = 证据是否进入注入集合），**不得声称端到端得分提升**。
+- **删除范围（只出清单，未动代码）**，见 `docs/_active/spec/SPEC_记忆降本增效_对比实验设计_2026-10-11.md` §九：
+  - **A 套（llama.cpp / `local:` gguf，属模型网关，与记忆无关）**：`local_model_registry.py`、
+    `llama_runtime.py`、`inference_queue.py`、`inference_dispatcher.py` 本地分支、
+    `unified_model_registry.py` 本地段、`api/admin.py`/`api/models.py`/`api/silly_tavern.py`、
+    `tests/test_c_batch_security_hygiene.py`。
+    ⚠️ 删 A 套 = **取消"用户上传 gguf 本地跑模型"产品能力**，影响面远大于记忆优化，**须单独拍板**。
+  - **B 套（ollama 生成 + 摘要配置）**：`qwen2.5:0.5b`；`core/config.py:83 SUMMARY_MODEL`（默认 None，本就未启用）；
+    `compact_title_service.py:110`（唯一消费点）；`memory_module/ai_summary_service.py`、
+    `compression_service.py`（均已 deprecated）、`lifecycle_service.py:114/135`。
+- **⛔ 阻塞项**：**边界未确认** —— 只删 B 套，还是 A+B 全删？确认前不动刀。
+  动刀时须逐条 `grep` 引用链（AGENTS.md：不按名字删、不整文件删），每批跑 `bash scripts/gate.sh`。
+
+### [未开工·待拍板] 向量记忆与上下文注入的**配置调优**（2026-10-11 实测完成）
+
+- **权威件**：[`docs/_active/report/REPORT_记忆与上下文注入_配置调优研究_2026-10-11.md`](docs/_active/report/REPORT_记忆与上下文注入_配置调优研究_2026-10-11.md)
+- **★ 最强项（纯配置，零代码）**：**邻居扩展是纯成本** ——
+  `NEIGHBOR_EXPAND` on vs off（n=57，关缓存）：命中 **93.0% vs 93.0%（0 变化）**，
+  注入 **5133 → 3779 单位（−26.4%）**，≈ **1,855 真实 tok = 总 prompt 的 7.4%**。
+  建议顺序：`NEIGHBOR_MAX_ADDS 4→1`（折中，保 1 条相邻块）→ 复测 → 再考虑全关。
+  ⚠️ 判据只覆盖"检索层命中"；邻居的收益在"块完整性"，**离线无法验证** ⇒ 建议先折中不要一步关死。
+- **同时证伪一个流行诊断**：召回**没有**大面积失败 —— P80 实测 IN_POOL = **48/57 = 84.2%**、TOPK_KILLED = **0**。
+  "只返回 2 个唯一 msg_id / 单簇 80%" 更可能来自**注入后集合**（邻居把同消息的块成堆拉进来），不是候选池。
+  ⇒ 查询扩展 / HyDE / 全量重嵌**暂不必做**。
+- **三个坑（先别踩）**：
+  1. **死配置 4 个**：`SEMANTIC_WEIGHT` / `TIME_WEIGHT` / `IMPORTANCE_WEIGHT` / `CHUNK_TARGET_CHARS`
+     调了不生效（真权重硬编码在 `retriever.py:434-438` 的 0.6/0.2/0.2）。建议直接删掉这四项。
+  2. **缓存掩盖**：`MemoryService` 缓存键（`service.py:198`）**不含**检索参数
+     ⇒ 改 `NEIGHBOR_EXPAND`/`MIN_SIMILARITY`/`HYBRID_WEIGHT` 后 60s 内仍是旧结果，A/B 会被完全掩盖
+     （实测 on/off 两臂逐字节相同）。配置 A/B 必须 `enable_cache=False`。
+  3. **库规模 764 行 / 71 会话 / 最大会话 227 行** ⇒ 候选池 50 对多数会话是全库，
+     "扩候选池"是在调一个不存在的瓶颈。
+- **其余建议**：`MIN_SIMILARITY` 只扫描（0.45/0.5/0.55）别盲降（0.4 时无关查询放行 270 条）；
+  `memory_budget_level` 4000→2500 可省 13% 总 prompt 但掉 12.3pp 得分（p55）⇒ 需拍板是否接受；
+  历史 24→16/12 **硬前置是建近期题集**（`qa2` 0/57 证据在 24 条内，用它测必然测不出差异）。
+- **⛔ 阻塞项**：需用户拍板"是否接受用 12.3pp 换 13% 成本"，以及邻居扩展的折中档取哪个值。
+
 ### [未开工·待拍板] 向量记忆替代上下文历史 — 四步落地清单（2026-10-09 实测结论）
 
 - **背景**：用户问三件事（现有向量记忆精准度够不够用 / 「每句语义匹配收益不如现在」是否属实 /

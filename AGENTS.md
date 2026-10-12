@@ -3,6 +3,82 @@
 > 所有 agent（Claude Code / Codex / TRAE / 其他）在修改本项目前，请先阅读本文件。
 > 本文件描述**当前主攻方向**，避免误解代码意图。
 
+## 本机命令行环境（强制 · 2026-10-12 实测）
+
+> **为什么立这条**：本机上 agent 反复误用 PowerShell / cmd 语法，或敲 `powershell`、`python` 后
+> 拿到"找不到命令"，然后开始瞎试。下面每条都是**在这台机器上实测**的结果，不是通用 Windows 常识。
+> 机器级根因与回退备份见 `_BACKUPS/2026-10-12_命令行环境修复/`。
+
+### 1. 唯一默认 shell = Git Bash（MSYS2 / MINGW64）
+
+| 项 | 实测值 |
+|---|---|
+| 解释器 | bash 5.2.37，`D:\APP\Tool\Git\bin\bash.exe` |
+| 内核串 | `MINGW64_NT-10.0-26200`（Win11 25H2） |
+| 谁在用 | Qoder / Claude Code / Codex / TRAE 的 Shell 工具**都落在这个 bash** |
+
+**⇒ 一律写 bash 语法。不要写 PowerShell 的 `$env:X` / `Get-Content` / 反引号续行，也不要写 cmd 的 `dir /b`、`%VAR%`、`&&` 串联后接 `2>nul`。**
+需要 Windows 专有能力（注册表、服务、WMI）时才用 PowerShell，见 §2。
+
+WSL **不是**可用选项：本机只有 `docker-desktop` 一个发行版（`wsl -l -v` 实测），没有通用 Linux，别拿它当 bash 环境。
+
+### 2. PowerShell：本体完好，但按名字调不到（2026-10-12 已修，重启后生效）
+
+- **病根**：`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path` 的类型被存成
+  `REG_SZ`（应为 `REG_EXPAND_SZ`），里面 `%SystemRoot%\System32\WindowsPowerShell\v1.0\`、
+  `%SystemRoot%\System32\OpenSSH\`、`%INTEL_DEV_REDIST%redist\intel64_win\compiler` 三条**永不展开**
+  ⇒ 连 cmd 里 `where powershell` 都是空。**PS 本体没坏**：5.1.26100.9168 用全路径跑通。
+- **已做两件**：① 在 **HKCU** Path 末尾追加两条已展开目录（不碰 HKLM、不需管理员，原值已备份）；
+  ② `winget install Microsoft.PowerShell` 装上 **pwsh 7.6.6**（MSIX 包，走 WindowsApps 应用别名）。
+- ✅ **`pwsh` 现在就能按名用，不用重启**（实测 `pwsh -NoProfile -Command '$PSVersionTable'` → 7.6.6）。
+- ⚠️ **`powershell`（5.1）按名可用要等重启**：环境变量是进程启动时的快照，正在跑的 Qoder / Codex /
+  Claude Code 不重启就看不到新 PATH。当前会话里 `powershell` 仍报 command not found —— **这是预期，不是又坏了**。
+- **要立刻用 5.1**（例如必须碰系统模块）：写全路径。
+  ```bash
+  /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '...'
+  pwsh -NoProfile -Command '...'          # 7.6.6，按名可用
+  ```
+- 写法约定：`-Command` 后用**单引号**包住（双引号会被 bash 吃掉 `$`）；一律带 `-NoProfile`。
+  读注册表原样值优先用 `reg.exe` + §5 的 `MSYS_NO_PATHCONV=1`，比绕 PS 短。
+- **中文输出是 GBK**（实测 pwsh 7 与 5.1 都按代码页 936 往管道写字节，装了 PS7 也不会变 UTF-8）：
+  ```bash
+  pwsh -NoProfile -Command '"中文输出"' | iconv -f GBK -t UTF-8   # 加 iconv 才读得对
+  ```
+- 口径：**能用 bash 解决就别上 PowerShell**。PS 在这台机器上是"要调 Windows API 时才用"的桥，
+  不是日常 shell。
+
+### 3. Python：`python` / `python3` 是微软商店空壳（实测 exit=49，零输出）
+
+- 真解释器走启动器 **`py`**：`py -3.14 --version` → `Python 3.14.3`
+  （实体在 `C:\Users\Pall\AppData\Local\Python\pythoncore-3.14-64\python.exe`；`uv` 也已装，
+  另带 3.12.13 / 3.14.3 两份）。
+- **凡本地跑 Python 一律 `py xxx.py`**。`scripts/gate.sh` 已用 `pick_python`（`py -3` 优先）自动探测，
+  **不要写死 `python`** —— 那是历史上"全量门禁从没绿过"的病灶之一。
+- 实测通过样例：`py scripts/docs/gen_docs_catalog.py --check` → `OK 300 docs, catalog up to date`（rc=0）。
+- 后端依赖**不在**本机 Python 里（跑在 docker 容器）。**不要 `py -m pip install` 去凑** —— 该进容器/镜像。
+
+### 4. 工具在场性（按名调用实测，别假设）
+
+| 可用 | **不可用**（敲了就是"找不到"） |
+|---|---|
+| pwsh 7.6.6、git、curl、openssl、tar、unzip、grep、sed、awk、rg、ssh/scp/sftp（**Git 自带那份**）、node/npx/npm/pnpm、docker/docker-compose/kubectl、cmake、gcc/g++、cppcheck、doxygen、ffmpeg、winget、py、uv、7zr（仅 `~/.qoder-cn/bin/7zr.exe`） | **powershell**（§2，重启后可用）、**python/python3**（§3，用 `py`）、wget、jq、**make**、7z、gh、yarn、sqlite3、mysql、psql、redis-cli、choco、scoop |
+
+- 需要 `jq` → 用 `py -c "import json..."` 或 node。需要 `make` → 进容器做。
+- **不要为补缺的工具擅自 `winget install`**（C 盘仅剩约 11G、95% 满，且属机器级改动）；先问用户。
+- 包管理器只有 winget 一个。
+
+### 5. 三个必踩的坑（已付过学费）
+
+1. **`reg.exe` / `sc.exe` / 任何带 `/v` `/f` 风格参数的 Windows 程序**，先
+   `export MSYS_NO_PATHCONV=1`。否则 MSYS 把 `/v` 当路径改写，报"无效语法"。
+   同一条规则：`docker exec` 要加，但 **`docker cp` 的宿主路径不能加**（加了反而不转）。
+2. **控制台代码页 936（GBK）**：一切 Windows 程序（`winget` / `reg` / PS / cmd）的中文输出到管道里
+   都是 GBK 字节，本终端显示为乱码。两种自救：加 `| iconv -f GBK -t UTF-8`；
+   或**判定只认结构化 ASCII 行和退出码**（`OK` / `RESULT=` / `failed = 0` / `rc=`），别读中文提示。
+   ⚠️ `reg.exe query` 输出**不是** UTF-16，别用 `iconv -f UTF-16LE`（会变成空/乱码）。
+3. **backend 容器里没有 `ps` / `git` / `wget`**；SQL 走文件传，不要长串内联（引号嵌套必烂）。
+   另外**永远不要把 pytest 的 `--basetemp` 指进仓库内**（见 §验证纪律 4）。
+
 ## 当前主攻：palink-native 模式
 
 本项目目前**只维护和优化** **`palink-native`** **模式**（Palink 原生提示词装配 + Palink 前端插件体系）。
