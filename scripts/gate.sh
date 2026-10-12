@@ -151,7 +151,16 @@ if should_run frontend; then
 fi
 
 if should_run docs; then
-  run_stage "文档目录一致性" docs python scripts/docs/gen_docs_catalog.py --check
+  # [2026-10-11 修复] 这里原先写死 `python`，而本文件头部的 pick_python 注释明确说过"不要写死"。
+  # Windows 上 `python`/`python3` 常常是 Microsoft Store 的**应用执行别名空壳**：
+  #   它不报 "command not found"（那是 127），而是**零输出 + 退出码 49**。
+  # 后果有两层：
+  #   ① docs 段恒红 ⇒ 整个 `bash scripts/gate.sh`（不带参数）在本机**从来没绿过**；
+  #   ② 因为空壳一个字都不打印，$LOGDIR/docs.log 是**空文件** ⇒ 连"为什么红"都查不到。
+  # 恒红的门禁等于没有门禁：真回归混在恒定红里分不出来。
+  # 修法与上面 backend 段同源：复用已探测出的 "$PY"，并用 bash -c 承载（$PY 含空格，
+  # 直接 "$PY" 会被当成一个带空格的命令名）。
+  run_stage "文档目录一致性" docs bash -c 'cd "'"$ROOT"'" && '"$PY"' scripts/docs/gen_docs_catalog.py --check'
 fi
 
 echo ""
