@@ -5545,17 +5545,28 @@ ${IDB_NS_RUNTIME_SOURCE}
     if (Array.isArray(result)) return result;
     if (result && Array.isArray(result.entries)) return result.entries;
     if (result && typeof result === 'object') {
-      const len = Number(result.length);
-      if (Number.isFinite(len) && len > 0) {
-        const rebuilt = [];
-        for (let i = 0; i < len; i += 1) rebuilt.push(result[i]);
-        return rebuilt;
+      // ⚠️ 不能用 result.length 判：数组的 length 是**不可枚举**自有属性，
+      // 展开（{...arr}）时不会复制过来 —— 真机实测该对象**没有 length**。
+      // 只能按下标键还原。
+      const indexKeys = Object.keys(result).filter((k) => /^\d+$/.test(k));
+      if (indexKeys.length > 0) {
+        return indexKeys
+          .map((k) => Number(k))
+          .sort((a, b) => a - b)
+          .map((i) => result[i]);
       }
     }
     return [];
   };
   const getLorebookEntriesCompat = async (target) => {
     try {
+      // 优先复用 legacy 段注册的 getWorldbookEntries：它走 legacy requestParent
+      // （直接 resolve data.result），真机实测同参数能拿到 19 条真条目。
+      // 本段 v2 requestParent 对数组结果的包装（{ok:true, ...arr}）会吃掉数组。
+      if (typeof window.getWorldbookEntries === 'function') {
+        const viaLegacy = normalizeCompatEntries(await window.getWorldbookEntries(target));
+        if (viaLegacy.length > 0) return viaLegacy;
+      }
       return normalizeCompatEntries(await requestParent('getWorldbookEntries', { target }));
     } catch (e) {
       // 必须给数组：真机 zn() 直接 for...of 它，给 undefined 会再炸一层。

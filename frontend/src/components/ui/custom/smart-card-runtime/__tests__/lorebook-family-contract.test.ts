@@ -77,6 +77,8 @@ interface FrameOpts {
   parentThrows?: boolean;
   /** 按 action 分派返回（端到端用例需要 getCharWorldbook 与 getWorldbookEntries 给不同结果）。 */
   parentResultByAction?: Record<string, any>;
+  /** 注入 legacy 段注册的 window.getWorldbookEntries（真机环境里它先注册、且能拿到真条目）。 */
+  legacyWorldbookEntries?: (target?: any) => any;
   /** 第二次及以后 requestParent 的返回（测"只 kick 一次"用不到，保留扩展位）。 */
   parentResultLater?: any;
 }
@@ -105,8 +107,11 @@ function buildFrame(opts: FrameOpts = {}) {
     if (typeof registry[name] === 'undefined') registry[name] = fn;
   };
   const region = sliceRegion(COMPAT_V2_SOURCE);
+  // 真机环境里帧内 window 已有 legacy 段注册的 getWorldbookEntries；测试按需注入。
+  const win: any = {};
+  if (opts.legacyWorldbookEntries) win.getWorldbookEntries = opts.legacyWorldbookEntries;
   const factory = new Function(
-    'activeWorldbookName', 'requestParent', 'post', 'ensureFunction',
+    'window', 'activeWorldbookName', 'requestParent', 'post', 'ensureFunction',
     region + '\nreturn {\n'
       + '  getCharLorebooksCompat: getCharLorebooksCompat,\n'
       + '  getCurrentCharPrimaryLorebookCompat: getCurrentCharPrimaryLorebookCompat,\n'
@@ -115,8 +120,8 @@ function buildFrame(opts: FrameOpts = {}) {
       + '  getLorebookEntriesCompat: getLorebookEntriesCompat,\n'
       + '};',
   );
-  const api = factory('', requestParent, post, ensureFunction);
-  return { api, requestParent, post, registry };
+  const api = factory(win, '', requestParent, post, ensureFunction);
+  return { api, requestParent, post, registry, win };
 }
 
 // ============================================================
@@ -259,6 +264,26 @@ describe('D getCurrentCharPrimaryLorebook —— 同步、string|null、不抛�
 // E getLorebookEntries：zn() 里 for...of 的对象，必须是数组
 // ============================================================
 describe('E getLorebookEntries —— 必须给数组（zn() 直接 for...of）', () => {
+  it('[红→S1 转绿] 优先复用 legacy 的 getWorldbookEntries（真机实测只有它能拿到条目）', async () => {
+    const legacy = vi.fn(async () => [{ comment: '[InitVar]', content: 'x' }]);
+    const { api, requestParent } = buildFrame({ legacyWorldbookEntries: legacy });
+    const entries = await api.getLorebookEntriesCompat('角色世界书');
+    expect(entries).toHaveLength(1);
+    expect(legacy).toHaveBeenCalledWith('角色世界书');
+    expect(requestParent).not.toHaveBeenCalled();
+  });
+
+  it('[红→S1 转绿] legacy 返回空时回退到 RPC（两条路都要试，不能因一条空就放弃）', async () => {
+    const legacy = vi.fn(async () => []);
+    const { api, requestParent } = buildFrame({
+      legacyWorldbookEntries: legacy,
+      parentResult: [{ comment: 'a' }],
+    });
+    const entries = await api.getLorebookEntriesCompat('角色世界书');
+    expect(entries).toHaveLength(1);
+    expect(requestParent).toHaveBeenCalled();
+  });
+
   it('[红→S1 转绿] 父侧返回数组时原样透传', async () => {
     const { api } = buildFrame({ parentResult: [{ comment: '[InitVar]', content: 'x' }] });
     const entries = await api.getLorebookEntriesCompat('角色世界书');
@@ -276,11 +301,12 @@ describe('E getLorebookEntries —— 必须给数组（zn() 直接 for...of）'
   it('[红→S1 转绿] v2 requestParent 把数组展开进 {ok:true,...} 时也能还原（真机实测形状）', async () => {
     // SillyTavernCompatRuntime.ts:4659 的 v2 requestParent：
     //   data.ok ? { ok: true, ...(data.result ?? {...}) } : {...}
-    // ⇒ 数组结果被展开成普通对象（Array.isArray=false，下标与 length 仍在）。
-    // 真机实测（2026-10-13）：未归一化时本 API 恒返回 []，而 legacy 的
-    // getWorldbookEntries 同参数返回 19 条 —— 就是被这个展开吃掉的。
+    // ⇒ 数组被展开成普通对象：Array.isArray=false、.entries 不存在，
+    //   而且**没有 length**（数组的 length 是不可枚举自有属性，展开不复制）。
+    // ⚠️ 这个形状是真机实测出来的；早先按"有 length"写的实现与测试都通过、
+    //    真机却仍返回 [] —— 教训：桩必须照抄真机形状，不能照抄自己的假设。
     const { api } = buildFrame({
-      parentResult: { ok: true, 0: { comment: 'a' }, 1: { comment: 'b' }, length: 2 },
+      parentResult: { ok: true, 0: { comment: 'a' }, 1: { comment: 'b' } },
     });
     const entries = await api.getLorebookEntriesCompat('角色世界书');
     expect(Array.isArray(entries)).toBe(true);
@@ -289,8 +315,8 @@ describe('E getLorebookEntries —— 必须给数组（zn() 直接 for...of）'
     expect(entries[1].comment).toBe('b');
   });
 
-  it('[红→S1 转绿] 展开后的对象 length 为 0 时返回 []（不能造出伪数组）', async () => {
-    const { api } = buildFrame({ parentResult: { ok: true, length: 0 } });
+  it('[红→S1 转绿] 无下标键的展开对象返回 []（不能造出伪数组）', async () => {
+    const { api } = buildFrame({ parentResult: { ok: true, success: true } });
     expect(await api.getLorebookEntriesCompat('角色世界书')).toEqual([]);
   });
 
