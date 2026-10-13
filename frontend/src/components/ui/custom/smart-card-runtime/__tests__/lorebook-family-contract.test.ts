@@ -273,6 +273,27 @@ describe('E getLorebookEntries —— 必须给数组（zn() 直接 for...of）'
     expect(entries).toHaveLength(2);
   });
 
+  it('[红→S1 转绿] v2 requestParent 把数组展开进 {ok:true,...} 时也能还原（真机实测形状）', async () => {
+    // SillyTavernCompatRuntime.ts:4659 的 v2 requestParent：
+    //   data.ok ? { ok: true, ...(data.result ?? {...}) } : {...}
+    // ⇒ 数组结果被展开成普通对象（Array.isArray=false，下标与 length 仍在）。
+    // 真机实测（2026-10-13）：未归一化时本 API 恒返回 []，而 legacy 的
+    // getWorldbookEntries 同参数返回 19 条 —— 就是被这个展开吃掉的。
+    const { api } = buildFrame({
+      parentResult: { ok: true, 0: { comment: 'a' }, 1: { comment: 'b' }, length: 2 },
+    });
+    const entries = await api.getLorebookEntriesCompat('角色世界书');
+    expect(Array.isArray(entries)).toBe(true);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].comment).toBe('a');
+    expect(entries[1].comment).toBe('b');
+  });
+
+  it('[红→S1 转绿] 展开后的对象 length 为 0 时返回 []（不能造出伪数组）', async () => {
+    const { api } = buildFrame({ parentResult: { ok: true, length: 0 } });
+    expect(await api.getLorebookEntriesCompat('角色世界书')).toEqual([]);
+  });
+
   it('[红→S1 转绿] 父侧返回非数组时降级为 []（不能让 zn() 的 for...of 崩）', async () => {
     const { api } = buildFrame({ parentResult: { success: true } });
     const entries = await api.getLorebookEntriesCompat('角色世界书');

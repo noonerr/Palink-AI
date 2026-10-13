@@ -5535,12 +5535,28 @@ ${IDB_NS_RUNTIME_SOURCE}
     }
     return getLorebookSettingsCompat();
   };
+  // [S1-G11 2026-10-13] 归一化 requestParent 的返回形状。
+  // 本帧有两套 requestParent：legacy 段（frame-shim）直接 resolve data.result；
+  // 而本段（v2）在 :4659 这样 resolve：data.ok ? { ok: true, ...(data.result ?? {...}) }。
+  // ⇒ **数组结果会被展开进对象**（Array.isArray 为 false、下标与 length 仍在）。
+  // 真机实测（2026-10-13）：未归一化时 getLorebookEntries 恒返回 []，
+  // 而 legacy 的 getWorldbookEntries 同参数返回 19 条 —— 就是被这个展开吃掉的。
+  const normalizeCompatEntries = (result) => {
+    if (Array.isArray(result)) return result;
+    if (result && Array.isArray(result.entries)) return result.entries;
+    if (result && typeof result === 'object') {
+      const len = Number(result.length);
+      if (Number.isFinite(len) && len > 0) {
+        const rebuilt = [];
+        for (let i = 0; i < len; i += 1) rebuilt.push(result[i]);
+        return rebuilt;
+      }
+    }
+    return [];
+  };
   const getLorebookEntriesCompat = async (target) => {
     try {
-      const result = await requestParent('getWorldbookEntries', { target });
-      if (Array.isArray(result)) return result;
-      if (result && Array.isArray(result.entries)) return result.entries;
-      return [];
+      return normalizeCompatEntries(await requestParent('getWorldbookEntries', { target }));
     } catch (e) {
       // 必须给数组：真机 zn() 直接 for...of 它，给 undefined 会再炸一层。
       post({ type: 'log', level: 'warn', message: 'getLorebookEntries 失败，返回空数组' });
