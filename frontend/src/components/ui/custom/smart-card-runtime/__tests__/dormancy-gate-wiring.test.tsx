@@ -238,3 +238,22 @@ describe('D 卸载退订', () => {
     expect(getSharedIframeLru().has('ghost')).toBe(false);
   });
 });
+
+// ============================================================
+// E cardId 缺失时的兜底
+// ============================================================
+describe('E cardId 缺失（/chat 渲染点不传 messageIndex）不能塌成一个条目', () => {
+  it('[红→T2 转绿] 两张 cardId 为空串的卡仍各占一个配额条目（否则配额形同虚设）', () => {
+    installFakeIo();
+    useCap(1);
+    const a = mountGate('');
+    const b = mountGate('');
+
+    report(a, false);
+    report(b, false);
+
+    // 塌陷时两张卡共用一个条目 ⇒ 在册数 1 ≤ cap ⇒ 永不逐出 ⇒ 两张都活着
+    expect(getSharedIframeLru().size).toBeLessThanOrEqual(1);
+    expect(mounted.filter(isAlive).length).toBe(1);
+  });
+});
