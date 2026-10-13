@@ -5,6 +5,25 @@
 > 对象: TODOS.md「[进行中] Palink 本体无限加载排查（backend 内存飙升卡死）」
 > 交接单: docs/_archive/handoff/HANDOFF_Ollama部署与无限加载排查_2026-08-19.md
 
+> ⚠️ **主控核验订正（2026-10-14 02:35）—— 不改写原文，仅补充实测事实**
+>
+> §3 的 S1【最可疑】列了两个档位，需要按**实际配置**区分，否则容易把"极端档"当主嫌：
+>
+> - 实测 `.env` 中**不存在** `MEMORY_EMBEDDING_PROVIDER`（`grep -i EMBED .env` 零命中）
+>   ⇒ 走 `backend/app/memory_module/config.py:14` 默认值 `fastembed`，模型取 `:15` 默认
+>   `BAAI/bge-small-zh-v1.5` ⇒ 兜底实际加载的是 **bge-small ONNX（约 91MB）**，**打不满 2GiB**。
+> - 文中"极端档"（`SentenceTransformer("BAAI/bge-m3")` ≈2.27GB）**需要有人显式设置**
+>   `MEMORY_EMBEDDING_PROVIDER=sentencetransformer` 才会触发。当晚 env 是否被改过，本次核验
+>   **未取到**（容器当时未运行，`docker exec ... env` 无法执行）——待真机复现时补测。
+> - ⚠️ **`bge-m3` 另有其人**：它是 **Ollama 容器**的模型（`config.py:19 OLLAMA_MODEL` 默认
+>   `bge-m3`），跑在 `palink-ollama` 里，**不吃 backend 的内存**。别把两者混为一个。
+>
+> ⇒ **结论调整**：S1 的"进程内加载嵌入模型"这个**机制成立**，而且它顺带证伪了旧排查用
+> "卡死期无 /api/embed 请求"排除 embedding 的理由（进程内兜底根本不发 Ollama 请求）——
+> 这是本条排查最有价值的产出。但**默认配置下量级差一个数量级**，不足以单独解释 1.975GiB。
+> ⇒ 真正的第一证据缺口仍是 **S3（`memory.stat` 未拆 anon/file）**：**复现时先做 S3 的拆分，
+> 再决定要不要深挖 S1**，不要一上来就奔着 2.2GB 去。
+
 ## 结论摘要
 
 **三个已证实的核心结论**（读码/grep 可复验，详见 §2）：

@@ -32,11 +32,32 @@
 
 ⚠️ 本机同时有多个 agent 在不同任务上干活。为防止互相影响，以下规约**必须遵守**：
 
-【分支隔离】
-1. 第一步就执行：git checkout -b <你的任务slug>   （例如 s2-storage-migration）
-2. **禁止**：git checkout / switch 到别的分支、git pull / fetch / rebase / merge / reset --hard
-   —— 你要的代码当前工作区已经有，动 git 历史会毁掉别人的进度。
-3. 完工后**不要 merge**，留在自己分支上等主控统一合。
+【分支隔离 —— 2026-10-14 修订，旧规约已证伪】
+🔴 **旧规约「git checkout -b <slug>」在本机结构性失效，已造成一次污染**：git 分支是
+**整个工作区共享的状态，不是每个进程独立的**。实测后果：丙1 执行 `checkout -b ro-survey` 时，
+工作区已被 S2 的 agent 留在 s2 分支上，于是 ro-survey 从 0738300 切出，**把别人的生产提交
+带进了自己分支**（幸而未提交任何东西，无损回收）。
+✅ **新规约：每个任务一个独立工作目录（git worktree）**，已实测可用（worktree + junction
+共享 node_modules 后，vitest 21 passed 正常跑通）：
+
+1. 第一步，建自己的独立工作目录：
+   git worktree add /d/项目/_palink-wt/<你的slug> -b <你的slug>
+   cd /d/项目/_palink-wt/<你的slug>
+   git branch --show-current        # 必须显示你的 slug 才算对
+2. 共享依赖（node_modules 469M，重装会被 SIGKILL，不能每个 worktree 装一份）：
+   cmd //c "mklink /J D:\\项目\\_palink-wt\\<你的slug>\\frontend\\node_modules D:\\项目\\Palink-AI\\frontend\\node_modules"
+   （只此一次；不建这个联接，worktree 里跑不了 vitest / tsc）
+3. 🔴 **清理时绝不许 `rm -rf` 那个 node_modules** —— 它是目录联接，`rm -rf` 会顺着联接
+   **删掉主工作区真实的 469M 依赖**。断联接只能用：
+   cmd //c "rmdir D:\\项目\\_palink-wt\\<你的slug>\\frontend\\node_modules"
+4. **禁止**：在主工作区（D:/项目/Palink-AI）里切分支、git pull / fetch / rebase / merge /
+   reset --hard —— 你要的代码 worktree 里已经有，动主工作区会毁掉别人的进度。
+5. 完工后**不要 merge**，留在自己分支上等主控统一合。
+
+⚠️ **后端任务例外（重要）**：`backend/app` 是**容器镜像内**的代码，compose 的 bind mount
+指向**主工作区** `D:/项目/Palink-AI/backend`。在 worktree 里改 backend 代码**不会反映到容器**，
+也没法真机验证。⇒ **凡要改 backend/ 或要真机复现的任务，不能用 worktree，必须回主工作区串行做**，
+且同一时刻只能有一个后端任务。
 
 【提交纪律】
 4. 提交一律 git commit -o -- <pathspec>（-o = 只提交指定文件）。不用 -o 会把别人暂存的内容吞掉。
@@ -229,8 +250,11 @@ legacy-st-sim.ts、TODOS.md、docs/_CATALOG.md、.workbuddy/、别人的文档�
 且多数与并轨无关（sandbox.ts 5612、ModelManagementTab.tsx 1973 等）。**没拍板就别拆无关文件。**
 
 【拆谁】SillyTavernCompatRuntime.ts（约 6984）/ legacy-st-sim.ts（约 2480）。
-⚠️ `sillyTavernPluginRuntime.ts`（约 2477）**先别拆** —— G9 存疑：S5 可能要删它的大堂注入段，
-拆完再删 = 白做。等丙1 测出占比再定。
+✅ **G9 已裁决（丙1 实测，主控复核）：`sillyTavernPluginRuntime.ts` S4 跳过，不要拆。**
+实测该文件 2477 行，大堂轨注入段 = `injectIntoContainer` 476–2244 = **1769 行 / 71.42%**；
+候选存活段仅 103 行（4.16%），且三个导出接口全仓零外部消费。
+⇒ S5 删完大堂段后，该文件只剩约 700 行，**自然满足 ≤1200 行**，无需拆。
+⇒ 现在拆它 = 拆一个马上要瘦身 71% 的文件，纯白做。
 
 【最大风险】模板字符串雷区：SillyTavernCompatRuntime.ts 全文约 44 个反引号 / 26 个 `${`，
 新增注释或代码出现反引号 / ${ 会提前终止模板 → TS1005，且 vitest 配置都加载不了。
@@ -242,16 +266,37 @@ legacy-st-sim.ts、TODOS.md、docs/_CATALOG.md、.workbuddy/、别人的文档�
 
 【前置】S2 + S3 + S4 全完工。
 
+🔴 **动工前必须先解决两处跨轨反向依赖**（丙1 挖出，主控已逐行复核为真 —— 这不是"大堂轨依赖单间轨"，是**单间轨自己依赖大堂轨**，删了大堂轨它们会静默失效）：
+
+1. `frontend/src/lib/sillytavern/getContext.ts:2275-2310`
+   把 `triggerSlash` / `getChatMessages` / `setChatMessages` 三个 API **委托给大堂轨注入的
+   window 桥**（`window.triggerSlash` 等）。桥随大堂轨一起消失后，这三个 API 恒降级为
+   warn + 空值。⇒ S5 前必须把它们改为读单间轨自己的实现，或确认 Ctx 轨是否本就是单间轨在用的
+   那条 getContext（**此点尚未核实，别默认"一定会坏"，也別默认"不会坏"**）。
+2. `frontend/src/components/ui/custom/smart-card-runtime/frame-shim/legacy-st-sim.ts:1106`
+   单间轨 shim 读 `window.__palinkStRuntime?.context?.stat_data` 作为兜底 —— 即**单间轨在读
+   大堂轨运行时的 context**。大堂轨删了这条兜底就没了。⇒ 需确认父侧是否有等价数据通道。
+
 【删除面前必须 grep 消费链（已核实的，动之前重新确认）】
 - emitClassicPluginEvent：CharacterView.tsx:28 / :1645 ← 角色页，不在聊天页，最容易漏
 - lib/sillytavern/card-script-runner.ts：CharacterChat.tsx:36-40
 - 同页 :44 card-script-storage-sync、:48 st-third-party-globals
 
-【这 7 个测试文件必须随迁不许随删】
-lib/sillytavern/__tests__/card-script-runner.test.ts、card-script-storage.test.ts、
-card-script-bridge-write-degradation.test.ts
-utils/__tests__/plugin-runtime-diff-hotswap.test.ts、plugin-runtime-extprompt-contract.test.ts、
-plugin-runtime-l1-settings.test.ts、plugin-runtime-setup-script-parses.test.ts
+【测试文件处置 —— 2026-10-14 按丙1 实测订正，我原写法有误】
+分两类，别一刀切：
+
+- **必须随迁（3 个，守护的是存活功能）**：
+  `lib/sillytavern/__tests__/card-script-runner.test.ts`、`card-script-storage.test.ts`、
+  `card-script-bridge-write-degradation.test.ts`
+- **应改写而非保留（4 个，守护的是将被删的大堂段）**：
+  `utils/__tests__/plugin-runtime-diff-hotswap.test.ts`（`injectIntoContainer` 出现 11 次）、
+  `plugin-runtime-l1-settings.test.ts`（`new SillyTavernPluginRuntime` 9 次 + inject 7 次）、
+  `plugin-runtime-setup-script-parses.test.ts`（inject 2 次）、
+  `plugin-runtime-extprompt-contract.test.ts`（按源码文本断言）。
+  ⇒ 前三直接 new 类并调 `injectIntoContainer`，第四个按源码文本断言 —— 它们测的就是 S5 要删的东西。
+  ⇒ 正确做法：**改写为单间轨等价测试**（同样的能力，打到 `SillyTavernCompatRuntime.ts` 上），
+  而不是原样留着一堆测死代码的测试。
+  ⚠️ 我原稿写"这 7 个必须随迁不许随删"是错的，差点导致 S5 留下 4 个测死代码的测试文件。
 
 【窗口化留下的两个文件】若消息窗口化已落地，InlineCardRenderer.tsx 与
 smart-card-runtime/inline/inline-script-replay.ts 可一并处理（InlineCardRenderer.tsx:41 有 import，
