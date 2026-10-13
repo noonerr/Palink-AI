@@ -18,9 +18,11 @@
 >   门组件抽到 `smart-card-runtime/dormancy-gate.tsx`（纯移动，便于 jsdom 测试）。
 > - **复测**（真机 playwright）：cap=16 → 逐出 0、帧 7→7（行为零变化）；
 >   **cap=3 → 逐出 2、帧 7→5**；**cap=1 → 逐出 4、帧 7→2**（修复前 cap=3 是 7→7）。
-> - **门禁**：`npx tsc --noEmit` 0 错；`npx vitest run` **957 passed / 1 failed（S2 设计红）/ 3 skipped**。
-> - 新增守卫测试 `smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（8 条，jsdom + 伪造 IO）；
->   反证：换回旧接线 → **7 红 1 绿**，换回修复版 → 8 绿。
+> - **门禁**：`npx tsc --noEmit` 0 错；`npx vitest run` **958 passed / 1 failed（S2 设计红）/ 3 skipped**。
+> - 新增守卫测试 `smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（9 条，jsdom + 伪造 IO）；
+>   反证（实测）：换回旧接线 → **8 红 1 绿**，换回修复版 → 9 绿。
+> - 顺手补了交接文档 §5 ① 的兜底：`cardId` 落空串时用 `useId()` 生成唯一配额身份
+>   （`/chat` 的两个渲染点不传 `messageIndex`，未落库消息 `message.id` 也可能为空）。
 > - 细节见 `SPEC_T2_iframe生命周期策略_2026-10-13.md` §8（含诊断口与测量方法）。
 > - ⚠️ **cap 调小时 task 耗时反而上升**（逐出-重建 = 884KB srcdoc 重新装配）：这是**设计上的已知代价**，
 >   默认档 16 远大于可见集所以生产不触发；别把"逐出"当零成本。

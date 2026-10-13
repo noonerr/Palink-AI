@@ -104,8 +104,8 @@
 ## 7. 验收
 
 - 方案文档 ✅ 本文件
-- 守卫测试 ✅ `iframe-lru.test.ts`（18 条，纯策略内核）+ `dormancy-gate-wiring.test.tsx`（8 条，jsdom 伪造 IntersectionObserver 驱动真实组件）
-- 门禁 ✅ `failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）；实测 **957 passed / 1 failed / 3 skipped**
+- 守卫测试 ✅ `iframe-lru.test.ts`（18 条，纯策略内核）+ `dormancy-gate-wiring.test.tsx`（9 条，jsdom 伪造 IntersectionObserver 驱动真实组件）
+- 门禁 ✅ `failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）；实测 **958 passed / 1 failed / 3 skipped**
 - 复测数字 ✅ **达标**（受控实验：cap=3 → 存活卡片 7→5、cap=1 → 7→2；默认 cap=16 真实数据行为零变化），见 §8
 
 ---
@@ -147,12 +147,17 @@
   ② 休眠分支 `register + markVisible(false)` 后调 `enforceCap()`；唤醒也调（唤醒会重新占名额）；
   ③ **登记从"挂载时"改到"第一次 IO 上报时"** —— 挂载时可见性未知，注册成隐藏项会让一张其实在视口内的新卡
      被别的卡触发的逐出顺手卸掉（卸载即 iframe 重建 = 一次导航），而它的 IO 回调随后才到；
-  ④ 逐出仍用已有的 `dormantHeight` 等高占位（零跳动），通知回调里对"从未量过高"的边角做兜底量高。
+  ④ 逐出仍用已有的 `dormantHeight` 等高占位（零跳动），通知回调里对"从未量过高"的边角做兜底量高；
+  ⑤ **配额身份兜底**：`cardId` 落空串时用 `useId()` 生成稳定唯一 id（`anon-<id>`）。
+     背景：`/chat` 的两个渲染点（`ChatViewMobile` / `ChatViewDesktop`）**不传 `messageIndex`**，
+     未落库消息的 `message.id` 也可能为空 ⇒ `cardId` 会成空串 ⇒ 多张卡在 LRU 里**共用一个条目**、
+     配额形同虚设（交接文档 §5 ① 的修法）。角色聊天路径恒传 `messageIndex`，所以这条在真机上没暴露，
+     但按"不能落空串"的契约补齐；真机复验确认正常路径仍是真实 message id（不是 `anon-`）。
 - **门组件抽出**：`Message.tsx` 的 `SmartCardDormancyGate` → `smart-card-runtime/dormancy-gate.tsx`
   （**纯移动，逐字节 diff 一致**；Message.tsx 2164 → 2032 行）。理由：接线原先埋在 4000 行的
   Message.tsx 里，**测不到**；抽出来后 jsdom 可以直接驱动真实组件。
-- **新增守卫**：`smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（8 条）。
-  **反证**：把接线换回 `301225a` 版本 → **7 红 1 绿**（唯一绿的是本来就正确的卸载退订）；换回修复版 → 8 绿。
+- **新增守卫**：`smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（9 条）。
+  **反证**（实测）：把接线换回 `301225a` 版本 → **8 红 1 绿**（唯一绿的是本来就正确的"卸载退订"）；换回修复版 → 9 绿。
 
 ### 8.3 真机复测数字（playwright 真机，口径沿用 §8.6）
 
