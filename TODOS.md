@@ -48,10 +48,17 @@
 - **⚠️ 订正（2026-10-13，动手前实测所得，勿再按旧结论施工）**：`getCharWorldbookNames` 的 ST 契约**不是** `Promise<string[]>`，而是**同步** `CharWorldbooks = { primary: string|null, additional: string[] }`。三条独立证据：① 本仓 `st-plugins/third-party/JS-Slash-Runner-main/@types/function/worldbook.d.ts:32` 的官方声明（非 Promise）；② `backend/data/smart_card_assets/` 三个真机 MVU bundle 全是 `getCharWorldbookNames('current').primary`，`await getCharWorldbookNames` 出现 **0** 次；③ JS-Slash-Runner 自家实现 `src/function/worldbook.ts:50` 即同步转调 `getCharLorebooks`。**真缺陷是「三处都返回 Promise 而消费者不 await」⇒ `.primary` 恒 undefined ⇒ MVU 的 `initialized_lorebooks` 键退化成 `'unknown'`**，原清单把因果说反了。
 - **下一步（S1 剩余 + S2）**：
   1. ~~**T2（未做）** iframe 生命周期策略~~ → **✅ 已完成（2026-10-13 收口，见上"T2 ✅"）**。
-  2. S2 挂载点 + 存储迁移（「读新键 → 无则读旧键 → 写新键」，**只加不删**），完成后 `storage-isolation-contract.test.ts:221` 才转绿。
+  2. ~~S2 挂载点 + 存储迁移（「读新键 → 无则读旧键 → 写新键」，**只加不删**），完成后 `storage-isolation-contract.test.ts:221` 才转绿。~~
+     → **✅ 已完成（2026-10-14 合并，tag `s2-done`）**。提交 `0738300` + merge `ebb34d6`。
+     `storage.ts` +142（新增迁移层并接进读路径）；`card-script-storage.ts` **一行未动**（继续写旧键 = 回退完整性）。
+     验收：**42 passed / 0 failed**（`storage-isolation-contract` 21 含 B1:221 转绿 + 新增 `s2-storage-migration.test.ts` 21）；合并后全量门禁 **980 passed / 0 failed / 3 skipped**、tsc 0。
+     ⚠️ **已知窗口（主控核出，需登记）**：双写期间大堂轨 `CharacterChat.tsx:1673/1682/1705` 仍在生产运行并继续写旧键，而单间轨一旦迁过新键就不再回读旧键 ⇒ 大堂轨**后续**写进旧键的增量永远读不到。**S5 删大堂轨即关闭该窗口**，在那之前别拖太久。
+     ⚠️ 另注：`.env` 无 `MEMORY_EMBEDDING_PROVIDER` ⇒ 默认 `fastembed` + `bge-small-zh-v1.5`（与 backend OOM 排查相关，见 `REPORT_be-oom-static_2026-10-14.md` 订正块）。
   3. **分支出仓**：push origin 或 `git bundle` 存仓库外 —— 目前分支仅存本地，磁盘事故即全丢。
   4. **T2 之后的根治方案**：**消息窗口化**（抄 ST `chat_truncation`，只增不减、零重建）
      —— 已另立条目，见下方「[未开工·建议] 消息窗口化」。落地后 G8（iOS 档位）可直接关掉。
+- ✅ **G9 已裁决（2026-10-14，丙1 实测 + 主控复核）**：`sillyTavernPluginRuntime.ts` 大堂轨注入段 = `injectIntoContainer` 476–2244 = **1769 行 / 71.42%**（全文 2477 行；候选存活段仅 103 行 / 4.16%，三个导出接口全仓零外部消费）⇒ **S4 跳过该文件**，S5 删完大堂段后只剩约 700 行，自然满足 ≤1200 行门禁。证据：`REPORT_ro-survey_2026-10-14.md`。
+- 🔴 **S5 动工前必须先解决两处跨轨反向依赖**（丙1 挖出、主控逐行复核为真）：① `lib/sillytavern/getContext.ts:2275-2310` 把 `triggerSlash`/`getChatMessages`/`setChatMessages` 委托大堂轨注入的 window 桥；② `frame-shim/legacy-st-sim.ts:1106` 单间轨 shim 自己读 `window.__palinkStRuntime?.context?.stat_data`。**是单间轨依赖大堂轨**，删了大堂轨会静默失效。
 - ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。
 
 ### [未开工·建议] 消息窗口化（抄 ST 的 `chat_truncation`）—— 长会话劣化的根治方案
