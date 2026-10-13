@@ -37,6 +37,7 @@ import {
   ensureCardScriptBridge,
   removeCardTavernHelperScripts,
   runCardTavernHelperScripts,
+  isCardScriptLegacyFallbackOn,
 } from '@/lib/sillytavern/card-script-runner';
 // 插件侧角色身份派生（2026-10-02 P1：名字哈希 → UUID 派生）
 import { pluginCharacterIdFromUuid } from '@/lib/sillytavern/plugin-character-id';
@@ -71,7 +72,10 @@ import type { RegexScript } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { extractReasoningTags } from '@/lib/sillytavern/formatting';
-import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
+import {
+  SillyTavernPluginRuntime,
+  isMainPageStPluginInjectionEnabled,
+} from '@/utils/sillyTavernPluginRuntime';
 import { promptInjection, setActivePromptCharacter, getActivePromptCharacter } from '@/services/prompt-injection';
 import { PluginManager } from '@/components/roleplay/PluginManager';
 import { StPluginSettingsDrawer } from '@/components/st-plugin-ui-host/StPluginSettingsDrawer';
@@ -1614,6 +1618,10 @@ export function CharacterChat(props: CharacterChatProps) {
     let cancelled = false;
     runtime.loadRuntimeConfig(selectedCharacter?.id).then(() => {
       if (cancelled) return;
+      if (!isMainPageStPluginInjectionEnabled()) {
+        runtime.unloadAll();
+        return;
+      }
       // 注入到独立容器（body 下，不在 React 树中）：避免插件 <script>/<style>
       // 被附加到 React 管理的 .roleplay-container，导致 React 重新渲染时
       // DOM 不一致触发 NotFoundError: insertBefore/removeChild。
@@ -1625,7 +1633,7 @@ export function CharacterChat(props: CharacterChatProps) {
         pluginHost.style.display = 'none';
         document.body.appendChild(pluginHost);
       }
-      runtime.injectIntoContainer(pluginHost, { diffOnly: true });
+      runtime.injectIntoContainer(pluginHost, { diffOnly: true, legacyScriptExecution: true });
     }).catch((err) => {
       console.error('Failed to load SillyTavern plugin runtime config:', err);
     });
@@ -1656,6 +1664,7 @@ export function CharacterChat(props: CharacterChatProps) {
   useEffect(() => {
     const ext = compatCharacterExtensions || (selectedCharacter as any)?.extensions;
     if (!ext) return;
+    if (!isCardScriptLegacyFallbackOn()) return;
     let cancelled = false;
 
     const run = async () => {
@@ -1708,7 +1717,13 @@ export function CharacterChat(props: CharacterChatProps) {
 
   useEffect(() => {
     const handleSettingsUpdated = () => {
-      stRuntimeRef.current?.reload();
+      if (!isMainPageStPluginInjectionEnabled()) {
+        stRuntimeRef.current?.unloadAll();
+        return;
+      }
+      stRuntimeRef.current?.reload({
+        legacyScriptExecution: true,
+      });
     };
     window.addEventListener('userSettingsUpdated', handleSettingsUpdated);
     return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdated);

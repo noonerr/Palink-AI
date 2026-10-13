@@ -32,6 +32,11 @@ export { setCardScriptStorageSyncer, type CardScriptStorage };
 
 /** 止血开关的 localStorage 键（'0' = 关闭，其它值/缺省 = 开启） */
 export const CARD_SCRIPT_KILL_SWITCH_KEY = 'palink_card_tavern_helper_scripts';
+/**
+ * 主页面 legacy 回退开关。默认关闭：卡内 tavern_helper 脚本由智能卡 iframe
+ * 接收并执行；设为 '1' 仅用于 S3 期间的现场回退。
+ */
+export const CARD_SCRIPT_LEGACY_FALLBACK_KEY = 'palink_card_tavern_helper_scripts_legacy';
 /** 注入节点上的标记属性，用于幂等判定与卸载 */
 export const CARD_SCRIPT_ATTR = 'data-palink-card-script-id';
 /**
@@ -94,6 +99,13 @@ interface CardScriptEntry {
   content?: string;
 }
 
+export interface CardScriptFrameEntry {
+  id: string;
+  name: string;
+  content: string;
+  module: boolean;
+}
+
 /** 顶层 ESM 语法判定：只认正文开头的 import/export，避免把注释里的词误判 */
 export function isTopLevelEsm(content: string): boolean {
   const head = String(content || '').replace(/^\s*(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*\n?)*/g, '');
@@ -104,6 +116,226 @@ function cardScriptsOf(extensions: unknown): CardScriptEntry[] {
   const th = (extensions as any)?.tavern_helper;
   const scripts = th?.scripts;
   return Array.isArray(scripts) ? (scripts as CardScriptEntry[]) : [];
+}
+
+export function isCardScriptKillSwitchOn(): boolean {
+  try {
+    return window.localStorage.getItem(CARD_SCRIPT_KILL_SWITCH_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+export function isCardScriptLegacyFallbackOn(): boolean {
+  try {
+    return window.localStorage.getItem(CARD_SCRIPT_LEGACY_FALLBACK_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 准备给智能卡 iframe 的卡脚本清单。iframe 侧通过 postMessage 收到清单后再以
+ * DOM script 节点执行，避免把不可信脚本插进主页面。源码经 structured clone 传输，
+ * 因而不会受到 HTML ``script`` 结束标签转义问题影响。
+ */
+export function getCardTavernHelperScriptsForFrame(extensions: unknown): CardScriptFrameEntry[] {
+  if (!isCardScriptKillSwitchOn()) return [];
+  return cardScriptsOf(extensions)
+    .map((entry, index) => ({
+      id: String(entry?.id || `idx-${index}`),
+      name: String(entry?.name || ''),
+      content: String(entry?.content || ''),
+      module: isTopLevelEsm(String(entry?.content || '')),
+      enabled: entry?.enabled !== false,
+      type: entry?.type || 'script',
+    }))
+    .filter((entry) => entry.enabled && entry.type === 'script' && entry.content.trim())
+    .map(({ id, name, content, module }) => ({ id, name, content, module }));
+}
+
+/**
+ * 智能卡 iframe 内的脚本接收器。它只负责执行收到的卡脚本，ST 兼容全局和存储
+ * 隔离由 iframe 自己的 runtime shim 提供。
+ */
+export function buildCardScriptFrameBootstrap(frameId: string, nonce = ''): string {
+  const frameIdJson = JSON.stringify(String(frameId)).replace(/</g, '\\u003c');
+  const nonceAttr = nonce ? ` nonce="${String(nonce).replace(/"/g, '&quot;')}"` : '';
+  const nonceJson = JSON.stringify(String(nonce));
+  const dependencyUrlsJson = JSON.stringify({
+    lodash: 'https://testingcf.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js',
+    vue: 'https://testingcf.jsdelivr.net/npm/vue@3.5.13/dist/vue.runtime.global.prod.min.js',
+    showdown: 'https://testingcf.jsdelivr.net/npm/showdown@2.1.0/dist/showdown.min.js',
+    z: 'https://testingcf.jsdelivr.net/npm/zod@4.4.3/+esm',
+    yaml: 'https://testingcf.jsdelivr.net/npm/yaml@2.8.1/+esm',
+  });
+  return `<script${nonceAttr}>
+(() => {
+  const frameId = ${frameIdJson};
+  const scriptNonce = ${nonceJson};
+  const dependencyUrls = ${dependencyUrlsJson};
+  let thirdPartyGlobalsPromise = null;
+  const seen = new Set();
+  const report = (message, detail) => {
+    try {
+      window.parent.postMessage({ source: 'palink-smart-card-frame', frameId, type: 'frame-error', message, detail }, '*');
+    } catch {}
+  };
+  const installCardScriptCompatGlobals = () => {
+    try {
+      const scriptId = '__palink_card_script__';
+      if (typeof window.getScriptId !== 'function') window.getScriptId = () => scriptId;
+      if (typeof window.getScriptName !== 'function') window.getScriptName = () => 'Palink 卡内脚本';
+      if (typeof window.getIframeName !== 'function') window.getIframeName = () => scriptId;
+      if (typeof window.getScriptInfo !== 'function') {
+        window.getScriptInfo = () => ({ id: scriptId, name: 'Palink 卡内脚本', content: '', enabled: true });
+      }
+      if (typeof window.getTavernHelperVersion !== 'function') window.getTavernHelperVersion = () => '3.4.17';
+      if (typeof window.getTavernVersion !== 'function') window.getTavernVersion = () => '1.12.0';
+      if (typeof window.getButtonEvent !== 'function') window.getButtonEvent = (name) => 'tavern_button_' + String(name);
+      if (typeof window.reloadIframe !== 'function') window.reloadIframe = () => Promise.resolve();
+      let scriptButtons = [];
+      if (typeof window.getScriptButtons !== 'function') window.getScriptButtons = () => scriptButtons.slice();
+      if (typeof window.replaceScriptButtons !== 'function') window.replaceScriptButtons = (buttons) => { scriptButtons = Array.isArray(buttons) ? buttons.slice() : []; return scriptButtons.slice(); };
+      if (typeof window.updateScriptButtonsWith !== 'function') window.updateScriptButtonsWith = (updater) => {
+        const next = typeof updater === 'function' ? updater(scriptButtons.slice()) : scriptButtons;
+        scriptButtons = Array.isArray(next) ? next : scriptButtons;
+        return scriptButtons.slice();
+      };
+      if (typeof window.appendInexistentScriptButtons !== 'function') window.appendInexistentScriptButtons = (buttons) => {
+        (Array.isArray(buttons) ? buttons : []).forEach((button) => {
+          if (!button || !button.name || scriptButtons.some((item) => item?.name === button.name)) return;
+          scriptButtons.push(button);
+        });
+        return scriptButtons.slice();
+      };
+      window.SillyTavern = window.SillyTavern || {};
+      if (typeof window.SillyTavern.saveChat !== 'function') window.SillyTavern.saveChat = () => Promise.resolve();
+      if (typeof window.SillyTavern.saveChatConditional !== 'function') window.SillyTavern.saveChatConditional = () => Promise.resolve();
+      const writeVariables = (value) => {
+        if (value && typeof value === 'object' && typeof window.setVariables === 'function') {
+          window.setVariables(value);
+        }
+        return value || {};
+      };
+      if (typeof window.insertOrAssignVariables !== 'function') window.insertOrAssignVariables = (value) => Promise.resolve(writeVariables(value));
+      if (typeof window.updateVariablesWith !== 'function') window.updateVariablesWith = (updater) => {
+        const current = typeof window.getVariables === 'function' ? window.getVariables() : {};
+        const next = typeof updater === 'function' ? updater(current) : current;
+        return Promise.resolve(writeVariables(next));
+      };
+      if (typeof window.deleteVariable !== 'function') window.deleteVariable = () => Promise.resolve({ variables: {}, delete_occurred: false });
+      if (typeof window.eventOn !== 'function' && window.eventSource?.on) window.eventOn = (event, callback) => window.eventSource.on(event, callback);
+      if (typeof window.eventOff !== 'function' && window.eventSource?.off) window.eventOff = (event, callback) => window.eventSource.off(event, callback);
+      if (typeof window.eventEmit !== 'function' && window.eventSource?.emit) window.eventEmit = (event, data) => window.eventSource.emit(event, data);
+      if (typeof window.eventOnce !== 'function' && window.eventSource?.once) window.eventOnce = (event, callback) => window.eventSource.once(event, callback);
+      if (typeof window.eventMakeFirst !== 'function') window.eventMakeFirst = (event, callback) => window.eventOn?.(event, callback);
+      if (typeof window.eventMakeLast !== 'function') window.eventMakeLast = (event, callback) => window.eventOn?.(event, callback);
+      if (typeof window.eventOnButton !== 'function') window.eventOnButton = (event, callback) => window.eventOn?.(event, callback);
+      if (!window.event_types) {
+        window.event_types = {
+          CHAT_CHANGED: 'CHAT_CHANGED',
+          MESSAGE_RECEIVED: 'MESSAGE_RECEIVED',
+          CHARACTER_MESSAGE_RENDERED: 'CHARACTER_MESSAGE_RENDERED',
+          USER_MESSAGE_RENDERED: 'USER_MESSAGE_RENDERED',
+          MESSAGE_SENT: 'MESSAGE_SENT',
+          MESSAGE_UPDATED: 'MESSAGE_UPDATED',
+        };
+      }
+      if (!window.tavern_events) window.tavern_events = window.event_types;
+      if (!window.eventTypes) window.eventTypes = window.event_types;
+    } catch (error) {
+      report('card script compatibility globals unavailable', String(error && (error.stack || error.message || error)));
+    }
+  };
+  const hasGlobal = (name) => {
+    try {
+      const value = window[name];
+      if (name === '_' && value && typeof value.clamp !== 'function') return false;
+      return typeof value !== 'undefined';
+    } catch { return false; }
+  };
+  const loadClassic = (name, src) => {
+    if (hasGlobal(name)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.async = false;
+      if (scriptNonce) script.setAttribute('nonce', scriptNonce);
+      const finish = () => {
+        if (!hasGlobal(name)) report('card script dependency unavailable: ' + name, src);
+        resolve();
+      };
+      script.addEventListener('load', finish, { once: true });
+      script.addEventListener('error', () => {
+        report('card script dependency failed: ' + name, src);
+        resolve();
+      }, { once: true });
+      (document.head || document.documentElement).appendChild(script);
+    });
+  };
+  const loadModule = async (name, src) => {
+    if (hasGlobal(name)) return;
+    try {
+      const mod = await import(src);
+      window[name] = mod;
+    } catch (error) {
+      report('card script dependency failed: ' + name, String(error && (error.stack || error.message || error)));
+    }
+  };
+  const ensureThirdPartyGlobals = () => {
+    if (thirdPartyGlobalsPromise) return thirdPartyGlobalsPromise;
+    thirdPartyGlobalsPromise = Promise.all([
+      loadClassic('_', dependencyUrls.lodash),
+      loadClassic('Vue', dependencyUrls.vue),
+      loadClassic('showdown', dependencyUrls.showdown),
+      loadModule('z', dependencyUrls.z),
+      loadModule('YAML', dependencyUrls.yaml),
+    ]).then(() => undefined);
+    return thirdPartyGlobalsPromise;
+  };
+  const dispatchInit = () => {
+    try { document.dispatchEvent(new Event('palink-card-init')); } catch {}
+  };
+  const patchInitEvent = (source) => String(source || '').replace(
+    /document\\s*\\.\\s*addEventListener\\s*\\(\\s*(['"])DOMContentLoaded\\1/g,
+    'document.addEventListener($1palink-card-init$1',
+  );
+  const execute = (scripts) => {
+    if (!Array.isArray(scripts)) return;
+    const host = document.body || document.documentElement;
+    if (!host) return;
+    scripts.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const id = String(item.id || '');
+      const content = String(item.content || '');
+      if (!id || !content.trim() || seen.has(id)) return;
+      seen.add(id);
+      const script = document.createElement('script');
+      script.type = item.module ? 'module' : 'text/javascript';
+      script.setAttribute('data-palink-card-script-id', id);
+      script.setAttribute('nonce', ${JSON.stringify(String(nonce))});
+      script.onerror = () => report('card script resource failed: ' + id);
+      script.textContent = patchInitEvent(content);
+      try {
+        host.appendChild(script);
+        dispatchInit();
+      } catch (error) {
+        report('card script execution failed: ' + id, String(error && (error.stack || error.message || error)));
+      }
+    });
+    dispatchInit();
+  };
+  installCardScriptCompatGlobals();
+  window.addEventListener('message', (event) => {
+    const data = event && event.data;
+    if (!data || data.source !== 'palink-smart-card-parent' || data.frameId !== frameId) return;
+    if (data.type === 'card-scripts-push') {
+      ensureThirdPartyGlobals().then(() => execute(data.scripts));
+    }
+  });
+})();
+</script>`;
 }
 
 function existingIds(): Set<string> {

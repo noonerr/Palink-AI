@@ -10,6 +10,10 @@ import { readIdbNamespaceKillSwitch } from '@/lib/sillytavern/card-idb-namespace
 import type { CharacterSmartCardContext, SillyTavernPluginRuntimeConfig, SmartCardRenderMode } from '@/types';
 import { buildSillyTavernCompatRuntimeV2Shim } from '@/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime';
 import { promptInjection } from '@/services/prompt-injection';
+import {
+  buildCardScriptFrameBootstrap,
+  getCardTavernHelperScriptsForFrame,
+} from '@/lib/sillytavern/card-script-runner';
 
 import { REMAINING_MARKDOWN_PLUGINS, REMAINING_REHYPE_PLUGINS, INLINE_MIN_HEIGHT, IFRAME_DEFAULT_HEIGHT, IFRAME_INLINE_MAX_HEIGHT, IFRAME_VIEWPORT_MIN_HEIGHT, IFRAME_AVAILABLE_MIN_HEIGHT, SMART_CARD_CSP_NONCE, SMART_CARD_CONTEXT_UPDATE_DELAY_MS, SMART_CARD_VIEWPORT_SETTLE_DELAYS_MS, SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
 import { resolveAvailableHeightCardResize } from './smart-card-runtime/avail-height-unlock';
@@ -450,7 +454,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
       // 否则回退为全内联（旧行为）。
       externalRuntimeUrl: SMART_CARD_RUNTIME_URL,
     });
-    const shim = `${legacyShim}${compatV2Shim}`;
+    const cardScriptBootstrap = buildCardScriptFrameBootstrap(frameIdRef.current, SMART_CARD_CSP_NONCE);
+    const shim = `${legacyShim}${compatV2Shim}${cardScriptBootstrap}`;
     const sourceHtml = effectiveMode === 'static-html'
       ? DOMPurify.sanitize(srcDocHtml, {
           ADD_TAGS: ['style', 'link', 'meta', 'div', 'span', 'font', 'center', 'marquee', 'hr', 'br', 'details', 'summary', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'video', 'audio', 'source', 'iframe', 'button', 'input', 'select', 'option', 'textarea', 'section', 'main', 'article'],
@@ -497,6 +502,19 @@ const IframeRenderer = React.memo(function IframeRenderer({
     }, smartCardFrameTargetOrigin(trustedNativeRef.current));
   }, []);
 
+  const postCardScriptsToFrame = useCallback((
+    targetWindow: Window | null,
+    extensions: CharacterSmartCardContext['characterExtensions'],
+  ) => {
+    if (!targetWindow) return;
+    targetWindow.postMessage({
+      source: 'palink-smart-card-parent',
+      frameId: frameIdRef.current,
+      type: 'card-scripts-push',
+      scripts: getCardTavernHelperScriptsForFrame(extensions),
+    }, smartCardFrameTargetOrigin(trustedNativeRef.current));
+  }, []);
+
   // [MVU-EVENTS 2026-10-05] 帧加载后的首次 context-update 才带 mvuInit 标记。
   const mvuInitPendingRef = useRef(true);
 
@@ -526,6 +544,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // generated_at 去重）。源码不再内联进 context，避免 4.4MB 随每次
     // context-update（滚动/键盘等高频触发）反复结构化克隆导致滑动卡顿。
     postPluginScriptsToFrame(targetWindow);
+    postCardScriptsToFrame(targetWindow, contextToPost.characterExtensions);
     mvuInitPendingRef.current = false;
     };
 
@@ -550,7 +569,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
       pendingContextUpdateRef.current = null;
       if (pendingContext) postNow(pendingContext);
     }, SMART_CARD_CONTEXT_UPDATE_DELAY_MS);
-  }, [postPluginScriptsToFrame]);
+  }, [postCardScriptsToFrame, postPluginScriptsToFrame]);
 
   useEffect(() => {
     postContextToFrame(liveContext);
@@ -597,6 +616,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // iframe 已加载完成，此处推送确保 bundle 必达。iframe 内按 generated_at
     // 幂等，重复推送无害。
     postPluginScriptsToFrame(iframeRef.current?.contentWindow ?? null, true);
+    postCardScriptsToFrame(
+      iframeRef.current?.contentWindow ?? null,
+      liveContext.characterExtensions,
+    );
     const frame = iframeRef.current;
     const frameDoc = frame?.contentDocument;
     if (!frameDoc || frameDoc === document || prefersImmersive) return;
@@ -612,7 +635,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
       themeRoot: document.documentElement,
       isEnabled: isContrastEnhancementEnabled,
     });
-  }, [postLiveContext, postPluginScriptsToFrame, prefersImmersive]);
+  }, [liveContext.characterExtensions, postCardScriptsToFrame, postLiveContext, postPluginScriptsToFrame, prefersImmersive]);
 
   const updateViewportContext = useCallback((nextAvailableHeight = availableHeight) => {
     if (typeof window !== 'undefined') {

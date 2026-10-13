@@ -10,6 +10,17 @@ import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
 import { promptInjection, activeSandboxPartitionKey } from '@/services/prompt-injection';
 import { eventBus } from '@/lib/event-bus';
 
+/** S3 大厅注入总闸：默认关闭，设为 '1' 才恢复大厅侧插件容器注入。 */
+export const ST_PLUGIN_MAIN_PAGE_INJECTION_KEY = 'palink_st_plugin_main_page_injection';
+
+export function isMainPageStPluginInjectionEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(ST_PLUGIN_MAIN_PAGE_INJECTION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 interface RuntimePluginResource {
   path?: string;
   content?: string | null;
@@ -198,6 +209,8 @@ export interface InjectIntoContainerOptions {
    * 共用插件的 DOM 节点保持原样（无闪烁、面板状态不丢）。
    */
   diffOnly?: boolean;
+  /** S3 legacy fallback: permit classic JS execution in the main document. */
+  legacyScriptExecution?: boolean;
 }
 
 /**
@@ -474,6 +487,7 @@ export class SillyTavernPluginRuntime {
   }
 
   injectIntoContainer(container: HTMLElement, options: InjectIntoContainerOptions = {}) {
+    const legacyScriptExecution = options.legacyScriptExecution !== false;
     // canDiff：容器没换、之前注入过 → 走差集热插拔，不清全局状态（保插件面板状态）。
     // 其余情况沿用老的全量重装语义（unloadAll），行为与 L0 完全一致。
     const canDiff = Boolean(options.diffOnly) && this.injected && this.container === container;
@@ -2194,6 +2208,7 @@ export class SillyTavernPluginRuntime {
     }
 
     for (const plugin of extensions) {
+      if (!legacyScriptExecution) continue;
       if (canDiff && this.injectedPluginIds.has(plugin.id)) continue;
       const resources = plugin.resources || {};
       const jsList = resources.js || [];
@@ -2428,12 +2443,12 @@ export class SillyTavernPluginRuntime {
     delete (window as any).__palinkStRuntime;
   }
 
-  async reload() {
+  async reload(options: InjectIntoContainerOptions = {}) {
     const container = this.container;
     this.unloadAll();
     if (container) {
       await this.loadRuntimeConfig();
-      this.injectIntoContainer(container);
+      this.injectIntoContainer(container, options);
     }
   }
 

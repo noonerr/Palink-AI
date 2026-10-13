@@ -13,8 +13,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   CARD_SCRIPT_ATTR,
+  CARD_SCRIPT_LEGACY_FALLBACK_KEY,
   CARD_SCRIPT_KILL_SWITCH_KEY,
   CARD_SCRIPT_STORAGE_STUB,
+  buildCardScriptFrameBootstrap,
+  getCardTavernHelperScriptsForFrame,
+  isCardScriptLegacyFallbackOn,
   isTopLevelEsm,
   patchCardContentLoaded,
   removeCardTavernHelperScripts,
@@ -39,7 +43,36 @@ beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
   window.localStorage.removeItem(CARD_SCRIPT_KILL_SWITCH_KEY);
+  window.localStorage.removeItem(CARD_SCRIPT_LEGACY_FALLBACK_KEY);
   resetCompatStubStats();
+});
+
+describe('S3 iframe 默认执行桥', () => {
+  it('只向 iframe 下发启用的 script，并标出 ESM', () => {
+    expect(getCardTavernHelperScriptsForFrame(makeExtensions([
+      entry('classic', 'window.x=1;'),
+      entry('module', "export const x = 1;"),
+      entry('off', 'window.y=1;', { enabled: false }),
+      entry('button', 'window.z=1;', { type: 'button' }),
+    ]))).toEqual([
+      { id: 'classic', name: 'classic', content: 'window.x=1;', module: false },
+      { id: 'module', name: 'module', content: 'export const x = 1;', module: true },
+    ]);
+  });
+
+  it('默认关闭大厅 legacy 回退，开关为 1 时才启用', () => {
+    expect(isCardScriptLegacyFallbackOn()).toBe(false);
+    window.localStorage.setItem(CARD_SCRIPT_LEGACY_FALLBACK_KEY, '1');
+    expect(isCardScriptLegacyFallbackOn()).toBe(true);
+  });
+
+  it('bootstrap 包含来源校验、幂等标记和 DOMContentLoaded 改写', () => {
+    const bootstrap = buildCardScriptFrameBootstrap('frame-1', 'nonce-1');
+    expect(bootstrap).toContain("source !== 'palink-smart-card-parent'");
+    expect(bootstrap).toContain('data-palink-card-script-id');
+    expect(bootstrap).toContain('palink-card-init');
+    expect(bootstrap).toContain('nonce-1');
+  });
 });
 
 afterEach(() => {
