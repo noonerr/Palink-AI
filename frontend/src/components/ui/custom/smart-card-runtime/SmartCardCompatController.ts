@@ -1,6 +1,7 @@
 import { toast } from 'sonner';
 import DOMPurify from 'dompurify';
 import { api, invalidateCache } from '@/services/api';
+import { worldbookApi } from '@/services/worldbookApi';
 import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
@@ -344,6 +345,70 @@ function buildSmartCardWorldBookExport(state: SmartCardCompatControllerState) {
     world_book_id: state.worldBook.id,
     entries: [...state.worldBook.entries],
   };
+}
+
+// [S1-G11 2026-10-13] 空绑定（与 buildSmartCardWorldBookExport 的 null 分支逐字一致）。
+const EMPTY_CHAR_WORLDBOOK_EXPORT = {
+  success: true,
+  id: '',
+  name: '',
+  world_book_id: '',
+  entries: [] as SmartCardWorldBookEntry[],
+};
+
+/**
+ * [S1-G11] 把后端 world_book_stages 映射成 ST 形状的世界书条目。
+ *
+ * 后端把 ST 世界书条目的 `comment` 存成了 `title`
+ * （backend/app/api/worldbook.py:597 `title=entry.get("comment", ...)`），
+ * 所以这里必须映射回去 —— 真机 MVU 的 zn() 靠
+ * `entry.comment?.toLowerCase().includes('[initvar]')` 找初始化条目，
+ * 不映射就一条都匹配不到，变量初始化等于没做。
+ */
+function mapCharBookStagesToEntries(stages: unknown): SmartCardWorldBookEntry[] {
+  if (!Array.isArray(stages)) return [];
+  return stages.map((stage: any) => ({
+    ...(stage && typeof stage === 'object' ? stage : {}),
+    comment: String(stage?.comment ?? stage?.title ?? ''),
+    content: String(stage?.content ?? ''),
+  }));
+}
+
+/**
+ * [S1-G11] 角色世界书解析：**卡自建优先，缺失时回退到角色自带 character_book**。
+ *
+ * 为什么必须回退：本控制器原先只认 `state.worldBook`（:315 由卡调
+ * createOrReplace* 才赋值），卡未自建时恒返回空绑定 ⇒ 卡 iframe 看不到角色自带
+ * 世界书，而那本正是承载 MVU `[InitVar]` 条目的世界书。
+ * 权威参考实现是主页面轨的桥：utils/sillyTavernPluginRuntime.ts:819-843
+ *   GET /api/worldbooks?character_id=<cid>&type=character_book → names[0]=primary
+ *
+ * 真机对照（2026-10-13，角色 露缇雅1.2 / 会话 f25daab6，session_world_books 为 0 行）：
+ *   主页面 primary === '露缇雅1.2'；卡片帧 primary === null。
+ */
+async function resolveCharWorldbookExport(
+  state: SmartCardCompatControllerState,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<typeof EMPTY_CHAR_WORLDBOOK_EXPORT> {
+  if (state.worldBook) return buildSmartCardWorldBookExport(state);
+  const characterId = String(context?.selectedCharacterId || '').trim();
+  if (!characterId) return { ...EMPTY_CHAR_WORLDBOOK_EXPORT };
+  try {
+    const books = await worldbookApi.list({ character_id: characterId, type: 'character_book' });
+    const first = Array.isArray(books) && books.length > 0 ? books[0] : null;
+    if (!first || !first.id) return { ...EMPTY_CHAR_WORLDBOOK_EXPORT };
+    const detail: any = await worldbookApi.get(String(first.id));
+    return {
+      success: true,
+      id: String(first.id),
+      name: String(first.name || ''),
+      world_book_id: String(first.id),
+      entries: mapCharBookStagesToEntries(detail?.stages),
+    };
+  } catch {
+    // 降级：任何失败都返回空绑定，绝不把异常抛给卡脚本。
+    return { ...EMPTY_CHAR_WORLDBOOK_EXPORT };
+  }
 }
 
 function extractArgsFromPayload(payload: Record<string, unknown>): unknown[] {
@@ -734,9 +799,11 @@ export async function handleSmartCardCompatRequest(
       }
       result = { success: true };
     } else if (action.action === 'getCharWorldbook') {
-      result = buildSmartCardWorldBookExport(state);
+      // [S1-G11] 卡自建优先，缺失时回退到角色自带 character_book（原为纯 buildSmartCardWorldBookExport）。
+      result = await resolveCharWorldbookExport(state, requestContext);
     } else if (action.action === 'getWorldbookEntries') {
-      result = state.worldBook?.entries ? [...state.worldBook.entries] : [];
+      // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
+      result = (await resolveCharWorldbookExport(state, requestContext)).entries;
     } else if (action.action === 'setChatMessage' || action.action === 'updateMessageBlock') {
       const content = extractMessageContentFromPayload(payload);
       const options = extractMessageOptionsFromPayload(payload);

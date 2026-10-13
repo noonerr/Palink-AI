@@ -88,6 +88,17 @@ describe('B seed 消费 —— 内联值必须真的被帧内缓存采纳', () =
   it('[红→S1 转绿] SillyTavernCompatRuntime 的 activeWorldbookName 同样以 ctx.worldbookName 为初值', () => {
     expect(COMPAT_V2_SOURCE).toMatch(SEED_PATTERN);
   });
+
+  it('[回归钉] 内联源必须是角色 character_book，不是 sessionStatus（真机实测后者恒空）', () => {
+    const src = readFileSync(
+      join(process.cwd(), 'src/components/views/character/CharacterChat.tsx'),
+      'utf8',
+    );
+    // 真机实证：被测会话 session_world_books 为 0 行 ⇒ world_book_name 恒 undefined，内联白做。
+    // 断言精确到**赋值形态**，避免匹配到解释这件事的注释本身。
+    expect(src).not.toContain('characterWorldbookName={wb.sessionStatus?.world_book_name}');
+    expect(src).toContain("book?.type === 'character_book'");
+  });
 });
 
 // ============================================================

@@ -2124,9 +2124,19 @@ export function CharacterChat(props: CharacterChatProps) {
                 globalRegexScripts={globalRegexScripts}
                 totalMessages={totalMsgCount}
                 chatMessages={smartCardChatMessages}
-                // [S1-G7 2026-10-13] 会话绑定的世界书名（随聊天加载，早于卡片渲染）：
-                // 让智能卡 iframe 的同步世界书 API 首次调用就有值，消掉 MVU 的 'unknown' 孤儿键。
-                characterWorldbookName={wb.sessionStatus?.world_book_name}
+                // [S1-G7 2026-10-13] 角色自带世界书名（character_book），内联进智能卡 iframe，
+                // 让帧内**同步**世界书 API 首次调用就有值。
+                // 数据源订正：原先用 wb.sessionStatus?.world_book_name，真机实测该会话
+                // session_world_books 为 0 行 ⇒ 恒 undefined、内联白做。权威源是角色
+                // character_book（与主页面桥 sillyTavernPluginRuntime.ts:819-843 同源）。
+                characterWorldbookName={
+                  Array.isArray(wb.worldBooks)
+                    ? (wb.worldBooks as Array<{ type?: string; name?: string; character_id?: string }>)
+                      .find((book) => book?.type === 'character_book'
+                        && (!book?.character_id || String(book.character_id) === String(selectedCharacter.id)))
+                      ?.name
+                    : undefined
+                }
                 models={models}
                 streaming={(isGenerating && idx === totalMsgCount - 1) || regeneratingMessageIndex === idx}
                 isLast={idx === totalMsgCount - 1}
