@@ -53,6 +53,20 @@ export type SmartCardPersistedStorage = {
 
 export const SMART_CARD_STORAGE_PREFIX = 'palink:smart-card-storage:v1:';
 
+/**
+ * 大堂轨（card-script-storage.ts）旧键前缀 —— S2 双兼容迁移的**源**键。
+ *
+ * ⚠️ 必须与 `lib/sillytavern/card-script-storage.ts` 的 `CARD_SCRIPT_STORAGE_PREFIX`
+ * 逐字节一致。这里**故意不 import 而是原地写死**：存储隔离契约测试
+ * （`__tests__/storage-isolation-contract.test.ts` A7）是对本文件**源码文本**断言，
+ * import 进来的字面量不落在本文件里，契约会红。两边一致性由
+ * `__tests__/s2-storage-migration.test.ts` 钉住。
+ */
+export const LEGACY_CARD_SCRIPT_STORAGE_PREFIX = 'palink:card-storage:v1:';
+
+/** 单个桶的键数上限（读写双向封顶，见 A5 契约） */
+const SMART_CARD_STORAGE_MAX_KEYS = 500;
+
 
 export function getSmartCardStorageNamespace(context: CharacterSmartCardContext, sourceFingerprint: string): string {
   const characterId = normalizeSmartCardStorageId(context.characterId, 'global-character');
@@ -71,6 +85,126 @@ export function getSmartCardStorageKey(
 }
 
 
+/* ────────────────────────── S2 双兼容迁移（旧键 → 新键，只加不删） ──────────────────────────
+ *
+ * 三轨并一轨后新键是唯一存留者，但老用户浏览器里躺着大堂轨写的旧键
+ * （`palink:card-storage:v1:<characterId>:<ns>:<rawKey>`，一条键一个字符串值，不是 JSON 桶）。
+ * 直接换钥匙 = 解锁态/CG 进度一夜清零，所以做**一次性抄写迁移**：
+ *
+ *   读新键 → 新键缺失则回读旧键 → 把旧键内容抄进新键 → 返回
+ *
+ * 三条硬约束：
+ *   1. **只加不删**：旧键一律原地保留。回退档位 R2（切回大堂轨）要求旧键仍完好可续用，
+ *      任何"搬完就清"的写法都会让回退变成数据丢失。
+ *   2. **只在新键缺失时搬**：新键一旦存在就以新键为准，旧键不再参与 —— 否则旧键会
+ *      反向覆盖用户在并轨后产生的新数据。
+ *   3. **绝不抛错**：迁移是读路径上的附加动作，扫存储时任何异常都退回"没可迁数据"。
+ */
+
+/** 旧键的 ns 段（对应大堂轨的 CardScriptStorageNs）。 */
+function legacyNamespaceFor(type: keyof SmartCardPersistedStorage): 'local' | 'session' {
+  return type === 'sessionStorage' ? 'session' : 'local';
+}
+
+/**
+ * 旧键所在的真实 Storage。
+ * 注意：大堂轨的 `session` 键写的是 **window.sessionStorage**，而并轨后两种 type 的
+ * 新桶统一落在 window.localStorage（见 writeSmartCardStorageBucket）——别按新桶的位置去找旧键。
+ */
+function legacyStoreFor(type: keyof SmartCardPersistedStorage): Storage | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const store = type === 'sessionStorage' ? window.sessionStorage : window.localStorage;
+    return store || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 旧键前缀候选（含尾部 `:`）。
+ *
+ * 为什么可能有多个：大堂轨 `buildCardScriptStorageKey` 用的是**原始** characterId
+ * （card-script-runner 传进来的那个），新键用的是 `normalizeSmartCardStorageId` 清洗后的 id。
+ * UUID 下两者相同；含空格等字符时不同。两个候选都扫一遍取并集 —— 迁移宁可多搬，
+ * 也不能因为 id 形态不一致而把解锁态判成"没有旧数据"。
+ *
+ * 没有角色身份时旧键落在 `__anonymous__` 桶（card-script-runner 的兜底），同样纳入。
+ */
+export function getLegacyCardStoragePrefixes(
+  context: CharacterSmartCardContext,
+  type: keyof SmartCardPersistedStorage,
+): string[] {
+  const ns = legacyNamespaceFor(type);
+  const raw = String(context?.characterId ?? '').trim();
+  if (!raw) {
+    // 没有角色身份时大堂轨写在 __anonymous__ 桶里（card-script-runner 的兜底），直接认领它。
+    // ⚠️ 不能拿清洗后的占位符 'global-character' 当候选 —— 那是新键的命名空间名，
+    // 大堂轨从来没用它写过键，扫它等于什么都扫不到。
+    return [`${LEGACY_CARD_SCRIPT_STORAGE_PREFIX}__anonymous__:${ns}:`];
+  }
+  const normalized = normalizeSmartCardStorageId(context?.characterId, 'global-character');
+  const candidates = [raw];
+  if (normalized && normalized !== raw) candidates.push(normalized);
+  return candidates.map((id) => `${LEGACY_CARD_SCRIPT_STORAGE_PREFIX}${id}:${ns}:`);
+}
+
+/**
+ * 把某张卡的旧键扫成一个桶。**纯读**，不写任何东西、不动任何键。
+ */
+export function collectLegacyCardStorageBucket(
+  context: CharacterSmartCardContext,
+  type: keyof SmartCardPersistedStorage,
+): Record<string, string> {
+  const store = legacyStoreFor(type);
+  if (!store) return {};
+  const prefixes = getLegacyCardStoragePrefixes(context, type);
+  const out: Record<string, string> = {};
+  try {
+    for (let i = 0; i < store.length; i += 1) {
+      const fullKey = store.key(i);
+      if (!fullKey) continue;
+      let matched = '';
+      for (const prefix of prefixes) {
+        if (fullKey.startsWith(prefix)) {
+          matched = prefix;
+          break;
+        }
+      }
+      if (!matched) continue;
+      const rawKey = fullKey.slice(matched.length);
+      if (!rawKey) continue;
+      const value = store.getItem(fullKey);
+      if (typeof value !== 'string') continue;
+      out[rawKey] = value;
+      if (Object.keys(out).length >= SMART_CARD_STORAGE_MAX_KEYS) break;
+    }
+  } catch {
+    // 存储被禁用 / 遍历中途被改动：按"没有可迁数据"处理，绝不冒泡到卡片运行时。
+    return {};
+  }
+  return out;
+}
+
+/**
+ * 迁移落盘：把扫出来的旧键内容抄进新键。
+ *
+ * 只写新键，**不碰旧键**（回退完整性，约束 1）。
+ * 扫不到东西时不写空桶 —— 留着"新键仍缺失"这个事实，让大堂轨后续再写进来的旧键
+ * 还有机会被下一次读搬上来。
+ */
+export function migrateLegacySmartCardBucket(
+  context: CharacterSmartCardContext,
+  sourceFingerprint: string,
+  type: keyof SmartCardPersistedStorage,
+): Record<string, string> {
+  const bucket = collectLegacyCardStorageBucket(context, type);
+  if (Object.keys(bucket).length === 0) return {};
+  writeSmartCardStorageBucket(context, sourceFingerprint, type, bucket);
+  return bucket;
+}
+
+
 export function readSmartCardStorageBucket(
   context: CharacterSmartCardContext,
   sourceFingerprint: string,
@@ -79,12 +213,16 @@ export function readSmartCardStorageBucket(
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(getSmartCardStorageKey(context, sourceFingerprint, type));
+    // 新键缺失（注意：存在但内容损坏不算缺失，走下面原样的解析/兜底路径）→ 抄写迁移
+    if (raw === null || raw === undefined) {
+      return migrateLegacySmartCardBucket(context, sourceFingerprint, type);
+    }
     const parsed = raw ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     return Object.fromEntries(
       Object.entries(parsed)
         .filter(([key, value]) => typeof key === 'string' && typeof value === 'string')
-        .slice(0, 500),
+        .slice(0, SMART_CARD_STORAGE_MAX_KEYS),
     ) as Record<string, string>;
   } catch {
     return {};
@@ -113,7 +251,7 @@ export function writeSmartCardStorageBucket(
   try {
     const entries = Object.entries(values)
       .filter(([key, value]) => typeof key === 'string' && typeof value === 'string')
-      .slice(-500);
+      .slice(-SMART_CARD_STORAGE_MAX_KEYS);
     window.localStorage.setItem(
       getSmartCardStorageKey(context, sourceFingerprint, type),
       JSON.stringify(Object.fromEntries(entries)),
