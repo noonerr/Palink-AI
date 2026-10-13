@@ -22,16 +22,31 @@
 - **权威方案**：[`docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md`](./docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md)
 - **S0 基线档案**：[`docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md`](./docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md)
 - **S0 完工自检（B1–B9 逐条）**：[`docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md`](./docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md)
-- **进度**：**S0 备料 = 9/9 完成**；**S1 部分完成（T1 ✅ / T3 ✅ / T2 未做）**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，S1 末笔提交 `ea15a6f`。尚无 `s1-done`..`s4-done` tag（T2 未完，故不打 `s1-done`）。
+- **进度**：**S0 备料 = 9/9 完成**；**S1 完成（T1 ✅ / T3 ✅ / T2 ✅）**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，S1 末笔提交 `ea15a6f`。尚无 `s1-done`..`s4-done` tag（S1 三个 Task 已全部收口，`s1-done` 待打）。
 - **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
-- **门禁现值（S1 两笔后）**：vitest **876 passed / 1 failed / 3 skipped（880）**，唯一红仍是上面那条 S2 设计红；tsc **0 错误**；未碰后端。
+- **门禁现值（S1 三笔后）**：vitest **957 passed / 1 failed / 3 skipped（961）**，唯一红仍是上面那条 S2 设计红；tsc **0 错误**；未碰后端。
 - **S1 已完成**：
   1. **T1 ✅（`fe419b7`）** `getCharWorldbookNames` 三处统一为**同步返回 `{primary, additional}`**。
      ⚠️ **推翻了原清单/交接文档的 `Promise<string[]>` 结论**（见下「订正」）——真机消费者是**同步读 `.primary`**，改成 `string[]` 会加重缺陷。
   2. **T3 ✅（`ea15a6f`）** inline 渲染 flag **彻底废除**：`inline-flags.ts` 已删，`Message.tsx` 不再分流，智能卡渲染收口到 `CharacterCardRenderer`(iframe)。`InlineCardRenderer.tsx` 与 `inline-script-replay.ts` **保留到 S5**（提前删会让 Message.tsx 的类型 import 悬空）。
+  3. **T2 ✅（2026-10-13 收口）** iframe 存活配额（LRU 封顶）**接线已修 + 真机复测达标**。
+     - 首测负面：cap 16→3 存活 iframe **7→7**，一个没少（接线没生效）。
+     - 真机诊断（新增 `window.__palinkIframeLru` + 门上的 `data-palink-card-gate-id/-evicted`）定位到**两个结构性缺陷**：
+       ① wake 分支 `register(cardId,true)` 对已注册条目是**幂等空操作** ⇒ 可见性永远翻不真（`lruVisible` 恒 0）；
+       ② 逐出判断只写在"刚睡着那张卡"的回调里，而受害者按定义是**更早变隐藏**的那张卡 ⇒ 结构上永远打不中。
+       （交接文档的三条嫌疑里，①cardId 塌陷、②IO 没触发**均被证伪**；③计数口径部分成立 ——
+       **一个门可有多个卡块 iframe**，配额单位是**门**不是帧。）
+     - 修法：内核加 `onEviction` 订阅 + `enforceCap()` 统一逐出并通知受害者；wake 改 `register + markVisible(true)`；
+       登记从"挂载时"改到"第一次 IO 上报时"（避免可见性未知的新卡被误逐出）；门组件抽到
+       `smart-card-runtime/dormancy-gate.tsx`（纯移动，Message.tsx 2164→2032 行，便于 jsdom 测）。
+     - 复测：cap=16 → 逐出 0、帧 7→7（**行为零变化**，task 672.6ms vs 基线 729.4ms）；
+       **cap=3 → 逐出 2、帧 7→5**；**cap=1 → 逐出 4、帧 7→2**。
+     - 守卫：`dormancy-gate-wiring.test.tsx`（8 条，jsdom + 伪造 IO）；反证换回旧接线 → 7 红 1 绿。
+     - 详情：`docs/_active/spec/SPEC_T2_iframe生命周期策略_2026-10-13.md` §8。
+     - ⚠️ 遗留：**G8（iOS 档位 16/40）仍未在真机 iOS 复验**；cap 调小时 task 耗时上升（逐出-重建代价，默认档不触发）。
 - **⚠️ 订正（2026-10-13，动手前实测所得，勿再按旧结论施工）**：`getCharWorldbookNames` 的 ST 契约**不是** `Promise<string[]>`，而是**同步** `CharWorldbooks = { primary: string|null, additional: string[] }`。三条独立证据：① 本仓 `st-plugins/third-party/JS-Slash-Runner-main/@types/function/worldbook.d.ts:32` 的官方声明（非 Promise）；② `backend/data/smart_card_assets/` 三个真机 MVU bundle 全是 `getCharWorldbookNames('current').primary`，`await getCharWorldbookNames` 出现 **0** 次；③ JS-Slash-Runner 自家实现 `src/function/worldbook.ts:50` 即同步转调 `getCharLorebooks`。**真缺陷是「三处都返回 Promise 而消费者不 await」⇒ `.primary` 恒 undefined ⇒ MVU 的 `initialized_lorebooks` 键退化成 `'unknown'`**，原清单把因果说反了。
 - **下一步（S1 剩余 + S2）**：
-  1. **T2（未做）** iframe 生命周期策略 —— 实测边际 **+9~11 MB/iframe、只增不减**，91 条会话 48 iframe = 560MB 堆、每千像素滚动主线程成本 **1.51×**。**必须在 S1 定「懒挂载 + 出视野卸载/冻结」**，不能拖到 S4 拆完再看。验收：方案文档 + 至少一条守卫测试（iframe 数不随已加载消息数线性增长）。
+  1. ~~**T2（未做）** iframe 生命周期策略~~ → **✅ 已完成（2026-10-13 收口，见上"T2 ✅"）**。
   2. S2 挂载点 + 存储迁移（「读新键 → 无则读旧键 → 写新键」，**只加不删**），完成后 `storage-isolation-contract.test.ts:221` 才转绿。
   3. **分支出仓**：push origin 或 `git bundle` 存仓库外 —— 目前分支仅存本地，磁盘事故即全丢。
 - ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。

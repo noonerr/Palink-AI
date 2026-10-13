@@ -3,6 +3,28 @@
 > 日期：2026-10-13 20:25｜分支 `three-tracks-merge-20261012`｜HEAD `8289b5e`
 > 上游：`docs/_active/HANDOFF_剩余任务提示词_T2与S2-S5_2026-10-13.md`
 > 方案：`docs/_active/spec/SPEC_T2_iframe生命周期策略_2026-10-13.md`（**先读它**，尤其 §8）
+>
+> ## ✅ 接手结果（2026-10-13 22:2x 完成，本节由接手 agent 追加）
+>
+> **任务已闭环，T2 可打勾。** 摘要：
+> - **根因**（§3 的"看起来没生效"是真的，但三条嫌疑有两条被证伪）：真缺陷是接线两处 ——
+>   ① wake 分支 `register(cardId,true)` 对已注册条目是**幂等空操作** ⇒ `visible` 永远翻不真
+>   （真机 `lruVisible` 恒 0）；② 逐出判断只写在"刚睡着那张卡"的回调里，而受害者按定义是
+>   **更早变隐藏**的那张卡 ⇒ 结构上永远打不中（真机 cap=3 且 size=5>3，逐出数恒 0）。
+> - **顺手订正 §4 嫌疑③**：一个**门**里可以有多个卡块 iframe（同一消息两个 HTML 块）⇒
+>   5 门 / 7 帧。配额单位是门，不是帧。
+> - **修法**：内核加 `onEviction` 订阅 + `enforceCap()`（统一逐出并通知受害者本人）；
+>   接线 wake 改 `register + markVisible(true)`、登记从"挂载时"改到"第一次 IO 上报时"；
+>   门组件抽到 `smart-card-runtime/dormancy-gate.tsx`（纯移动，便于 jsdom 测试）。
+> - **复测**（真机 playwright）：cap=16 → 逐出 0、帧 7→7（行为零变化）；
+>   **cap=3 → 逐出 2、帧 7→5**；**cap=1 → 逐出 4、帧 7→2**（修复前 cap=3 是 7→7）。
+> - **门禁**：`npx tsc --noEmit` 0 错；`npx vitest run` **957 passed / 1 failed（S2 设计红）/ 3 skipped**。
+> - 新增守卫测试 `smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（8 条，jsdom + 伪造 IO）；
+>   反证：换回旧接线 → **7 红 1 绿**，换回修复版 → 8 绿。
+> - 细节见 `SPEC_T2_iframe生命周期策略_2026-10-13.md` §8（含诊断口与测量方法）。
+> - ⚠️ **cap 调小时 task 耗时反而上升**（逐出-重建 = 884KB srcdoc 重新装配）：这是**设计上的已知代价**，
+>   默认档 16 远大于可见集所以生产不触发；别把"逐出"当零成本。
+> - ⚠️ **G8（iOS 档位）仍未验**（未动 16/40）。
 
 ---
 

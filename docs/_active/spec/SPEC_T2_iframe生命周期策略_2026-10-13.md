@@ -1,7 +1,7 @@
 # SPEC — T2：智能卡 iframe 生命周期策略
 
 > 日期：2026-10-13｜分支 `three-tracks-merge-20261012`｜上游：HANDOFF P1 / REPORT_交接文档复核 §2
-> 状态：**方案定稿 + 策略内核已实现**（配额策略 iOS 分档待拍板，见 §4）
+> 状态：**方案定稿 + 策略内核已实现 + 接线已修 + 真机复测达标**（配额策略 iOS 分档待拍板，见 §4 / §8.4）
 
 ---
 
@@ -104,54 +104,97 @@
 ## 7. 验收
 
 - 方案文档 ✅ 本文件
-- 守卫测试 ✅ `iframe-lru.test.ts`（18 条，纯策略内核）
-- 门禁 ✅ `failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）
-- 复测数字 ❌ **未达标 —— 且暴露接线可能根本没生效，见 §8**
+- 守卫测试 ✅ `iframe-lru.test.ts`（18 条，纯策略内核）+ `dormancy-gate-wiring.test.tsx`（8 条，jsdom 伪造 IntersectionObserver 驱动真实组件）
+- 门禁 ✅ `failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）；实测 **957 passed / 1 failed / 3 skipped**
+- 复测数字 ✅ **达标**（受控实验：cap=3 → 存活卡片 7→5、cap=1 → 7→2；默认 cap=16 真实数据行为零变化），见 §8
 
 ---
 
-## 8. 🔴 复测结果（2026-10-13 20:12~20:25）—— 负面，T2 不得打勾
+## 8. ✅ 复测结果（2026-10-13 20:12 首测负面 → 22:2x 修复后复测达标）
 
-**结论：策略内核单测全绿，但线上侧的"存活 iframe 数被封住"这一效果**未被证明**，
-受控实验显示接线可能根本没生效。**
+**结论：首测"配额从 16 降到 3、存活 iframe 一个没少（7→7）"已复现、已定位、已修；
+修好后受控实验证明存活卡片数被钉在配额上，且默认档（16）下真实数据行为零变化。**
 
-### 8.1 真实数据里没有能触发逐出的会话
+### 8.1 根因（诊断口 + 真机数据定的，不是猜的）
 
-DB 查会话"总条数 / 疑似卡片条数"：最大会话 92 条**仅 2 条**疑似卡片（页面实测 **7 个 iframe**），
-远低于配额 16 ⇒ 用真实数据**测不出**逐出。
+诊断口（本次新增，**仅诊断用**，见 §8.6）：
+`window.__palinkIframeLru`（`iframe-lru.ts` 的 `getSharedIframeLru()` 内挂载）
++ DOM 属性 `data-palink-card-gate-id` / `data-palink-card-evicted`（门组件上）。
 
-### 8.2 受控对照实验（把 `nonIosCap` 临时降到 3）失败
+诊断快照（cap=3，滚动全程）：`lruVisible` **恒为 0**、`gatesNoFrame` **恒为 0**、
+`lruIds` 是 5 条唯一 id ⇒ 逐条判定交接文档的三个嫌疑：
 
-| | 配额 16 | 配额 3 |
+| 交接文档的嫌疑 | 判定 | 真机证据 |
 |---|---|---|
-| `iframesAfter` | **7** | **7** |
+| ① `cardId` 塌成同一个 | **证伪** | registry 5 条唯一 id（2788/2790/2792/2794/2796）= 门数；`CharacterChat.tsx:2168` 恒传 `messageIndex={idx}`，`cardId` 不可能落空串 |
+| ② IO 的 sleep 分支没触发 | **证伪** | `gatesSleeping=4`，休眠分支确实在跑 |
+| ③ iframe 计数混了非卡片帧 | **部分成立** | 7 个 iframe 全在门内，但**一个门可以有 2 个卡块 iframe**（同一消息里两个 HTML 块，`CharacterCardRenderer` 按块渲染）⇒ 5 门 / 7 帧。配额单位是**门**，不是帧 |
 
-配额降到 3 之后 iframe 数**一点没少** ⇒ 接线没有真正减少存活 iframe。
+**真正的两个结构性缺陷（都在接线，不在策略内核）：**
 
-### 8.3 候选根因（未查证，下一步必须查）
+1. **wake 分支调 `register(cardId, true)`，而 `register` 对已注册条目是幂等空操作**
+   ⇒ `visible` 永远翻不真（真机 `lruVisible` 恒为 0）⇒「可见项永不逐出」形同虚设。
+2. **逐出判断只写在"刚刚睡着那张卡"的 IO 回调里**（`if (lru.pickEviction() === cardId)`），
+   而受害者按定义是**更早变隐藏**的那张卡 —— 它的 IO 状态早已稳定、回调不会再跑
+   ⇒ 结构上永远打不中（真机 cap=3 且 size=5>3，逐出数恒为 0）。
 
-1. **`cardId` 塌成同一个**：`cardId={String(message.id ?? messageIndex ?? '')}` ——
-   若 `message.id` 缺失则退到 `messageIndex`，再缺失就是**空串** ⇒ 多张卡在 LRU 里
-   **共用一个条目** ⇒ registry size 远小于卡数 ⇒ 永远不超配额。（最可疑）
-2. IntersectionObserver 的 **sleep 分支没触发**：程序化滚动 800px/步 + 140ms 等待下，
-   IO 回调可能没机会跑；而逐出**只发生在 sleep 分支里**。
-3. 那 7 个 iframe 里可能混了非卡片 iframe，计数口径要重新定。
+### 8.2 修法（红→绿：测试先红，再改实现）
 
-### 8.4 下一步
+- **内核**（`iframe-lru.ts`）：新增 `onEviction(id, handler)` 订阅 + `enforceCap()` —— 逐出由内核**统一执行**，
+  并**主动通知受害者本人**去卸载自己；废弃"谁刚睡着谁检查自己是不是受害者"那种写法。
+- **接线**（`smart-card-runtime/dormancy-gate.tsx`）：
+  ① wake 分支改 `register(...) + markVisible(id, true)`（先兜住"曾被逐出、已不在册"，再翻可见性 + 刷新 LRU 时间戳）；
+  ② 休眠分支 `register + markVisible(false)` 后调 `enforceCap()`；唤醒也调（唤醒会重新占名额）；
+  ③ **登记从"挂载时"改到"第一次 IO 上报时"** —— 挂载时可见性未知，注册成隐藏项会让一张其实在视口内的新卡
+     被别的卡触发的逐出顺手卸掉（卸载即 iframe 重建 = 一次导航），而它的 IO 回调随后才到；
+  ④ 逐出仍用已有的 `dormantHeight` 等高占位（零跳动），通知回调里对"从未量过高"的边角做兜底量高。
+- **门组件抽出**：`Message.tsx` 的 `SmartCardDormancyGate` → `smart-card-runtime/dormancy-gate.tsx`
+  （**纯移动，逐字节 diff 一致**；Message.tsx 2164 → 2032 行）。理由：接线原先埋在 4000 行的
+  Message.tsx 里，**测不到**；抽出来后 jsdom 可以直接驱动真实组件。
+- **新增守卫**：`smart-card-runtime/__tests__/dormancy-gate-wiring.test.tsx`（8 条）。
+  **反证**：把接线换回 `301225a` 版本 → **7 红 1 绿**（唯一绿的是本来就正确的卸载退订）；换回修复版 → 8 绿。
 
-1. 加诊断：把 LRU registry 的 `size` 与各 `cardId` 暴露到 `window.__palinkIframeLru`（仅诊断用），
-   真机滚一遍看 size 是否等于卡数。
-2. 确认 sleep 分支是否真的触发（计数/日志）。
-3. **在证明"存活 iframe 数被封住"之前，T2 不得打勾**，也不得打 `s1-done`。
+### 8.3 真机复测数字（playwright 真机，口径沿用 §8.6）
 
-### 8.5 本次踩到的测量坑（下次直接用）
+| 配置 | registry size | 逐出门数 | 存活卡片 iframe | 备注 |
+|---|---|---|---|---|
+| 修复前 cap=16（20:16 记录） | 5 | 0 | 7 → 7 | 普通会话无逐出（应然） |
+| 修复前 cap=3（20:19 记录） | 5（>cap 不降） | **0** | **7 → 7** | **证伪：配额没生效** |
+| 修复后 cap=16（生产默认） | 5 | **0** | **7 → 7** | **行为零变化**：heap 78.6→73.3MB、task 672.6ms（基线 729.4ms） |
+| 修复后 cap=3 | **恒为 3** | **2** | **7 → 5** | 配额生效 |
+| 修复后 cap=1 | **恒为 1** | **4** | **7 → 2** | 配额生效（更醒目） |
 
+- 判据以三个**结构性信号**为准：registry size 被钉在 cap、逐出门数 > 0、存活帧数真的下降。
+- ⚠️ **heap 数字噪声大**（GC 时机），单次不能当结论。
+- ⚠️ **cap 调小时 task 耗时反而上升**（修复后 cap=3 = 1026.7ms、cap=1 = 942.1ms，基线 685.1ms）——
+  这是**逐出-重建的真实代价**（重建 = 884KB srcdoc 重新装配）。默认档 16 远大于可见集 ⇒
+  普通会话根本不逐出（上表 cap=16 行），生产不付这个代价。**这正是 §4 把 cap 设大 + iOS 分档的理由**，
+  别把"逐出"当零成本。
+
+### 8.4 仍未验的
+
+- **G8（iOS 档位 16/40）**：那条 iOS 幽灵历史回归**仍未在真机 iOS 上复验**；本次未动档位。
+  若复验证明已不复现，可直接把 `iosCap` 调成与 `nonIosCap` 相同（改一个值）。
+
+### 8.5 首测的负面记录（保留，作为"接线没生效"的对照样本）
+
+- 真实数据里没有能触发逐出的会话：DB 最大会话 92 条仅 2 条疑似卡片，页面实测 7 个 iframe，远低于配额 16。
+- 受控对照实验（`nonIosCap` 临时降到 3）：`iframesAfter` **7 → 7**，一个没少。
+- 当时把根因猜成"cardId 塌陷 / IO 没触发 / 计数口径"三条 —— 真机诊断后**前两条被证伪**，
+  真正的缺陷在"可见性翻转"与"逐出通知"两处（见 8.1）。**教训：单测覆盖策略内核 ≠ 覆盖接线。**
+
+### 8.6 诊断与测量方法（可复用，别再重踩）
+
+- **生产包看不到 `console.*`**：terser `drop_console: true` 剥掉全部 console（含 warn）
+  ⇒ 真机取证只能靠 **DOM 属性 / 运行时对象**。本次新增的两个观测面：
+  `window.__palinkIframeLru`（cap/size/visibleCount/snapshot）与门上的
+  `data-palink-card-gate-id` / `data-palink-card-evicted` / `data-palink-card-dormancy`。
 - 滚动容器是 **`#chat`**，不是 `#chat-items-scroller`；`docSH == docCH == 720`，
   必须自己找内层滚动容器（按 `scrollHeight - clientHeight > 200` 筛）。
-- CDP `Performance.getMetrics` 的 **`TaskDuration` 单位是秒**，不是毫秒
-  （我第一版漏了 ×1000，算出 0.1ms/1000px 的荒谬值，实际 ≈ 84.8ms/1000px）。
-- 滚动过程中 `scrollHeight` 会从 9184 涨到 14456（卡片懒解析高度）⇒
-  "每千像素"的分母不准，应改用**实际滚动距离**或直接报总量。
+- CDP `Performance.getMetrics` 的 **`TaskDuration` 单位是秒**，不是毫秒（漏 ×1000 会算出荒谬值）。
+- 滚动过程中 `scrollHeight` 会变（卡片懒解析高度 + 逐出后占位替换）⇒ "每千像素"分母不准，
+  应报**总量**或实际滚动距离。
 - **不得用 FPS**（headless 无 vsync，实测 149.8fps 是假象）。
-
-> 实验值 `nonIosCap: 3` 已恢复为 16 并重新构建部署，源码回到提交态（`git status` 干净）。
+- **一个门可能有多个卡块 iframe** ⇒ 数 iframe ≠ 数门；探针要按门统计（`[data-palink-card-gate-id]`）。
+- 现成探针：`D:\项目\_palink-s0-20261012\_probe_lru_retest.js`（LRU + heap/task 一次拿全）、
+  `_probe_lru_diag.js`（纯 LRU 诊断）、`_probe_gate_tree.js`（门内结构 dump）、`_probe_perf.js`（性能）。
