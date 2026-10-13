@@ -940,7 +940,9 @@ export const LEGACY_ST_SIM_SEGMENT = `  // [MVU-EVENTS 2026-10-05] MVU 事件键
       messages: chatMessages(),
     };
   };
-  let activeWorldbookName = '';
+  // [S1-G7 2026-10-13] 用 srcdoc 构建期内联的会话绑定世界书名做初值。
+  // 帧内桥是异步的，不内联则首次同步调用必为空（真机 MVU 只在模块顶层读一次，等不起）。
+  let activeWorldbookName = String((ctx && ctx.worldbookName) || '');
   const rememberWorldbookName = (requestedName, result) => {
     const resultName = result && typeof result === 'object'
       ? (result.name || result.worldbookName || result.world_book_name || result.title)

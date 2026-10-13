@@ -169,6 +169,8 @@ function buildSmartCardCompatRuntimeBootPayload(options: SmartCardRuntimeV2Optio
     characterName: context.characterName || '',
     userName: context.userName || 'User',
     language: context.language || 'zh',
+    // [S1-G7 2026-10-13] 会话绑定世界书名内联：帧内同步 API 首次调用即可取到真值。
+    worldbookName: context.worldbookName || '',
     messageId: context.messageId ?? null,
     messageIndex: context.messageIndex ?? null,
     messageContent: context.messageContent || '',
@@ -2081,7 +2083,8 @@ ${IDB_NS_RUNTIME_SOURCE}
     persistStorageValue('__palink_global_variables', globalVariableStore);
     persistStorageValue('__palink_chat_variables', chatVariableStore);
   };
-  let activeWorldbookName = '';
+  // [S1-G7 2026-10-13] 用 srcdoc 构建期内联的会话绑定世界书名做初值（理由同 legacy-st-sim）。
+  let activeWorldbookName = String((ctx && ctx.worldbookName) || '');
   const rememberWorldbookNameCompat = (requestedName, result) => {
     const resultName = result && typeof result === 'object'
       ? (result.name || result.worldbookName || result.world_book_name || result.title)
@@ -5485,8 +5488,11 @@ ${IDB_NS_RUNTIME_SOURCE}
         activeLorebooks = { primary: name, additional: [] };
         activeWorldbookName = name;
       }
+      // 父侧没有（例如卡尚未自建世界书）时，回退到构建期内联的会话绑定名 —— 这是 S1-G7
+      // 让"同步首次就有值"真正生效的地方，不能因为父侧暂缺就把内联值丢掉。
+      const resolved = name || activeLorebooks.primary || activeWorldbookName || '';
       // 形状与 getCharWorldbookNames（T1 契约）保持一致，避免两处再漂移。
-      return { primary: name || null, additional: name ? [name] : [] };
+      return { primary: resolved || null, additional: resolved ? [resolved] : [] };
     } catch (e) {
       post({ type: 'log', level: 'warn', message: 'getCharLorebooks 失败，返回空绑定' });
       return { primary: null, additional: [] };

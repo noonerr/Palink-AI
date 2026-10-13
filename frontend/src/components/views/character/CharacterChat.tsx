@@ -2124,6 +2124,9 @@ export function CharacterChat(props: CharacterChatProps) {
                 globalRegexScripts={globalRegexScripts}
                 totalMessages={totalMsgCount}
                 chatMessages={smartCardChatMessages}
+                // [S1-G7 2026-10-13] 会话绑定的世界书名（随聊天加载，早于卡片渲染）：
+                // 让智能卡 iframe 的同步世界书 API 首次调用就有值，消掉 MVU 的 'unknown' 孤儿键。
+                characterWorldbookName={wb.sessionStatus?.world_book_name}
                 models={models}
                 streaming={(isGenerating && idx === totalMsgCount - 1) || regeneratingMessageIndex === idx}
                 isLast={idx === totalMsgCount - 1}

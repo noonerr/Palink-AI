@@ -367,6 +367,10 @@ export interface CharacterSmartCardContext {
   };
   firstMes?: string;
   alternateGreetings?: string[];
+  // [S1-G7 2026-10-13] 会话绑定的角色世界书名。用于在 srcdoc 构建期把它内联进 shim，
+  // 让帧内**同步** API（getCharWorldbookNames / getCharLorebooks / getCurrentCharPrimaryLorebook）
+  // 首次调用就有值 —— 帧内桥是异步的，不内联则首次必为空（MVU 只在模块顶层读一次，等不起）。
+  worldbookName?: string;
   characterExtensions?: Record<string, unknown> | string | null;
   presetData?: Record<string, unknown> | null;
   globalRegexScripts?: Array<Record<string, unknown>>;

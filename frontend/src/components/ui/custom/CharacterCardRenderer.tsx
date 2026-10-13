@@ -401,6 +401,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
     globalRegexScripts: context.globalRegexScripts,
     stPluginRuntimeConfig,
     sessionId: context.sessionId,
+    // [S1-G7 2026-10-13] 会话绑定世界书名随 bootContext 进 shim（构建期内联，首帧可用）。
+    worldbookName: context.worldbookName,
     depth: 0,
     isInit: false,
     presentationMode,

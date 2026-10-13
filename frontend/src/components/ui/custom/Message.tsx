@@ -188,6 +188,8 @@ interface MessageProps {
   globalRegexScripts?: RegexScript[];
   totalMessages?: number;
   chatMessages?: Array<Record<string, unknown>>;
+  /** [S1-G7] 会话绑定的角色世界书名；内联进智能卡 iframe，使帧内同步 API 首次即有值。 */
+  characterWorldbookName?: string;
   onSmartCardAction?: (action: SmartCardAction) => void;
   /** 手动触发副 AI 变量更新（全手动模式）：以本条消息剧情为源解析变量 */
   onManualMvuSecondary?: (messageId?: string | number) => void;
@@ -790,6 +792,7 @@ function MessageInner({
   sessionId: _sessionId,
   sessionVariables: _sessionVariables,
   characterExtensions: _characterExtensions,
+  characterWorldbookName: _characterWorldbookName,
   characterPresetData: _characterPresetData,
   memoryMode,
   summary,
@@ -1670,6 +1673,8 @@ function MessageInner({
                       characterId: _characterId ? String(_characterId) : undefined,
                       characterName,
                       userName: _userName,
+                      // [S1-G7 2026-10-13] 会话绑定世界书名：进 bootContext → 构建期内联进 shim。
+                      worldbookName: _characterWorldbookName,
                       messageId: message.id,
                       // [P0-FIX 2026-09-30] 补传 messageIndex：渲染器用它做 chat 压缩与
                       // "当前消息"定位，ST 语义的 getCurrentMessageId 也依赖它。

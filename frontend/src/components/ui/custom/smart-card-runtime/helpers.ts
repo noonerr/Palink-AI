@@ -52,6 +52,8 @@ export function buildShim(context: CharacterSmartCardContext, frameId: string): 
     sourceFingerprint: context.sourceFingerprint || '',
     presentationMode: context.presentationMode || 'inline',
     viewport: context.viewport || null,
+    // [S1-G7 2026-10-13] 会话绑定世界书名内联：帧内同步 API 首次调用即可取到真值。
+    worldbookName: context.worldbookName || '',
   });
   const frameIdJson = safeJson(frameId);
 
