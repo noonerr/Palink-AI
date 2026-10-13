@@ -5418,6 +5418,135 @@ ${IDB_NS_RUNTIME_SOURCE}
   };
   ensureFunction('getCharWorldbookNames', getCharWorldbookNamesCompat);
   ensureFunction('getCharWorldbook', async (...args) => requestParent('getCharWorldbook', { args }));
+  // >>> S1-G10 LOREBOOK FAMILY BEGIN
+  // [S1-G10 2026-10-13] 单间轨补齐 lorebook 族（S3 阻断项）。
+  //
+  // 为什么必须补：真机 MVU 的变量初始化器 zn() 依赖整族 API，而本帧此前**一个都没注册**
+  // （大堂轨有，单间轨无）。真机原文（backend/data/smart_card_assets/ 三份 bundle 一致）：
+  //   const e = [...(await getLorebookSettings()).selected_global_lorebooks];  // 不在 try 内！
+  //   try { const t = await getCharLorebooks(); null !== t.primary && e.push(t.primary); }
+  //   catch (e) { console.warn('primaryLorebookReadFailed', e) }
+  //   for (const t of n) { ... const n = await getLorebookEntries(t); }
+  // ⇒ 第一行就会 TypeError 且不在 try 内 ⇒ 变量初始化整体失败（真机弹「[MVU]变量初始化失败」）。
+  // 今天默认走大堂轨所以没暴露；S3 把默认切到单间轨即炸。
+  //
+  // ST 契约（@types/function/lorebook.d.ts / lorebook_entry.d.ts）：除 getLorebookEntries
+  // 声明为 Promise 外，其余四个都是同步。本帧内数据在父侧、桥是异步的，故分两类处理：
+  //   - 同步三兄弟（getCharLorebooks 之外的 getCurrentCharPrimaryLorebook / getLorebookSettings）
+  //     走「同步读帧内缓存 + 冷缓存只 kick 一次自热」，对齐主页面轨 :1581 的桥缓存策略；
+  //   - getCharLorebooks 例外：真机 zn() 是 await 它，返回 Promise 才能确定性拿真值。
+  //     本帧内该 API 在本轮之前根本不存在，改 async 不构成对任何既有消费者的回归。
+  //
+  // 红线：本区域位于 :265-:6981 的模板字符串内，禁止出现反引号与美元花括号。
+  let activeLorebooks = { primary: '', additional: [] };
+  let lorebooksWarmStarted = false;
+  const warmCharLorebooksOnce = () => {
+    if (lorebooksWarmStarted) return;
+    lorebooksWarmStarted = true;
+    requestParent('getCharWorldbook', { args: [] }).then((result) => {
+      if (result && result.success === false) {
+        post({ type: 'log', level: 'warn', message: 'getCharLorebooks 冷缓存自热失败，返回空绑定' });
+        return;
+      }
+      const name = result && typeof result === 'object'
+        ? String(result.name || result.world_book_name || result.worldbookName || '').trim()
+        : '';
+      if (name) {
+        activeLorebooks = { primary: name, additional: [] };
+        activeWorldbookName = name;
+      }
+    }).catch(() => {
+      post({ type: 'log', level: 'warn', message: 'getCharLorebooks 冷缓存自热失败，返回空绑定' });
+    });
+  };
+  const readCharLorebooksSync = () => {
+    warmCharLorebooksOnce();
+    const primary = activeLorebooks.primary || activeWorldbookName || '';
+    return {
+      primary: primary || null,
+      additional: primary ? [primary] : [],
+    };
+  };
+  const getCharLorebooksCompat = async (opts) => {
+    // 非当前角色的按名查询：父侧桥只服务当前卡，返回空绑定并留痕（不冒充别人的世界书）。
+    if (opts && opts.name && opts.name !== 'current') {
+      post({ type: 'log', level: 'warn', message: 'getCharLorebooks 暂不支持按名查询非当前角色，返回空绑定' });
+      return { primary: null, additional: [] };
+    }
+    try {
+      const result = await requestParent('getCharWorldbook', { args: [] });
+      if (result && result.success === false) {
+        return { primary: null, additional: [] };
+      }
+      const name = result && typeof result === 'object'
+        ? String(result.name || result.world_book_name || result.worldbookName || '').trim()
+        : '';
+      if (name) {
+        activeLorebooks = { primary: name, additional: [] };
+        activeWorldbookName = name;
+      }
+      // 形状与 getCharWorldbookNames（T1 契约）保持一致，避免两处再漂移。
+      return { primary: name || null, additional: name ? [name] : [] };
+    } catch (e) {
+      post({ type: 'log', level: 'warn', message: 'getCharLorebooks 失败，返回空绑定' });
+      return { primary: null, additional: [] };
+    }
+  };
+  const getCurrentCharPrimaryLorebookCompat = () => {
+    const books = readCharLorebooksSync();
+    return books && books.primary ? books.primary : null;
+  };
+  // MVU 用它做 _.isEqual(_.merge({}, 当前设置, 期望值), 当前设置) 比较；下面 13 个字段与它
+  // 期望值逐项一致 ⇒ 比较即相等，它的"归一化设置"步骤自然成为 no-op（不产生多余写入）。
+  const LOREBOOK_SETTINGS_DEFAULTS = {
+    scan_depth: 2,
+    context_percentage: 100,
+    budget_cap: 0,
+    min_activations: 0,
+    max_depth: 0,
+    max_recursion_steps: 0,
+    insertion_strategy: 'character_first',
+    include_names: false,
+    recursive: true,
+    case_sensitive: false,
+    match_whole_words: false,
+    use_group_scoring: false,
+    overflow_alert: false,
+    selected_global_lorebooks: [],
+  };
+  let lorebookSettingsStore = null;
+  const getLorebookSettingsCompat = () => {
+    const merged = Object.assign({}, LOREBOOK_SETTINGS_DEFAULTS, lorebookSettingsStore || {});
+    // 防御共享引用：默认值里的空数组不能把引用漏给调用方（否则调用方 push 会污染默认值）。
+    merged.selected_global_lorebooks = Array.isArray(merged.selected_global_lorebooks)
+      ? merged.selected_global_lorebooks.slice()
+      : [];
+    return merged;
+  };
+  const setLorebookSettingsCompat = (patch) => {
+    if (patch && typeof patch === 'object') {
+      lorebookSettingsStore = Object.assign({}, lorebookSettingsStore || {}, patch);
+    }
+    return getLorebookSettingsCompat();
+  };
+  const getLorebookEntriesCompat = async (target) => {
+    try {
+      const result = await requestParent('getWorldbookEntries', { target });
+      if (Array.isArray(result)) return result;
+      if (result && Array.isArray(result.entries)) return result.entries;
+      return [];
+    } catch (e) {
+      // 必须给数组：真机 zn() 直接 for...of 它，给 undefined 会再炸一层。
+      post({ type: 'log', level: 'warn', message: 'getLorebookEntries 失败，返回空数组' });
+      return [];
+    }
+  };
+  ensureFunction('getCharLorebooks', getCharLorebooksCompat);
+  ensureFunction('getCurrentCharPrimaryLorebook', getCurrentCharPrimaryLorebookCompat);
+  ensureFunction('getLorebookSettings', getLorebookSettingsCompat);
+  ensureFunction('setLorebookSettings', setLorebookSettingsCompat);
+  ensureFunction('getLorebookEntries', getLorebookEntriesCompat);
+  // <<< S1-G10 LOREBOOK FAMILY END
   ensureFunction('createOrReplaceCharWorldbook', async (name, entries, options = {}) => {
     const result = await requestParent('createOrReplaceWorldbook', { name, entries, options, scope: 'character' });
     return rememberWorldbookNameCompat(name, result);
