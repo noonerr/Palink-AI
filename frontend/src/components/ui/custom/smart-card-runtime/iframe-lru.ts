@@ -52,6 +52,8 @@ interface Entry {
 
 export class IframeLru {
   private entries = new Map<string, Entry>();
+  /** id → 该卡被逐出时要通知的回调集合（组件用它把自己切到占位态）。 */
+  private listeners = new Map<string, Set<() => void>>();
   private seq = 0;
   private cap: number;
 
@@ -139,6 +141,45 @@ export class IframeLru {
     return out;
   }
 
+  /**
+   * 订阅某 id 被逐出的事件；返回退订函数。
+   *
+   * 为什么需要它（2026-10-13 真机实证的缺陷）：逐出决策是**全局**的（挑"最久未见的隐藏项"），
+   * 而受害者按定义就是**更早变隐藏**的那张卡 —— 它的 IntersectionObserver 状态早已稳定、
+   * 回调不会再跑。所以"谁刚睡着谁检查自己是不是受害者"（`pickEviction() === cardId`）
+   * 在结构上永远打不中：真机 cap=3 且 size=5>3，逐出数恒为 0。
+   * ⇒ 必须由内核统一逐出，并**主动通知受害者本人**去卸载自己。
+   */
+  onEviction(id: string, handler: () => void): () => void {
+    let set = this.listeners.get(id);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(id, set);
+    }
+    set.add(handler);
+    return () => {
+      const cur = this.listeners.get(id);
+      if (!cur) return;
+      cur.delete(handler);
+      if (cur.size === 0) this.listeners.delete(id);
+    };
+  }
+
+  /**
+   * 超配额时统一逐出最久未见的隐藏项，并通知其订阅者卸载（受害者自己 setState）。
+   * 调用点 = 任何可能把在册数推过配额的动作之后（登记、翻可见性）。
+   * 返回被逐出的 id 列表（便于测试与诊断）。
+   */
+  enforceCap(max = 64): string[] {
+    const victims = this.pickEvictions(max);
+    for (const id of victims) {
+      const set = this.listeners.get(id);
+      if (!set) continue;
+      for (const handler of Array.from(set)) handler();
+    }
+    return victims;
+  }
+
   /** 调试/诊断用：id → {visible,lastSeen} 快照。 */
   snapshot(): Array<{ id: string; visible: boolean; lastSeen: number }> {
     return Array.from(this.entries.entries()).map(([id, e]) => ({ id, visible: e.visible, lastSeen: e.lastSeen }));
@@ -150,6 +191,17 @@ let shared: IframeLru | null = null;
 
 export function getSharedIframeLru(policy: IframeLruPolicy = DEFAULT_IFRAME_LRU_POLICY, isIos = false): IframeLru {
   if (!shared) shared = new IframeLru(resolveIframeCap(policy, isIos));
+  // [T2 诊断专用 · 可随时删除] 把单例挂到 window 供真机探针读取。
+  // 为什么不靠 console：生产包 terser drop_console 剥掉全部 console（含 warn），
+  // 日志和截图都取不到证，只能用运行时对象。本段不参与任何产品逻辑。
+  if (typeof window !== 'undefined') {
+    (window as unknown as Record<string, unknown>).__palinkIframeLru = {
+      cap: () => shared!.getCap(),
+      size: () => shared!.size,
+      visibleCount: () => shared!.visibleCount(),
+      snapshot: () => shared!.snapshot(),
+    };
+  }
   return shared;
 }
 

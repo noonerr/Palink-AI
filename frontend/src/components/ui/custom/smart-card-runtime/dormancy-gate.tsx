@@ -34,12 +34,28 @@ export function SmartCardDormancyGate({ children, cardId }: { children: React.Re
   const [evicted, setEvicted] = useState(false);
   const lruRef = useRef(getSharedIframeLru());
 
+  // 只做退订；**登记交给第一次 IntersectionObserver 上报**（见下面 IO 回调）。
+  // 为什么不在挂载时就 register(cardId, false)：那时可见性还未知，注册成"隐藏项"
+  // 会让一张其实在视口内的新卡被别的卡触发的逐出顺手卸掉（卸载即 iframe 重建 = 一次
+  // 导航），而它的 IO 回调随后才到。状态未知的卡不进内核，就永远不会被误逐出。
   useEffect(() => {
     const lru = lruRef.current;
-    lru.register(cardId, false);
     return () => {
       lru.unregister(cardId);
     };
+  }, [cardId]);
+
+  // 被内核逐出时，由内核主动通知本人（不是"自己检查自己是不是受害者"——
+  // 受害者按定义是更早变隐藏的那张卡，它的 IO 回调早已跑完，永远等不到第二次机会）。
+  useEffect(() => {
+    const lru = lruRef.current;
+    return lru.onEviction(cardId, () => {
+      // 兜底量高：正常路径下休眠分支已经量过；这里只处理"从未量过"的边角，
+      // 免得占位高度为 undefined 造成滚动条跳动。
+      const h = containerRef.current?.offsetHeight ?? 0;
+      if (h > 0) setDormantHeight((prev) => (prev != null && prev > 0 ? prev : h));
+      setEvicted(true);
+    });
   }, [cardId]);
 
   useEffect(() => {
@@ -88,18 +104,22 @@ export function SmartCardDormancyGate({ children, cardId }: { children: React.Re
           dormantNow = true;
           setDormantHeight(measured);
           setDormant(true);
-          // [T2 2026-10-13] 出视野：标为不可见；仅在**超出存活配额**时才把本卡逐出。
-          // 与普通「出视野即卸载」的区别：普通会话永不超配额 ⇒ 永不逐出 ⇒ 行为零变化。
+          // [T2 2026-10-13] 出视野：登记（首次上报）并标为不可见；逐出**由内核统一执行**，
+          // 可能逐出的是别的卡（由订阅通知它们），所以这里不判断"受害者是不是我"。
+          lru.register(cardId, false);
           lru.markVisible(cardId, false);
-          if (lru.pickEviction() === cardId) {
-            lru.unregister(cardId);
-            setEvicted(true);
-          }
+          lru.enforceCap();
         } else {
           dormantNow = false;
           setDormant(false);
           // [T2] 回到视野：重新登记为可见（可见项永不逐出），并立刻恢复渲染。
+          // ⚠️ 不能只调 register：它对**已注册**条目是幂等空操作，不会把 visible 翻真，
+          // 也不会刷新 lastSeen ⇒ 可见项会被当成隐藏项（真机 lruVisible 恒为 0 的成因，
+          // 2026-10-13 受控实验 cap=16→3 存活 iframe 一个没少）。必须先 register 兜住
+          // "曾被逐出、已不在册"的情况，再 markVisible 刷新可见性与 LRU 时间戳。
           lru.register(cardId, true);
+          lru.markVisible(cardId, true);
+          lru.enforceCap(); // 唤醒会重新占一个名额，可能把在册数推过配额 ⇒ 再逐出最久未见的隐藏项
           setEvicted(false);
         }
       }
@@ -113,6 +133,10 @@ export function SmartCardDormancyGate({ children, cardId }: { children: React.Re
       ref={containerRef}
       className="w-full"
       data-palink-card-dormancy={dormant ? 'sleeping' : 'awake'}
+      // 真机取证用（生产包 console 被 terser 剥光，只能靠 DOM 信号）：把本门的配额身份写在 DOM 上，
+      // 便于把 window.__palinkIframeLru 的快照与页面上的卡片一一对应。
+      data-palink-card-gate-id={cardId}
+      data-palink-card-evicted={evicted ? 'true' : undefined}
     >
       {PALINK_CARD_DORMANCY_UNMOUNT && dormant || evicted ? (
         <div aria-hidden="true" style={{ height: dormantHeight != null ? `${dormantHeight}px` : undefined }} />
