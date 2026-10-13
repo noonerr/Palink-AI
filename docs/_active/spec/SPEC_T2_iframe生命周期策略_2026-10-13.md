@@ -104,7 +104,54 @@
 ## 7. 验收
 
 - 方案文档 ✅ 本文件
-- 守卫测试 ✅ `iframe-lru.test.ts`
-- 复测数字：内存堆 + 每千像素主线程耗时（沿用 S0 口径：CDP `Performance.getMetrics`
-  的 `TaskDuration` 增量；**不得用 FPS**，headless 无 vsync，实测 149.8fps 是假象）
-- 门禁：`failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）
+- 守卫测试 ✅ `iframe-lru.test.ts`（18 条，纯策略内核）
+- 门禁 ✅ `failed = 0`（唯一例外 `storage-isolation-contract.test.ts:221` 的 S2 设计红）
+- 复测数字 ❌ **未达标 —— 且暴露接线可能根本没生效，见 §8**
+
+---
+
+## 8. 🔴 复测结果（2026-10-13 20:12~20:25）—— 负面，T2 不得打勾
+
+**结论：策略内核单测全绿，但线上侧的"存活 iframe 数被封住"这一效果**未被证明**，
+受控实验显示接线可能根本没生效。**
+
+### 8.1 真实数据里没有能触发逐出的会话
+
+DB 查会话"总条数 / 疑似卡片条数"：最大会话 92 条**仅 2 条**疑似卡片（页面实测 **7 个 iframe**），
+远低于配额 16 ⇒ 用真实数据**测不出**逐出。
+
+### 8.2 受控对照实验（把 `nonIosCap` 临时降到 3）失败
+
+| | 配额 16 | 配额 3 |
+|---|---|---|
+| `iframesAfter` | **7** | **7** |
+
+配额降到 3 之后 iframe 数**一点没少** ⇒ 接线没有真正减少存活 iframe。
+
+### 8.3 候选根因（未查证，下一步必须查）
+
+1. **`cardId` 塌成同一个**：`cardId={String(message.id ?? messageIndex ?? '')}` ——
+   若 `message.id` 缺失则退到 `messageIndex`，再缺失就是**空串** ⇒ 多张卡在 LRU 里
+   **共用一个条目** ⇒ registry size 远小于卡数 ⇒ 永远不超配额。（最可疑）
+2. IntersectionObserver 的 **sleep 分支没触发**：程序化滚动 800px/步 + 140ms 等待下，
+   IO 回调可能没机会跑；而逐出**只发生在 sleep 分支里**。
+3. 那 7 个 iframe 里可能混了非卡片 iframe，计数口径要重新定。
+
+### 8.4 下一步
+
+1. 加诊断：把 LRU registry 的 `size` 与各 `cardId` 暴露到 `window.__palinkIframeLru`（仅诊断用），
+   真机滚一遍看 size 是否等于卡数。
+2. 确认 sleep 分支是否真的触发（计数/日志）。
+3. **在证明"存活 iframe 数被封住"之前，T2 不得打勾**，也不得打 `s1-done`。
+
+### 8.5 本次踩到的测量坑（下次直接用）
+
+- 滚动容器是 **`#chat`**，不是 `#chat-items-scroller`；`docSH == docCH == 720`，
+  必须自己找内层滚动容器（按 `scrollHeight - clientHeight > 200` 筛）。
+- CDP `Performance.getMetrics` 的 **`TaskDuration` 单位是秒**，不是毫秒
+  （我第一版漏了 ×1000，算出 0.1ms/1000px 的荒谬值，实际 ≈ 84.8ms/1000px）。
+- 滚动过程中 `scrollHeight` 会从 9184 涨到 14456（卡片懒解析高度）⇒
+  "每千像素"的分母不准，应改用**实际滚动距离**或直接报总量。
+- **不得用 FPS**（headless 无 vsync，实测 149.8fps 是假象）。
+
+> 实验值 `nonIosCap: 3` 已恢复为 16 并重新构建部署，源码回到提交态（`git status` 干净）。
