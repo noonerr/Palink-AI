@@ -73,7 +73,10 @@ fa2bded docs: 补 G7/G10 实施记录 + shim 比对结果 + 新增 G11
 |---|---|---|
 | **S0 备料** | ✅ 完成（9/9） | 末笔提交 `068acde`（`docs(s0): 性能基线实测入档…S0 9/9 完成`，2026-10-13 01:41:57）；tag `merge-base` = `66672a0`（2026-10-12 23:53:54）；逐条自检见 `REPORT_S0完工自检_B1-B9_2026-10-13.md` §2。<br>⚠️ **无 `s0-done` tag**（`git tag -l "*s?-done*"` 只返回 `s1-done`） |
 | **S1 补功能** | ✅ 完成（T1/T2/T3 全收口） | **tag `s1-done` = `3665d8b`**（2026-10-13 22:40:58，`docs(s1/t2): 收尾补录…`）；`git rev-list --count merge-base..s1-done` = **34** 笔。<br>T1 `fe419b7`（getCharWorldbookNames 三处同步化）；T3 `ea15a6f`（inline flag 废除）；T2 = `301225a`→`7ac4445`→`a59d698`（LRU 接线修复 + 复测）。<br>⚠️ `TODOS.md:25` 仍写「尚无 `s1-done`..`s4-done` tag（`s1-done` 待打）」——**该行已过期**，与实测 tag 冲突，由主控统一更新 |
-| **S2 存储迁移** | 🔵 **代码已提交，B1 判据按源码检查已满足**（门禁转绿**未实测**） | 提交 **`0738300` `feat(s2): 智能卡存储旧键→新键双兼容迁移（只加不删）`**（本次盘点期间由另一 agent 提交，落在我分支上，见 §0.2）。<br>改动：`smart-card-runtime/storage.ts` +142/−2；新增 `smart-card-runtime/__tests__/s2-storage-migration.test.ts` +248。<br>实测 `storage.ts:65` = `export const LEGACY_CARD_SCRIPT_STORAGE_PREFIX = 'palink:card-storage:v1:';` ⇒ **`storage-isolation-contract.test.ts:221` 的源码文本断言（`expect(storageSource).toContain(LEGACY_STORAGE_PREFIX)`）按源码看已满足**。<br>实测 `storage.ts` 内无 `removeItem(...card-storage...)` ⇒ 紧邻的 `:229` 绿条保持条件也满足。<br>❗ **B1 实际是否转绿、其余 failed 是否为 0，我未跑（验证纪律 10：不跑与己无关/会抢机器的全量门禁）⇒ 标注「未实测」**。<br>⚠️ **无 `s2-done` tag** |
+| **S2 存储迁移** | 🔵 **代码已提交，B1 判据按源码检查已满足**（门禁转绿**未实测**） | 提交 **`0738300` `feat(s2): 智能卡存储旧键→新键双兼容迁移（只加不删）`**（本次盘点期间由另一 agent 提交，落在我分支上，见 §0.2）。<br>改动：`smart-card-runtime/storage.ts` +142/−2；新增 `smart-card-runtime/__tests__/s2-storage-migration.test.ts` +248。<br>实测 `storage.ts:65` = `export const LEGACY_CARD_SCRIPT_STORAGE_PREFIX = 'palink:card-storage:v1:';` ⇒ **`storage-isolation-contract.test.ts:221` 的源码文本断言（`expect(storageSource).toContain(LEGACY_STORAGE_PREFIX)`）按源码看已满足**。<br>实测 `storage.ts` 内无 `removeItem(...card-storage...)` ⇒ 紧邻的 `:229` 绿条保持条件也满足。<br>❗ **B1 实际是否转绿、其余 failed 是否为 0，我未跑（验证纪律 10：不跑与己无关/会抢机器的全量门禁）⇒ 标注「未实测」**。
+   📌 **补记（盘点收尾时读到，非我实测）**：S2 agent 自己的记忆日志 `.workbuddy-ai/memory/2026-10-14.md` 记有
+   「`npx vitest run` 两个文件 42 passed / **0 failed**（B1 已绿）；相邻 3 个受影响的测试文件 61 passed；`npx tsc --noEmit` 0 错」。
+   **这是他人自测结论，我未独立复核**，仅转录供主控交叉核对。<br>⚠️ **无 `s2-done` tag** |
 | **S3 切换默认** | ❌ 未开工 | 无 `s3-done` tag；无相关分支（`git branch -v` 只有 `be-oom-static` / `ro-survey` / `s2-storage-migration` / `st-plugin-compat-20260727` / `three-tracks-merge-20261012`）。<br>代码实证未开工：`CharacterChat.tsx:1628` 仍是 `runtime.injectIntoContainer(pluginHost, { diffOnly: true })`，且该文件内**不存在** S3 要求的「大堂注入入口紧急停机开关」（`grep -rn` 无 kill switch 相关分支）。 |
 | **S4 拆单间** | ❌ 未开工 | 无 `s4-done` tag、无相关分支。<br>两个待拆文件实测行数：`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts`（本次未逐一复测行数，沿用 `REPORT_交接文档复核与T2-S5实施准备_2026-10-13.md` §6 的 6984 / 2480）。<br>门禁范围（G4）**仍未拍板**，见 §2。 |
 | **S5 删大堂** | ❌ 未开工 | 无 `s5-done` tag、无相关分支；`inline-script-replay.ts` 与 `InlineCardRenderer.tsx` 仍在（T3 明确保留到 S5）。 |
@@ -257,7 +260,7 @@ stat_data: ctx?.stat_data || window.__palinkStRuntime?.context?.stat_data || {},
 
 | 项 | 为什么未核实 |
 |---|---|
-| 门禁真实数字（958/1/3、S2 提交后是否 959/0/3） | 纯只读任务 + 验证纪律 10（不跑全量门禁抢机器）。所有门禁数字均为转录，标注**未实测** |
+| 门禁真实数字（958/1/3、S2 提交后 B1 是否真转绿） | 纯只读任务 + 验证纪律 10（不跑全量门禁抢机器）。所有门禁数字均为转录；S2 侧自测结论见 §1 补记，**我未独立复核** |
 | `tsc --noEmit` 是否 0 | 未跑，同上 |
 | S4 的 14 个 >1200 行文件清单 | 有别的 agent 正在改文件，复跑不可信；沿用 `REPORT_交接文档复核…` §6 |
 | `SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` 当前精确行数 | 同上，沿用 6984 / 2480 |
