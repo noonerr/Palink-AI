@@ -6,6 +6,7 @@ import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import { Maximize2, Shield, ShieldCheck, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { readIdbNamespaceKillSwitch } from '@/lib/sillytavern/card-idb-namespace';
 import type { CharacterSmartCardContext, SillyTavernPluginRuntimeConfig, SmartCardRenderMode } from '@/types';
 import { buildSillyTavernCompatRuntimeV2Shim } from '@/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime';
 import { promptInjection } from '@/services/prompt-injection';
@@ -403,6 +404,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
     sessionId: context.sessionId,
     // [S1-G7 2026-10-13] 会话绑定世界书名随 bootContext 进 shim（构建期内联，首帧可用）。
     worldbookName: context.worldbookName,
+    // [S1-G6 2026-10-13] 在主框架读 IDB 分库止血开关并下发。帧内读不到主框架的
+    // localStorage（未信任卡帧里 window.parent 是 legacy 安全代理），必须由这里读。
+    // 每次构建 srcdoc 都重读 ⇒ 刷新即生效，仍满足"不用重新构建就能关掉"。
+    idbNamespaceDisabled: readIdbNamespaceKillSwitch(),
     depth: 0,
     isInit: false,
     presentationMode,

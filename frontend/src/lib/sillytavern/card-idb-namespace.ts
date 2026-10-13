@@ -44,6 +44,23 @@ const SUFFIX_SEPARATOR = '__';
  */
 export const IDB_NS_KILL_SWITCH_KEY = 'palink_idb_namespace';
 
+/**
+ * [S1-G6 2026-10-13] 在**主框架**读取分库止血开关（`'0'` = 关闭按角色分库）。
+ *
+ * 存在的理由：卡 iframe 里 `window.parent` 是 legacy 段的安全代理，读不到主框架的
+ * localStorage（详见 `idbNamespaceDisabled` 运行时源码处的注释）。所以由主框架读好、
+ * 经 bootContext → `ctx.idbNamespaceDisabled` 下发给帧内。
+ *
+ * 异常一律按「不关闭」处理：宁可保持隔离，也不因为一次读取失败悄悄退掉隔离。
+ */
+export function readIdbNamespaceKillSwitch(): boolean {
+  try {
+    return window.localStorage.getItem(IDB_NS_KILL_SWITCH_KEY) === '0';
+  } catch {
+    return false;
+  }
+}
+
 /** 后缀长度上限，避免超长 id 把库名撑爆 */
 const SUFFIX_MAX_LEN = 64;
 
@@ -115,7 +132,21 @@ export const IDB_NS_RUNTIME_SOURCE = [
   '  var safe = input.replace(/[^A-Za-z0-9_-]/g, "").slice(0, ' + SUFFIX_MAX_LEN + ');',
   '  return safe.length > 0 ? safe : "";',
   '};',
+  // [S1-G6 2026-10-13] 优先读**构建期下发**的开关（父侧读主框架 localStorage 后经 ctx 传入）。
+  //
+  // 为什么不能只靠 window.parent.localStorage：**未信任卡帧**里 legacy 段装了 parent 安全代理，
+  // 它故意把 localStorage 映射到卡内 memoryStorage（frame-shim/legacy-st-sim.ts:135-138；
+  // 同文件 :39 明写「真实父帧对象本身不暴露：parent.localStorage / token / DOM 依旧不可达」）
+  // ⇒ 读到的不是主框架的存储、该键永远取不到 ⇒ 本函数恒返回 false ⇒ 分库 shim 永远安装。
+  // 真机实测（2026-10-13，14700）：置 '0' 后帧内 indexedDB.open 仍是包装实现 = 开关是哑弹。
+  //
+  // 旧路径**保留为兜底**：trusted-native 帧不装该代理，那里 window.parent 就是真父帧，
+  // 旧路径既有效又更新鲜（能捕捉 srcdoc 构建之后才改的开关）。ctx 只用来「打开」，
+  // 不会把旧路径本来能判出的 true 覆盖成 false。
   'var idbNamespaceDisabled = function () {',
+  '  try {',
+  '    if (typeof ctx !== "undefined" && ctx && ctx.idbNamespaceDisabled === true) return true;',
+  '  } catch (e) {}',
   '  try {',
   '    var p = window.parent;',
   '    if (p && p !== window && p.localStorage) {',
