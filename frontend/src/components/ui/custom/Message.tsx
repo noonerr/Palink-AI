@@ -18,6 +18,7 @@ import { WebSearchResults } from './WebSearchResults';
 import type { Message as MessageType, Model } from '@/types';
 import DOMPurify from 'dompurify';
 import { CharacterCardRenderer, InlineHtmlRenderer, type SmartCardAction, looksLikeSmartCardHtml } from './CharacterCardRenderer';
+import { getSharedIframeLru } from './smart-card-runtime/iframe-lru';
 import { resolveCardVariables } from './cardVariables';
 // [S1/T3 2026-10-13] inline 渲染 flag 已废（B3 拍板 ①）：智能卡统一走 iframe 的
 // CharacterCardRenderer，InlineCardRenderer 不再是可达渲染路径（文件留待 S5 一并删）。
@@ -654,14 +655,27 @@ function FramelessContent({ segments, streaming, markdownComponents }: {
 // 代价是重新引入 iframe 导航与 iOS 幽灵历史条目。
 const PALINK_CARD_DORMANCY_UNMOUNT = false;
 
-function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
+function SmartCardDormancyGate({ children, cardId }: { children: React.ReactNode; cardId: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dormant, setDormant] = useState(false);
   const [dormantHeight, setDormantHeight] = useState<number | null>(null);
+  // [T2 2026-10-13] 被 LRU 配额逐出：与"出视野即卸载"同分支（等高占位），
+  // 但只有**超出配额**才发生 —— 普通会话永不触发，iOS 上也不会每次滚动都重建 iframe。
+  const [evicted, setEvicted] = useState(false);
+  const lruRef = useRef(getSharedIframeLru());
+
+  useEffect(() => {
+    const lru = lruRef.current;
+    lru.register(cardId, false);
+    return () => {
+      lru.unregister(cardId);
+    };
+  }, [cardId]);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const lru = lruRef.current;
     // rootMargin 一屏缓冲：上下各扩一个视口高度，快速滚动时提前唤醒/延迟休眠
     const buffer = Math.max(window.innerHeight || 0, 480);
     // [PERF-2026-10-07 回归修复] 唤醒重绘踢（repaintKick）已删除。
@@ -704,15 +718,25 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
           dormantNow = true;
           setDormantHeight(measured);
           setDormant(true);
+          // [T2 2026-10-13] 出视野：标为不可见；仅在**超出存活配额**时才把本卡逐出。
+          // 与普通「出视野即卸载」的区别：普通会话永不超配额 ⇒ 永不逐出 ⇒ 行为零变化。
+          lru.markVisible(cardId, false);
+          if (lru.pickEviction() === cardId) {
+            lru.unregister(cardId);
+            setEvicted(true);
+          }
         } else {
           dormantNow = false;
           setDormant(false);
+          // [T2] 回到视野：重新登记为可见（可见项永不逐出），并立刻恢复渲染。
+          lru.register(cardId, true);
+          setEvicted(false);
         }
       }
     }, { rootMargin: `${buffer}px 0px ${buffer}px 0px` });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [cardId]);
 
   return (
     <div
@@ -720,7 +744,7 @@ function SmartCardDormancyGate({ children }: { children: React.ReactNode }) {
       className="w-full"
       data-palink-card-dormancy={dormant ? 'sleeping' : 'awake'}
     >
-      {PALINK_CARD_DORMANCY_UNMOUNT && dormant ? (
+      {PALINK_CARD_DORMANCY_UNMOUNT && dormant || evicted ? (
         <div aria-hidden="true" style={{ height: dormantHeight != null ? `${dormantHeight}px` : undefined }} />
       ) : (
         // 隐藏而非卸载：保留 iframe 文档，重新入视口不产生新导航（不新增历史条目）。
@@ -1653,7 +1677,7 @@ function MessageInner({
                 />
               ) : pipelineResult?.kind === 'smart-card' ? (
                 // [N-12] 出视口休眠：卸载卡片 iframe 释放资源，等高占位防跳动，入视口恢复
-                <SmartCardDormancyGate>
+                <SmartCardDormancyGate cardId={String(message.id ?? messageIndex ?? '')}>
                   <SmartCardComponent
                     content={pipelineResult.content}
                     onAction={onSmartCardAction}
