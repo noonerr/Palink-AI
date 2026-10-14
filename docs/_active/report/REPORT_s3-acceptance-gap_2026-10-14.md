@@ -10,7 +10,7 @@
 
 | # | 验收标准（任务书原文） | 结果 | 一句话结论 |
 |---|---|---|---|
-| 1 | 5 个真实插件端到端可用率 ≥95% | ❌ **未通过** | 注册 5/5 成功，但启用后 **5/5 全部语法错误无法运行**，端到端可用率 **0/5**；根因是兼容 runtime 的 import 变换与 wrapper 参数表撞名（既有缺陷，非 S3 回归） |
+| 1 | 5 个真实插件端到端可用率 ≥95% | ❌ **未通过（根因已修，见 §7）** | 注册 5/5 成功；启用后曾 **5/5 全部 SyntaxError**（import 变换与 wrapper 参数撞名，既有缺陷非 S3 回归）。**撞名及激活链 6 层缺陷已于 17:00 修复**：token-counter 端到端全通（/count 注册可用），regex 逐层深入，translate/memory/QR 剩余缺口均有定位（§7.5） |
 | 2 | 降级统计在插件管理页可见 | ✅ **通过** | 总闸置 1 后 `__palinkCompatStats` 落 1 条记录，插件管理页卡片**确认渲染可见**（有截图） |
 | 3 | 三张代表卡旧解锁状态保留（扩样本） | ✅ **通过（限首次迁移）** | 种子迁移逐值比对 **15/15 PASS**、既有状态 **18/18**；覆盖 2 个真实解锁键 + 3 个探针种子键；三卡分类复核属实 |
 
@@ -194,12 +194,62 @@ Quick Replies `228185ea-c9f4-4163-a45c-4d61e879d0c5`｜Chat Translation `ff62569
 Token Counter `6a8725df-6466-4aaa-9ca7-ca0611884034`｜Summarize `ffb782eb-1a3b-47d6-b544-01db1f12ddd0`｜
 Regex `db0c6324-2b5e-41ae-9221-43ef24b1a3ba`。
 
-## 7. 后续建议（供主控决策，本报告不代拍板）
+## 7. 撞名修复与激活链修复（2026-10-14 17:00 主控实施，接 §2 的任务 1 未通过）
 
-1. **任务 1 的 bug 修不修，直接决定 S5 放行方式**。wrapper 撞名缺陷的修法有两种：
-   a) 变换时对与 wrapper 参数同名的 import 本地名加前缀重命名（最小改动，在 `normalizeStPluginScriptSourceCompat` 内解决）；
-   b) wrapper 参数表改名。建议 a)——改完需回归 `plugin-runtime-*` 与 `card-script-*` 测试 +
-   用同一套 5 插件探针复测端到端。
+§2 定位的 wrapper 撞名缺陷已修复，并顺带修掉激活链上同批定位的 5 个缺陷。
+全部修改在 `frontend/src/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime.ts`
+（iframe 兼容 runtime），**零第三方插件源码改动**。
+
+### 7.1 ST 官方实现依据（先研究后动手，结论与 §4.1 同一纪律）
+- ST `activateExtensions()` 用 `<script type="module">` 加载扩展入口，浏览器原生模块机制解析
+  `import { eventSource } from '.../script.js'`——**没有 wrapper、没有参数表、没有字符串变换**，
+  import 绑定是词法绑定，与全局同名时天然遮蔽（`activateExtensions` 源码已核）；
+- ST 框架 import 后经 **manifest `hooks.activate`** 调用导出的 `init()`（`callExtensionHook`），
+  5 个插件 manifest 全部声明 `"hooks": {"activate": "init"}`；
+- 命名导出/默认导出均为真实 ESM 语义，`export { X }` 可早于 `const X`（懒绑定）。
+
+### 7.2 修复清单（按真机暴露顺序，每层均有单测+变异证明+真机复测）
+
+| # | 缺陷 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 5/5 插件整段 SyntaxError | import 变换生成的 `const` 与 wrapper 参数同名（重复声明） | 撞名本地名改为**对参数赋值**：import 值覆盖全局注入值，与 ESM「import 遮蔽全局」一致 |
+| 2 | init 从不执行 | 入口脚本 `moduleMode:false`（export 被剥），且无 manifest hooks.activate 调用 | 入口升级模块模式（export 收进 holder.exports），执行成功后调 `manifest.hooks.activate`（setTimeout(0) 落定后读 holder，异步 hook 错误只进诊断） |
+| 3 | memory TDZ：`Cannot access 'MODULE_NAME' before initialization` | `export { MODULE_NAME }`（:34）早于 `const MODULE_NAME`（:36），变换成顶部立即赋值撞 TDZ | export 列表改**活绑定 getter**（`Object.defineProperty(exports, X, {get})`），比原赋值更接近 ESM 语义 |
+| 4 | 29+20+28 处 `SlashCommand(Argument|NamedArgument).fromProps` TypeError | 三个桩函数无 fromProps 静态方法 | 补三个静态方法（构造透传，registerSlashCommandCompat 只消费 name/callback/aliases） |
+| 5 | regex init 首行 TypeError | `extension_settings.disabledExtensions` 键缺失（ST 契约恒为数组） | applyStPluginRuntimeConfigCompat 里补默认 `[]` |
+| 6 | token-counter `t is not a function` | `import { t } from '../../i18n.js'`——maps 无 i18n.js 模块 | 补 i18n.js 映射（身份翻译桩，与 TavernHelper.t 同语义） |
+| 7 | regex `getSortableDelay is not a function` | utils.js shim（stUtilsCompat）缺该函数 | 补 getSortableDelay/equalsIgnoreCaseAndAccents/isTrueBoolean/isFalseBoolean/regexFromString/escapeHtml/setInfoBlock |
+
+### 7.3 测试与验证（项目规矩：改坏证明会红、还原证明回绿）
+- 新增 `smart-card-runtime/__tests__/st-plugin-import-wrapper-collision.test.ts`（13 用例）：
+  镜像常量与真实参数表一致 / 5 真实入口+全部本地模块可解析 / 撞名守卫不失效 /
+  import 覆盖参数语义 / 经典脚本不受影响 / module 模式 / 重复 import / namespace import /
+  activate hook 链在场 / fromProps 三桩在场 / export 活绑定形状 / i18n+disabledExtensions 守卫；
+- 变异证明两轮：①撞名修复改回 const ⇒ 5 红；②入口退回非模块+删 fromProps ⇒ 2 红
+  （期间还抓到并修掉一个测试盲区：moduleMode 正则曾匹配到本地模块调用点）；
+- 全量门禁：vitest **997 passed / 0 failed / 3 skipped（77 文件）** + tsc 0；
+- 真机复测（同卡同流程，探针留底 `_probe_s3_fix_verify*.js/_raw.txt`）：
+  **token-counter 端到端全通**——init ok、`/count` 命令注册成功、可触发；
+  regex 逐层深入（disabledExtensions→getSortableDelay→getPresetManager，每层均有明确定位）。
+
+### 7.4 任务 1 验收标准重评（诚实口径）
+- 注册 5/5 ✅；脚本执行链 **5/5 可运行**（holder 全 ok）✅；斜杠命令端到端 **1/5**（token-counter）；
+- 距 ≥95% 仍差得远，但性质已变：从「整链死绝」变为「逐插件定位明确的适配缺口」。
+
+### 7.5 剩余缺口清单（均有真机定位，留待后续，不阻塞本次交付）
+1. **regex**：`getPresetManager is not a function`（presetManager 相关 shim 缺失，同 #7 模式）；
+2. **translate / memory**：init 内 `Cannot convert undefined or null to object`——
+   utils shim 仍有缺函数（getStringHash/waitUntilCondition/extractAllWords 等）+ extension_settings 子对象
+   （`.translate`/`.memory`）未初始化，需逐函数补；
+3. **quick-reply**：`document.querySelector('#qr_container').append` 在 iframe 内为 null——
+   **挂载层架构缺口**（ST 的挂载点在主页面，S3 后脚本在 iframe 跑），属 S5 删大堂时的单间轨自立议题；
+4. **Extras 后端**：ADAPTATION.md 已记载 `/api/extra/translate`、`/api/summarize` 等 404——
+   translate/memory 的功能后端（翻译/摘要）即使前端跑通也调不到，需补转发代理。
+
+## 8. 后续建议（供主控决策，本报告不代拍板）
+
+1. ~~**任务 1 的 bug 修不修，直接决定 S5 放行方式**~~ → **已修（§7）**：撞名及激活链 6 层缺陷全部修复，
+   token-counter 端到端全通；剩余缺口（§7.5）逐项有定位。S5 放行判据请主控按新口径重评。
 2. **MVU 世界书读取失败（§5.1）建议单独立项**，它与 S5 删大堂同属 iframe 轨依赖，宜在 S5 前弄清。
 3. **测试插件去留**（§5.2）请主控拍板；若留，需在 TODOS 登记；若删，删后跑一次默认态探针确认无副作用。
 4. 本分支仅含本报告与文档目录同步，**未 merge**，留在 `s3-acceptance-gap` 等主控合；

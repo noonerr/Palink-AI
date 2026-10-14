@@ -772,6 +772,10 @@ ${IDB_NS_RUNTIME_SOURCE}
   const applyStPluginRuntimeConfigCompat = () => {
     if (!window.extension_settings || typeof window.extension_settings !== 'object') window.extension_settings = {};
     mergePlainObjectCompat(window.extension_settings, getStPluginExtensionSettingsCompat());
+    // [S3-ACCEPTANCE-GAP] ST 契约字段：extension_settings.disabledExtensions 恒为数组。
+    // regex 插件 init 首行 extension_settings.disabledExtensions.includes('regex')，
+    // Palink 侧无此键 => TypeError => init 死（2026-10-14 真机定位）。
+    if (!Array.isArray(window.extension_settings.disabledExtensions)) window.extension_settings.disabledExtensions = [];
     const runtimeConfig = ctx.stPluginRuntimeConfig && typeof ctx.stPluginRuntimeConfig === 'object'
       ? ctx.stPluginRuntimeConfig
       : {};
@@ -1257,6 +1261,17 @@ ${IDB_NS_RUNTIME_SOURCE}
       if (element?.style) element.style.height = 'auto';
       return element;
     },
+    // [S3-ACCEPTANCE-GAP] regex/index.js:10 import { getSortableDelay } —— utils shim 缺此
+    // 函数 ⇒ TypeError（2026-10-14 真机定位）。ST 语义：用户开启 sort delay 时 400ms 否则 0。
+    getSortableDelay: () => (window.power_user && window.power_user.sort_delay ? 400 : 0),
+    equalsIgnoreCaseAndAccents: (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase(),
+    isTrueBoolean: (value) => value === true || value === 'true' || value === 'True',
+    isFalseBoolean: (value) => value === false || value === 'false' || value === 'False',
+    regexFromString: (pattern) => {
+      try { return new RegExp(pattern); } catch { return null; }
+    },
+    escapeHtml: escapeHtmlCompat,
+    setInfoBlock: () => {},
   };
   const evaluateStLocalPluginModuleCompat = (plugin, resource) => {
     const resourceContent = getStPluginScriptContentCompat(plugin, resource);
@@ -1725,6 +1740,16 @@ ${IDB_NS_RUNTIME_SOURCE}
         values: libModuleCompat,
       },
       {
+        // [S3-ACCEPTANCE-GAP] i18n 的 t 标签函数：身份翻译桩（与 TavernHelper.t 同语义，
+        // 见 6564 行）。token-counter import { t } from i18n.js 此前 maps 无此
+        // 模块 => t 为 undefined => t 模板字面量 TypeError（2026-10-14 真机定位）。
+        match: ['i18n.js', 'i18n/index.js'],
+        values: {
+          t: () => ((key) => String(key ?? '')),
+          default: () => ((key) => String(key ?? '')),
+        },
+      },
+      {
         match: ['util/accountstorage.js', 'accountstorage.js', 'account-storage.js'],
         values: accountStorageModuleCompat,
       },
@@ -1767,7 +1792,10 @@ ${IDB_NS_RUNTIME_SOURCE}
       const local = parts[0] || '';
       const exported = parts[1] || local;
       if (!/^[A-Za-z_$][\\w$]*$/.test(local) || !/^[A-Za-z_$][\\w$]*$/.test(exported)) return '';
-      return 'exports[' + JSON.stringify(exported) + '] = ' + local + ';';
+      // [S3-ACCEPTANCE-GAP] 活绑定 getter，不用立即赋值：export 列表可以早于 const 声明
+      // （memory/index.js:34 export { MODULE_NAME } 早于 :36 const），ES module 语义是懒绑定，
+      // 立即赋值会撞 TDZ（"Cannot access 'MODULE_NAME' before initialization"，补测实锤）。
+      return 'Object.defineProperty(exports, ' + JSON.stringify(exported) + ', { enumerable: true, get: function () { return ' + local + '; } });';
     })
     .filter(Boolean)
     .join('\\n');
@@ -1812,6 +1840,12 @@ ${IDB_NS_RUNTIME_SOURCE}
       .split(regexBackslashCompat + 'r').join(newlineCompat);
     return text;
   };
+  // [S3-ACCEPTANCE-GAP] wrapper 参数表镜像。两处脚本包装器（入口 executeStPluginScriptsCompat
+  // 与本地模块 evaluateStLocalPluginModuleCompat）用 function 参数向插件源码注入 ST 全局；
+  // import 变换遇到同名本地名时必须赋值而非声明（见 normalizeStPluginScriptSourceCompat）。
+  // ⚠️ 改动那两处参数表时必须同步本数组，否则撞名防御失效。
+  const ST_PLUGIN_WRAPPER_PARAMS_BASE = ['window', 'document', 'SillyTavern', 'getContext', 'extension_settings', 'TavernHelper', 'eventSource'];
+  const ST_PLUGIN_WRAPPER_PARAMS_MODULE = ST_PLUGIN_WRAPPER_PARAMS_BASE.concat(['exports', 'module']);
   const normalizeStPluginScriptSourceCompat = (source, options = {}) => {
     const imports = [];
     const sideEffectImports = [];
@@ -1848,13 +1882,31 @@ ${IDB_NS_RUNTIME_SOURCE}
       transformed = sideEffects + '\\n' + transformed;
     }
     if (imports.length) {
-      const declarations = imports.map((item) => {
-        if (item.namespace) {
-          return 'const ' + item.local + ' = window.__palinkStModuleNamespace?.(' + JSON.stringify(item.modulePath) + ', ' + JSON.stringify(pluginId) + ', ' + JSON.stringify(resourcePath) + ') || {};';
+      // [S3-ACCEPTANCE-GAP FIX] ES module 语义：import 绑定是词法绑定，优先于 wrapper 注入的
+      // 同名全局参数。与参数表同名的本地名不能再生成 const —— 同一作用域重复声明会让整段脚本
+      // SyntaxError（2026-10-14 补测实测：5/5 真实插件 import eventSource/getContext 全灭，
+      // 报错 "Identifier 'x' has already been declared"）。改为对参数赋值：import 值覆盖全局
+      // 注入值，与「import 绑定遮蔽全局」的 ST 语义一致；模块解析不到时同样得到 undefined，
+      // 与非参数名的 const 路径行为一致。重复 import 同一非参数本地名以首次为准
+      // （真实 ES module 属重复声明错误，此处优雅降级）。
+      const wrapperParams = new Set(options.moduleMode ? ST_PLUGIN_WRAPPER_PARAMS_MODULE : ST_PLUGIN_WRAPPER_PARAMS_BASE);
+      const declaredLocals = new Set();
+      const statements = [];
+      imports.forEach((item) => {
+        const valueExpr = item.namespace
+          ? 'window.__palinkStModuleNamespace?.(' + JSON.stringify(item.modulePath) + ', ' + JSON.stringify(pluginId) + ', ' + JSON.stringify(resourcePath) + ') || {}'
+          : 'window.__palinkStModuleImport(' + JSON.stringify(item.modulePath) + ', ' + JSON.stringify(item.imported) + ', ' + JSON.stringify(pluginId) + ', ' + JSON.stringify(resourcePath) + ')';
+        if (wrapperParams.has(item.local)) {
+          statements.push(item.local + ' = ' + valueExpr + ';');
+          return;
         }
-        return 'const ' + item.local + ' = window.__palinkStModuleImport(' + JSON.stringify(item.modulePath) + ', ' + JSON.stringify(item.imported) + ', ' + JSON.stringify(pluginId) + ', ' + JSON.stringify(resourcePath) + ');';
-      }).join('\\n');
-      transformed = declarations + '\\n' + transformed;
+        if (declaredLocals.has(item.local)) return;
+        declaredLocals.add(item.local);
+        statements.push('const ' + item.local + ' = ' + valueExpr + ';');
+      });
+      if (statements.length) {
+        transformed = statements.join(newlineCompat) + newlineCompat + transformed;
+      }
     }
     return transformed;
   };
@@ -1884,18 +1936,21 @@ ${IDB_NS_RUNTIME_SOURCE}
           const source = normalizeStPluginScriptSourceCompat(scriptContent, {
             pluginId: plugin.id || plugin.name || '',
             resourcePath: resource.zip_path || resource.path || '',
-            moduleMode: false,
+            // [S3-ACCEPTANCE-GAP] 入口脚本按模块模式变换：export 收进 holder.exports，
+            // 供下方 manifest.hooks.activate 调用（ST 标准激活机制，补测定位：
+            // ST 框架 import 后调 activate hook；Palink 此前只跑脚本不调 hook ⇒ init 从不执行）。
+            moduleMode: true,
           });
           const holderKey = '__palinkStPluginHolder_' + scriptKey.replace(/[^a-z0-9_$]/gi, '_') + '_' + Date.now();
-          window[holderKey] = { ok: false, error: '' };
+          window[holderKey] = { ok: false, error: '', exports: {}, module: { exports: {} } };
           const holderJson = JSON.stringify(holderKey);
           const pluginNameJson = JSON.stringify(String(plugin.name || plugin.id || ''));
           const wrappedSource = ''
             + '(async () => {' + newlineCompat
             + 'try {' + newlineCompat
-            + 'await (async function(window,document,SillyTavern,getContext,extension_settings,TavernHelper,eventSource){' + newlineCompat
+            + 'await (async function(window,document,SillyTavern,getContext,extension_settings,TavernHelper,eventSource,exports,module){' + newlineCompat
             + source
-            + newlineCompat + '})(window,document,window.SillyTavern,window.getContext,window.extension_settings,window.TavernHelper,window.eventSource);' + newlineCompat
+            + newlineCompat + '})(window,document,window.SillyTavern,window.getContext,window.extension_settings,window.TavernHelper,window.eventSource,window[' + holderJson + '].exports,window[' + holderJson + '].module);' + newlineCompat
             + 'window[' + holderJson + '].ok = true;' + newlineCompat
             + '} catch (error) {' + newlineCompat
             + 'window[' + holderJson + '].error = String(error && error.message || error);' + newlineCompat
@@ -1910,6 +1965,37 @@ ${IDB_NS_RUNTIME_SOURCE}
             apiName: String(plugin.name || plugin.id || ''),
             message: 'SillyTavern extension script executed in iframe sandbox.',
           });
+          // [S3-ACCEPTANCE-GAP] manifest hooks.activate：脚本主体成功后调用导出的 init。
+          // setTimeout(0) 待 async IIFE 的同步部分与 microtask 落定再读 holder（顶层
+          // 带 await 的插件也不漏）。hook 异步执行，错误只进诊断、不拖垮执行链。
+          const activateHookName = plugin?.manifest?.hooks?.activate;
+          if (activateHookName && typeof activateHookName === 'string') {
+            setTimeout(() => {
+              const holder = window[holderKey];
+              if (!holder || !holder.ok) return;
+              const hookFn = holder.exports ? holder.exports[activateHookName] : undefined;
+              if (typeof hookFn !== 'function') return;
+              Promise.resolve()
+                .then(() => hookFn())
+                .then(() => {
+                  reportDiagnostic({
+                    severity: 'info',
+                    code: 'st_plugin_activate_hook_ok',
+                    apiName: String(plugin.name || plugin.id || ''),
+                    message: 'Activate hook ' + activateHookName + ' completed.',
+                  });
+                })
+                .catch((hookError) => {
+                  reportDiagnostic({
+                    severity: 'warning',
+                    code: 'st_plugin_activate_hook_failed',
+                    apiName: String(plugin.name || plugin.id || ''),
+                    message: String(hookError?.message || hookError || uiText.unknownError),
+                    stack: String(hookError?.stack || ''),
+                  });
+                });
+            }, 0);
+          }
         } catch (error) {
           reportDiagnostic({
             severity: 'warning',
@@ -5952,6 +6038,18 @@ ${IDB_NS_RUNTIME_SOURCE}
   window.SlashCommandArgument = window.SlashCommandArgument || function SlashCommandArgumentCompat(config = {}) { Object.assign(this, config); };
   window.SlashCommandNamedArgument = window.SlashCommandNamedArgument || function SlashCommandNamedArgumentCompat(config = {}) { Object.assign(this, config); };
   window.SlashCommandEnumValue = window.SlashCommandEnumValue || function SlashCommandEnumValueCompat(config = {}) { Object.assign(this, config); };
+  // [S3-ACCEPTANCE-GAP] ST 1.12+ 标准注册方式 SlashCommand(Argument|NamedArgument).fromProps(props)。
+  // 此前三个桩均无该静态方法 ⇒ 5 插件 29+20+28 处调用全部 TypeError（2026-10-14 补测定位）。
+  // registerSlashCommandCompat 只消费 name/callback/aliases，构造透传的形状即够用。
+  if (typeof window.SlashCommand.fromProps !== 'function') {
+    window.SlashCommand.fromProps = function fromProps(props = {}) { return new window.SlashCommand(props); };
+  }
+  if (typeof window.SlashCommandArgument.fromProps !== 'function') {
+    window.SlashCommandArgument.fromProps = function fromProps(props = {}) { return new window.SlashCommandArgument(props); };
+  }
+  if (typeof window.SlashCommandNamedArgument.fromProps !== 'function') {
+    window.SlashCommandNamedArgument.fromProps = function fromProps(props = {}) { return new window.SlashCommandNamedArgument(props); };
+  }
 
   window.eventSource = window.eventSource || {
     _listeners: new Map(),
