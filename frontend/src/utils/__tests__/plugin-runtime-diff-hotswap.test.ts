@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import {
   SillyTavernPluginRuntime,
   computePluginDiff,
+  isMainPageStPluginInjectionEnabled,
+  ST_PLUGIN_MAIN_PAGE_INJECTION_KEY,
 } from '../sillyTavernPluginRuntime';
 
 // 桥接层里有自发请求（如刷新世界书名），jsdom 下相对 URL 无法解析会刷一堆
@@ -95,6 +97,16 @@ describe('computePluginDiff（纯函数，差集计算的边界）', () => {
 });
 
 describe('injectIntoContainer diffOnly（DOM 层热插拔）', () => {
+  it('S3 大厅注入总闸默认关闭，仅显式回退值 1 开启', () => {
+    window.localStorage.removeItem(ST_PLUGIN_MAIN_PAGE_INJECTION_KEY);
+    expect(isMainPageStPluginInjectionEnabled()).toBe(false);
+    window.localStorage.setItem(ST_PLUGIN_MAIN_PAGE_INJECTION_KEY, '0');
+    expect(isMainPageStPluginInjectionEnabled()).toBe(false);
+    window.localStorage.setItem(ST_PLUGIN_MAIN_PAGE_INJECTION_KEY, '1');
+    expect(isMainPageStPluginInjectionEnabled()).toBe(true);
+    window.localStorage.removeItem(ST_PLUGIN_MAIN_PAGE_INJECTION_KEY);
+  });
+
   it('共用插件保持同一节点实例；仅差异部分被装卸', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
