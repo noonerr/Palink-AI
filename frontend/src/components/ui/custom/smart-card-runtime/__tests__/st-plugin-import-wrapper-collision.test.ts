@@ -217,6 +217,27 @@ describe('ST 插件 import 变换 vs wrapper 参数表 撞名防御', () => {
     expect(body, 'disabledExtensions 默认数组缺失（regex init 首行 includes 会抛）').toMatch(/\.disabledExtensions = \[\]/);
   });
 
+  it('preset-manager.js 模块映射在场（regex getPresetManager 的守卫）', () => {
+    const body = runtimeBody();
+    expect(body, 'preset-manager.js 映射缺失（regex import { getPresetManager } 会拿到 undefined）').toMatch(/match: \['preset-manager\.js'/);
+  });
+
+  it('SlashCommandCommonEnumsProvider 映射与 settings 子对象初始化在场（regex/translate/memory 的守卫）', () => {
+    const body = runtimeBody();
+    expect(body, 'SlashCommandCommonEnumsProvider 映射缺失（regex commonEnumProviders.boolean 会抛）')
+      .toMatch(/match: \['slash-commands\/slashcommandcommonenumsprovider\.js'/);
+    // settings 子对象键名 ensure（translate/memory loadSettings 的前提）
+    expect(body, 'settings 子对象初始化缺失（Object.hasOwn(undefined) 会抛）').toMatch(/'quickReply', 'quickReplyV2', 'translate', 'memory', 'regex'/);
+    expect(body, 'regex_presets 数组初始化缺失（.map 会抛）').toMatch(/\.regex_presets = \[\]/);
+  });
+
+  it('iframe 内挂载容器桩在场（quick-reply init 的 #qr_container 前提）', () => {
+    const body = runtimeBody();
+    expect(body, '挂载容器 ensure 函数缺失').toContain('ensureStPluginMountPointsCompat');
+    expect(body, 'qr_container 不在桩清单里（quick-reply init 会抛 null.append）').toMatch(/'qr_container'/);
+    expect(body, 'ensure 未在脚本执行前调用').toMatch(/ensureStPluginMountPointsCompat\(\);\s*\n\s*executeStPluginScriptsCompat\(\)/);
+  });
+
   it('moduleMode 下 export 收成 exports.x（activate hook 拿得到 init）', () => {
     const { normalize } = loadTransform();
     const src = [

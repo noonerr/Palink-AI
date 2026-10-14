@@ -776,6 +776,16 @@ ${IDB_NS_RUNTIME_SOURCE}
     // regex 插件 init 首行 extension_settings.disabledExtensions.includes('regex')，
     // Palink 侧无此键 => TypeError => init 死（2026-10-14 真机定位）。
     if (!Array.isArray(window.extension_settings.disabledExtensions)) window.extension_settings.disabledExtensions = [];
+    // [S3-PLUGIN-SHIM-GAP] ST 扩展的 settings 子对象：ST 里由扩展首次 init 时自建并持久化，
+    // Palink 的 settings.json 从来没有这些键 => translate loadSettings 的
+    // Object.hasOwn(undefined) / memory loadSettings 的 Object.keys(undefined) 全抛。
+    // 键名 = 各扩展实际读取的 extension_settings.<key>（见 st-plugins 各 index.js loadSettings），
+    // 新增扩展时按同名单补。regex_presets 是数组型（305 行有 .map）。
+    ['quickReply', 'quickReplyV2', 'translate', 'memory', 'regex'].forEach((key) => {
+      const current = window.extension_settings[key];
+      if (!current || typeof current !== 'object' || Array.isArray(current)) window.extension_settings[key] = {};
+    });
+    if (!Array.isArray(window.extension_settings.regex_presets)) window.extension_settings.regex_presets = [];
     const runtimeConfig = ctx.stPluginRuntimeConfig && typeof ctx.stPluginRuntimeConfig === 'object'
       ? ctx.stPluginRuntimeConfig
       : {};
@@ -1750,6 +1760,41 @@ ${IDB_NS_RUNTIME_SOURCE}
         },
       },
       {
+        // [S3-PLUGIN-SHIM-GAP] ST preset-manager：getPresetManager(apiId) 返回预设管理器。
+        // regex/index.js:1680-1685 只用 getSelectedPresetName / readPresetExtensionField。
+        // 此前 maps 无此模块 => getPresetManager 为 undefined => TypeError（真机定位）。
+        // Palink 无 ST 预设体系，返回空名+空脚本集的降级形状（regex 逻辑对空集合法跳过）。
+        match: ['preset-manager.js', 'preset-manager/index.js'],
+        values: {
+          getPresetManager: () => ((apiId) => ({
+            apiId: String(apiId || ''),
+            getSelectedPresetName: () => '',
+            readPresetExtensionField: () => [],
+            writeExtensionField: () => true,
+            getPresetExtensionField: () => [],
+          })),
+          PresetManager: () => function PresetManagerCompat(apiId = '') { this.apiId = apiId; },
+          default: () => ((apiId) => ({ apiId: String(apiId || '') })),
+        },
+      },
+      {
+        // [S3-PLUGIN-SHIM-GAP] regex/index.js:7/298/2044 import commonEnumProviders/enumIcons。
+        // 此前 maps 无此模块 => commonEnumProviders.boolean TypeError（真机定位）。
+        match: ['slash-commands/slashcommandcommonenumsprovider.js'],
+        values: {
+          commonEnumProviders: () => ({
+            boolean: (variant) => () => (String(variant) === 'onOffToggle'
+              ? ['on', 'off', 'toggle'].map((value) => ({ value: value, text: value }))
+              : ['true', 'false'].map((value) => ({ value: value, text: value }))),
+          }),
+          enumIcons: () => ({
+            preset: 'preset',
+            getStateIcon: (enabled) => (enabled ? 'on' : 'off'),
+          }),
+          default: () => ({}),
+        },
+      },
+      {
         match: ['util/accountstorage.js', 'accountstorage.js', 'account-storage.js'],
         values: accountStorageModuleCompat,
       },
@@ -2055,6 +2100,28 @@ ${IDB_NS_RUNTIME_SOURCE}
     const value = String(selector || '');
     if (/(?:^|[\\s,])#(?:extensions_settings2|extensions_settings|extensions_settings_container)\\b/.test(value)) {
       ensureStExtensionSettingsHostCompat();
+    }
+  };
+  // [S3-PLUGIN-SHIM-GAP] ST 扩展的挂载容器。ST 里这些容器在主页面（Palink 对应
+  // StPluginMountPoints.tsx），但 S3 后插件脚本默认在 iframe 内执行，操作的是 iframe
+  // document —— quick-reply init 的 document.querySelector('#qr_container').append(...)
+  // 拿到 null 直接抛（2026-10-14 真机定位）。这里在 iframe 内预建同名离屏容器
+  // （与 extensions_settings 容器同款处理：仍可测量、不占视觉），让插件的挂载动作成功；
+  // UI 可见性是宿主隔离问题（S5 删大堂后的单间轨自立议题），本桩只保证 init 不中断、
+  // 命令/API 可注册。容器清单 = ADAPTATION.md 的 9 个 + 两个 wand 浮动窗。
+  const ensureStPluginMountPointsCompat = () => {
+    const ids = [
+      'qr_container', 'regex_container', 'tts_container', 'vectors_container', 'caption_container',
+      'translation_container', 'summarize_container', 'sd_container', 'expressions_container',
+      'translate_wand_container', 'token_counter_wand_container',
+    ];
+    for (const id of ids) {
+      if (document.getElementById(id)) continue;
+      const el = document.createElement('div');
+      el.id = id;
+      el.setAttribute('data-palink-st-mount-stub', 'iframe');
+      el.style.cssText = 'position:fixed; top:-9999px; left:-9999px; visibility:hidden;';
+      (document.body || document.documentElement).appendChild(el);
     }
   };
   const openThirdPartyExtensionMenuCompat = async (extensionName = '') => {
@@ -6869,6 +6936,7 @@ ${IDB_NS_RUNTIME_SOURCE}
     });
   } catch {}
   ensureStExtensionSettingsHostCompat();
+  ensureStPluginMountPointsCompat();
   executeStPluginScriptsCompat();
   // [EP-BRIDGE] 初始化恢复上报：插件脚本执行完毕后，把 chatVariableStore 中的
   // __extension_prompts 快照上报父页面（父页面整页刷新后 promptInjection 为空，

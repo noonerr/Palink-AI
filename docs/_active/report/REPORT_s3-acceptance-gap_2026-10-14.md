@@ -10,7 +10,7 @@
 
 | # | 验收标准（任务书原文） | 结果 | 一句话结论 |
 |---|---|---|---|
-| 1 | 5 个真实插件端到端可用率 ≥95% | ❌ **未通过（根因已修，见 §7）** | 注册 5/5 成功；启用后曾 **5/5 全部 SyntaxError**（import 变换与 wrapper 参数撞名，既有缺陷非 S3 回归）。**撞名及激活链 6 层缺陷已于 17:00 修复**：token-counter 端到端全通（/count 注册可用），regex 逐层深入，translate/memory/QR 剩余缺口均有定位（§7.5） |
+| 1 | 5 个真实插件端到端可用率 ≥95% | ❌ **未通过（根因已修，见 §7）** | 注册 5/5 成功；启用后曾 **5/5 全部 SyntaxError**（import 变换与 wrapper 参数撞名，既有缺陷非 S3 回归）。**撞名及激活链 10 层缺陷已修**：**init 成功 4/5**（token-counter/regex/translate/memory）、**7 条斜杠命令注册可用**；quick-reply 卡 iframe 内 fetch + UI 宿主隔离（§7.5） |
 | 2 | 降级统计在插件管理页可见 | ✅ **通过** | 总闸置 1 后 `__palinkCompatStats` 落 1 条记录，插件管理页卡片**确认渲染可见**（有截图） |
 | 3 | 三张代表卡旧解锁状态保留（扩样本） | ✅ **通过（限首次迁移）** | 种子迁移逐值比对 **15/15 PASS**、既有状态 **18/18**；覆盖 2 个真实解锁键 + 3 个探针种子键；三卡分类复核属实 |
 
@@ -219,32 +219,38 @@ Regex `db0c6324-2b5e-41ae-9221-43ef24b1a3ba`。
 | 5 | regex init 首行 TypeError | `extension_settings.disabledExtensions` 键缺失（ST 契约恒为数组） | applyStPluginRuntimeConfigCompat 里补默认 `[]` |
 | 6 | token-counter `t is not a function` | `import { t } from '../../i18n.js'`——maps 无 i18n.js 模块 | 补 i18n.js 映射（身份翻译桩，与 TavernHelper.t 同语义） |
 | 7 | regex `getSortableDelay is not a function` | utils.js shim（stUtilsCompat）缺该函数 | 补 getSortableDelay/equalsIgnoreCaseAndAccents/isTrueBoolean/isFalseBoolean/regexFromString/escapeHtml/setInfoBlock |
+| 8 | regex `getPresetManager is not a function` | maps 无 `preset-manager.js` 模块 | 补映射（返回空名+空脚本集的降级形状——Palink 无 ST 预设体系） |
+| 9 | regex `commonEnumProviders.boolean` TypeError | maps 无 `SlashCommandCommonEnumsProvider.js` | 补映射（boolean 两种 variant + enumIcons.preset/getStateIcon） |
+| 10 | translate `Object.hasOwn(undefined)` / memory `Object.keys(undefined)` | ST 里扩展 settings 子对象由 init 自建并持久化，Palink settings.json 从无这些键 | applyStPluginRuntimeConfigCompat 里按名单预建（quickReply/quickReplyV2/translate/memory/regex + regex_presets 数组型） |
+| 11 | quick-reply init `document.querySelector('#qr_container').append` 抛 null | 挂载点在主页面（StPluginMountPoints.tsx），iframe document 里不存在 | iframe 内预建同名**离屏**容器桩（11 个 id），让挂载动作成功、init 不中断 |
 
 ### 7.3 测试与验证（项目规矩：改坏证明会红、还原证明回绿）
-- 新增 `smart-card-runtime/__tests__/st-plugin-import-wrapper-collision.test.ts`（13 用例）：
+- 新增 `smart-card-runtime/__tests__/st-plugin-import-wrapper-collision.test.ts`（16 用例）：
   镜像常量与真实参数表一致 / 5 真实入口+全部本地模块可解析 / 撞名守卫不失效 /
   import 覆盖参数语义 / 经典脚本不受影响 / module 模式 / 重复 import / namespace import /
-  activate hook 链在场 / fromProps 三桩在场 / export 活绑定形状 / i18n+disabledExtensions 守卫；
+  activate hook 链在场 / fromProps 三桩在场 / export 活绑定形状 / i18n+disabledExtensions 守卫 /
+  preset-manager 映射 / CommonEnumsProvider+settings 子对象 / 挂载容器桩；
 - 变异证明两轮：①撞名修复改回 const ⇒ 5 红；②入口退回非模块+删 fromProps ⇒ 2 红
   （期间还抓到并修掉一个测试盲区：moduleMode 正则曾匹配到本地模块调用点）；
-- 全量门禁：vitest **997 passed / 0 failed / 3 skipped（77 文件）** + tsc 0；
+- 全量门禁：vitest **1000 passed / 0 failed / 3 skipped（77 文件）** + tsc 0；
 - 真机复测（同卡同流程，探针留底 `_probe_s3_fix_verify*.js/_raw.txt`）：
-  **token-counter 端到端全通**——init ok、`/count` 命令注册成功、可触发；
-  regex 逐层深入（disabledExtensions→getSortableDelay→getPresetManager，每层均有明确定位）。
+  **4/5 插件 init 全通、7 条斜杠命令注册成功**
+  （`translate` / `regex` / `regex-state` / `regex-toggle` / `regex-preset` / `summarize` / `count`）；
+  quick-reply 从"init 第一行即死"推进到"渲染设置面板时 iframe 内 fetch 失败"。
 
 ### 7.4 任务 1 验收标准重评（诚实口径）
-- 注册 5/5 ✅；脚本执行链 **5/5 可运行**（holder 全 ok）✅；斜杠命令端到端 **1/5**（token-counter）；
-- 距 ≥95% 仍差得远，但性质已变：从「整链死绝」变为「逐插件定位明确的适配缺口」。
+- 注册 5/5 ✅；脚本执行链 **5/5 可运行**（holder 全 ok）✅；
+- **init 成功 4/5**（token-counter/regex/translate/memory）；斜杠命令 **7 条注册成功**；
+- quick-reply 未通（§7.5-1）；UI 可见性另受宿主隔离限制（§7.5-2）；
+- 距 ≥95% 端到端仍差，但性质已变：从「整链死绝」变为「逐插件定位明确的适配缺口」。
 
 ### 7.5 剩余缺口清单（均有真机定位，留待后续，不阻塞本次交付）
-1. **regex**：`getPresetManager is not a function`（presetManager 相关 shim 缺失，同 #7 模式）；
-2. **translate / memory**：init 内 `Cannot convert undefined or null to object`——
-   utils shim 仍有缺函数（getStringHash/waitUntilCondition/extractAllWords 等）+ extension_settings 子对象
-   （`.translate`/`.memory`）未初始化，需逐函数补；
-3. **quick-reply**：`document.querySelector('#qr_container').append` 在 iframe 内为 null——
-   **挂载层架构缺口**（ST 的挂载点在主页面，S3 后脚本在 iframe 跑），属 S5 删大堂时的单间轨自立议题；
-4. **Extras 后端**：ADAPTATION.md 已记载 `/api/extra/translate`、`/api/summarize` 等 404——
-   translate/memory 的功能后端（翻译/摘要）即使前端跑通也调不到，需补转发代理。
+1. **quick-reply**：`SettingsUi.render()` 内 iframe 侧 `Failed to fetch`（挂载容器桩已让它越过 init 首行）；
+   即便修好，其 UI 落在 iframe 离屏容器里、**用户不可见**——宿主隔离是 S5 删大堂后的单间轨自立议题；
+2. **Extras 后端**：ADAPTATION.md 已记载 `/api/extra/translate`、`/api/summarize` 等 404——
+   translate/memory 的功能后端（翻译/摘要）即使前端跑通也调不到，需补转发代理；
+3. **UI 可见性（架构层）**：11 个挂载容器桩让插件"挂得上去"但用户在卡 iframe 内看不到面板，
+   真要可见需把挂载点桥回主页面或让单间轨自立门户——与 S5 议题合并考虑。
 
 ## 8. 后续建议（供主控决策，本报告不代拍板）
 
