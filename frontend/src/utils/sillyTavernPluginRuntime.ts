@@ -4,8 +4,11 @@ import jQuery from 'jquery';
 import { recordStubHit } from '@/lib/plugin-system/compat-stub-registry';
 import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 import { sanitizePluginCss, isUrlAllowedByPluginWhitelist } from '@/lib/plugin-system/sandbox';
-import { generationEngine } from '@/services/generation-engine';
+// [S5-GDEP2 2026-10-15] generationEngine 此前仅被 runSlashCommand 的 /model /profile /
+// preset 用到，那段已下沉到 slash-commands-compat.ts ⇒ 此处 import 随之移除（无其他引用）。
 import { getContext as getStContext } from '@/lib/sillytavern/getContext';
+// [S5-GDEP2 2026-10-15] Palink 专有 slash 命令的共享实现（沙箱轨同款调用）。
+import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
 import { ST_TO_PALINK_EVENT_MAP } from '@/lib/sillytavern/runtime';
 import { promptInjection, activeSandboxPartitionKey } from '@/services/prompt-injection';
 import { eventBus } from '@/lib/event-bus';
@@ -643,68 +646,20 @@ export class SillyTavernPluginRuntime {
         const cmd = String(command ?? '').trim();
         const sessionId = this.context.chatId;
         try {
-          // /branch-create {mesId}、/checkpoint-create mesId=X {name}
-          const branchCreateMatch = cmd.match(/^\/branch-create\s+(\d+)/) || cmd.match(/^\/checkpoint-create\s+mesId=(\d+)(?:\s+(.*))?$/i);
-          if (branchCreateMatch && sessionId) {
-            const floorId = Number(branchCreateMatch[1]);
-            const branchName = branchCreateMatch[2] ? String(branchCreateMatch[2]).trim() : undefined;
-            const anchor = await palinkBridge.resolveMessageAnchor(floorId);
-            const payload: any = { session_id: sessionId, same_level: false };
-            if (anchor?.branchId) payload.parent_branch_id = anchor.branchId;
-            if (anchor?.messageId) payload.parent_message_id = anchor.messageId;
-            if (branchName) payload.branch_name = branchName;
-            await api.post(`/api/character-sessions/${sessionId}/branches`, payload);
-            window.dispatchEvent(new CustomEvent('palink:switchBranch', { detail: { sessionId } }));
-            return '';
-          }
-          // /checkpoint-go {mesId}：切到目标消息所在分支并定位
-          const checkpointGoMatch = cmd.match(/^\/checkpoint-go\s+(\d+)/);
-          if (checkpointGoMatch && sessionId) {
-            const floorId = Number(checkpointGoMatch[1]);
-            const anchor = await palinkBridge.resolveMessageAnchor(floorId);
-            if (anchor?.branchId) {
-              const qs = anchor.messageId ? `&up_to_message_id=${anchor.messageId}` : '';
-              await api.post(`/api/character-sessions/${sessionId}/branches/${anchor.branchId}/switch?limit=10${qs}`);
-              window.dispatchEvent(new CustomEvent('palink:switchBranch', { detail: { sessionId, branchId: anchor.branchId, messageId: anchor.messageId } }));
-            }
-            return '';
-          }
-          // /chat-fork：当前聊天同级分叉
-          if (/^\/chat-fork\b/.test(cmd) && sessionId) {
-            await api.post(`/api/character-sessions/${sessionId}/branches`, { session_id: sessionId, same_level: true });
-            window.dispatchEvent(new CustomEvent('palink:switchBranch', { detail: { sessionId } }));
-            return '';
-          }
-          // /getchatname：返回当前聊天文件名（与 /api/characters/chats 的 file_name 对齐）
-          if (/^\/getchatname\b/.test(cmd)) {
-            return sessionId ? `palink-session-${sessionId}.jsonl` : '';
-          }
-          // ST /model get/set：读当前模型名、切换 raw 生成所用模型（generationEngine 上下文）。
-          // Galgame 插件加强模式经 /profile /model /preset 快照→切换→恢复 API 配置
-          // （COT 二次生成换更强模型）；Palink 无独立 profile/preset 概念，统一映射为模型。
-          if (/^\/model(?:\s|$)/i.test(cmd)) {
-            const arg = String(cmd).replace(/^\/model\s*/i, '').replace(/^quiet=true\s*/i, '').trim();
-            if (arg) {
-              try { generationEngine.setContext({ model: arg }); } catch (e) { /* ignore */ }
-              return /^\/model\s+quiet=true\b/i.test(cmd) ? arg : `Model: ${arg}`;
-            }
-            const currentModel = (generationEngine as any)._currentModel || '';
-            return /quiet=true/i.test(cmd) ? currentModel : (currentModel ? `Current model: ${currentModel}` : '');
-          }
-          if (/^\/(profile|preset)(\s|$)/i.test(cmd)) {
-            const arg = String(cmd).replace(/^\/(profile|preset)\s*/i, '').replace(/^quiet=true\s*/i, '').trim();
-            if (arg) {
-              // set：映射为模型切换；返回空串即可（runSlashSafe 只判"未知命令"）
-              try { generationEngine.setContext({ model: arg }); } catch (e) { /* ignore */ }
-              return '';
-            }
-            // get：返回当前模型名，让插件快照/恢复闭环；无模型时返回空串（插件跳过恢复）
-            return (generationEngine as any)._currentModel || '';
-          }
-          if (/^\/profile-list\b/.test(cmd)) {
-            recordStubHit('slash:profile-list', 'Palink 无独立 profile/preset 概念，返回空列表');
-            return '';
-          }
+          // [S5-GDEP2 2026-10-15] Palink 专有命令段（7 分支 / 9 命令名：/branch-create、
+          // /checkpoint-create、/checkpoint-go、/chat-fork、/getchatname、/model、
+          // /profile、/preset、/profile-list）已下沉为共享实现
+          // lib/sillytavern/slash-commands-compat.ts 的 runPalinkSlashCommands，
+          // 沙箱轨（sandbox.ts 的 triggerSlash）同款调用，S5 删大堂不再带走这批命令。
+          // 本轨**显式**注入 sessionId 与 palinkBridge.resolveMessageAnchor
+          // ⇒ 与下沉前的逐行实现同源同语义；逐条对照见
+          // docs/_active/report/REPORT_slash-sink_2026-10-15.md §3。
+          // 未命中（返回 null）时照旧落下面的 SlashCommandEngine 委托段。
+          const palinkResult = await runPalinkSlashCommands(cmd, {
+            sessionId,
+            resolveMessageAnchor: (floorId) => palinkBridge.resolveMessageAnchor(floorId),
+          });
+          if (palinkResult !== null) return palinkResult;
           // 其余命令委托 Palink SlashCommandEngine
           const { SlashCommandEngine } = await import('@/lib/slash-engine/mod');
           const result = await SlashCommandEngine.execute(cmd);
