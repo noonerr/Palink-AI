@@ -12,7 +12,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:14000"
+BASE = "http://localhost:16000"
 CHAR_ID = "c44f2ae6-5922-454d-8069-06ba48dc4408"  # 重导入后的 露缇雅1.2
 MODEL = "deepseek-v4-flash"
 

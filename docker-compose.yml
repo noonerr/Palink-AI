@@ -21,10 +21,16 @@ services:
       # 恢复原样：把下面一行换回 - "14000:8080"，并 `docker compose up -d --force-recreate frontend`。
       # ⚠️ 已知连带：backend/scripts/_accept_mvu_realrun.py:15 硬编码 BASE=:14000，
       #    换端口期间该验收脚本需同步改，或用公网地址跑。
-      - "14700:8080"
+      # [TEMP-PORT 2026-10-15] 14700 落进本次开机保留段 14621-14720（netsh 实测）
+      # → docker 绑不上宿主端口，容器 healthy 但站点 000。先按主控要求试回 3000；
+      #   3000 也在保留段 2922-3021 内，若绑定失败则改用 16000（所有排除段之上、实测未监听）。
+      # [TEMP-PORT 2026-10-15] 3000 实测绑定失败（保留段 2922-3021 内，报错
+      # "listen tcp 0.0.0.0:3000: bind: …forbidden by its access permissions"）⇒ 改挂 16000。
+      - "16000:8080"
+      # - "3000:8080"
+      # - "14700:8080"
       # - "14000:8080"
       # - "13000:8080"
-      # - "3000:8080"
     depends_on:
       backend:
         condition: service_healthy
