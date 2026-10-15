@@ -48,6 +48,7 @@ import { createSillyTavernRuntime, destroySillyTavernRuntime } from '@/lib/silly
 import { generationEngine } from '@/services/generation-engine';
 import { resetCompatStubStats, getCompatStubStats } from '@/lib/plugin-system/compat-stub-registry';
 import { pluginSandbox } from '@/lib/plugin-system/sandbox';
+import { getContext } from '@/lib/sillytavern/getContext';
 import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,10 @@ const LOBBY_SRC = fs.readFileSync(
 );
 const SHARED_SRC = fs.readFileSync(
   path.resolve(__dirname, '..', 'slash-commands-compat.ts'),
+  'utf-8',
+);
+const GETCONTEXT_SRC = fs.readFileSync(
+  path.resolve(__dirname, '..', 'getContext.ts'),
   'utf-8',
 );
 
@@ -398,5 +403,55 @@ describe('D. 源码层守卫', () => {
     const oldSample = `const m = cmd.match(/^\\/checkpoint-go\\s+(\\d+)/);`;
     expect(oldSample).toContain('/checkpoint-go\\s+(\\d+)');
     expect(stripComments(LOBBY_SRC)).not.toContain('/checkpoint-go\\s+(\\d+)');
+  });
+
+  it('getContext 轨 triggerSlash 也前置了共享实现（S5-GDEP2 第三轨）', () => {
+    const code = stripComments(GETCONTEXT_SRC);
+    expect(code).toContain("import { runPalinkSlashCommands } from './slash-commands-compat'");
+    expect(
+      /triggerSlash:[\s\S]{0,900}?runPalinkSlashCommands\(args\[0\]\)/.test(code),
+      'getContext 轨 triggerSlash 未前置共享实现（S5 后沙箱插件经 getContext() 会静默落到未知命令）',
+    ).toBe(true);
+    expect(code).toContain('if (palinkResult !== null) return palinkResult');
+    expect(/\bwindow\s*\??\.\s*triggerSlash\b/.test(code), 'getContext 轨不得读 window 桥').toBe(false);
+    // 防假绿：旧的"只走引擎"写法必须过不了上面那条正则
+    const oldSample = 'triggerSlash: async (...args: any[]) => executeSlashCommandCompat(args[0]),';
+    expect(/triggerSlash:[\s\S]{0,900}?runPalinkSlashCommands\(args\[0\]\)/.test(oldSample)).toBe(false);
+  });
+});
+
+describe('E. getContext 轨（沙箱插件 getContext() 的兜底来源）行为', () => {
+  it('getContext().triggerSlash("/getchatname") 返回真实文件名（不是未知命令降级）', async () => {
+    const ctx = getContext() as any;
+    await expect(ctx.triggerSlash('/getchatname')).resolves.toBe(
+      `palink-session-${SANDBOX_SID}.jsonl`,
+    );
+  });
+
+  it('getContext().triggerSlash("/chat-fork") 真的打到分支 API', async () => {
+    const ctx = getContext() as any;
+    await ctx.triggerSlash('/chat-fork');
+    expect(lastCall('/branches').body).toEqual({ session_id: SANDBOX_SID, same_level: true });
+  });
+
+  it('getContext 轨不读 window 桥（哨兵不出现）', async () => {
+    const ctx = getContext() as any;
+    const out = await ctx.triggerSlash('/getchatname');
+    expect(String(out)).not.toContain('BRIDGE');
+  });
+
+  it('getContext 轨未命中时仍落 SlashCommandEngine（原行为未被前置层吃掉）', async () => {
+    const { SlashCommandEngine } = await import('@/lib/slash-engine');
+    SlashCommandEngine.register({
+      name: '__gdep2_ctx_echo',
+      description: 'S5-GDEP2 getContext 轨测试命令',
+      callback: (_named: Record<string, string>, unnamed: string[]) => `ctx-engine:${unnamed[0] ?? ''}`,
+    });
+    try {
+      const ctx = getContext() as any;
+      await expect(ctx.triggerSlash('/__gdep2_ctx_echo tail')).resolves.toBe('ctx-engine:tail');
+    } finally {
+      SlashCommandEngine.unregister('__gdep2_ctx_echo');
+    }
   });
 });
