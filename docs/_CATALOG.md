@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-15 18:35**　｜　扫描到 **337** 份 markdown
+> **生成时间：2026-10-16 00:37**　｜　扫描到 **338** 份 markdown
 
 ---
 
@@ -33,7 +33,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | 前缀 | 顶层 | 全仓 | 含义 |
 |---|---|---|---|
 | `SPEC_` | 34 | 50 | 施工规格书 —— 动手前读 |
-| `REPORT_` | 17 | 73 | 排查/审计结论 |
+| `REPORT_` | 17 | 74 | 排查/审计结论 |
 | `DIAG_` | 0 | 1 | 诊断报告 |
 | `PROMPT_` | 7 | 9 | 交给 agent 的提示词 |
 | `HANDOFF_` | 2 | 39 | 交接书 |
@@ -51,8 +51,8 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 
 ## 二、首部状态标记覆盖情况
 
-- 有标记：**82 / 337**
-- 无标记：**255** —— ⚠️ 这不代表有效，只代表首部没写状态
+- 有标记：**82 / 338**
+- 无标记：**256** —— ⚠️ 这不代表有效，只代表首部没写状态
 
 ⚠️ **文件名日期与内容日期不同月的有 10 份**（下表 ⚠️ 列标出）。归档按**内容**日期，不信文件名：
 
@@ -74,7 +74,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | 层 | 目录 | 份数 | 说明 |
 |---|---|---|---|
 | 1 活 | `docs/` 顶层 | 126 | docs/ 顶层（有入链的活文档，按纪律不能直接搬） |
-| 1 活 | `docs/_active/` | 83 | **新文档放这里**（`spec/` `report/` `prompt/`） |
+| 1 活 | `docs/_active/` | 84 | **新文档放这里**（`spec/` `report/` `prompt/`） |
 | 3 参考 | `docs/_reference/` | 8 | 长期有效配置指南，不过期 |
 | 4 归档 | `docs/_archive/YYYY-MM/` | 53 | 已完工过保鲜期，按**内容**日期分月 |
 
@@ -95,7 +95,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 
 ## 四、⚠️ git 入库状态
 
-- 已被 git 跟踪：**334**
+- 已被 git 跟踪：**335**
 - **未入库（只存在本机）：3**
 
 > ⚠️ 这 3 份**只存在这台机器上**。整理/移动时一旦弄丢且没提交，就是真没了。移动任何文档前先确认它已被 git 跟踪，或先做物理备份。
@@ -260,7 +260,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`](./_active/HANDOFF_提示词_沙箱轨解耦_2026-10-15.md) | `HANDOFF_` | 2026-10 | 2026-10-01 | 已完成 | 2026-10-15 |
 | [`_README.md`](./_active/_README.md) | `其他` | — | 2026-10-01 | — | 2026-10-05 |
 
-### `docs/_active/report/` — 49 份
+### `docs/_active/report/` — 50 份
 
 | 文件 | 前缀 | 文件名日期 | 内容首现 | 状态标记 | mtime |
 |---|---|---|---|---|---|
@@ -276,6 +276,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`REPORT_s3-acceptance-gap_2026-10-14.md`](./_active/report/REPORT_s3-acceptance-gap_2026-10-14.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-14 |
 | [`REPORT_s3-merge_2026-10-14.md`](./_active/report/REPORT_s3-merge_2026-10-14.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-14 |
 | [`REPORT_s4-split_2026-10-15.md`](./_active/report/REPORT_s4-split_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
+| [`REPORT_s5-arch-e2e_2026-10-15.md`](./_active/report/REPORT_s5-arch-e2e_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-16 |
 | [`REPORT_s5-delete-lobby_2026-10-15.md`](./_active/report/REPORT_s5-delete-lobby_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
 | [`REPORT_sandbox-dep_2026-10-15.md`](./_active/report/REPORT_sandbox-dep_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
 | [`REPORT_slash-sink_2026-10-15.md`](./_active/report/REPORT_slash-sink_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
