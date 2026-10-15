@@ -25,7 +25,6 @@ import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 import { RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
-import { emitClassicPluginEvent } from '@/utils/sillyTavernPluginRuntime';
 
 interface CharacterViewProps {
   token: string;
@@ -1639,10 +1638,6 @@ export function CharacterView({
       // 后端已完成分支切换（checkpoint-go/branch-create），前端刷新消息与分支树即可
       await loadMessages(selectedSession.id).catch(() => undefined);
       loadBranches(selectedSession.id).catch(() => undefined);
-      // [N8-d 联动] 经典轨插件（Galgame 界面插件等）监听 tavern_events.CHAT_CHANGED
-      // 重建自身 UI——故事线侧栏 / 插件读档任意一侧切换分支，另一侧都能跟随刷新。
-      // 消息重载完成后再广播，避免插件读到半新半旧的 context.chat。
-      emitClassicPluginEvent('chat_id_changed', selectedSession.id);
     };
     const onChatMessagesUpdated = () => {
       if (selectedSession) {

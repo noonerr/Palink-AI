@@ -32,21 +32,10 @@ import {
   handleSmartCardCompatRequest,
   type SmartCardCompatControllerState,
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
-// 卡内 tavern_helper 脚本执行器（用户决策 2026-09-30：允许卡片执行自带脚本并从 CDN 拉库）
-import {
-  ensureCardScriptBridge,
-  removeCardTavernHelperScripts,
-  runCardTavernHelperScripts,
-  isCardScriptLegacyFallbackOn,
-} from '@/lib/sillytavern/card-script-runner';
 // 插件侧角色身份派生（2026-10-02 P1：名字哈希 → UUID 派生）
 import { pluginCharacterIdFromUuid } from '@/lib/sillytavern/plugin-character-id';
 // 卡脚本存档的服务端写穿同步（P2）；失败静默降级为纯本地
 import { installCardScriptStorageSync } from '@/lib/sillytavern/card-script-storage-sync';
-// 卡脚本依赖的第三方全局（z/Vue/lodash/YAML/showdown）。上游 JS-Slash-Runner 会白送，
-// Palink 此前零提供 → 卡内 mvu_zod.js 报 `z is not defined`、MVVarUpdate 报
-// `Vue is not defined`，变量系统整体失效（2026-10-03 真机复现）。
-import { ensureStThirdPartyGlobals } from '@/lib/sillytavern/st-third-party-globals';
 import { ErrorToast, ErrorToastPortalContainer } from '@/components/ui/custom/ErrorToast';
 import { StageIndicator } from '@/components/ui/custom/StageIndicator';
 // 重构后提取的子组件
@@ -72,10 +61,6 @@ import type { RegexScript } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { extractReasoningTags } from '@/lib/sillytavern/formatting';
-import {
-  SillyTavernPluginRuntime,
-  isMainPageStPluginInjectionEnabled,
-} from '@/utils/sillyTavernPluginRuntime';
 import { promptInjection, setActivePromptCharacter, getActivePromptCharacter } from '@/services/prompt-injection';
 import { PluginManager } from '@/components/roleplay/PluginManager';
 import { StPluginSettingsDrawer } from '@/components/st-plugin-ui-host/StPluginSettingsDrawer';
@@ -387,9 +372,6 @@ export function CharacterChat(props: CharacterChatProps) {
   const [sessionVariables, setSessionVariables] = useState<{ stat_data?: Record<string, unknown> } | undefined>(undefined);
   // [PERF-2026-10-07 问题3] 主来源改为父级 props（CharacterView 从 messages 响应里承接，
   // 零额外请求）；生成流结束后的 mvuVariablesUpdated 事件仍是覆盖源。见下方同步 effect。
-  // 卡内脚本桥接用：注入 effect 只在切卡时重跑，变量必须走 ref 读最新值，否则脚本读到旧 stat_data
-  const sessionVariablesRef = useRef(sessionVariables);
-  sessionVariablesRef.current = sessionVariables;
 
   // 生成流的 final_content 事件会携带后端刚保存的 MVU variables；直接写入页面状态，
   // 不等待生成状态 effect 或再次 GET，确保 iframe context-update 立即收到最新 stat_data。
@@ -412,10 +394,6 @@ export function CharacterChat(props: CharacterChatProps) {
   const prevMessagesRef = useRef<CharacterChatMessage[]>([]);
   const [globalRegexScripts, setGlobalRegexScripts] = useState<RegexScript[]>(() => getCachedGlobalRegexScripts());
   const userPausedAutoScrollRef = useRef(false);
-  const stRuntimeRef = useRef<SillyTavernPluginRuntime | null>(null);
-  if (!stRuntimeRef.current) {
-    stRuntimeRef.current = new SillyTavernPluginRuntime();
-  }
 
   useEffect(() => {
     const darkObserver = new MutationObserver(() => {
@@ -851,9 +829,6 @@ export function CharacterChat(props: CharacterChatProps) {
     setInputValue('');
     setAttachments([]);
     await handleSendMessage(processedInput, attachments);
-    stRuntimeRef.current?.emit('MESSAGE_SENT', {
-      message: { name: user.username, mes: processedInput, is_user: true },
-    });
     try {
       getGlobalSillyTavernRuntime()?.getEventSource().emit('message_sent', displayedMessages.length - 1, { name: user.username, mes: processedInput, is_user: true });
     } catch {}
@@ -863,9 +838,6 @@ export function CharacterChat(props: CharacterChatProps) {
     isAtBottomRef.current = true;
     activePausedAutoScrollRef.current = false;
     await handleSendMessage(msg, attachments);
-    stRuntimeRef.current?.emit('MESSAGE_SENT', {
-      message: { name: user.username, mes: msg, is_user: true },
-    });
     try {
       getGlobalSillyTavernRuntime()?.getEventSource().emit('message_sent', displayedMessages.length - 1, { name: user.username, mes: msg, is_user: true });
     } catch {}
@@ -1604,45 +1576,6 @@ export function CharacterChat(props: CharacterChatProps) {
     prevPromptCharacterIdRef.current = nextId;
   }, [selectedCharacter?.id]);
 
-  useEffect(() => {
-    // 插件 runtime 注入到容器（保留 ST 逆向接口）
-    // [PLUGIN-ON-DEMAND] 依赖角色 ID：切换角色卡时按新角色重新拉取配置并注入 ——
-    // 后端按卡过滤的结果即时生效，无需刷新页面。
-    // [PLUGIN-ON-DEMAND L1] 传 diffOnly：容器还是同一个 palink-st-plugin-host，
-    // 于是 runtime 内部走**差集装卸** —— 只卸掉这张卡不用的插件、只注入新出现的插件，
-    // 两张卡共用的插件 DOM 节点原样保留（无闪烁、面板状态不丢）。
-    // 幂等由 runtime 保证：非差集场景（容器变了/首次注入）内部仍走 unloadAll 全量重装。
-    const runtime = stRuntimeRef.current;
-    if (!runtime) return;
-    // 竞态保护：快速连续切卡时，丢弃已过期那次请求的结果。
-    let cancelled = false;
-    runtime.loadRuntimeConfig(selectedCharacter?.id).then(() => {
-      if (cancelled) return;
-      if (!isMainPageStPluginInjectionEnabled()) {
-        runtime.unloadAll();
-        return;
-      }
-      // 注入到独立容器（body 下，不在 React 树中）：避免插件 <script>/<style>
-      // 被附加到 React 管理的 .roleplay-container，导致 React 重新渲染时
-      // DOM 不一致触发 NotFoundError: insertBefore/removeChild。
-      // 插件脚本通过 jQuery 在整个 document 上查询，不受容器位置影响。
-      let pluginHost = document.getElementById('palink-st-plugin-host');
-      if (!pluginHost) {
-        pluginHost = document.createElement('div');
-        pluginHost.id = 'palink-st-plugin-host';
-        pluginHost.style.display = 'none';
-        document.body.appendChild(pluginHost);
-      }
-      runtime.injectIntoContainer(pluginHost, { diffOnly: true, legacyScriptExecution: true });
-    }).catch((err) => {
-      console.error('Failed to load SillyTavern plugin runtime config:', err);
-    });
-    // cleanup 只负责作废过期的拉取结果，**不卸载插件** —— 见上方注释。
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedCharacter?.id]);
-
   // [PLUGIN-STORAGE] 挂上服务端写穿同步 + 进入角色页时拉一次（P2）。
   // 必须在卡脚本执行之前装载：先 hydrate 再让脚本读写，脚本才不会用空气 positions
   // 跑完一轮、随后又被服务端的值覆盖掉（覆盖发生在卡脚本挂载 UI 之后 = 图鉴位置跳变）。
@@ -1651,83 +1584,6 @@ export function CharacterChat(props: CharacterChatProps) {
     if (!characterId) return;
     return installCardScriptStorageSync(characterId);
   }, [selectedCharacter?.id]);
-
-  // [CARD-SCRIPT] 执行卡自带 tavern_helper 脚本（CG 图库悬浮按钮、图鉴、状态栏特效等）。
-  // 必须在插件 runtime 注入之后跑：脚本依赖 setup 挂上来的 getChatMessages /
-  // window.__palinkChatMessages。失败按条隔离，一条坏脚本不得拖垮其余（当天事故教训）。
-  // 止血：localStorage.palink_card_tavern_helper_scripts = '0' 后刷新，整体不执行。
-  //
-  // [ST-GLOBALS 2026-10-03] 先 await 第三方全局（z/Vue/lodash/YAML/showdown）再注入脚本：
-  // 卡脚本是「注入即执行 + 按 id 幂等去重」，晚到的全局不会让已跑过的脚本重跑，
-  // 所以顺序不能反。ensureStThirdPartyGlobals 自带超时（8s）且不抛，CDN 挂掉时
-  // 退回今天的行为，不会把聊天页卡住。
-  useEffect(() => {
-    const ext = compatCharacterExtensions || (selectedCharacter as any)?.extensions;
-    if (!ext) return;
-    if (!isCardScriptLegacyFallbackOn()) return;
-    let cancelled = false;
-
-    const run = async () => {
-      await ensureStThirdPartyGlobals();
-      if (cancelled) return;
-
-      // 复用插件容器（display:none）：卡脚本自己会把悬浮按钮挂到 document.body
-      let host = document.getElementById('palink-st-plugin-host');
-      if (!host) {
-        host = document.createElement('div');
-        host.id = 'palink-st-plugin-host';
-        host.style.display = 'none';
-        document.body.appendChild(host);
-      }
-      ensureCardScriptBridge({
-        getVariables: () => (sessionVariablesRef.current as Record<string, unknown>) || {},
-        getCurrentMessageId: () => {
-          const msgs = (window as any).__palinkChatMessages;
-          return Array.isArray(msgs) && msgs.length > 0 ? msgs.length - 1 : -1;
-        },
-      });
-      // 传 UUID 给执行器：卡脚本里的 localStorage / sessionStorage 会被改写为按这张卡
-      // 隔离的视图（P0）。拿不到 id 时执行器会保持原文不动 —— 隔离失效，但不会引入改写风险。
-      const res = runCardTavernHelperScripts(ext, host, { characterId: selectedCharacter?.id });
-      if (res.failed.length > 0) {
-        console.warn('[card-script] 卡内脚本有失败项（已隔离，不影响其余）:', res.failed);
-      }
-      if (res.ran.length > 0) {
-        console.warn('[card-script] 已执行卡内脚本 ' + res.ran.length + ' 条');
-      }
-    };
-
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedCharacter?.id, compatCharacterExtensions]);
-
-  useEffect(() => {
-    // 离开聊天页才真正清空插件 [PLUGIN-ON-DEMAND L1]
-    const runtime = stRuntimeRef.current;
-    return () => {
-      runtime?.unloadAll();
-      // 卡内脚本同批清理：既摘脚本节点，也摘它在 body 上创建的悬浮按钮/弹窗，
-      // 否则切到别的页面会飘着一个不属于该页的卡片 UI。
-      const host = document.getElementById('palink-st-plugin-host');
-      if (host) removeCardTavernHelperScripts(host);
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleSettingsUpdated = () => {
-      if (!isMainPageStPluginInjectionEnabled()) {
-        stRuntimeRef.current?.unloadAll();
-        return;
-      }
-      stRuntimeRef.current?.reload({
-        legacyScriptExecution: true,
-      });
-    };
-    window.addEventListener('userSettingsUpdated', handleSettingsUpdated);
-    return () => window.removeEventListener('userSettingsUpdated', handleSettingsUpdated);
-  }, []);
 
   useEffect(() => {
     const stContext = {
@@ -1769,8 +1625,6 @@ export function CharacterChat(props: CharacterChatProps) {
       })) as StChatMessage[],
       chatId: selectedSession?.id || '',
     };
-
-    stRuntimeRef.current?.setContext(stContext);
 
     const globalRuntime = getGlobalSillyTavernRuntime();
     if (globalRuntime) {
@@ -1847,29 +1701,12 @@ export function CharacterChat(props: CharacterChatProps) {
           globalRegexScripts,
           isMarkdown: true,
         });
-        stRuntimeRef.current?.emit('MESSAGE_RECEIVED', {
-          message: {
-            name: selectedCharacter.name,
-            mes: processed || '',
-            is_user: false,
-          },
-        });
         try {
           getGlobalSillyTavernRuntime()?.emitMessageReceived(displayedMessages.length - 1);
         } catch {}
       }
     }
   }, [isGenerating, displayedMessages, selectedCharacter.name, user.username, selectedCharacter.avatar, compatCharacterExtensions, compatCharacterPresetData, globalRegexScripts]);
-
-  const prevSessionIdRef = useRef<string | null>(selectedSession?.id || null);
-  useEffect(() => {
-    const prev = prevSessionIdRef.current;
-    const current = selectedSession?.id || null;
-    prevSessionIdRef.current = current;
-    if (prev !== current && current) {
-      stRuntimeRef.current?.emit('CHAT_CHANGED', { chatId: current });
-    }
-  }, [selectedSession?.id]);
 
   // handleSessionSwitchWithFade / handleNewSessionWithFade 已从 useSessionSwitchAnimation 提取
 
