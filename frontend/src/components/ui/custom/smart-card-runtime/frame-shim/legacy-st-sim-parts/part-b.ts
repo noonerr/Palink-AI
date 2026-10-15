@@ -274,12 +274,10 @@ export const LEGACY_ST_SIM_SEGMENT_PART_B = `    const content = String(message?
     readExtensionField: window.readExtensionField,
     chat_metadata: window.chat_metadata || {},
     chatMetadata: window.chat_metadata || {},
-    // 防御性补全：避免覆盖 sillyTavernPluginRuntime 已设置好的 stat_data。
-    // 优先 ctx，回退到 runtime 已存的 context，再回退空对象。
-    stat_data:
-      ctx?.stat_data ||
-      window.__palinkStRuntime?.context?.stat_data ||
-      {},
+    // [S5 2026-10-15] 原兜底读主页面大堂轨实例挂在 window 私有键上的 context.stat_data。
+    // 该大堂轨（utils/sillyTavernPluginRuntime.ts）已整体删除，且该实例从未在 iframe 域
+    // 被赋值 ⇒ 该兜底恒为 undefined（死表达式），删除后运行时零变化。
+    stat_data: ctx?.stat_data || {},
     messageFormatting: window.messageFormatting,
     messageFormatter: window.messageFormatter,
     MessageFormatter: window.MessageFormatter,
