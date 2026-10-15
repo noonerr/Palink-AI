@@ -159,4 +159,14 @@ passed 差值恰好等于新增用例数、skipped 不变 ⇒ 纯增量，无回
 | `backend/tests/test_st_extras_proxy.py` | 新增，17 例 |
 | 本文件 | 新增 |
 
-**未 merge**，保留在 `be-extras` 分支 / worktree `D:\项目\_palink-wt\be-extras`。
+**未 merge**，保留在 `be-extras` 分支 / worktree `D:\项目\_palink-wt\be-extras`（工作区干净）：
+
+| commit | 内容 |
+|---|---|
+| `69a472b` | 4 条路由 + 17 例测试 + 本报告 |
+| `c36fc37` | 刷新 `_CATALOG.md` |
+
+> ⚠️ **目录脚本的一个顺序坑**：`gen_docs_catalog.py` 的输出含 `tracked=` 计数（来自 `git ls-files`）。
+> 新报告**提交入库后**该计数 323 → 324，目录随即"过期"，`--check` 会失败。
+> ⇒ 正确顺序是**先提交新文档、再重新生成目录**；只在本分支内生成不提交、或先生成后提交，都会留下一个过期的目录。
+> 当前 `py scripts/docs/gen_docs_catalog.py --check` → `OK 324 docs, catalog up to date`（rc=0）。
