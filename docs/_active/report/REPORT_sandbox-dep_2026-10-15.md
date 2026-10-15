@@ -200,7 +200,7 @@ npx vitest run src/lib/sillytavern/__tests__/getcontext-parity.test.ts \
 | **L1** | `setChatMessages` **未落库** | 只写内存态（`runtime.context.chat` + `messageManager`），已 `recordStubHit` 登记。原大堂桥会 `POST /api/chats/save` | 若 COT 格式化 swipe 的持久化在 S5 后仍需保留，应把大堂 `saveChatMessages`（`sillyTavernPluginRuntime.ts:549-610`，含 `fetchSessionMessages` + 按 `mesid` 定位 + `slice(1)` 语义）整体下沉；**不宜由本分支顺手引入新的后端写路径**（形状不一致会污染聊天数据，且无真机验证窗口）。**待主控确认** |
 | **L2** | 大堂 `runSlashCommand` 的**前置命令段**未下沉 | `/branch-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、`/model`、`/profile`、`/preset`、`/profile-list`（`sillyTavernPluginRuntime.ts:646-707`）依赖大堂私有的 `palinkBridge.resolveMessageAnchor` 与 `this.context`。S5 删大堂后这些命令在沙箱轨**会丢失** | 任务单只授权下沉 `:709-710`。若要保 S5 后可用，需另立议题把这 8 条命令 + `resolveMessageAnchor` 下沉（工作量约 70 行 + 1 个 API 依赖） |
 | **L3** | 大堂 `:711` 的 `String(result)` 缺陷 | 见 §4.2，本次有意不复制 | 无需动作；S5 删大堂后自然消失。仅作登记 |
-| **L4** | worktree 的 `docs/_CATALOG.md` | worktree 不 checkout 被 .gitignore 的文件（`docs/_archive/2026-10/COMMIT_MESSAGE.md`、`DELIVERY_PACKAGE.md`），而 `gen_docs_catalog.py` 扫文件系统 ⇒ 分支侧目录天然少 2 份 | **并入主工作区后必须重跑** `py scripts/docs/gen_docs_catalog.py` 再 `--check`，勿沿用分支产物（见 MEMORY.md 同日条目） |
+| **L4** | 🔴 worktree 的 `docs/_CATALOG.md` **与主工作区不同步** | 实测（2026-10-15 12:05）：worktree 扫到 **325** 份 md（生成于 12:04），主工作区扫到 **330** 份（生成于 11:54）。差异原因有二：① worktree 不 checkout 被 .gitignore 的文件（`docs/_archive/2026-10/COMMIT_MESSAGE.md`、`DELIVERY_PACKAGE.md`）；② **主工作区另有 4 份「已入库但晚于 9b24724」的在途文档**（`REFERENCE_ST上游锚定`、`HANDOFF_S5提示词订正`、`HANDOFF_提示词_S4拆单间`、`HANDOFF_提示词_沙箱轨解耦`，均由并行 agent 在本会话期间提交）。本分支的 `_CATALOG.md` 是 **325 份版本**，主工作区是 **330 份版本** ⇒ **直接 merge 会把目录回退** | **并入主工作区后必须重跑** `py scripts/docs/gen_docs_catalog.py` 再 `--check`，**勿沿用分支产物**（见 MEMORY.md 同日条目）。建议主控在合并时对 `docs/_CATALOG.md` 一律取「重跑」而非「取分支版」 |
 
 ---
 
@@ -213,4 +213,27 @@ npx vitest run src/lib/sillytavern/__tests__/getcontext-parity.test.ts \
   - `frontend/src/lib/plugin-system/sandbox.ts`
   - `frontend/src/lib/sillytavern/__tests__/sandbox-dep-decouple.test.ts`（新增）
   - `docs/_active/report/REPORT_sandbox-dep_2026-10-15.md`（本文件）
-  - `docs/_CATALOG.md`（重跑目录脚本产生）
+  - `docs/_CATALOG.md`（重跑目录脚本产生，**325 份版本；合并时以重跑结果为准**，见 §七 L4）
+
+---
+
+## 九、与主控交接书的一致性核对
+
+主工作区存在本任务的权威交接书 `docs/_active/HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`
+（注意：该文件**晚于** 9b24724 入库，故不在本 worktree 内；已单独读取核对）。逐条对账：
+
+| 交接书「主控验收标准」 | 本次交付 |
+|---|---|
+| 1. 三个 API 不再依赖 window 桥（判据：grep 实现，数据源来自本轨原生源或共享函数） | ✅ §三；并有 §五 源码层守卫测试钉住 |
+| 2. 两条红线测试全绿，no-op 预算未放宽 | ✅ 145/145，`PALINK_ALLOWED_NO_OPS` 仍 19/20，未增删 |
+| 3. 门禁 `failed = 0` + `tsc --noEmit` = 0 | ✅ 1012 passed / 0 failed；tsc 0 错误 |
+| 4. 报告含「改坏会红 / 还原回绿」两组变异证明 | ✅ §5.3 |
+| 5. `setChatMessages` 降级必须明确登记（不能静默） | ✅ §4.3 + `recordStubHit` + 测试钉住 |
+| 6. 完工不 merge，留 `sandbox-dep` | ✅ 未 merge、未 push |
+
+另：交接书要求「node_modules 用目录联接共享（mklink /J）」—— 本机 `cmd` 被沙箱拦截，
+改用等价的 PowerShell `New-Item -ItemType Junction`，效果一致（已实测 `vitest`/`tsc` 可跑）。
+
+⚠️ **基线漂移提示**：本会话期间主工作区 HEAD 已由 `9b24724` 前进到 `1856d77`
+（并行 agent 提交了 S4/S5 系列交接文档）。本分支**仍基于 `9b24724`**（与交接书前置一致）。
+合并时若遇 `docs/_CATALOG.md` / `docs/_active/` 冲突，按 §七 L4 处置。
