@@ -161,6 +161,19 @@ if should_run docs; then
   # 修法与上面 backend 段同源：复用已探测出的 "$PY"，并用 bash -c 承载（$PY 含空格，
   # 直接 "$PY" 会被当成一个带空格的命令名）。
   run_stage "文档目录一致性" docs bash -c 'cd "'"$ROOT"'" && '"$PY"' scripts/docs/gen_docs_catalog.py --check'
+
+  # [2026-10-15 新增] docs 里 390+ 处 `上游文件:行号` 引用的可复核性校验。
+  # 这些引用支撑过世界书 position 偏移 1、{{jailbreak}} 宏缺失等 P0 修复，是本项目
+  # ST 兼容准确性的实际来源；校验器会确认它们指向的上游文件与行号仍然成立。
+  # ⚠️ 它依赖 `_reference/sillytavern-1.18.0/`，而该目录**不入库**（.gitignore，机器本地）。
+  #    所以缺失时**跳过而不是失败** —— 否则门禁会因环境原因恒红，
+  #    与上面「恒红的门禁等于没有门禁」这条教训直接冲突。缺失只提示怎么锚定。
+  if [ -d "$ROOT/_reference/sillytavern-1.18.0" ]; then
+    run_stage "ST 上游引用可复核" citations bash -c 'cd "'"$ROOT"'" && '"$PY"' scripts/check_st_citations.py'
+  else
+    echo "  ⏭️  跳过「ST 上游引用可复核」：_reference/sillytavern-1.18.0 不存在。"
+    echo "      该目录不入库（换机器即失效），锚定方法见 docs/REFERENCE_ST上游锚定_2026-10-15.md"
+  fi
 fi
 
 echo ""

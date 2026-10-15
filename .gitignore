@@ -315,3 +315,17 @@ _BACKUPS/**
 !_BACKUPS/*/
 !_BACKUPS/_INDEX.md
 !_BACKUPS/*/BACKUP_INFO.md
+
+# ── 上游源码参考副本（2026-10-15 立）──────────────────────────────────────────
+# 为什么立这条：docs/ 里有 390+ 处 `上游文件:行号` 形式的引用（如 world-info.js:855-864），
+#   它们直接支撑过世界书 position 偏移 1、{{jailbreak}} 宏缺失等 P0 修复 —— 是本项目
+#   ST 兼容准确性的实际来源。但审计报告所依据的 SillyTavern-1.18.0/ 副本已从项目里消失，
+#   导致这批引用**在项目内无法复核**：换台机器、换个人，引用就成了无法验证的一句话。
+# 锚定对象：ST 1.18.0（= 本项目对齐的版本），裁剪掉 webfonts/img/sounds/tokenizers/content
+#   等纯资源目录后 17M / 544 文件，只保留可被引用的源码。
+# 纪律：该目录是**只读参考**，不入库、不进镜像、不进构建。
+#   换机器按 docs/REFERENCE_ST上游锚定_2026-10-15.md 重新锚定，
+#   再用 `py scripts/check_st_citations.py` 校验引用是否仍然成立（failed 必须为 0）。
+# 注：锚定说明（docs/）与校验脚本（scripts/check_st_citations.py）本身**入库**，
+#   只有源码副本排除 —— 与 _BACKUPS/ 的"台账入库、大产物排除"同一口径。
+_reference/
