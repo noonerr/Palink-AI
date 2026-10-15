@@ -19,14 +19,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { handleSmartCardCompatRequest } from '../SmartCardCompatController';
 import { LEGACY_ST_SIM_SEGMENT } from '../frame-shim/legacy-st-sim';
+// [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，改为读拼接后的源码文本。
+import { COMPAT_V2_RUNTIME_SOURCE as runtimeSource } from './compat-v2-runtime-source';
 
 // vitest 固定以 frontend/ 为 cwd 运行
 const rendererSource = readFileSync(
   join(process.cwd(), 'src/components/ui/custom/CharacterCardRenderer.tsx'),
-  'utf8',
-);
-const runtimeSource = readFileSync(
-  join(process.cwd(), 'src/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime.ts'),
   'utf8',
 );
 const chatSource = readFileSync(
