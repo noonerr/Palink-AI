@@ -19,6 +19,9 @@ import {
   executeSlashCommandCompat,
   applyStChatMessages,
 } from '../sillytavern/getContext';
+// [S5-GDEP2 2026-10-15] Palink 专有 slash 命令（7 分支 / 9 命令名）的共享实现，
+// 原先只在大堂轨 runSlashCommand 内；S5 删大堂后由本轨承接（不读 window 桥）。
+import { runPalinkSlashCommands } from '../sillytavern/slash-commands-compat';
 // N1 修复（批次 F）: messageFormatting 接真实格式化管线所需
 import { formatMessage } from '../sillytavern/formatting';
 import { regex_placement } from '../sillytavern/regex/engine';
@@ -3590,7 +3593,20 @@ export class PluginSandbox {
       // [S5-GDEP1 2026-10-15] **不再**桥接 window.triggerSlash（大堂轨 __palinkBridge
       // .runSlashCommand，S5 删大堂后消失），改调 getContext.ts 的共享实现
       // executeSlashCommandCompat（SlashCommandEngine.execute，与 getContext 轨同源）。
-      triggerSlash: async (_command: string) => executeSlashCommandCompat(_command),
+      // [S5-GDEP2 2026-10-15] 再前置一层 Palink 专有命令段：/branch-create、
+      // /checkpoint-create、/checkpoint-go、/chat-fork、/getchatname、/model、/profile、
+      // /preset、/profile-list（7 分支 / 9 命令名）此前只存在于大堂轨 runSlashCommand 内，
+      // S5 删大堂后沙箱轨会整体失去它们。改为调共享实现
+      // lib/sillytavern/slash-commands-compat.ts 的 runPalinkSlashCommands：
+      // 命中则直接返回其结果（string，含空串），未命中（null）才落 SlashCommandEngine。
+      // 不注入 deps ⇒ 会话与楼层锚点由该模块经全局 ST runtime 自行解析，
+      // 本轨因此**不依赖**大堂注入的 window.__palinkBridge（见 __tests__/slash-commands-sink.test.ts
+      // 的 window 哨兵反证）。
+      triggerSlash: async (_command: string) => {
+        const palinkResult = await runPalinkSlashCommands(_command);
+        if (palinkResult !== null) return palinkResult;
+        return executeSlashCommandCompat(_command);
+      },
       // generateRaw: 生成请求（K-5 修复：桥接到真实实现，非空 stub）
       // ST 插件经 `var generateRaw = __sandbox.generateRaw`（buildWrappedCode 注入）
       // 拿到此函数，memory/vectors/expressions 以 ST 单对象签名调用

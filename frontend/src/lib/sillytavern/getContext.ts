@@ -21,6 +21,7 @@ import { eventBus, emitEvent } from '@/lib/event-bus';
 import { groupChatManager } from '@/lib/group-chat/manager';
 import { pluginManager } from '@/lib/plugin-system/manager';
 import { substituteParamsExtended } from './macros';
+import { runPalinkSlashCommands } from './slash-commands-compat';
 import {
   globalExtensionSettings,
   getExtensionSettingsNs,
@@ -2505,7 +2506,19 @@ export function getContext(): StGetContext {
     // :1479 / :1087；本处旧注释写的 "runtime.ts:731-881" 是陈旧坐标，已订正），
     // 大堂轨在 S5 删除后桥即消失、三个 API 会静默降级为空值。现改为调用本文件
     // 自有的原生实现（见上方 [S5-GDEP1] 段），getContext 轨与沙箱轨共用。
-    triggerSlash: async (...args: any[]) => executeSlashCommandCompat(args[0]),
+    // [S5-GDEP2 2026-10-15] 再前置一层 Palink 专有命令段（/branch-create、
+    // /checkpoint-create、/checkpoint-go、/chat-fork、/getchatname、/model、/profile、
+    // /preset、/profile-list —— 7 分支 / 9 命令名）。此前它们只存在于大堂轨
+    // runSlashCommand 内，S5 删大堂后本轨会静默落到"未知命令"；而本轨正是沙箱插件
+    // `getContext()` 的兜底来源（sandbox.ts:3092 的 Proxy：PluginContext 无此键时
+    // 回退 buildStContext()），故必须与沙箱轨同款前置。修法同 sandbox.ts:3605：
+    // 命中即返回，未命中（null）才落引擎。不注入 deps ⇒ 会话与楼层锚点由共享模块
+    // 经全局 ST runtime 自行解析，本轨因此**不依赖**大堂注入的 window.__palinkBridge。
+    triggerSlash: async (...args: any[]) => {
+      const palinkResult = await runPalinkSlashCommands(args[0]);
+      if (palinkResult !== null) return palinkResult;
+      return executeSlashCommandCompat(args[0]);
+    },
     getChatMessages: (id?: any, opts?: any) => selectStChatMessages(chat, id, opts),
     setChatMessages: async (messages?: any, _opts?: any) =>
       applyStChatMessages(messages, { runtime }),
