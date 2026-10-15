@@ -1,26 +1,27 @@
 /*
- * [S5-GDEP2 2026-10-15] 大堂专有 slash 命令下沉守卫（7 分支 / 9 命令名）
+ * [S5-GDEP2 2026-10-15 / S5 2026-10-15 订正] Palink 专有 slash 命令下沉守卫（7 分支 / 9 命令名）
  *
  * 背景：Palink 专有的一批 slash 命令（/branch-create、/checkpoint-create、/checkpoint-go、
  * /chat-fork、/getchatname、/model、/profile、/preset、/profile-list）此前**只**存在于
  * utils/sillyTavernPluginRuntime.ts（大堂轨）的 runSlashCommand 里。S5 删除大堂轨后这批
- * 命令整体消失，而沙箱轨（lib/plugin-system/sandbox.ts 的 triggerSlash）是 S5 后插件
- * 触发 slash 命令的唯一入口 —— 于是「删大堂 = 沙箱逻辑丢失」。
+ * 命令整体消失，而沙箱轨（lib/plugin-system/sandbox.ts 的 triggerSlash）与 getContext 轨
+ * 是 S5 后插件触发 slash 命令的入口 —— 于是「删大堂 = 逻辑丢失」。
  * 本次把它们下沉为 lib/sillytavern/slash-commands-compat.ts 的 runPalinkSlashCommands，
- * 大堂轨与沙箱轨共调同一份。
+ * 两轨共调同一份。
  *
- * 本文件钉四件事：
+ * ⚠️ [S5 2026-10-15] 大堂轨（utils/sillyTavernPluginRuntime.ts）已**整体删除**，
+ *    原 C 段（大堂轨行为对照）随对照对象消失而移除；A/B/D/E 段保留并继续守卫存活链路。
+ *
+ * 本文件钉三件事：
  *   A. 逐命令行为：9 个命令名的返回值 / 请求体 / 事件派发 / recordStubHit 副作用
  *      （红线下沉只搬不改语义，所以这些断言就是「旧实现」的等价契约）。
  *   B. **window 哨兵反证**：在真实 window 上装假桥（__palinkBridge.runSlashCommand 与
  *      window.triggerSlash 都返回 "BRIDGE-*"），再调共享实现 / 沙箱 triggerSlash ——
- *      结果里一旦出现哨兵就说明还在读大堂注入的 window 桥，测试变红。
+ *      结果里一旦出现哨兵就说明还在读 window 桥，测试变红。
  *      并且走**插件真路径**（executePluginCode 里 var triggerSlash = __sandbox.triggerSlash）
- *      证明沙箱轨无需大堂注入即可拿到这批命令。
- *   C. 大堂轨行为不变：injectIntoContainer 造出真 window.__palinkBridge，其
- *      runSlashCommand 仍按旧语义工作；且仍用**自己**的 characterUuid 读楼层锚点
- *      （全局 runtime 故意喂不同 uuid ⇒ 若被共享实现的缺省解析顶替，这条会红）。
- *   D. 源码层：沙箱轨与大堂轨都接了共享实现，且共享实现自身不读 window 桥。
+ *      证明沙箱轨无需 window 注入即可拿到这批命令。
+ *   D. 源码层：沙箱轨与 getContext 轨都接了共享实现，且共享实现自身不读 window 桥。
+ *   E. getContext 轨行为（沙箱插件 getContext() 的兜底来源）。
  *
  * 运行: npx vitest run src/lib/sillytavern/__tests__/slash-commands-sink.test.ts
  */
@@ -49,15 +50,10 @@ import { generationEngine } from '@/services/generation-engine';
 import { resetCompatStubStats, getCompatStubStats } from '@/lib/plugin-system/compat-stub-registry';
 import { pluginSandbox } from '@/lib/plugin-system/sandbox';
 import { getContext } from '@/lib/sillytavern/getContext';
-import { SillyTavernPluginRuntime } from '@/utils/sillyTavernPluginRuntime';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SANDBOX_SRC = fs.readFileSync(
   path.resolve(__dirname, '..', '..', 'plugin-system', 'sandbox.ts'),
-  'utf-8',
-);
-const LOBBY_SRC = fs.readFileSync(
-  path.resolve(__dirname, '..', '..', '..', 'utils', 'sillyTavernPluginRuntime.ts'),
   'utf-8',
 );
 const SHARED_SRC = fs.readFileSync(
@@ -69,11 +65,9 @@ const GETCONTEXT_SRC = fs.readFileSync(
   'utf-8',
 );
 
-/** 沙箱轨（全局 runtime）会话；大堂轨故意用另一套，验证 deps 注入没被顶替。 */
+/** 沙箱轨（全局 runtime）会话。 */
 const SANDBOX_SID = 'sess-gdep2-sandbox';
 const SANDBOX_UUID = 'uuid-gdep2-sandbox';
-const LOBBY_SID = 'sess-gdep2-lobby';
-const LOBBY_UUID = 'uuid-gdep2-lobby';
 
 /** 后端调用流水（url + body），供断言请求体。 */
 let calls: Array<{ url: string; body: any }> = [];
@@ -82,7 +76,7 @@ let events: Array<{ type: string; detail: any }> = [];
 
 const W = window as any;
 
-/** 装上"大堂轨还活着"的 window 桥哨兵：任何读到它们的实现都会返回 BRIDGE-*。 */
+/** 装上 window 桥哨兵：任何读到它们的实现都会返回 BRIDGE-*（S5 后该桥已无人注入，哨兵只用于反证不依赖它）。 */
 function installBridgeSentinels(): void {
   W.__palinkBridge = {
     runSlashCommand: async () => 'BRIDGE-RUN',
@@ -302,76 +296,6 @@ describe('B. window 哨兵反证：不依赖大堂注入的 window 桥', () => {
   });
 });
 
-describe('C. 大堂轨行为不变（旧实现 → 新实现对照）', () => {
-  function injectLobby(): any {
-    const runtime = new SillyTavernPluginRuntime();
-    (runtime as any).config = { plugins: [] } as any;
-    runtime.setContext({
-      chatId: LOBBY_SID,
-      characterUuid: LOBBY_UUID,
-      name2: 'LobbyBot',
-    } as any);
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    runtime.injectIntoContainer(container);
-    return W.__palinkBridge;
-  }
-
-  it('window.__palinkBridge.runSlashCommand 仍在，/getchatname 返回值与旧实现一致', async () => {
-    const bridge = injectLobby();
-    expect(typeof bridge.runSlashCommand).toBe('function');
-    await expect(bridge.runSlashCommand('/getchatname')).resolves.toBe(
-      `palink-session-${LOBBY_SID}.jsonl`,
-    );
-  });
-
-  it('大堂轨仍用自己 context 的 characterUuid 解析锚点（未被共享缺省解析顶替）', async () => {
-    const bridge = injectLobby();
-    await bridge.runSlashCommand('/branch-create 3');
-    expect(lastCall('/api/chats/get').body).toEqual({
-      avatar_url: `palink-${LOBBY_UUID}.png`,
-      ch_name: 'LobbyBot',
-    });
-    expect(lastCall('/branches').body).toEqual({
-      session_id: LOBBY_SID,
-      same_level: false,
-      parent_branch_id: 'br-1',
-      parent_message_id: 33,
-    });
-  });
-
-  it('大堂轨 /model /profile-list 副作用不变（模型切换 + 降级登记）', async () => {
-    const bridge = injectLobby();
-    await expect(bridge.runSlashCommand('/model lobby-model')).resolves.toBe('Model: lobby-model');
-    expect(generationEngine._currentModel).toBe('lobby-model');
-    await expect(bridge.runSlashCommand('/profile-list')).resolves.toBe('');
-    expect(getCompatStubStats().has('slash:profile-list')).toBe(true);
-  });
-
-  it('大堂轨未命中时仍委托 SlashCommandEngine（未被前置层静默吞掉）', async () => {
-    const { SlashCommandEngine } = await import('@/lib/slash-engine');
-    let engineCalled = false;
-    SlashCommandEngine.register({
-      name: '__gdep2_lobby_echo',
-      description: 'S5-GDEP2 测试命令',
-      callback: () => { engineCalled = true; return 'lobby-engine-ok'; },
-    });
-    try {
-      const bridge = injectLobby();
-      const out = await bridge.runSlashCommand('/__gdep2_lobby_echo');
-      expect(engineCalled, '未命中的命令必须落到 SlashCommandEngine').toBe(true);
-      // 断言的是**旧实现的既有口径**：大堂桥写的是 String(result ?? '')，
-      // 而 execute 返回 CommandResult 对象 ⇒ 实产出 "[object Object]"。
-      // 该差异已在 getContext.ts [S5-GDEP1] executeSlashCommandCompat 注释里
-      // 登记为有意修正（共享/沙箱轨取 result.output），**不是**本次下沉引入的，
-      // 且红线要求不改语义 ⇒ 此处照钉旧口径。
-      expect(out).toBe('[object Object]');
-    } finally {
-      SlashCommandEngine.unregister('__gdep2_lobby_echo');
-    }
-  });
-});
-
 describe('D. 源码层守卫', () => {
   /** 剥掉注释，避免"注释里提到 window 桥"被误判成代码引用。 */
   function stripComments(src: string): string {
@@ -391,18 +315,21 @@ describe('D. 源码层守卫', () => {
     expect(/\bwindow\s*\??\.\s*triggerSlash\b/.test(code), '沙箱轨不得改回读 window 桥').toBe(false);
   });
 
-  it('大堂轨已改为调用共享实现（原 7 分支实现体已移出）', () => {
-    const code = stripComments(LOBBY_SRC);
-    expect(code).toContain('runPalinkSlashCommands(');
-    // 原实现的特征正则必须已不在大堂轨里（只剩共享实现一份）
-    expect(code).not.toContain('/checkpoint-create\\s+mesId=');
-    expect(code).not.toContain('/checkpoint-go\\s+(\\d+)');
-  });
-
-  it('守卫自身有效：正则能识别出旧的大堂内联实现（防假绿）', () => {
-    const oldSample = `const m = cmd.match(/^\\/checkpoint-go\\s+(\\d+)/);`;
+  it('[S5 2026-10-15] 大堂轨已整体删除；原 7 分支内联实现只剩共享实现一份', () => {
+    // 删码守卫：S5（宽口径）把 utils/sillyTavernPluginRuntime.ts 整个删除。
+    // 该文件若被"恢复"回来，说明 S5 的删除被回滚 —— 这条会红。
+    expect(
+      fs.existsSync(
+        path.resolve(__dirname, '..', '..', '..', 'utils', 'sillyTavernPluginRuntime.ts'),
+      ),
+      'S5 删大堂：utils/sillyTavernPluginRuntime.ts 必须已不存在',
+    ).toBe(false);
+    // 原大堂内联实现的特征正则不得出现在任何存活轨里（只剩共享实现一份）
+    expect(stripComments(SANDBOX_SRC)).not.toContain('/checkpoint-go\\s+(\\d+)');
+    expect(stripComments(GETCONTEXT_SRC)).not.toContain('/checkpoint-go\\s+(\\d+)');
+    // 防假绿：正则确实能识别出旧的大堂内联实现写法
+    const oldSample = 'const m = cmd.match(/^\\/checkpoint-go\\s+(\\d+)/);';
     expect(oldSample).toContain('/checkpoint-go\\s+(\\d+)');
-    expect(stripComments(LOBBY_SRC)).not.toContain('/checkpoint-go\\s+(\\d+)');
   });
 
   it('getContext 轨 triggerSlash 也前置了共享实现（S5-GDEP2 第三轨）', () => {
