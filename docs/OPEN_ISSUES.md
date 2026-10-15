@@ -406,12 +406,25 @@
 | 3 | `setChatMessages` 未落库（原桥会 `POST /api/chats/save`，COT 格式化 swipe 靠它持久） | **P2** | 已 `recordStubHit('setChatMessages:persist')` 登记（降级面板可见，未静默）；S5 真机后按实际影响决定是否下沉 |
 | 4 | MVU 世界书读取失败（默认态 14 次/会话；已核实非数据缺失、非 S3 回归；根因未定位） | **P2** | S5 前做一次真机诊断（第一嫌疑：iframe 内世界书内容读取 API 的名字→id 解析或内容下发） |
 | 5 | quick-reply 未通（`SettingsUi.render()` 内 iframe 侧 `Failed to fetch`） | **P2** | 与第 1 条同源（UI 落在离屏容器）⇒ 随 UI 口径一并处理 |
-| 6 | `triggerSlash` 返回值复验（大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`） | **P2** | 并入 S5 真机验收清单 |
+| 6 | ~~`triggerSlash` 返回值复验（大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`）~~ | — | ✅ **已随大堂删除而关闭**：该文件已于 S5 整文件删除（`f5c1a86`），bug 对象不存在；新共享实现本就取 `result.output` |
 
 - ✅ **2026-10-15 已关闭原表第 2 项**：「8 条大堂前置命令未下沉」已施工并合入主干（merge `6688343`，`slash-commands-compat.ts` + 三轨共调），已回填 TODOS.md「三轨并一轨」条目。
+- ✅ **S5 已于 2026-10-15 完工并待合入**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，分支 `s5-delete-lobby` 未 merge）。本表**第 3/4/5 项仍开放**，第 6 项已随大堂删除关闭；S5 新发现的两处后续项见 **[P2-10]**。
 - **背景与证据**：交接 `docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；补测报告 §7.4/§7.5；TODOS.md「三轨并一轨」条目下的同名单。
 - ⚠️ **别误判**：默认部署下 Extras 4 条新端点恒 **502**（转发目标 ST sidecar 已随 st-native 删除，`silly_tavern.py:6238` 注释明写）——这是设计使然，不是"补齐失败"。
 - **5 个测试插件**：用户 2026-10-15 拍板**保留**（复测靶子；删除路径见补测报告 §2.4）。
+
+### [P2-10] S5 删大堂后的两处后续项（2026-10-16 登记 · 非 S5 回归）
+
+- **核实时点**：2026-10-15 S5 完工后（分支 `s5-delete-lobby`，删码 `f5c1a86`，tag `s5-done`）由主控独立复核确认。
+
+| # | 项 | 档位 | 现在该做什么 |
+|---|---|---|---|
+| 1 | **单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash`** | **P2** | 已证伪为 S5 引入（单间轨产物 `palink-smart-card-runtime-1a15e6820ae7.js` 的 sha256 与文件名内容哈希一致且 S5 前后同名，本来就不含 `triggerSlash`）。若将来有插件经 iframe 的 `getContext().triggerSlash` 调用，需另立任务补；本次未动 |
+| 2 | **`setExtensionPrompt` 的行为测试随大堂专测删除后无存活轨等价覆盖** | **P2** | S5 删掉了 `plugin-runtime-extprompt-contract.test.ts`（169 行）等 4 个大堂专测，但 `setExtensionPrompt` **在存活的单间轨里仍在**（`legacy-st-sim-parts/part-b.ts:443/:750`、`runtime-body/part-06.ts:795`、`part-08.ts:174`）。目前只剩 `getcontext-parity.test.ts` 的"存在性"校验，**没有行为测试** ⇒ 建议补一条单间轨等价的行为契约测试 |
+
+- **背景**：S5 报告 `docs/_active/report/REPORT_s5-delete-lobby_2026-10-15.md` §9；删码与测试清理提交 `f5c1a86` / `fc6aa9a`。
+- ✅ S5 本体已通过主控复核（门禁 74 文件 / 960 passed / 3 skipped / 0 failed + tsc 0；后端 2060/23/0；真机入口 chunk 的大堂指纹 0 命中、存活指纹命中）。
 
 ---
 
