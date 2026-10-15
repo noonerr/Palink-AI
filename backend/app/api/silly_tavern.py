@@ -5155,6 +5155,79 @@ class STGenerateImageRequest(BaseModel):
 
 
 # ============================================================
+# Extras 转发代理：/api/summarize + /api/extra/translate + /api/translate/*
+#
+# 背景（ADAPTATION.md「后端 ST Extras 端点」一节实测）：
+#   /api/summarize 与 /api/translate 长期返回 404——本文件此前只定义了
+#   STSummarizeRequest / STGenerateImageRequest 两个 pydantic 模型，
+#   **从未注册过对应路由**，属「孤立模型」。记忆（memory）与向量（vectors）
+#   插件的 doExtrasFetch('/api/summarize')、translate 插件的
+#   fetch('/api/translate/{provider}') 因此整体失效。
+#
+# 实现策略与同批 P1-9 classify / P1-12 caption / P1-13 elevenlabs 完全同构：
+#   • 同目录：backend/app/api/silly_tavern.py，同一 router（继承 csrf_guard）
+#   • 同中间件：Depends(get_st_current_user)
+#   • 同转发器：_forward_extensions_to_st_native（透传请求体到 ST sidecar）
+#   • 同错误形状：sidecar 缺位/不可达 → 502 JSONResponse
+#     {"error": "ST native service unavailable", "detail": ...}
+#
+# 只新增路由，不改动任何现有端点语义。
+# ============================================================
+
+# ST 1.18.0 translate 扩展支持的 provider（见 st-plugins/translate/index.js 的
+# 8 个 translateProvider* 函数）。此处作为路径段白名单：既限定语义范围，
+# 也阻断 ../ 之类的路径穿越（provider 参与拼接上游 URL）。
+_ST_TRANSLATE_PROVIDERS = frozenset({
+    "onering", "libre", "google", "lingva", "deepl", "deeplx", "bing", "yandex",
+})
+
+
+@router.post("/api/summarize")
+async def st_extras_summarize(
+    request: Request,
+    user: User = Depends(get_st_current_user),
+):
+    """ST Extras 摘要：POST {text, params} → 上游 {summary}。
+
+    消费方：memory 插件 callExtrasSummarizeAPI、vectors 插件 summarizeExtra。
+    """
+    return await _forward_extensions_to_st_native(request, user, "api/summarize")
+
+
+@router.post("/api/extra/translate")
+async def st_extras_translate(
+    request: Request,
+    user: User = Depends(get_st_current_user),
+):
+    """ST Extras 翻译（/api/extra/* 族路径）。"""
+    return await _forward_extensions_to_st_native(request, user, "api/extra/translate")
+
+
+@router.post("/api/translate")
+async def st_translate(
+    request: Request,
+    user: User = Depends(get_st_current_user),
+):
+    """ST 翻译：无 provider 子路径的兜底转发。"""
+    return await _forward_extensions_to_st_native(request, user, "api/translate")
+
+
+@router.post("/api/translate/{provider}")
+async def st_translate_provider(
+    provider: str,
+    request: Request,
+    user: User = Depends(get_st_current_user),
+):
+    """ST 翻译：按 provider 子路径转发（translate 插件实际调用的形状）。"""
+    if provider not in _ST_TRANSLATE_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported translate provider: {provider}",
+        )
+    return await _forward_extensions_to_st_native(request, user, f"api/translate/{provider}")
+
+
+# ============================================================
 # Task 4.4: /api/vector/* 路由（向量记忆）
 #
 # 接入 Palink 已有的 memory_module 服务，为 ST 向量插件提供
