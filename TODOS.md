@@ -29,7 +29,14 @@
   - **沙箱轨解耦**（S5 前置）：merge `aa106eb`（`[S5-GDEP1]` 共享实现）
   - **Extras 转发**：merge `3df84cf`（`/api/summarize` + `/api/extra/translate` + `/api/translate/{provider}`；默认部署恒 502，sidecar 已随 st-native 删除）
   - **合并后门禁（主控实跑）**：前端 78 文件 / **1012 passed / 3 skipped / 0 failed** + `tsc` 0；后端 **2060 passed / 23 skipped / 0 failed**；目录 `--check` OK（332 docs）
-  - **bundle**：`_palink-s0-20261012/palink_three-tracks-merge_20261015.bundle`（7 refs，complete history）
+  - **bundle**：`_palink-s0-20261012/palink_three-tracks-merge_20261015b.bundle`（**8 refs**，含 `slash-sink`；complete history）
+  - **S5 前置·大堂命令下沉**（2026-10-15 追加）：merge `6688343` —— 新建 `lib/sillytavern/slash-commands-compat.ts`
+    承载 7 分支 / 9 命令名（`/branch-create`、`/checkpoint-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、
+    `/model`、`/profile`、`/preset`、`/profile-list`）；**三轨一致**（大堂轨改调共享实现、沙箱轨 `sandbox.ts:3605`
+    与 getContext 轨 `getContext.ts:2508` 均前置共享实现）。门禁：79 文件 / **1040 passed / 3 skipped / 0 failed** + tsc 0
+  - **dist 已重建到主干**（两轮：`e0751ca` → slash-sink 合入后）：真机验证 —— 站点 `HTTP 200`（5 容器 healthy）、
+    入口 chunk `index-DbvvHwvN.js` 经 HTTP 取到且**内容含新模块指纹** `Palink slash-commands`
+  - ✅ **S5 的全部前置已清**（命令下沉 + 沙箱轨解耦 + 反向依赖订正 + dist 重建）
   - ⚠️ **未做的上线动作**：`frontend/dist` 仍服务 `355e0ce`（未重建）；backend 镜像未重建 ⇒ **S5 真机前必须重建 dist**。
   - 权威交接：`docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；提示词：`HANDOFF_提示词_S4拆单间_2026-10-15.md`、`HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`、`HANDOFF_S5提示词订正_2026-10-15.md`。
 - **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
@@ -72,7 +79,8 @@
 - ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。
 - 📋 **S5 剩余未做项（2026-10-15 主控登记 · 用户已拍板口径）**：
   1. **[P2 · 暂不做] ST 扩展 UI 可见性** —— 现状：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但**用户在卡内看不到插件面板**。用户 2026-10-15 拍板：**暂用 (c)「接受不可见、只保留命令/API 能力」**；**方案 (b)「单间轨自立门户（面板在卡内可见）」登记为未做项**，待真实需求出现再开（方案 (a) 挂载点桥回主页面与 S5 方向矛盾，已排除）。
-  2. **[P1 · S5 前做] 8 条大堂前置命令未下沉** —— `/branch-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、`/model`、`/profile`、`/preset` 等（`utils/sillyTavernPluginRuntime.ts:646-707`）。S5 删大堂后沙箱轨将丢失这些命令；建议单开小任务下沉为共享实现（同 `[S5-GDEP1]` 手法）。
+  2. ✅ **[已完成 2026-10-15] 大堂前置命令下沉**（merge `6688343`）—— 7 分支 / 9 命令名搬入
+     `lib/sillytavern/slash-commands-compat.ts`，三轨共调（原条目：S5 删大堂后这批命令会消失；现已消除）。
   3. **[P2 · S5 真机后定] `setChatMessages` 未落库** —— 原大堂桥会 `POST /api/chats/save`（COT 格式化 swipe 靠它持久），新共享实现只写内存；已 `recordStubHit('setChatMessages:persist')` 登记（插件管理页降级面板可见），**未静默吞掉**。
   4. **[P2 · S5 前诊断] MVU 世界书读取失败** —— 默认态 14 次/会话 `无法读取角色世界书`；已核实非数据缺失（库内 3 本、合计 57 条 stage）、非 S3 回归；根因未定位（第一嫌疑：iframe 内世界书内容读取 API 的名字→id 解析或内容下发）。详见 `REPORT_s3-acceptance-gap_2026-10-14.md` §5.1。
   5. **[P2] quick-reply 未通** —— `SettingsUi.render()` 内 iframe 侧 `Failed to fetch`；即便修好其 UI 也落在离屏容器（见第 1 条）。
