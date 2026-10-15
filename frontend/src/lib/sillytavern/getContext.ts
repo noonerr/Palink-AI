@@ -34,6 +34,7 @@ import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import { api, getCsrfToken } from '@/services/api';
 import { personaManager } from '@/lib/personas/manager';
 import { contextSetterRegistry, functionToolRegistry } from '../plugin-system/sandbox';
+import { recordStubHit } from '../plugin-system/compat-stub-registry';
 import { toast } from 'sonner';
 import { i18nManager } from '../i18n';
 import Handlebars from 'handlebars';
@@ -1522,6 +1523,230 @@ async function _persistChatMetadata(chatId: string): Promise<void> {
   }
 }
 
+// ============================================================
+// [S5-GDEP1 2026-10-15] 沙箱轨反向依赖解耦：三个 window 桥 API 的原生实现
+//
+// 背景：下面这三个 API 此前委托 utils/sillyTavernPluginRuntime.ts（大堂轨）
+// 注入的 window 同名桥（window.triggerSlash / window.getChatMessages /
+// window.setChatMessages，定义见 utils/sillyTavernPluginRuntime.ts:1479 /
+// :1087 / :1092）。大堂轨在 S5 删除后 window 桥随之消失，三项会静默降级为
+// warn + 空值，而沙箱轨（lib/plugin-system/sandbox.ts）是 S5 后唯一存活的
+// 消费方（经 sandbox.ts:3081 的 buildStContext 回退拿到它们）。
+//
+// 这里把它们改成不依赖 window 的原生实现，getContext 轨与沙箱轨共用同一份，
+// 避免"删大堂 → 沙箱逻辑丢失"。
+// ============================================================
+
+/**
+ * 取当前聊天的原生读源。
+ *
+ * 与 getContext() 内 `chat` 的取数口径一致：优先大堂无关的全局 ST runtime
+ * （CharacterChat 每次渲染 setContext 喂入，S5 保留），回退 messageManager。
+ */
+function resolveNativeChat(): any[] {
+  const ctx = getGlobalSillyTavernRuntime()?.getContext?.() as StContext | null | undefined;
+  if (Array.isArray(ctx?.chat) && ctx!.chat.length > 0) return ctx!.chat;
+  return messageManager.messages.map(toStMessage);
+}
+
+/**
+ * ST 语义的 getChatMessages 选择器（从原生 chat 数组复刻）。
+ *
+ * 语义逐条对齐 utils/sillyTavernPluginRuntime.ts:1479-1506 的 window 桥实现，
+ * 插件（Galgame 的 saveFormatToSwipe 等）依赖这些细节：
+ *   - 返回**数组**（msgs[0] 为目标消息），不是单条
+ *   - id 为合法下标 → 取该条；id === -1 → 取末条；id 非法/缺失 → 取全量
+ *   - opts.role === 'assistant' → 过滤掉 is_user 的消息后再按 id 取
+ *   - opts.includeSwipes / include_swipes → 补齐 swipes（缺省用当前正文包一层）
+ *   - 输出副本带 message 别名与 swipe_id 兜底 0
+ *
+ * @param chat 原生 chat 数组；传 null/undefined 时自行解析当前读源
+ */
+export function selectStChatMessages(
+  chat?: readonly any[] | null,
+  id?: unknown,
+  opts?: { role?: string; includeSwipes?: boolean; include_swipes?: boolean } | null,
+): any[] {
+  const source = Array.isArray(chat) ? chat : resolveNativeChat();
+  const includeSwipes = !!(opts && (opts.includeSwipes || opts.include_swipes));
+  const role = opts && opts.role;
+  let list = source.slice();
+  // 与大堂桥同口径：只实现 assistant 过滤（user / system 未实现，保持原行为）
+  if (role === 'assistant') list = list.filter((m: any) => !m?.is_user);
+
+  const idx = Number.parseInt(String(id == null ? '' : id), 10);
+  let targets: any[] = [];
+  if (Number.isFinite(idx) && idx >= 0 && idx < list.length) {
+    targets.push(list[idx]);
+  } else if (Number.isFinite(idx) && idx === -1 && list.length > 0) {
+    targets.push(list[list.length - 1]);
+  } else if (!Number.isFinite(idx)) {
+    targets = list;
+  }
+
+  return targets.map((m: any) => {
+    if (!m || typeof m !== 'object') return m;
+    const out: any = Object.assign({}, m);
+    out.message = out.message || out.mes || '';
+    if (includeSwipes && !Array.isArray(out.swipes) && out.extra && Array.isArray(out.extra.swipes)) {
+      out.swipes = out.extra.swipes;
+    }
+    if (includeSwipes && !Array.isArray(out.swipes)) out.swipes = [out.message || out.mes || ''];
+    if (out.swipe_id == null && out.extra && out.extra.swipe_id != null) out.swipe_id = out.extra.swipe_id;
+    if (out.swipe_id == null) out.swipe_id = 0;
+    return out;
+  });
+}
+
+/**
+ * 共享的 slash 命令执行入口（getContext 轨与沙箱轨共用）。
+ *
+ * 下沉自 utils/sillyTavernPluginRuntime.ts:709-711 的 SlashCommandEngine 委托
+ * 段——那是大堂轨 runSlashCommand 里唯一与"引擎"相关的部分，S5 删大堂后只剩
+ * 它还能被复用。
+ *
+ * ⚠️ 与大堂桥的一处**有意**差异：大堂桥写的是 `String(result ?? '')`，而
+ * SlashCommandEngine.execute 返回 CommandResult 对象，那会实产出
+ * "[object Object]"；此处改为取 `result.output`，与全仓其余消费点同口径
+ * （getContext.ts:1763 / :2466、sandbox.ts:5413）。
+ *
+ * ⚠️ 大堂 runSlashCommand 的**前置命令段**（/branch-create、/checkpoint-go、
+ * /chat-fork、/getchatname、/model、/profile、/preset，见
+ * utils/sillyTavernPluginRuntime.ts:646-707）**不在**本次下沉范围：它们依赖
+ * 大堂私有的 palinkBridge.resolveMessageAnchor 与 this.context。S5 前需主控
+ * 确认是否单独下沉（见 REPORT_sandbox-dep_2026-10-15.md 遗留项）。
+ */
+export async function executeSlashCommandCompat(command: unknown): Promise<string> {
+  const cmd = String(command ?? '').trim();
+  if (!cmd) return '';
+  try {
+    const result = await SlashCommandEngine.execute(cmd);
+    if (typeof result === 'string') return result;
+    return String((result as any)?.output ?? '');
+  } catch (e) {
+    console.warn('[Palink getContext] executeSlashCommandCompat failed:', e);
+    return '';
+  }
+}
+
+/** 把一条 ST 形状消息归一化为 Palink ChatMessage（不含 id）。 */
+function stMessageToChatPatch(m: any, index: number): Omit<ChatMessage, 'id'> {
+  const swipes = Array.isArray(m?.swipes) && m.swipes.length
+    ? m.swipes.map((s: any) => String(s ?? ''))
+    : (Array.isArray(m?.extra?.swipes) ? m.extra.swipes.map((s: any) => String(s ?? '')) : undefined);
+  const sendDateRaw = m?.send_date;
+  return {
+    name: String(m?.name ?? ''),
+    mes: String(m?.mes ?? m?.message ?? ''),
+    is_user: Boolean(m?.is_user),
+    is_system: Boolean(m?.is_system),
+    send_date: sendDateRaw != null ? sendDateRaw : Date.now() + index,
+    role: m?.role ?? (m?.is_user ? 'user' : (m?.is_system ? 'system' : 'assistant')),
+    swipes,
+    swipe_id: m?.swipe_id ?? 0,
+    swipe_info: m?.swipe_info,
+    extra: m?.extra ?? {},
+    is_hidden: Boolean(m?.is_hidden),
+    is_locked: Boolean(m?.is_locked),
+  };
+}
+
+/**
+ * 共享的批量消息写入（ST setChatMessages 语义）。
+ *
+ * Palink 没有"整体覆盖聊天"的原生批量写原语，这里用 messageManager 的
+ * add / update / delete 组合出来，并同步回全局 runtime 的 context.chat
+ * （getContext() 内 chat 的读源），使随后的 getChatMessages 立即可读。
+ *
+ * 支持大堂桥同款的两种入参形态：
+ *   (a) 完整消息数组 → 整体替换；
+ *   (b) 部分更新 [{ message_id, swipes, swipe_id }] → 按楼层只改 swipes。
+ *
+ * ⚠️ 已知降级（**不是静默吞掉**，调用时会登记进 window.__palinkCompatStats）：
+ * 原大堂桥会把结果 POST 到 /api/chats/save 落库（COT 格式化 swipe 由此持久）；
+ * 本实现只写内存态，刷新/重载后丢失。落库是否单独下沉需主控确认
+ * （见 REPORT_sandbox-dep_2026-10-15.md 遗留项 L1）。
+ */
+export function applyStChatMessages(
+  messages: unknown,
+  options?: { runtime?: unknown } | null,
+): boolean {
+  const incoming = Array.isArray(messages) ? (messages as any[]) : null;
+  if (!incoming || incoming.length === 0) return false;
+
+  try {
+    const runtime: any = options?.runtime ?? getGlobalSillyTavernRuntime();
+    const runtimeChat = Array.isArray(runtime?.context?.chat) ? runtime.context.chat : null;
+    const base: any[] = (runtimeChat && runtimeChat.length > 0)
+      ? runtimeChat.slice()
+      : messageManager.messages.map(toStMessage);
+
+    const isPartialUpdate = incoming.every(
+      (m: any) => m && typeof m === 'object' && m.message_id != null && m.mes == null && Array.isArray(m.swipes),
+    );
+
+    let next: any[];
+    if (isPartialUpdate) {
+      next = base.slice();
+      for (const upd of incoming) {
+        const floor = Number((upd as any).message_id);
+        if (!Number.isFinite(floor) || floor < 0 || floor >= next.length) continue;
+        const target = next[floor];
+        if (!target || typeof target !== 'object') continue;
+        const swipes = Array.isArray((upd as any).swipes)
+          ? (upd as any).swipes.map((s: any) => String(s ?? ''))
+          : (target.swipes || []);
+        const swipeId = (upd as any).swipe_id != null ? Number((upd as any).swipe_id) : (target.swipe_id ?? 0);
+        next[floor] = Object.assign({}, target, {
+          swipes,
+          swipe_id: swipeId,
+          extra: Object.assign({}, target.extra, { swipes }),
+        });
+      }
+    } else {
+      next = incoming;
+    }
+
+    // ① 写回全局 runtime 的 context.chat（getContext() 的读源）
+    if (runtime && runtime.context) {
+      runtime.context.chat = next;
+    }
+
+    // ② 对齐写回 messageManager（add / update / delete 组合）
+    //    仅在 messageManager 本身就是读源（runtime chat 为空）或已有内容时才写，
+    //    避免给 useCharacterChat.ts:152 的真实消息读取注入合成消息。
+    const mmIsSource = !runtimeChat || runtimeChat.length === 0;
+    if (mmIsSource || messageManager.messages.length > 0) {
+      const mm = messageManager.messages;
+      for (let i = 0; i < next.length; i++) {
+        const patch = stMessageToChatPatch(next[i], i);
+        if (i < mm.length) {
+          messageManager.updateMessage(mm[i].id, patch);
+        } else {
+          messageManager.addMessage({ ...patch, id: `st-local-${Date.now()}-${i}` } as ChatMessage);
+        }
+      }
+      for (let i = mm.length - 1; i >= next.length; i--) {
+        messageManager.deleteMessage(mm[i].id);
+      }
+    }
+
+    // ③ 通知 UI 刷新（CharacterView.tsx:1654 监听，与大堂桥同款）
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('palink:chatMessagesUpdated'));
+    }
+
+    recordStubHit(
+      'setChatMessages:persist',
+      '仅写内存态（runtime.context.chat + messageManager），未经 /api/chats/save 落库，重载后丢失；待主控确认是否下沉落库',
+    );
+    return true;
+  } catch (e) {
+    console.warn('[Palink getContext] applyStChatMessages failed:', e);
+    return false;
+  }
+}
+
 /**
  * 获取 ST 兼容的上下文对象
  *
@@ -2272,34 +2497,18 @@ export function getContext(): StGetContext {
       // messages 由 messageManager 自动持久化；此处持久化 chat_metadata
       await _persistChatMetadata(chatId);
     },
-    // N9 修复（批次 F）: 补齐经典/沙箱轨已有而 Ctx 轨缺失的 4 个 API——
-    // 委托 sillyTavernPluginRuntime 注入的 window 桥（triggerSlash/
-    // getChatMessages/setChatMessages 于 runtime.ts:731-881 定义），
-    // 桥缺失时诚实降级 warn 而非插件侧 ReferenceError。
-    triggerSlash: async (...args: any[]) => {
-      const w = window as any;
-      if (typeof w?.triggerSlash === 'function') {
-        return await w.triggerSlash(...args);
-      }
-      console.warn('[Palink getContext] triggerSlash bridge unavailable');
-      return '';
-    },
-    getChatMessages: (...args: any[]) => {
-      const w = window as any;
-      if (typeof w?.getChatMessages === 'function') {
-        return w.getChatMessages(...args);
-      }
-      console.warn('[Palink getContext] getChatMessages bridge unavailable');
-      return undefined;
-    },
-    setChatMessages: (...args: any[]) => {
-      const w = window as any;
-      if (typeof w?.setChatMessages === 'function') {
-        return w.setChatMessages(...args);
-      }
-      console.warn('[Palink getContext] setChatMessages bridge unavailable');
-      return undefined;
-    },
+    // N9 修复（批次 F）: 补齐经典/沙箱轨已有而 Ctx 轨缺失的 4 个 API。
+    //
+    // [S5-GDEP1 2026-10-15] 三者**不再**委托 window 桥：原实现读的是
+    // utils/sillyTavernPluginRuntime.ts（大堂轨）注入的 window.triggerSlash /
+    // window.getChatMessages / window.setChatMessages（定义见该文件 :1092 /
+    // :1479 / :1087；本处旧注释写的 "runtime.ts:731-881" 是陈旧坐标，已订正），
+    // 大堂轨在 S5 删除后桥即消失、三个 API 会静默降级为空值。现改为调用本文件
+    // 自有的原生实现（见上方 [S5-GDEP1] 段），getContext 轨与沙箱轨共用。
+    triggerSlash: async (...args: any[]) => executeSlashCommandCompat(args[0]),
+    getChatMessages: (id?: any, opts?: any) => selectStChatMessages(chat, id, opts),
+    setChatMessages: async (messages?: any, _opts?: any) =>
+      applyStChatMessages(messages, { runtime }),
     saveChatConditional: async (..._args: any[]) => {
       const w = window as any;
       if (typeof w?.saveChatConditional === 'function') {

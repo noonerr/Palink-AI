@@ -10,7 +10,15 @@ import { promptInjection } from '@/services/prompt-injection';
 import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import DOMPurify from 'dompurify';
-import { ST_EVENT_TYPES, getContext as buildStContext, writeExtensionFieldCompat } from '../sillytavern/getContext';
+import {
+  ST_EVENT_TYPES,
+  getContext as buildStContext,
+  writeExtensionFieldCompat,
+  // [S5-GDEP1 2026-10-15] 沙箱轨不再依赖大堂轨 window 桥：这三项原生实现
+  // 与 getContext 轨共用同一份（详见 getContext.ts 的 [S5-GDEP1] 段）。
+  executeSlashCommandCompat,
+  applyStChatMessages,
+} from '../sillytavern/getContext';
 // N1 修复（批次 F）: messageFormatting 接真实格式化管线所需
 import { formatMessage } from '../sillytavern/formatting';
 import { regex_placement } from '../sillytavern/regex/engine';
@@ -3578,20 +3586,11 @@ export class PluginSandbox {
       // 经 __palinkBridge 有真桥接——同一酒馆助手脚本"注入能跑、进沙箱失效"。
       // 统一改为调用时转发到主 window 同名真实现，缺失时保留诚实降级。
 
-      // triggerSlash: 触发 slash 命令（桥接经典轨 window.triggerSlash → __palinkBridge.runSlashCommand）
-      triggerSlash: async (_command: string) => {
-        try {
-          const w = window as any;
-          if (typeof w.triggerSlash === 'function') {
-            return await w.triggerSlash(_command);
-          }
-        } catch (e) {
-          console.warn('[PluginSandbox] triggerSlash 桥接失败:', e);
-          return '';
-        }
-        console.warn(`[PluginSandbox] triggerSlash: 无可用桥接（window.triggerSlash 缺失）: ${_command}`);
-        return '';
-      },
+      // triggerSlash: 触发 slash 命令
+      // [S5-GDEP1 2026-10-15] **不再**桥接 window.triggerSlash（大堂轨 __palinkBridge
+      // .runSlashCommand，S5 删大堂后消失），改调 getContext.ts 的共享实现
+      // executeSlashCommandCompat（SlashCommandEngine.execute，与 getContext 轨同源）。
+      triggerSlash: async (_command: string) => executeSlashCommandCompat(_command),
       // generateRaw: 生成请求（K-5 修复：桥接到真实实现，非空 stub）
       // ST 插件经 `var generateRaw = __sandbox.generateRaw`（buildWrappedCode 注入）
       // 拿到此函数，memory/vectors/expressions 以 ST 单对象签名调用
@@ -3669,19 +3668,13 @@ export class PluginSandbox {
         console.warn('[PluginSandbox] uninjectPrompts: 无可用桥接（window.uninjectPrompts 缺失）');
       },
       // setChatMessages / deleteChatMessages: 消息操作
-      // setChatMessages 桥接经典轨真实现（__palinkBridge.saveChatMessages）；
+      // [S5-GDEP1 2026-10-15] setChatMessages **不再**桥接 window（大堂轨注入的
+      // window.setChatMessages → __palinkBridge.saveChatMessages，S5 删大堂后消失），
+      // 改调 getContext.ts 的共享原生实现 applyStChatMessages（messageManager
+      // add/update/delete 组合 + 同步 runtime.context.chat）。
       // deleteChatMessages 两轨均无底层实现，保留诚实桩。
       setChatMessages: async (_messages: any, _range?: any) => {
-        try {
-          const w = window as any;
-          if (typeof w.setChatMessages === 'function') {
-            return await w.setChatMessages(_messages, _range);
-          }
-        } catch (e) {
-          console.warn('[PluginSandbox] setChatMessages 桥接失败:', e);
-          return;
-        }
-        console.warn('[PluginSandbox] setChatMessages: 无可用桥接（window.setChatMessages 缺失）');
+        return applyStChatMessages(_messages);
       },
       // [ST-ALIGN] deleteChatMessages：桥接经典轨真实现（映射索引→消息 id 调删除 API）。
       // ⚠ UI 刷新依赖宿主监听 message_deleted，主 UI 未监听前删除后需手动刷新。
