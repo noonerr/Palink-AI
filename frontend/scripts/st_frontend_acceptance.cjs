@@ -143,8 +143,19 @@ record('D', 'eventTypes exposed in getContext', hasEventTypes);
 
 // 检查 SmartCard runtime 中的事件
 const smartCardPath = path.join(ROOT, 'src/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime.ts');
+// [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，
+// 入口文件只剩拼接壳 ⇒ 必须把各段拼回来再扫，否则事件覆盖率会假性暴跌。
+const smartCardPartsDir = path.join(ROOT, 'src/components/ui/custom/smart-card-runtime/runtime-body');
+function readSmartCardRuntimeSource() {
+  let src = fs.readFileSync(smartCardPath, 'utf-8');
+  if (!fs.existsSync(smartCardPartsDir)) return src;
+  const parts = fs.readdirSync(smartCardPartsDir)
+    .filter((f) => /^part-\d+\.ts$/.test(f))
+    .sort();
+  return src + parts.map((f) => fs.readFileSync(path.join(smartCardPartsDir, f), 'utf-8')).join('');
+}
 if (fs.existsSync(smartCardPath)) {
-  const smartCardSrc = fs.readFileSync(smartCardPath, 'utf-8');
+  const smartCardSrc = readSmartCardRuntimeSource();
   let smartCardEventCount = 0;
   for (const evt of ST_CORE_EVENTS) {
     if (smartCardSrc.includes(evt)) {
@@ -157,7 +168,7 @@ if (fs.existsSync(smartCardPath)) {
 }
 
 // 检查 APP_READY 处理
-const hasAppReady = runtimeSrc.includes('APP_READY') || smartCardPath && fs.readFileSync(smartCardPath, 'utf-8').includes('APP_READY');
+const hasAppReady = runtimeSrc.includes('APP_READY') || smartCardPath && readSmartCardRuntimeSource().includes('APP_READY');
 record('D', 'APP_READY event handled', hasAppReady);
 
 // 检查 GROUP_UPDATED 事件
