@@ -36,7 +36,17 @@
     与 getContext 轨 `getContext.ts:2508` 均前置共享实现）。门禁：79 文件 / **1040 passed / 3 skipped / 0 failed** + tsc 0
   - **dist 已重建到主干**（两轮：`e0751ca` → slash-sink 合入后）：真机验证 —— 站点 `HTTP 200`（5 容器 healthy）、
     入口 chunk `index-DbvvHwvN.js` 经 HTTP 取到且**内容含新模块指纹** `Palink slash-commands`
-  - ✅ **S5 的全部前置已清**（命令下沉 + 沙箱轨解耦 + 反向依赖订正 + dist 重建）
+  - ✅ **S5 已完工并合入主干**（merge `e86ad9a`，删码 `f5c1a86`，tag `s5-done`）—— **三轨并一轨收官**：
+    大堂轨 `utils/sillyTavernPluginRuntime.ts`（2447 行）**整体退役**，仅剩单间轨（iframe）+ 沙箱轨独扛。
+    合并后门禁：前端 **74 文件 / 960 passed / 3 skipped / 0 failed** + tsc 0；后端 2060 / 23 / 0；
+    真机：入口 chunk 中 4 项大堂指纹 0 命中、存活指纹命中（复核于合并前同一份代码）。
+    ⚠️ **对方案附录 B 的显式偏离已登记**：总闸 `palink_st_plugin_main_page_injection` 随大堂一并删，
+    S5 验收 #3「kill switch 三态有效」作废，替代兜底 = `git revert f5c1a86`（见 S5 报告 §6）。
+  - 📌 **S5 遗留的两项后续**（已登记 `docs/OPEN_ISSUES.md` [P2-10]）：
+    ① 单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash`（已证伪非 S5 引入）；
+    ② `setExtensionPrompt` 在存活单间轨仍在，但随大堂专测删除后**无行为测试**，建议补。
+  - ⏳ **尚未真机复验（S5 报告如实标注）**：验收 #1「故意抛错卡脚本不影响其他消息」、
+    #2「插件管理页降级可见」——建议补一次真机演练（需 Docker 在跑）。
   - ⚠️ **未做的上线动作**：`frontend/dist` 仍服务 `355e0ce`（未重建）；backend 镜像未重建 ⇒ **S5 真机前必须重建 dist**。
   - 权威交接：`docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；提示词：`HANDOFF_提示词_S4拆单间_2026-10-15.md`、`HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`、`HANDOFF_S5提示词订正_2026-10-15.md`。
 - **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
