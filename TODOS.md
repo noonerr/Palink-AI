@@ -23,6 +23,15 @@
 - **S0 基线档案**：[`docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md`](./docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md)
 - **S0 完工自检（B1–B9 逐条）**：[`docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md`](./docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md)
 - **进度**：**S0 备料 = 9/9 完成**；**S1 完成（T1 ✅ / T3 ✅ / T2 ✅）**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，S1 末笔提交 `ea15a6f`。尚无 `s1-done`..`s4-done` tag（S1 三个 Task 已全部收口，`s1-done` 待打）。
+- **进度（2026-10-15 更新 · 主控实测复核）**：**S0–S4 全部完成并合入主干，只剩 S5（删大堂）未开工**。
+  - S2 `ebb34d6`（tag `s2-done`）｜S3 `b38efc4`（tag `s3-done`）｜S3 补测 `d06b728`+`355e0ce`（tag `s3-gap-done`/`s3-shim-done`，真机 init 4/5 + 7 条斜杠命令）
+  - **S4 拆分**：merge `34a7fa0`（`runtime-body/part-01..08.ts` + `frame-shim/legacy-st-sim-parts/part-a..c.ts`，入口 292/27 行，全部 ≤1200；**四份产物字节同一性 `f5d7089b`/`f710ed06`/`1a15e682`/`99629d0c` 全等，合并后在主干复核仍成立**）
+  - **沙箱轨解耦**（S5 前置）：merge `aa106eb`（`[S5-GDEP1]` 共享实现）
+  - **Extras 转发**：merge `3df84cf`（`/api/summarize` + `/api/extra/translate` + `/api/translate/{provider}`；默认部署恒 502，sidecar 已随 st-native 删除）
+  - **合并后门禁（主控实跑）**：前端 78 文件 / **1012 passed / 3 skipped / 0 failed** + `tsc` 0；后端 **2060 passed / 23 skipped / 0 failed**；目录 `--check` OK（332 docs）
+  - **bundle**：`_palink-s0-20261012/palink_three-tracks-merge_20261015.bundle`（7 refs，complete history）
+  - ⚠️ **未做的上线动作**：`frontend/dist` 仍服务 `355e0ce`（未重建）；backend 镜像未重建 ⇒ **S5 真机前必须重建 dist**。
+  - 权威交接：`docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；提示词：`HANDOFF_提示词_S4拆单间_2026-10-15.md`、`HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`、`HANDOFF_S5提示词订正_2026-10-15.md`。
 - **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
 - **门禁现值（S1 三笔后）**：vitest **958 passed / 1 failed / 3 skipped（962）**，唯一红仍是上面那条 S2 设计红；tsc **0 错误**；未碰后端。
 - **S1 已完成**：
@@ -59,7 +68,17 @@
      —— 已另立条目，见下方「[未开工·建议] 消息窗口化」。落地后 G8（iOS 档位）可直接关掉。
 - ✅ **G9 已裁决（2026-10-14，丙1 实测 + 主控复核）**：`sillyTavernPluginRuntime.ts` 大堂轨注入段 = `injectIntoContainer` 476–2244 = **1769 行 / 71.42%**（全文 2477 行；候选存活段仅 103 行 / 4.16%，三个导出接口全仓零外部消费）⇒ **S4 跳过该文件**，S5 删完大堂段后只剩约 700 行，自然满足 ≤1200 行门禁。证据：`REPORT_ro-survey_2026-10-14.md`。
 - 🔴 **S5 动工前必须先解决两处跨轨反向依赖**（丙1 挖出、主控逐行复核为真）：① `lib/sillytavern/getContext.ts:2275-2310` 把 `triggerSlash`/`getChatMessages`/`setChatMessages` 委托大堂轨注入的 window 桥；② `frame-shim/legacy-st-sim.ts:1106` 单间轨 shim 自己读 `window.__palinkStRuntime?.context?.stat_data`。**是单间轨依赖大堂轨**，删了大堂轨会静默失效。
+- ✅ **上条状态更新（2026-10-15，勿再按旧结论施工）**：① **已解决** —— 沙箱轨解耦 merge `aa106eb`：`getContext.ts` 新增 `[S5-GDEP1]` 共享实现，`sandbox.ts` 的 `triggerSlash`/`setChatMessages` 不再读 window 桥（`setChatMessages` 的落库缺口见下方未做项第 3 条）。真影响面是**存活的沙箱轨**，不是单间轨（`smart-card-runtime/` 对该文件零 import）。② **证伪** —— `legacy-st-sim.ts:1106` 是**死表达式**：`window.__palinkStRuntime` 全仓唯一赋值点 `sillyTavernPluginRuntime.ts:513` 属父侧 ES module class，iframe 域无人赋值，且该 legacy getContext 已被 compatV2 覆盖 ⇒ 运行时恒 `{}`，**S5 对其零行为变化**。父侧等价通道 = `context.variables`（srcdoc 首帧 `helpers.ts:37-38` + `context-update` postMessage）。
 - ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。
+- 📋 **S5 剩余未做项（2026-10-15 主控登记 · 用户已拍板口径）**：
+  1. **[P2 · 暂不做] ST 扩展 UI 可见性** —— 现状：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但**用户在卡内看不到插件面板**。用户 2026-10-15 拍板：**暂用 (c)「接受不可见、只保留命令/API 能力」**；**方案 (b)「单间轨自立门户（面板在卡内可见）」登记为未做项**，待真实需求出现再开（方案 (a) 挂载点桥回主页面与 S5 方向矛盾，已排除）。
+  2. **[P1 · S5 前做] 8 条大堂前置命令未下沉** —— `/branch-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、`/model`、`/profile`、`/preset` 等（`utils/sillyTavernPluginRuntime.ts:646-707`）。S5 删大堂后沙箱轨将丢失这些命令；建议单开小任务下沉为共享实现（同 `[S5-GDEP1]` 手法）。
+  3. **[P2 · S5 真机后定] `setChatMessages` 未落库** —— 原大堂桥会 `POST /api/chats/save`（COT 格式化 swipe 靠它持久），新共享实现只写内存；已 `recordStubHit('setChatMessages:persist')` 登记（插件管理页降级面板可见），**未静默吞掉**。
+  4. **[P2 · S5 前诊断] MVU 世界书读取失败** —— 默认态 14 次/会话 `无法读取角色世界书`；已核实非数据缺失（库内 3 本、合计 57 条 stage）、非 S3 回归；根因未定位（第一嫌疑：iframe 内世界书内容读取 API 的名字→id 解析或内容下发）。详见 `REPORT_s3-acceptance-gap_2026-10-14.md` §5.1。
+  5. **[P2] quick-reply 未通** —— `SettingsUi.render()` 内 iframe 侧 `Failed to fetch`；即便修好其 UI 也落在离屏容器（见第 1 条）。
+  6. **[P2 · 并入 S5 验收] `triggerSlash` 返回值复验** —— 大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`（bug）；新共享实现改取 `result.output`，若真机探针依赖该返回值需复验一次。
+  7. **5 个测试插件：保留**（用户 2026-10-15 拍板；作后续适配复测靶子，删除路径见 `REPORT_s3-acceptance-gap_2026-10-14.md` §2.4）。
+  （消息窗口化不在此列，已另有独立条目。）
 
 ### [未开工·建议] 消息窗口化（抄 ST 的 `chat_truncation`）—— 长会话劣化的根治方案
 
