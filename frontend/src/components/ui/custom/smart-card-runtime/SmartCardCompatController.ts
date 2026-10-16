@@ -2,6 +2,8 @@ import { toast } from 'sonner';
 import DOMPurify from 'dompurify';
 import { api, invalidateCache } from '@/services/api';
 import { worldbookApi } from '@/services/worldbookApi';
+import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
+import { executeSlashCommandCompat } from '@/lib/sillytavern/getContext';
 import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
@@ -804,6 +806,24 @@ export async function handleSmartCardCompatRequest(
     } else if (action.action === 'getWorldbookEntries') {
       // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
       result = (await resolveCharWorldbookExport(state, requestContext)).entries;
+    } else if (action.action === 'runPalinkSlash') {
+      // [S5-GDEP3 T2 2026-10-16] 卡内 triggerSlash 的宿主侧落点。
+      //
+      // 背景：沙箱轨（sandbox.ts:3605）与主页面 getContext 轨（getContext.ts:2517）都有
+      // triggerSlash，唯独单间轨（卡内）没有 —— S5 评审 §3.1 实测确认该缺口。
+      // 这里把卡内调用桥到**与那两轨同一份**的共享实现，不重写命令逻辑：
+      //   命中 Palink 专有命令（/branch-create 等 9 条）→ 返回其结果（含空串）；
+      //   未命中（null）→ 回落 executeSlashCommandCompat（SlashCommandEngine），
+      //   与 getContext.ts:2520 的兜底逐字同源。
+      // 不传 deps ⇒ 会话与楼层锚点由共享模块经全局 ST runtime 自行解析，
+      // 不依赖任何大堂注入物（S5 后大堂已删，也无从依赖）。
+      const command = String(payload.command ?? (payload.args as unknown[] | undefined)?.[0] ?? '');
+      const palinkResult = await runPalinkSlashCommands(command);
+      if (palinkResult !== null) {
+        result = palinkResult;
+      } else {
+        result = await executeSlashCommandCompat(command);
+      }
     } else if (action.action === 'setChatMessage' || action.action === 'updateMessageBlock') {
       const content = extractMessageContentFromPayload(payload);
       const options = extractMessageOptionsFromPayload(payload);

@@ -571,7 +571,12 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
     error: (...args) => post({ type: 'error', message: String(args[0] ?? '') }),
   });
 
-  ensureFunction('getRequestHeaders', () => ({}));
+  // [S5-COMPAT-AUDIT T1] 恒 {} 是「假实现」：Palink 的认证头由 api 服务统一注入，
+  // 但插件读不到真实请求头 ⇒ 签名/鉴权类插件会静默失效。留痕（同 part-08 的 st_api_stub）。
+  ensureFunction('getRequestHeaders', () => {
+    reportStubApi('getRequestHeaders');
+    return {};
+  });
   const makeStApiJsonResponseCompat = (data, init = {}) => new Response(JSON.stringify(data ?? {}), {
     status: init.status || 200,
     statusText: init.statusText || 'OK',
@@ -641,6 +646,9 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
       return makeStApiJsonResponseCompat({ characters: getStApiCharactersCompat(), data: getStApiCharactersCompat() });
     }
     if (path.startsWith('/api/worldinfo') || path.startsWith('/api/world-info')) {
+      // [S5-COMPAT-AUDIT T1] entries 恒空是「假实现」：这正是 MVU 世界书读不到内容的
+      // 一部分根因（SPEC T3 立项）。留痕，让降级可见而不是静默。
+      if (method === 'GET') reportStubApi('fetch:/api/worldinfo');
       return makeStApiJsonResponseCompat(method === 'GET' ? buildStApiWorldInfoCompat() : { result: 'ok', ok: true });
     }
     if (path.startsWith('/api/groups')) {

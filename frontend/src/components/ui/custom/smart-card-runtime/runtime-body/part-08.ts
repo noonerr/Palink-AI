@@ -86,6 +86,65 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       return () => {};
     }),
   });
+  // [S5-COMPAT-AUDIT 2026-10-16] 单间轨「假实现」显性化（承接
+  // REPORT_S5架构重建评审 §4.3 / SPEC_ST兼容层修复计划 T1）。
+  //
+  // 背景：本帧的 getContextCompat 有一批 API 名字在、值是假的（世界书恒空、preset 名硬编码、
+  // 假成功……）。它们不报错、返回看起来合理的值 ⇒ 插件功能静默失效，用户与开发者都无从感知
+  // （评审原话：「对用户来说这比直接报错更糟」）。此前单间轨**完全没有**留痕通道。
+  //
+  // 落点选择（关键，别改错）：
+  //   主页面 getContext 轨的 recordStubHit（lib/plugin-system/compat-stub-registry.ts）**不能
+  //   在这里用** —— 它是主 bundle 的模块，iframe 里 import 不到；单间轨既有的可见通道是
+  //   reportDiagnostic → post({type:'st:diagnostic'}) → 宿主 CharacterCardRenderer 的
+  //   onAction({type:'diagnostic'}) → handleSmartCardCompatDiagnostic（toast，12s 去重）。
+  //   本 helper 只是把「桩被调用」翻译成一条 diagnostic，不新建第二套统计。
+  //
+  // 为什么不用 __stub 标记（SPEC T1 方案①）：getContextCompat 是每次调用新建的对象字面量，
+  //   defineProperty 会让它变稠且仍不可枚举可见；真正要的「调用时留痕」由 reportStubApi 完成。
+  const PALINK_STUB_API_NOTES = {
+    loadWorldInfo: '世界书内容读取在单间轨未接线，恒返回空对象（见 SPEC T3 立项）',
+    getWorldInfoPrompt: '世界书提示词恒返回空串，实际注入走后端 worldbook_service',
+    saveWorldInfo: '写入为假成功（返回 true 但不落库），请改用 createOrReplaceWorldbook',
+    getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
+    writePresetExtensionField: '写入为假成功（返回 true 但不落库）',
+    getRequestHeaders: 'Palink 由 api 服务统一注入认证头，此处恒空对象',
+    'fetch:/api/worldinfo': 'iframe 侧 fetch 白名单对 /api/worldinfo 恒返回空 entries/data（真实内容走 getLorebookEntries 桥，见 SPEC T3）',
+    getChatCompletionModel: '模型名经 generationEngine 读取，此处恒空串',
+    getMediaDisplay: '消息媒体显示形态由 React 组件管理，此处为占位常量',
+    getMediaIndex: '消息媒体索引由 React 组件管理，此处为占位常量',
+    appendMediaToMessage: '消息媒体追加由后端 extra.media 管理，此处为假成功',
+    scrollOnMediaLoad: '滚动由宿主管理，此处为假成功',
+    convertCharacterBook: 'Palink 后端已存 ST 形状，此处为恒等占位',
+    getTextGenServer: 'Palink 不使用独立 textgen 服务器，占位空串',
+    renameChat: '会话改名入口未接线，此处为假成功',
+    updateWorldInfoList: '世界书列表由宿主 UI 管理，此处为假成功',
+    reloadWorldInfoEditor: '世界书编辑器由宿主 UI 管理，此处为假成功',
+  };
+  const stubApiReported = {};
+  const reportStubApi = (apiName, note) => {
+    const key = String(apiName || '');
+    if (!key || stubApiReported[key]) return;
+    stubApiReported[key] = true;
+    try {
+      reportDiagnostic({
+        severity: 'warning',
+        code: 'st_api_stub',
+        apiName: key,
+        message: 'ST API ' + key + ' 在 Palink 单间轨为无操作/部分实现：' + String(note || PALINK_STUB_API_NOTES[key] || ''),
+      });
+    } catch (e) { /* 静默 */ }
+  };
+  const stubApi = (apiName, impl) => {
+    const wrapped = (...args) => {
+      reportStubApi(apiName);
+      return impl(...args);
+    };
+    // 保留 async 语义：原实现多为 async，包一层后调用方 await/catch 行为不变。
+    if (impl && typeof impl.then === 'function') return wrapped;
+    return wrapped;
+  };
+  window.__palinkStubApiNotes = PALINK_STUB_API_NOTES;
   const getContextCompat = () => ({
     accountStorage: accountStorageCompat,
     chat: window.chat,
@@ -112,7 +171,7 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     streamingProcessor: null,
     getRequestHeaders: window.getRequestHeaders,
     reloadCurrentChat: window.reloadCurrentChat,
-    renameChat: async () => true,
+    renameChat: stubApi('renameChat', async () => true),
     saveSettingsDebounced: window.saveSettingsDebounced,
     chatMetadata: window.chat_metadata || {},
     chat_metadata: window.chat_metadata || {},
@@ -244,7 +303,7 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     macros: window.macros,
     registerMacro: window.registerMacro,
     unregisterMacro: window.unregisterMacro,
-    appendMediaToMessage: async () => true,
+    appendMediaToMessage: stubApi('appendMediaToMessage', async () => true),
     ensureMessageMediaIsArray: (message) => {
       if (message && typeof message === 'object' && !Array.isArray(message.extra?.media)) {
         message.extra = message.extra && typeof message.extra === 'object' ? message.extra : {};
@@ -252,21 +311,60 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       }
       return message?.extra?.media || [];
     },
-    getMediaDisplay: () => 'inline',
-    getMediaIndex: () => -1,
+    getMediaDisplay: stubApi('getMediaDisplay', () => 'inline'),
+    getMediaIndex: stubApi('getMediaIndex', () => -1),
     scrollChatToBottom: window.scrollChatToBottom,
-    scrollOnMediaLoad: () => true,
-    loadWorldInfo: async () => ({}),
-    saveWorldInfo: async () => true,
-    reloadWorldInfoEditor: async () => true,
-    updateWorldInfoList: async () => true,
-    convertCharacterBook: (book) => book || {},
-    getWorldInfoPrompt: async () => '',
+    scrollOnMediaLoad: stubApi('scrollOnMediaLoad', () => true),
+    loadWorldInfo: stubApi('loadWorldInfo', async (name) => {
+      // [S5-COMPAT-AUDIT T3 2026-10-16] MVU 世界书读取失败的根因修复（66 次/会话）。
+      //
+      // 根因（从真机卡 bundle backend/data/smart_card_assets/0c646fb31a….js 的 MVU beta
+      // 原文挖出，非推测；调用形如 await SillyTavern.loadWorldInfo(t)，随后
+      // if(!_.isPlainObject(n) || !_.isPlainObject(_.get(n,'entries'))) throw ...）：
+      //   async function $a(t){
+      //     const n = await SillyTavern.loadWorldInfo(t);
+      //     if(!_.isPlainObject(n)||!_.isPlainObject(_.get(n,'entries')))
+      //       throw new Error(at('runtime.characterOverride.worldbookReadFailed',{worldbook:t}));
+      //   }
+      // ⇒ 判据是「返回值是 plain object 且 .entries 是 plain object」。
+      // 原实现恒返回 {}（没有 entries 键）⇒ **必然命中抛错分支**，这就是
+      // 「无法读取角色世界书"露缇雅1.2"」的来源。
+      //
+      // 数据源：与 getLorebookEntries / getCharWorldbookNames **同源**（S1-G10/G11 的成果，
+      // 卡自建优先、缺失回退角色 character_book，title→comment 已由父侧映射好）。
+      //
+      // ⚠️ 形状约束（关键，别改错）：MVU 用 lodash isPlainObject 判定
+      //    （_.isPlainObject(_.get(n,'entries'))），而 **数组不是 plain object**
+      //    （isPlainObject([]) === false）⇒ 直接透传 getWorldbookEntries 的数组仍会抛错。
+      //    必须包成 { entries: {...} } 对象形状（ST 的 world_info.entries 契约本身就是
+      //    uid→entry 的对象，不是数组）。
+      try {
+        const detail = await requestParent('getCharWorldbook', { args: [] });
+        const list = detail && Array.isArray(detail.entries) ? detail.entries : [];
+        const entries = {};
+        list.forEach((entry, index) => {
+          const uid = Number(entry?.uid ?? entry?.id ?? index) || index;
+          entries[String(uid)] = entry;
+        });
+        const resolvedName = String(name || detail?.name || activeLorebooks?.primary || '');
+        if (resolvedName) activeWorldbookName = resolvedName;
+        return { name: resolvedName, entries };
+      } catch (e) {
+        // 拿不到也不能抛：抛给卡脚本会让整个变量初始化链断掉（与 S1-G10 的降级口径一致）。
+        post({ type: 'log', level: 'warn', message: 'loadWorldInfo 失败，返回空世界书' });
+        return { name: String(name || ''), entries: {} };
+      }
+    }),
+    saveWorldInfo: stubApi('saveWorldInfo', async () => true),
+    reloadWorldInfoEditor: stubApi('reloadWorldInfoEditor', async () => true),
+    updateWorldInfoList: stubApi('updateWorldInfoList', async () => true),
+    convertCharacterBook: stubApi('convertCharacterBook', (book) => book || {}),
+    getWorldInfoPrompt: stubApi('getWorldInfoPrompt', async () => ''),
     getWorldInfoNames: () => Array.isArray(window.world_names) ? [...window.world_names] : [],
     CONNECT_API_MAP: {},
-    getTextGenServer: async () => '',
+    getTextGenServer: stubApi('getTextGenServer', async () => ''),
     extractMessageFromData: (data) => data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || data?.text || data?.content || '',
-    getChatCompletionModel: () => '',
+    getChatCompletionModel: stubApi('getChatCompletionModel', () => ''),
     printMessages: window.printMessages,
     clearChat: window.clearChat,
     ChatCompletionService: class ChatCompletionServiceCompat {},
@@ -294,19 +392,51 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     symbols: { ignore: window.IGNORE_SYMBOL },
     constants: { unset: null },
     getPresetManager: () => ({
-      getSelectedPresetName: () => 'Palink',
+      getSelectedPresetName: stubApi('getSelectedPresetName', () => 'Palink'),
       getSelectedPreset: () => parseMaybeJsonObject(ctx.presetData, {}),
       readPresetExtensionField: ({ path } = {}) => {
         if (!path || path === 'regex_scripts') return clone(presetRegexScripts);
         return getByPath(parseMaybeJsonObject(ctx.presetData, {}), String(path), undefined);
       },
-      writePresetExtensionField: async () => true,
+      writePresetExtensionField: stubApi('writePresetExtensionField', async () => true),
     }),
     loader: {
       show: () => post({ type: 'log', level: 'info', message: 'loader.show' }),
       hide: () => post({ type: 'log', level: 'info', message: 'loader.hide' }),
     },
+    // [S5-GDEP3 T2] 卡内可达的 triggerSlash（宿主桥 → 共享 slash 实现）。
+    // 声明在 getContextCompat **之后**定义的闭包，这里用函数声明提升引用，避免时序问题。
+    triggerSlash: (...args) => triggerSlashCompat(...args),
   });
+  window.getContext = getContextCompat;
+  // [S5-GDEP3 2026-10-16] 卡内 triggerSlash 缺口补齐（承接 REPORT_S5架构重建评审 §3.1 /
+  // SPEC_ST兼容层修复计划 T2 / OPEN_ISSUES.md [P2-10] 第 1 项）。
+  //
+  // 缺口事实（实测复核）：沙箱轨 sandbox.ts:3605 与主页面 getContext 轨
+  // getContext.ts:2517 都有 triggerSlash（且前置 runPalinkSlashCommands 的 9 条 Palink 命令），
+  // 唯独**单间轨（卡内）没有** —— getContextCompat 无此字段，runtime-body 全段 0 命中。
+  // 后果：S5 评审总表里「9 条命令逐条实跑 = 通过」只在沙箱轨成立，容易被读成卡内也能用。
+  //
+  // 修法：桥到宿主，由宿主调**现成的共享实现**（不重写命令逻辑）：
+  //   命中 Palink 命令 → 返回其结果；未命中（null）→ 宿主回落 executeSlashCommandCompat
+  //   （与沙箱轨/getContext 轨完全同源，见 getContext.ts:2518-2520）。
+  // 依赖边界：不读任何大堂注入物，只走 requestParent 这条既有 RPC 通道。
+  const triggerSlashCompat = async (command) => {
+    const text = String(command ?? '').trim();
+    if (!text) return '';
+    try {
+      const response = await requestParent('runPalinkSlash', { command: text });
+      if (response && response.success === false) return '';
+      return response && typeof response.result === 'string' ? response.result : '';
+    } catch (e) {
+      // 不把 RPC 异常抛给卡脚本：宿主侧 handleSmartCardCompatRequest 已有兜底，
+      // 这里再拦一层是防御（对齐同帧 getLorebookEntriesCompat 的降级口径）。
+      post({ type: 'log', level: 'warn', message: 'triggerSlash 桥接失败：' + String(e && e.message || e) });
+      return '';
+    }
+  };
+  setCompatFunction('triggerSlash', triggerSlashCompat);
+  window.triggerSlashWithResult = triggerSlashCompat;
   window.getContext = getContextCompat;
   window.SillyTavern = window.SillyTavern || {};
   window.SillyTavern.libs = {
