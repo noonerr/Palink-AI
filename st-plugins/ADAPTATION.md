@@ -221,8 +221,8 @@ iframe 是 `sandbox="allow-scripts"` 的 **opaque-origin** 帧（未信任卡不
 
 | 缺口 | 状态 | 说明 |
 |---|---|---|
-| 卡内 `triggerSlash` | ✅ **2026-10-16 已补** | 单间轨 `getContext()` 此前不暴露 `triggerSlash`，已桥到宿主共享实现（与沙箱轨/主页面 getContext 轨同源） |
-| MVU 世界书读取失败 | ✅ **2026-10-16 已修** | `loadWorldInfo` 原为恒返 `{}` 的空桩，命中 MVU 的 `isPlainObject` 判据抛错；现改为经 `getCharWorldbook` 桥取真实条目（`entries` 为对象形状） |
+| 卡内 `triggerSlash` | ✅ **2026-10-16 已补 + 已真机复验** | 单间轨 `getContext()` 此前不暴露 `triggerSlash`，已桥到宿主共享实现（与沙箱轨/主页面 getContext 轨同源）。真机实测：帧内 `window.triggerSlash` 与 `getContext().triggerSlash` 均为 function |
+| MVU 世界书读取失败 | ✅ **2026-10-16 已修 + 已真机复验** | `loadWorldInfo` 原为恒返 `{}` 的空桩，命中 MVU 的 `isPlainObject` 判据抛错；现改为经 `getCharWorldbook` 桥取真实条目（`entries` 为对象形状）。真机实测：`entryCount: 19`，MVU `worldbookReadFailed` **66 → 0** |
 | quick-reply `Failed to fetch` | ⛔ 阻塞中 | 其 `SettingsUi.render()` 要 fetch 的端点不在 iframe fetch 白名单；且**即便修好，UI 也落在离屏容器里** ⇒ 依赖本节口径变化，暂不投入 |
 | 一批「假实现」静默失效 | ✅ **2026-10-16 已显性化** | 世界书 `entries` 恒空、`writePresetExtensionField` 假成功、preset 名硬编码等，被调用时经 `reportDiagnostic`（code=`st_api_stub`）留痕并 toast 提示，不再完全静默 |
 
