@@ -170,3 +170,61 @@
 - **轻后端插件**（memory、caption、translate、expressions、vectors、tts）需补少量端点/垫片，工作量可控。
 - **stable-diffusion** 不是"原理性不可行"——它和 caption/translate 一样是外部 API 客户端，ST 的 `/api/sd/*` 本就是转发代理（Palink 已有 `/api/openai/generate-image` 同族先例）。补一套转发代理属 **P1**，且只需覆盖你实际用的 SD WebUI/ComfyUI，不必做全 30 个 provider。
 - 缺失的 4 个扩展（图像提示词模板 / qprompt / 小白X / 酒馆助手）不在本 ST 1.18.0 `extensions/` 内，需你提供来源后再逆向。
+
+---
+
+## 六、⚠️ 已知限制：ST 扩展 UI 在角色卡内不可见（设计决策，非 bug）
+
+> **本节是产品口径说明，写给「以为这是 bug」的人。** 2026-10-15 用户拍板采纳口径 c。
+
+### 6.1 现象
+
+ST 插件在**角色卡（智能卡）内部**执行时，它们的挂载容器是**离屏渲染**的：节点存在于 DOM、可被测量、插件的 `append()` 不会报错，但**用户在卡内看不到插件面板**。
+
+已确认在用的离屏容器清单（源码：`frontend/src/components/ui/custom/smart-card-runtime/runtime-body/part-03.ts` 的 `ensureStPluginMountPointsCompat` + `ensureStExtensionSettingsHostCompat`）：
+
+- 9 个插件容器：`#qr_container`、`#regex_container`、`#tts_container`、`#vectors_container`、`#caption_container`、`#translation_container`、`#summarize_container`、`#sd_container`、`#expressions_container`
+- 2 个浮动 wand 容器：`#translate_wand_container`、`#token_counter_wand_container`
+- 2 个设置容器：`#extensions_settings`、`#extensions_settings2`
+
+样式为 `position:fixed; top:-9999px; left:-9999px; visibility:hidden`。
+**刻意不用 `display:none`** —— 部分 ST 插件用 `offsetWidth`/`offsetHeight` 判断可见性，
+用 `display:none` 会让它们认为自己没被挂载而走降级分支。
+
+### 6.2 为什么这样设计
+
+2026-10-12 起的「三轨并一轨」架构重建（S0–S5）确定：**所有不可信代码只准在 iframe 单间里跑**，
+主页面只当"服务员"。角色卡脚本与 ST 插件默认都进单间轨（iframe）执行。
+
+iframe 是 `sandbox="allow-scripts"` 的 **opaque-origin** 帧（未信任卡不给 `allow-same-origin`）。
+面板要「可见」有两条路：
+
+| 方案 | 结论 |
+|---|---|
+| (a) 把挂载点桥回主页面 | **已排除**：与 S5「不可信代码只准在单间跑」的方向矛盾 |
+| (b) 单间轨自立门户（面板在卡内可见） | **登记为未做项**，待真实需求出现再开 |
+| (c) 接受不可见，只保留命令/API 能力 | ✅ **当前采纳（2026-10-15 用户拍板）** |
+
+### 6.3 用户实际能得到 / 得不到什么
+
+**能得到**：
+- 插件 `init()` 正常执行，不会因容器缺失而崩（容器在，只是离屏）；
+- 斜杠命令正常注册与调用（实测 7 条）；
+- `getContext()` / `window.SillyTavern` 等 API 面可用（实测 iframe window 上 121 个常用 API 命中 93 个）；
+- 卡内 `triggerSlash` 已补齐（2026-10-16，见下）；
+- 卡内 `setExtensionPrompt` 注入的提示词会进入生成管道。
+
+**得不到**：
+- 在角色卡区域内看到插件的图形面板/按钮/设置抽屉。
+
+### 6.4 同期已知缺口（诚实登记，别当新 bug）
+
+| 缺口 | 状态 | 说明 |
+|---|---|---|
+| 卡内 `triggerSlash` | ✅ **2026-10-16 已补** | 单间轨 `getContext()` 此前不暴露 `triggerSlash`，已桥到宿主共享实现（与沙箱轨/主页面 getContext 轨同源） |
+| MVU 世界书读取失败 | ✅ **2026-10-16 已修** | `loadWorldInfo` 原为恒返 `{}` 的空桩，命中 MVU 的 `isPlainObject` 判据抛错；现改为经 `getCharWorldbook` 桥取真实条目（`entries` 为对象形状） |
+| quick-reply `Failed to fetch` | ⛔ 阻塞中 | 其 `SettingsUi.render()` 要 fetch 的端点不在 iframe fetch 白名单；且**即便修好，UI 也落在离屏容器里** ⇒ 依赖本节口径变化，暂不投入 |
+| 一批「假实现」静默失效 | ✅ **2026-10-16 已显性化** | 世界书 `entries` 恒空、`writePresetExtensionField` 假成功、preset 名硬编码等，被调用时经 `reportDiagnostic`（code=`st_api_stub`）留痕并 toast 提示，不再完全静默 |
+
+**参考**：`docs/_active/report/REPORT_S5架构重建评审_ST兼容性实测与打分_2026-10-16.md`、
+`docs/_active/spec/SPEC_ST兼容层修复计划_承接S5评审_2026-10-16.md`。

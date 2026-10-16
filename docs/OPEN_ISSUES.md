@@ -402,14 +402,15 @@
 
 | # | 项 | 档位 | 现在该做什么 |
 |---|---|---|---|
-| 1 | ST 扩展 UI 可见性：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但用户在卡内**看不到面板** | **P2** | 用户 2026-10-15 拍板暂用 (c)「接受不可见、只保留命令/API 能力」；**(b) 单间轨自立门户（面板在卡内可见）登记为未做项**，待真实需求再开。(a) 挂载点桥回主页面与 S5 方向矛盾，已排除 |
+| 1 | ST 扩展 UI 可见性：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但用户在卡内**看不到面板** | **P2** | 用户 2026-10-15 拍板暂用 (c)「接受不可见、只保留命令/API 能力」；**(b) 单间轨自立门户（面板在卡内可见）登记为未做项**，待真实需求再开。(a) 挂载点桥回主页面与 S5 方向矛盾，已排除。**2026-10-16 已把该口径写进用户向文档** `st-plugins/ADAPTATION.md` §六（含容器清单 + 得/不得清单），防止被当 bug 报 |
 | 3 | `setChatMessages` 未落库（原桥会 `POST /api/chats/save`，COT 格式化 swipe 靠它持久） | **P2** | 已 `recordStubHit('setChatMessages:persist')` 登记（降级面板可见，未静默）；S5 真机后按实际影响决定是否下沉 |
-| 4 | MVU 世界书读取失败（默认态 14 次/会话；已核实非数据缺失、非 S3 回归；根因未定位） | **P2** | S5 前做一次真机诊断（第一嫌疑：iframe 内世界书内容读取 API 的名字→id 解析或内容下发） |
-| 5 | quick-reply 未通（`SettingsUi.render()` 内 iframe 侧 `Failed to fetch`） | **P2** | 与第 1 条同源（UI 落在离屏容器）⇒ 随 UI 口径一并处理 |
+| 4 | ~~MVU 世界书读取失败（默认态 14 次/会话）~~ | — | ✅ **2026-10-16 已修（未真机）**：根因从真机卡 bundle 挖实 —— `runtime-body/part-08.ts` 的 `loadWorldInfo` 是恒返 `{}` 的空桩，命中 MVU `!_.isPlainObject(_.get(n,'entries'))` 判据必抛。现改为经 `getCharWorldbook` 桥取真实条目（`entries` 为**对象**形状，数组会假阴性）。**待 Docker 起来后真机复验判据：console `无法读取角色世界书` 命中数 66 → 0** |
+| 5 | quick-reply 未通（`SettingsUi.render()` 内 iframe 侧 `Failed to fetch`） | **P2** | 与第 1 条同源（UI 落在离屏容器）⇒ **维持阻塞**：用户 2026-10-16 再次确认口径 c，修好 fetch 白名单其 UI 也仍不可见，投入不值 |
 | 6 | ~~`triggerSlash` 返回值复验（大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`）~~ | — | ✅ **已随大堂删除而关闭**：该文件已于 S5 整文件删除（`f5c1a86`），bug 对象不存在；新共享实现本就取 `result.output` |
 
 - ✅ **2026-10-15 已关闭原表第 2 项**：「8 条大堂前置命令未下沉」已施工并合入主干（merge `6688343`，`slash-commands-compat.ts` + 三轨共调），已回填 TODOS.md「三轨并一轨」条目。
-- ✅ **S5 已于 2026-10-15 完工并待合入**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，分支 `s5-delete-lobby` 未 merge）。本表**第 3/4/5 项仍开放**，第 6 项已随大堂删除关闭；S5 新发现的两处后续项见 **[P2-10]**。
+- ✅ **2026-10-16 新增关闭一项**：**卡内 `triggerSlash` 缺口已修**（本表 [P2-10] 第 1 项同源）。帧侧 `getContext().triggerSlash` + `window.triggerSlash` 已桥到宿主 `runPalinkSlash` action，命中走 `runPalinkSlashCommands`、未命中回落 `executeSlashCommandCompat`（与沙箱轨/getContext 轨同源）。单测 22 例覆盖，**未真机**。
+- ✅ **S5 已于 2026-10-15 完工并待合入**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，分支 `s5-delete-lobby` 未 merge）。本表**第 3 项仍开放**，第 4/5/6 项已关闭或阻塞；S5 新发现的两处后续项见 **[P2-10]**。
 - **背景与证据**：交接 `docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；补测报告 §7.4/§7.5；TODOS.md「三轨并一轨」条目下的同名单。
 - ⚠️ **别误判**：默认部署下 Extras 4 条新端点恒 **502**（转发目标 ST sidecar 已随 st-native 删除，`silly_tavern.py:6238` 注释明写）——这是设计使然，不是"补齐失败"。
 - **5 个测试插件**：用户 2026-10-15 拍板**保留**（复测靶子；删除路径见补测报告 §2.4）。
@@ -420,11 +421,16 @@
 
 | # | 项 | 档位 | 现在该做什么 |
 |---|---|---|---|
-| 1 | **单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash`** | **P2** | 已证伪为 S5 引入（单间轨产物 `palink-smart-card-runtime-1a15e6820ae7.js` 的 sha256 与文件名内容哈希一致且 S5 前后同名，本来就不含 `triggerSlash`）。若将来有插件经 iframe 的 `getContext().triggerSlash` 调用，需另立任务补；本次未动 |
-| 2 | **`setExtensionPrompt` 的行为测试随大堂专测删除后无存活轨等价覆盖** | **P2** | S5 删掉了 `plugin-runtime-extprompt-contract.test.ts`（169 行）等 4 个大堂专测，但 `setExtensionPrompt` **在存活的单间轨里仍在**（`legacy-st-sim-parts/part-b.ts:443/:750`、`runtime-body/part-06.ts:795`、`part-08.ts:174`）。目前只剩 `getcontext-parity.test.ts` 的"存在性"校验，**没有行为测试** ⇒ 建议补一条单间轨等价的行为契约测试 |
+| 1 | **单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash`** | **P2** | ✅ **2026-10-16 已修（未真机）**：帧侧 `getContextCompat` 新增 `triggerSlash`（宿主桥 → `runPalinkSlash` action → `runPalinkSlashCommands`，未命中回落 `executeSlashCommandCompat`），`window.triggerSlash` 同步注册。设计与证据见 `SPEC_ST兼容层修复计划_承接S5评审_2026-10-16.md` §3.2/§8 |
+| 2 | **`setExtensionPrompt` 的行为测试随大堂专测删除后无存活轨等价覆盖** | **P2** | ✅ **2026-10-16 已补**：新增 `frontend/src/components/ui/custom/smart-card-runtime/__tests__/st-compat-fix-batch-contract.test.ts`（D 组 5 例），覆盖 set→get 闭环 + `extensionPrompts` postMessage 上报 + 宿主 `promptInjection.setSourcePrompts` 消费 + 按 position/depth/role 过滤 |
 
 - **背景**：S5 报告 `docs/_active/report/REPORT_s5-delete-lobby_2026-10-15.md` §9；删码与测试清理提交 `f5c1a86` / `fc6aa9a`。
 - ✅ S5 本体已通过主控复核（门禁 74 文件 / 960 passed / 3 skipped / 0 failed + tsc 0；后端 2060/23/0；真机入口 chunk 的大堂指纹 0 命中、存活指纹命中）。
+- 📌 **2026-10-16 同批新增未闭环项**（用户已拍板口径 A，实现待下批）：
+  `setChatMessage`/`deleteMessage` 不在手势闸门集合内 —— 经论证**不加剧门**（opaque-origin iframe 感知不到父页面点击，
+  而 MVU 每轮都在无手势上下文里调 `setChatMessage`，加剧门会打断变量更新主链路，见
+  `SmartCardCompatController.ts:67-79` 的兼容性论证），改为**调用留痕**：宿主侧 `recordStubHit` 登记，
+  插件管理页可见「卡在无人点击时改了消息」。**尚未实现。**
 
 ---
 
