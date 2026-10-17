@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-17 11:44**　｜　扫描到 **340** 份 markdown
+> **生成时间：2026-10-17 11:46**　｜　扫描到 **340** 份 markdown
 
 ---
 
@@ -277,8 +277,8 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`REPORT_s3-acceptance-gap_2026-10-14.md`](./_active/report/REPORT_s3-acceptance-gap_2026-10-14.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-14 |
 | [`REPORT_s3-merge_2026-10-14.md`](./_active/report/REPORT_s3-merge_2026-10-14.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-14 |
 | [`REPORT_s4-split_2026-10-15.md`](./_active/report/REPORT_s4-split_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
-| [`REPORT_s5-arch-e2e_2026-10-15.md`](./_active/report/REPORT_s5-arch-e2e_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-16 |
-| [`REPORT_s5-delete-lobby_2026-10-15.md`](./_active/report/REPORT_s5-delete-lobby_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
+| [`REPORT_s5-arch-e2e_2026-10-15.md`](./_active/report/REPORT_s5-arch-e2e_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-17 |
+| [`REPORT_s5-delete-lobby_2026-10-15.md`](./_active/report/REPORT_s5-delete-lobby_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-17 |
 | [`REPORT_sandbox-dep_2026-10-15.md`](./_active/report/REPORT_sandbox-dep_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
 | [`REPORT_slash-sink_2026-10-15.md`](./_active/report/REPORT_slash-sink_2026-10-15.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-15 |
 | [`REPORT_一次性并轨施工方案与回退计划_2026-10-12.md`](./_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-12 |

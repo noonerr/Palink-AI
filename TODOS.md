@@ -29,7 +29,7 @@
   - **沙箱轨解耦**（S5 前置）：merge `aa106eb`（`[S5-GDEP1]` 共享实现）
   - **Extras 转发**：merge `3df84cf`（`/api/summarize` + `/api/extra/translate` + `/api/translate/{provider}`；默认部署恒 502，sidecar 已随 st-native 删除）
   - **合并后门禁（主控实跑）**：前端 78 文件 / **1012 passed / 3 skipped / 0 failed** + `tsc` 0；后端 **2060 passed / 23 skipped / 0 failed**；目录 `--check` OK（332 docs）
-  - **bundle**：`_palink-s0-20261012/palink_three-tracks-merge_20261015b.bundle`（**8 refs**，含 `slash-sink`；complete history）
+  - **bundle**：曾存 `_palink-s0-20261012/palink_three-tracks-merge_20261015b.bundle`（8 refs）—— ⚠️ **该目录已不存在（2026-10-17 核查）**，出仓现状见下方未做项第 3 条。
   - **S5 前置·大堂命令下沉**（2026-10-15 追加）：merge `6688343` —— 新建 `lib/sillytavern/slash-commands-compat.ts`
     承载 7 分支 / 9 命令名（`/branch-create`、`/checkpoint-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、
     `/model`、`/profile`、`/preset`、`/profile-list`）；**三轨一致**（大堂轨改调共享实现、沙箱轨 `sandbox.ts:3606`
@@ -85,7 +85,7 @@
      验收：**42 passed / 0 failed**（`storage-isolation-contract` 21 含 B1:221 转绿 + 新增 `s2-storage-migration.test.ts` 21）；合并后全量门禁 **980 passed / 0 failed / 3 skipped**、tsc 0。
      ⚠️ **已知窗口（已随 S5 关闭）**：双写期间大堂轨 `CharacterChat.tsx:1673/1682/1705` 曾在生产运行并继续写旧键，而单间轨一旦迁过新键就不再回读旧键 ⇒ 大堂轨**后续**写进旧键的增量永远读不到。**S5 删大堂轨（`f5c1a86`，2026-10-15）已关闭该窗口**。
      ⚠️ 另注：`.env` 无 `MEMORY_EMBEDDING_PROVIDER` ⇒ 默认 `fastembed` + `bge-small-zh-v1.5`（与 backend OOM 排查相关，见 `REPORT_be-oom-static_2026-10-14.md` 订正块）。
-  3. **分支出仓**：push origin 或 `git bundle` 存仓库外 —— 目前分支仅存本地，磁盘事故即全丢。
+  3. **分支出仓（未做 · 2026-10-17 复核升级）**：push origin 或 `git bundle` 存**仓库外**（另一块盘/另一台机）—— 目前分支 `three-tracks-merge-20261012` 仅存本地，origin 只有 `master` 与 `st-plugin-compat-20260727`；原 bundle 目录已消失 ⇒ **S0 至今全部工作（含 S5/T2-T5）仅存于本机磁盘，磁盘事故即全丢**。⚠️ 是否 push 到 `origin`（GitHub 公开仓 noonerr/Palink-AI）属用户决策，动前先问。
   4. **T2 之后的根治方案**：**消息窗口化**（抄 ST `chat_truncation`，只增不减、零重建）
      —— 已另立条目，见下方「[未开工·建议] 消息窗口化」。落地后 G8（iOS 档位）可直接关掉。
 - ✅ **G9 已裁决（2026-10-14，丙1 实测 + 主控复核）**：`sillyTavernPluginRuntime.ts` 大堂轨注入段 = `injectIntoContainer` 476–2244 = **1769 行 / 71.42%**（全文 2477 行；候选存活段仅 103 行 / 4.16%，三个导出接口全仓零外部消费）⇒ **S4 跳过该文件**，S5 删完大堂段后只剩约 700 行，自然满足 ≤1200 行门禁。证据：`REPORT_ro-survey_2026-10-14.md`。
