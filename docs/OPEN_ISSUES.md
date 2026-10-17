@@ -430,14 +430,21 @@
   `setChatMessage`/`deleteMessage` 不在手势闸门集合内 —— 经论证**不加剧门**（opaque-origin iframe 感知不到父页面点击，
   而 MVU 每轮都在无手势上下文里调 `setChatMessage`，加剧门会打断变量更新主链路，见
   `SmartCardCompatController.ts:67-79` 的兼容性论证），改为**调用留痕**：宿主侧 `recordStubHit` 登记，
-  插件管理页可见「卡在无人点击时改了消息」。**尚未实现。**
+  插件管理页可见「卡在无人点击时改了消息」。
+  ✅ **2026-10-17 已实现（主控 `6d720fd`）**：落点两处 —— ① `getContext.ts` 的 `setChatMessages:persist`
+  由**逐次**登记改为**会话级**（`recordStubHitOnce`，消 MVU 每轮调用造成的计数膨胀噪音）；
+  ② `sandbox.ts` 的 `deleteChatMessages` 补留痕（其桥 `window.deleteChatMessages` 由大堂轨注入，
+  S5 后已无赋值 ⇒ 现恒定返回 false，此前只 `console.warn`，属静默失效）。
+  守卫见 `frontend/src/lib/plugin-system/__tests__/compat-stub-registry-once.test.ts`（7 例）。
+  ⚠️ 注意：本项只做「留痕」，**落库（持久化）缺口仍在**（重载后丢失），是否下沉 `/api/chats/save`
+  仍待 S5 真机影响评估后决定。
 
 ### [P2-11] 审计遗留两项（2026-10-17 登记 · 均有前置依赖，勿直接开工）
 
 | # | 项 | 档位 | 现在该做什么 |
 |---|---|---|---|
 | 1 | **Phase5 39 个主页面桩登记进 stats**（T1 方案③） | **P2** | ⛔ **有前置**：会把 `getcontext-parity.test.ts` 的 `PALINK_ALLOWED_NO_OPS` 从 19 推过预算 20 ⇒ 必须**先单独立项评估**（要么扩预算并说明，要么分批登记），评估前不动手 |
-| 2 | **T5 口径 A：`setChatMessage` / `deleteMessage` 调用留痕**（不加闸门） | **P2** | ⛔ **有前置**：口径 A 已拍板（留痕、不加闸门），但**登记粒度未定** —— MVU **每轮**都调 `setChatMessage`，若逐次 `recordStubHit` 会在插件管理页给出一个持续膨胀的计数，淹没其他真信号。**先定粒度再动手**（主控建议：每个 API **每会话首次调用登记一次**，后续静默） |
+| 2 | ~~**T5 口径 A：`setChatMessage` / `deleteMessage` 调用留痕**（不加闸门）~~ | — | ✅ **已做（2026-10-17，主控 `6d720fd`）**：新增 `recordStubHitOnce`（每桩名**每会话只登记一次**，后续静默）；落点两处 —— `getContext.ts` 的 `setChatMessages:persist` 由逐次改为会话级（消噪音），`sandbox.ts` 的 `deleteChatMessages` 补留痕（S5 后其桥 `window.deleteChatMessages` 已无注入方 ⇒ 恒定返回 false，此前只 `console.warn`，属静默失效）。守卫 7 用例 + 改坏证明 2 红/还原 7 绿 |
 
 - **来源**：并行 agent 的收尾审计（2026-10-17），四项"明确没做"中本表收录两项；
   另两项：**T7 quick-reply** 已按口径 c 决定不做（UI 仍落在离屏容器，投入不值）、
