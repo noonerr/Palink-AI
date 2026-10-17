@@ -432,6 +432,23 @@
   `SmartCardCompatController.ts:67-79` 的兼容性论证），改为**调用留痕**：宿主侧 `recordStubHit` 登记，
   插件管理页可见「卡在无人点击时改了消息」。**尚未实现。**
 
+### [P2-11] 审计遗留两项（2026-10-17 登记 · 均有前置依赖，勿直接开工）
+
+| # | 项 | 档位 | 现在该做什么 |
+|---|---|---|---|
+| 1 | **Phase5 39 个主页面桩登记进 stats**（T1 方案③） | **P2** | ⛔ **有前置**：会把 `getcontext-parity.test.ts` 的 `PALINK_ALLOWED_NO_OPS` 从 19 推过预算 20 ⇒ 必须**先单独立项评估**（要么扩预算并说明，要么分批登记），评估前不动手 |
+| 2 | **T5 口径 A：`setChatMessage` / `deleteMessage` 调用留痕**（不加闸门） | **P2** | ⛔ **有前置**：口径 A 已拍板（留痕、不加闸门），但**登记粒度未定** —— MVU **每轮**都调 `setChatMessage`，若逐次 `recordStubHit` 会在插件管理页给出一个持续膨胀的计数，淹没其他真信号。**先定粒度再动手**（主控建议：每个 API **每会话首次调用登记一次**，后续静默） |
+
+- **来源**：并行 agent 的收尾审计（2026-10-17），四项"明确没做"中本表收录两项；
+  另两项：**T7 quick-reply** 已按口径 c 决定不做（UI 仍落在离屏容器，投入不值）、
+  **pre-commit hook** 已修（见下）。
+- ✅ **已修（不计入待办）**：`.githooks/pre-commit` 原先试 `python`，而本机 `python` 是微软商店空壳
+  （`AGENTS.md` §3：exit=49、零输出）⇒ 其他 agent 的 shell 里 `command -v python` 命中空壳、
+  扫描静默失败、`git commit` 被拦下且无提示。已改为 **`py -3` 优先、`python` 兜底且带功能校验**
+  （提交 `a8d684e`，该笔提交即由新 hook 端到端验证通过）。
+  ⚠️ 其余"裸 `python`"只出现在 `scripts/autotune.py` / `scripts/browser_smoke_test.py` 的
+  **用法注释**里（非可执行代码），按 `AGENTS.md` §3 口径应改成 `py`，属可选清理。
+
 ---
 
 ## P3 已知 · 主动不做

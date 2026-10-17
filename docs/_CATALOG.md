@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-16 11:11**　｜　扫描到 **340** 份 markdown
+> **生成时间：2026-10-17 11:04**　｜　扫描到 **340** 份 markdown
 
 ---
 
@@ -120,7 +120,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`HANDOFF_项目全面体检_2026-09-03.md`](./HANDOFF_项目全面体检_2026-09-03.md) | `HANDOFF_` | 2026-09 | 2026-09-01 | 口径已作废 | 2026-10-03 |
 | [`HOTFIX完工报告_安全批次六项_2026-08-24.md`](./HOTFIX完工报告_安全批次六项_2026-08-24.md) | `其他` | 2026-08 | 2026-08-01 | — | 2026-08-24 |
 | [`MOBILE_ST_COMPAT_VERIFY_2026-08-12.md`](./MOBILE_ST_COMPAT_VERIFY_2026-08-12.md) | `其他` | 2026-08 | 2026-10-01 | 已作废 | 2026-10-08 |
-| [`OPEN_ISSUES.md`](./OPEN_ISSUES.md) | `OPEN_` | — | 2026-10-01 | 已完成 | 2026-10-16 |
+| [`OPEN_ISSUES.md`](./OPEN_ISSUES.md) | `OPEN_` | — | 2026-10-01 | 已完成 | 2026-10-17 |
 | [`OPEN_ISSUES_窄屏卡片三修已上线_首屏入口包未解决_2026-10-05.md`](./OPEN_ISSUES_窄屏卡片三修已上线_首屏入口包未解决_2026-10-05.md) | `OPEN_` | 2026-10 | 2026-10-01 | — | 2026-10-05 |
 | [`PALINK_ST_AGENT_TODO.md`](./PALINK_ST_AGENT_TODO.md) | `PALINK_` | — | — | — | 2026-07-23 |
 | [`PALINK_ST_COMPAT_EXECUTION_SPEC.md`](./PALINK_ST_COMPAT_EXECUTION_SPEC.md) | `PALINK_` | — | 2026-06-01 | — | 2026-07-07 |
