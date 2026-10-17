@@ -27,7 +27,7 @@
   - S2 `ebb34d6`（tag `s2-done`）｜S3 `b38efc4`（tag `s3-done`）｜S3 补测 `d06b728`+`355e0ce`（tag `s3-gap-done`/`s3-shim-done`，真机 init 4/5 + 7 条斜杠命令）
   - **S4 拆分**：merge `34a7fa0`（`runtime-body/part-01..08.ts` + `frame-shim/legacy-st-sim-parts/part-a..c.ts`，入口 292/27 行，全部 ≤1200；**四份产物字节同一性 `f5d7089b`/`f710ed06`/`1a15e682`/`99629d0c` 全等，合并后在主干复核仍成立**）
   - **沙箱轨解耦**（S5 前置）：merge `aa106eb`（`[S5-GDEP1]` 共享实现）
-  - **Extras 转发**：merge `3df84cf`（`/api/summarize` + `/api/extra/translate` + `/api/translate/{provider}`；默认部署恒 502，sidecar 已随 st-native 删除）
+  - **Extras 转发**：merge `3df84cf`（`/api/summarize` + `/api/extra/translate` + `/api/translate/{provider}`；**代码已合入但后端镜像未重建 ⇒ 2026-10-17 实测线上为 404**，"默认部署恒 502"是 rebuild 生效后的设计形态，详见 `OPEN_ISSUES.md` [P1-12]）
   - **合并后门禁（主控实跑）**：前端 78 文件 / **1012 passed / 3 skipped / 0 failed** + `tsc` 0；后端 **2060 passed / 23 skipped / 0 failed**；目录 `--check` OK（332 docs）
   - **bundle**：曾存 `_palink-s0-20261012/palink_three-tracks-merge_20261015b.bundle`（8 refs）—— ⚠️ **该目录已不存在（2026-10-17 核查）**，出仓现状见下方未做项第 3 条。
   - **S5 前置·大堂命令下沉**（2026-10-15 追加）：merge `6688343` —— 新建 `lib/sillytavern/slash-commands-compat.ts`
