@@ -35,7 +35,7 @@ import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import { api, getCsrfToken } from '@/services/api';
 import { personaManager } from '@/lib/personas/manager';
 import { contextSetterRegistry, functionToolRegistry } from '../plugin-system/sandbox';
-import { recordStubHit } from '../plugin-system/compat-stub-registry';
+import { recordStubHit, recordStubHitOnce } from '../plugin-system/compat-stub-registry';
 import { toast } from 'sonner';
 import { i18nManager } from '../i18n';
 import Handlebars from 'handlebars';
@@ -1737,7 +1737,10 @@ export function applyStChatMessages(
       window.dispatchEvent(new CustomEvent('palink:chatMessagesUpdated'));
     }
 
-    recordStubHit(
+    // [T5 口径 A 2026-10-17] 用**会话级**留痕：MVU 等卡脚本每轮都调 setChatMessages，
+    // 逐次登记会让插件管理页出现持续膨胀的计数（淹没其他降级信号）⇒ 每会话只记一次。
+    // 口径 A = 「留痕、不加闸门」，所以这里只登记、不做任何拦截。
+    recordStubHitOnce(
       'setChatMessages:persist',
       '仅写内存态（runtime.context.chat + messageManager），未经 /api/chats/save 落库，重载后丢失；待主控确认是否下沉落库',
     );

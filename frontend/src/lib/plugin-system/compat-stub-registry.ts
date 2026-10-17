@@ -22,6 +22,8 @@ export interface CompatStubStat {
 
 const stats = new Map<string, CompatStubStat>();
 const warnedNames = new Set<string>();
+/** `recordStubHitOnce` 的会话级去重集合（由 resetCompatStubStats 清空）。 */
+const onceKeys = new Set<string>();
 
 export const COMPAT_STUB_WINDOW_KEY = '__palinkCompatStats';
 
@@ -61,6 +63,24 @@ export function recordStubHit(name: string, detail?: string): void {
   }
 }
 
+/**
+ * **会话级**只登记一次（同一桩名的后续调用静默）。
+ *
+ * 为什么要这个变体：有些桩是"高频调用但缺口恒定"的 —— 典型是
+ * `setChatMessages:persist`（MVU 每轮都调 setChatMessages）。若逐次
+ * `recordStubHit`，插件管理页会给它一个持续膨胀的计数（几百上千），
+ * 把其他真正需要看的降级信号淹没掉 —— **比不登记更吵**。
+ * 而留痕的目的是"让缺口可见"，不是"统计调用频次" ⇒ 一个桩名每会话记一次就够。
+ *
+ * 会话边界：`resetCompatStubStats()`（切会话 / 手动清除）或页面重载。
+ */
+export function recordStubHitOnce(name: string, detail?: string): void {
+  const key = String(name || 'unknown');
+  if (onceKeys.has(key)) return;
+  onceKeys.add(key);
+  recordStubHit(key, detail);
+}
+
 /** 读取当前统计（只读视图，供 UI 渲染） */
 export function getCompatStubStats(): ReadonlyMap<string, CompatStubStat> {
   return stats;
@@ -70,5 +90,6 @@ export function getCompatStubStats(): ReadonlyMap<string, CompatStubStat> {
 export function resetCompatStubStats(): void {
   stats.clear();
   warnedNames.clear();
+  onceKeys.clear();
   syncWindow();
 }

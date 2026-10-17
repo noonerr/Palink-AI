@@ -30,7 +30,7 @@ import { SlashCommandEngine } from '../slash-engine';
 // 模块解析失败的降级登记：与 card-script-runner.ts 同口径，console.warn 会被生产
 // 产物的 terser drop_console 剥掉，只有登记进 window.__palinkCompatStats 才能
 // 在插件管理页降级统计面板被看见。
-import { recordStubHit } from './compat-stub-registry';
+import { recordStubHit, recordStubHitOnce } from './compat-stub-registry';
 import {
   globalExtensionSettings,
   getExtensionSettingsNs,
@@ -3694,6 +3694,10 @@ export class PluginSandbox {
       },
       // [ST-ALIGN] deleteChatMessages：桥接经典轨真实现（映射索引→消息 id 调删除 API）。
       // ⚠ UI 刷新依赖宿主监听 message_deleted，主 UI 未监听前删除后需手动刷新。
+      // ⚠ [S5 后 2026-10-15] 原先的桥 `window.deleteChatMessages` 由**大堂轨**注入，
+      //   S5 删大堂后全仓已无赋值 ⇒ 本函数现在**恒定**走下面的"无桥接"分支（返回 false）。
+      //   [T5 口径 A 2026-10-17] 这是静默失效（插件拿到 false 但用户看不到）⇒ 补会话级留痕；
+      //   口径 A = 「留痕、不加闸门」，所以只登记、不拦截。
       deleteChatMessages: async (ids?: any) => {
         try {
           const w = window as any;
@@ -3702,9 +3706,17 @@ export class PluginSandbox {
           }
         } catch (e) {
           console.warn('[PluginSandbox] deleteChatMessages 桥接失败:', e);
+          recordStubHitOnce(
+            'deleteChatMessages:bridge-error',
+            '桥接 window.deleteChatMessages 抛错，删除未生效（S5 后该桥已无注入方）',
+          );
           return false;
         }
         console.warn('[PluginSandbox] deleteChatMessages: 无可用桥接（window.deleteChatMessages 缺失）');
+        recordStubHitOnce(
+          'deleteChatMessages:no-impl',
+          'Palink 无批量删除消息的底层实现（S5 前由大堂轨 __palinkBridge 提供，现随大堂删除）⇒ 调用恒定返回 false，插件的删除操作静默无效',
+        );
         return false;
       },
       // getCharacter / getCurrentCharacterName / getCharacterNames / getCharData:
