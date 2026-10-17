@@ -4,13 +4,18 @@ set -eu
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 SCAN_SCRIPT="$ROOT_DIR/scripts/security/scan_staged_secrets.py"
 
-if command -v python >/dev/null 2>&1; then
-  python "$SCAN_SCRIPT"
+# [2026-10-17 修复] 原写法先试 `python`，而本机 `python` 是微软商店空壳
+# （AGENTS.md §3：exit=49、零输出）⇒ `command -v python` 命中空壳、扫描静默失败、
+# 任何 agent 的 git commit 都被拦下且看不到原因。改为：
+#   ① py -3 优先（本机真解释器，Windows Python Launcher）；
+#   ② python 仅作兜底，且**先做功能校验**（空壳过不了 `python -c`）。
+if command -v py >/dev/null 2>&1; then
+  py -3 "$SCAN_SCRIPT"
   exit $?
 fi
 
-if command -v py >/dev/null 2>&1; then
-  py -3 "$SCAN_SCRIPT"
+if command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+  python "$SCAN_SCRIPT"
   exit $?
 fi
 
