@@ -379,11 +379,30 @@
 
 ---
 
-### [P2-6] 酒馆助手 API 适配 · 交接后无人接手 · ⚠️ 2026-10-17 复核：适配代码未入库且工作区无迹
+### [P2-6] 酒馆助手（JS-Slash-Runner）适配 · 代码在、链路通，剩局部缺口（2026-10-17 复核订正）
 
-- **来源**：`TODOS.md` 标 `[已施工·待接手]`，明确写"交接给下一个 agent"、"全部未提交 git"。
-- **2026-10-17 复核**：① 交接与查验报告已落档（`e201a93` docs 提交）；② **全仓（含所有分支）未找到任何酒馆助手适配代码**——「已施工」的代码既未入库也不在工作区，实质已丢失，只剩报告。⇒ 本条从「待接手」降级为「代码已失，需重做或正式关闭」，请主控裁决。
-- ⚠️ 查验结论本身可信：见 `REPORT_酒馆助手API适配查验_2026-10-03.md`（证据密度最高的文档之一）。
+- **⚠️ 订正本表 2026-10-17 上午的错误记载**：当时本条被改写成「适配代码全仓找不到、实质已丢失」——
+  **该结论错误**（复核者搜的是**文件名**，而适配代码在 `sandbox.ts`/`plugins.py` 等内容里，文件名不含"酒馆"）。
+  当日深夜按**内容**复核，代码全部在场（明细见下），原条目已恢复订正。
+- **代码现状（2026-10-17 逐点核实）**：
+  - `frontend/src/lib/plugin-system/sandbox.ts`：`tavernVariableStore`（:54）、`TavernHelper` 全局对象
+    （:3914 对照 JS-Slash-Runner `getTavernHelper()` 结构）、`getVariables`/`replaceVariables` 真实现
+    （:3487+，klona 深拷贝/整体替换语义，对齐 `src/function/variables.ts`）、`buildWrappedCode` 全局声明（:2803-2840）
+  - `backend/app/api/plugins.py`：tavern_helper 下发豁免（:506-509）+ `_synthesize_tavern_helper_js_content`
+    （:535，script_type='script' 的 IIFE 拼接）
+  - `frontend/security-headers.conf`：CSP `unsafe-eval`（:10）
+  - 守卫：`backend/tests/test_plugin_card_ext_guard_exempt.py`（GUARD-TH-EXEMPT，`ae61ee2`）
+  - 历史：代码经 2026-08-17 git object loss 后由全树 restore（`7d5dea1`）幸存，此后一直在主干
+- **链路现状（10-06/10-08 真机检测 + 10-15/16 e2e）**：插件**能跑、主链路通**
+  （`window.Mvu` 活着、事件桥通、7 个脚本按钮已注册）；实际调用面 47 项（保守口径 31 项）中大部分真可用；
+  e2e 中该插件记 `no-init-export` 属**预期**（tavern_helper 型不走 `pluginManager.init()`，走下发豁免链）。
+- **仍开放的缺口**（按 `REPORT_酒馆助手API适配度复查与100%适配判定_2026-10-06.md` §7 动工顺序）：
+  ① 主页面 `SillyTavern` 全局字段投影（chat/name2/characterId）——A/B 实测 ~20 行只读补丁可修（报错 1→0），
+  **未落地**（iframe 侧 proxy 已有 `chat`，卡内 MVU 崩溃已覆盖；主页面侧仍缺）；
+  ② `getCharacterNames` 仍对稀疏数组 `.map()`（`sandbox.ts:3745`，10-06 §3.3 冻结风险未修）；
+  ③ 世界书全局绑定 2 项、变量写通道（需用户授权）。
+  ④ 插件两条脚本（242KB + 4MB）在 DB 的现状需 Docker 起来后复核（10-17 23:xx Docker daemon 已停）。
+- ⚠️ 查验结论本身可信：`REPORT_酒馆助手API适配查验` 系列（10-06/10-08，证据密度最高的文档之一）。
 
 ---
 
