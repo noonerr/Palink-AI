@@ -17,13 +17,13 @@
 
 ## 待办任务（进行中 / 未完成）
 
-### [进行中] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0 备料已于 2026-10-13 完成）
+### [已收官·真机复验闭环] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0–S5 全部合入 · 2026-10-16 真机复验收官）
 
 - **权威方案**：[`docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md`](./docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md)
 - **S0 基线档案**：[`docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md`](./docs/_active/report/REPORT_S0备料基线与回退演练档案_2026-10-12.md)
 - **S0 完工自检（B1–B9 逐条）**：[`docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md`](./docs/_active/report/REPORT_S0完工自检_B1-B9_2026-10-13.md)
-- **进度**：**S0 备料 = 9/9 完成**；**S1 完成（T1 ✅ / T3 ✅ / T2 ✅）**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，S1 末笔提交 `ea15a6f`。尚无 `s1-done`..`s4-done` tag（S1 三个 Task 已全部收口，`s1-done` 待打）。
-- **进度（2026-10-15 更新 · 主控实测复核）**：**S0–S4 全部完成并合入主干，只剩 S5（删大堂）未开工**。
+- **进度**：**S0 备料 = 9/9 完成**；**S1 完成（T1 ✅ / T3 ✅ / T2 ✅）**。分支 `three-tracks-merge-20261012`，tag `merge-base` → `66672a0`，S1 末笔提交 `ea15a6f`。tag 现状：`s1-done`..`s3-shim-done` + `s5-done` 均已打（S4 合并 `34a7fa0` 未单独打 tag）。
+- **进度（2026-10-16 更新 · 收官）**：**S0–S5 全部完成并合入主干，三轨并一轨收官**。
   - S2 `ebb34d6`（tag `s2-done`）｜S3 `b38efc4`（tag `s3-done`）｜S3 补测 `d06b728`+`355e0ce`（tag `s3-gap-done`/`s3-shim-done`，真机 init 4/5 + 7 条斜杠命令）
   - **S4 拆分**：merge `34a7fa0`（`runtime-body/part-01..08.ts` + `frame-shim/legacy-st-sim-parts/part-a..c.ts`，入口 292/27 行，全部 ≤1200；**四份产物字节同一性 `f5d7089b`/`f710ed06`/`1a15e682`/`99629d0c` 全等，合并后在主干复核仍成立**）
   - **沙箱轨解耦**（S5 前置）：merge `aa106eb`（`[S5-GDEP1]` 共享实现）
@@ -32,8 +32,8 @@
   - **bundle**：`_palink-s0-20261012/palink_three-tracks-merge_20261015b.bundle`（**8 refs**，含 `slash-sink`；complete history）
   - **S5 前置·大堂命令下沉**（2026-10-15 追加）：merge `6688343` —— 新建 `lib/sillytavern/slash-commands-compat.ts`
     承载 7 分支 / 9 命令名（`/branch-create`、`/checkpoint-create`、`/checkpoint-go`、`/chat-fork`、`/getchatname`、
-    `/model`、`/profile`、`/preset`、`/profile-list`）；**三轨一致**（大堂轨改调共享实现、沙箱轨 `sandbox.ts:3605`
-    与 getContext 轨 `getContext.ts:2508` 均前置共享实现）。门禁：79 文件 / **1040 passed / 3 skipped / 0 failed** + tsc 0
+    `/model`、`/profile`、`/preset`、`/profile-list`）；**三轨一致**（大堂轨改调共享实现、沙箱轨 `sandbox.ts:3606`
+    与 getContext 轨 `getContext.ts:2521` 均前置共享实现）。门禁：79 文件 / **1040 passed / 3 skipped / 0 failed** + tsc 0
   - **dist 已重建到主干**（两轮：`e0751ca` → slash-sink 合入后）：真机验证 —— 站点 `HTTP 200`（5 容器 healthy）、
     入口 chunk `index-DbvvHwvN.js` 经 HTTP 取到且**内容含新模块指纹** `Palink slash-commands`
   - ✅ **S5 已完工并合入主干**（merge `e86ad9a`，删码 `f5c1a86`，tag `s5-done`）—— **三轨并一轨收官**：
@@ -42,12 +42,17 @@
     真机：入口 chunk 中 4 项大堂指纹 0 命中、存活指纹命中（复核于合并前同一份代码）。
     ⚠️ **对方案附录 B 的显式偏离已登记**：总闸 `palink_st_plugin_main_page_injection` 随大堂一并删，
     S5 验收 #3「kill switch 三态有效」作废，替代兜底 = `git revert f5c1a86`（见 S5 报告 §6）。
-  - 📌 **S5 遗留的两项后续**（已登记 `docs/OPEN_ISSUES.md` [P2-10]）：
-    ① 单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash`（已证伪非 S5 引入）；
-    ② `setExtensionPrompt` 在存活单间轨仍在，但随大堂专测删除后**无行为测试**，建议补。
-  - ⏳ **尚未真机复验（S5 报告如实标注）**：验收 #1「故意抛错卡脚本不影响其他消息」、
-    #2「插件管理页降级可见」——建议补一次真机演练（需 Docker 在跑）。
-  - ⚠️ **未做的上线动作**：`frontend/dist` 仍服务 `355e0ce`（未重建）；backend 镜像未重建 ⇒ **S5 真机前必须重建 dist**。
+  - ✅ **S5 遗留的两项后续均已关闭**（原登记 `docs/OPEN_ISSUES.md` [P2-10]，2026-10-16 同日闭环）：
+    ① 单间轨 iframe 的 `SillyTavern.getContext()` 不暴露 `triggerSlash` —— 已由 `4956789` 修复并真机复验
+    （帧内两者均为 function，`d6d61b2` 记录）；② `setExtensionPrompt` 无行为测试 —— 已补
+    `st-compat-fix-batch-contract.test.ts`（D 组 5 例）。
+  - ✅ **S5 验收 #1/#2 已真机复验**（2026-10-16 完工，`457eea3`/`f661434`）：C 组「故意抛错卡脚本不影响他人」
+    与 D 组「插件管理页降级可见」均在 A–H 八组全过的实机评估中跑通，报告
+    `docs/_active/report/REPORT_s5-arch-e2e_2026-10-15.md`（含总表 + 未做项登记 §11.5）。
+    2026-10-17 独立复验：报告事实声明（架构接缝/API/DB/门禁/dist 载具）全部属实。
+  - ✅ **dist 已重建到 S5 后代码并完成真机**（10-15 15:13 构建，入口 `index-2sAXca_F.js`；e2e 载具考证：
+    大堂独有串在该构建 0 命中）。此后 T5 修复（`4956789` 起）又重建过，当前入口以 `dist/index.html` 为准。
+    ⇒ 原文「dist 仍服务 355e0ce、S5 真机前必须重建」已作废。
   - 权威交接：`docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；提示词：`HANDOFF_提示词_S4拆单间_2026-10-15.md`、`HANDOFF_提示词_沙箱轨解耦_2026-10-15.md`、`HANDOFF_S5提示词订正_2026-10-15.md`。
 - **门禁基线（S0 末）**：vitest **845 passed / 1 failed / 3 skipped**（唯一红条 = `storage-isolation-contract.test.ts:221`，S2 设计信号，测试名带 `[红→S2 转绿]`）；tsc **0 错误**；后端 pytest 2043 passed / 23 skipped（本阶段未碰后端）。**验收线只认 `failed = 0`（B1 预期红除外），passed 数字不是验收线。**
 - **门禁现值（S1 三笔后）**：vitest **958 passed / 1 failed / 3 skipped（962）**，唯一红仍是上面那条 S2 设计红；tsc **0 错误**；未碰后端。
@@ -78,24 +83,26 @@
      → **✅ 已完成（2026-10-14 合并，tag `s2-done`）**。提交 `0738300` + merge `ebb34d6`。
      `storage.ts` +142（新增迁移层并接进读路径）；`card-script-storage.ts` **一行未动**（继续写旧键 = 回退完整性）。
      验收：**42 passed / 0 failed**（`storage-isolation-contract` 21 含 B1:221 转绿 + 新增 `s2-storage-migration.test.ts` 21）；合并后全量门禁 **980 passed / 0 failed / 3 skipped**、tsc 0。
-     ⚠️ **已知窗口（主控核出，需登记）**：双写期间大堂轨 `CharacterChat.tsx:1673/1682/1705` 仍在生产运行并继续写旧键，而单间轨一旦迁过新键就不再回读旧键 ⇒ 大堂轨**后续**写进旧键的增量永远读不到。**S5 删大堂轨即关闭该窗口**，在那之前别拖太久。
+     ⚠️ **已知窗口（已随 S5 关闭）**：双写期间大堂轨 `CharacterChat.tsx:1673/1682/1705` 曾在生产运行并继续写旧键，而单间轨一旦迁过新键就不再回读旧键 ⇒ 大堂轨**后续**写进旧键的增量永远读不到。**S5 删大堂轨（`f5c1a86`，2026-10-15）已关闭该窗口**。
      ⚠️ 另注：`.env` 无 `MEMORY_EMBEDDING_PROVIDER` ⇒ 默认 `fastembed` + `bge-small-zh-v1.5`（与 backend OOM 排查相关，见 `REPORT_be-oom-static_2026-10-14.md` 订正块）。
   3. **分支出仓**：push origin 或 `git bundle` 存仓库外 —— 目前分支仅存本地，磁盘事故即全丢。
   4. **T2 之后的根治方案**：**消息窗口化**（抄 ST `chat_truncation`，只增不减、零重建）
      —— 已另立条目，见下方「[未开工·建议] 消息窗口化」。落地后 G8（iOS 档位）可直接关掉。
 - ✅ **G9 已裁决（2026-10-14，丙1 实测 + 主控复核）**：`sillyTavernPluginRuntime.ts` 大堂轨注入段 = `injectIntoContainer` 476–2244 = **1769 行 / 71.42%**（全文 2477 行；候选存活段仅 103 行 / 4.16%，三个导出接口全仓零外部消费）⇒ **S4 跳过该文件**，S5 删完大堂段后只剩约 700 行，自然满足 ≤1200 行门禁。证据：`REPORT_ro-survey_2026-10-14.md`。
-- 🔴 **S5 动工前必须先解决两处跨轨反向依赖**（丙1 挖出、主控逐行复核为真）：① `lib/sillytavern/getContext.ts:2275-2310` 把 `triggerSlash`/`getChatMessages`/`setChatMessages` 委托大堂轨注入的 window 桥；② `frame-shim/legacy-st-sim.ts:1106` 单间轨 shim 自己读 `window.__palinkStRuntime?.context?.stat_data`。**是单间轨依赖大堂轨**，删了大堂轨会静默失效。
+- ~~🔴 **S5 动工前必须先解决两处跨轨反向依赖**~~ → ✅ **均已处理（2026-10-15，见下条）**：① `lib/sillytavern/getContext.ts` 委托大堂轨 window 桥的三 API —— 沙箱轨解耦 `aa106eb` 已下沉为 `[S5-GDEP1]` 共享实现；② `frame-shim/legacy-st-sim.ts:1106` 读 `window.__palinkStRuntime` —— 已证伪为死表达式（恒 `{}`，S5 零行为变化）。
 - ✅ **上条状态更新（2026-10-15，勿再按旧结论施工）**：① **已解决** —— 沙箱轨解耦 merge `aa106eb`：`getContext.ts` 新增 `[S5-GDEP1]` 共享实现，`sandbox.ts` 的 `triggerSlash`/`setChatMessages` 不再读 window 桥（`setChatMessages` 的落库缺口见下方未做项第 3 条）。真影响面是**存活的沙箱轨**，不是单间轨（`smart-card-runtime/` 对该文件零 import）。② **证伪** —— `legacy-st-sim.ts:1106` 是**死表达式**：`window.__palinkStRuntime` 全仓唯一赋值点 `sillyTavernPluginRuntime.ts:513` 属父侧 ES module class，iframe 域无人赋值，且该 legacy getContext 已被 compatV2 覆盖 ⇒ 运行时恒 `{}`，**S5 对其零行为变化**。父侧等价通道 = `context.variables`（srcdoc 首帧 `helpers.ts:37-38` + `context-update` postMessage）。
 - ⚠️ **红线**：不按文件名删任何东西（先 grep 消费链）；`SillyTavernCompatRuntime.ts` / `legacy-st-sim.ts` / `api/silly_tavern.py` **只拆不改语义**；不改后端、不改正则管线。
-- 📋 **S5 剩余未做项（2026-10-15 主控登记 · 用户已拍板口径）**：
+- 📋 **S5 剩余未做项（2026-10-15 主控登记 · 用户已拍板口径；2026-10-17 按实际进展更新）**：
   1. **[P2 · 暂不做] ST 扩展 UI 可见性** —— 现状：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但**用户在卡内看不到插件面板**。用户 2026-10-15 拍板：**暂用 (c)「接受不可见、只保留命令/API 能力」**；**方案 (b)「单间轨自立门户（面板在卡内可见）」登记为未做项**，待真实需求出现再开（方案 (a) 挂载点桥回主页面与 S5 方向矛盾，已排除）。
   2. ✅ **[已完成 2026-10-15] 大堂前置命令下沉**（merge `6688343`）—— 7 分支 / 9 命令名搬入
      `lib/sillytavern/slash-commands-compat.ts`，三轨共调（原条目：S5 删大堂后这批命令会消失；现已消除）。
-  3. **[P2 · S5 真机后定] `setChatMessages` 未落库** —— 原大堂桥会 `POST /api/chats/save`（COT 格式化 swipe 靠它持久），新共享实现只写内存；已 `recordStubHit('setChatMessages:persist')` 登记（插件管理页降级面板可见），**未静默吞掉**。
-  4. **[P2 · S5 前诊断] MVU 世界书读取失败** —— 默认态 14 次/会话 `无法读取角色世界书`；已核实非数据缺失（库内 3 本、合计 57 条 stage）、非 S3 回归；根因未定位（第一嫌疑：iframe 内世界书内容读取 API 的名字→id 解析或内容下发）。详见 `REPORT_s3-acceptance-gap_2026-10-14.md` §5.1。
-  5. **[P2] quick-reply 未通** —— `SettingsUi.render()` 内 iframe 侧 `Failed to fetch`；即便修好其 UI 也落在离屏容器（见第 1 条）。
-  6. **[P2 · 并入 S5 验收] `triggerSlash` 返回值复验** —— 大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`（bug）；新共享实现改取 `result.output`，若真机探针依赖该返回值需复验一次。
-  7. **5 个测试插件：保留**（用户 2026-10-15 拍板；作后续适配复测靶子，删除路径见 `REPORT_s3-acceptance-gap_2026-10-14.md` §2.4）。
+  3. **[P2 · 留痕已做，落库待评估] `setChatMessages` 未落库** —— 原大堂桥会 `POST /api/chats/save`（COT 格式化 swipe 靠它持久），新共享实现只写内存。**2026-10-17 `6d720fd` 已做调用留痕**：`recordStubHitOnce` 会话级登记（消 MVU 每轮计数噪音）+ `deleteChatMessages` 补留痕（S5 后其桥恒定返回 false，此前静默）；插件管理页可见，未静默吞掉。**落库（持久化）缺口仍在**（重载后丢失），是否下沉 `/api/chats/save` 待影响评估后决定。
+  4. ✅ **[已完成 2026-10-16] MVU 世界书读取失败** —— 根因已定位并修复（`4956789`）：`runtime-body/part-08.ts` 的
+     `loadWorldInfo` 恒返 `{}` 空桩，命中 MVU 判据必抛；改为经 `getCharWorldbook` 桥取真实条目。
+     真机实测 `entryCount: 19`、`worldbookReadFailed` **66 → 0**（`d6d61b2`）。
+  5. **[P2] quick-reply 未通** —— `SettingsUi.render()` 内 iframe 侧 `Failed to fetch`；即便修好其 UI 也落在离屏容器（见第 1 条）。用户 2026-10-16 再次确认口径 c：维持阻塞，投入不值。
+  6. ✅ **[已关闭] `triggerSlash` 返回值复验** —— 大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`（bug）；该文件已于 S5 整文件删除（`f5c1a86`），bug 对象不存在；新共享实现本就取 `result.output`，e2e B 组 9 命令实跑返回值形状全部正确。
+  7. **5 个测试插件：保留**（用户 2026-10-15 拍板；作后续适配复测靶子，删除路径见 `REPORT_s3-acceptance-gap_2026-10-14.md` §2.4）。e2e A 组复测确认 init 4/5 + 7 条斜杠命令与基线一致。
   （消息窗口化不在此列，已另有独立条目。）
 
 ### [未开工·建议] 消息窗口化（抄 ST 的 `chat_truncation`）—— 长会话劣化的根治方案

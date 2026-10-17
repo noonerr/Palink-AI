@@ -403,14 +403,14 @@
 | # | 项 | 档位 | 现在该做什么 |
 |---|---|---|---|
 | 1 | ST 扩展 UI 可见性：11 个挂载容器是 iframe 内**离屏桩** ⇒ 插件能跑、命令能用，但用户在卡内**看不到面板** | **P2** | 用户 2026-10-15 拍板暂用 (c)「接受不可见、只保留命令/API 能力」；**(b) 单间轨自立门户（面板在卡内可见）登记为未做项**，待真实需求再开。(a) 挂载点桥回主页面与 S5 方向矛盾，已排除。**2026-10-16 已把该口径写进用户向文档** `st-plugins/ADAPTATION.md` §六（含容器清单 + 得/不得清单），防止被当 bug 报 |
-| 3 | `setChatMessages` 未落库（原桥会 `POST /api/chats/save`，COT 格式化 swipe 靠它持久） | **P2** | 已 `recordStubHit('setChatMessages:persist')` 登记（降级面板可见，未静默）；S5 真机后按实际影响决定是否下沉 |
+| 3 | `setChatMessages` 未落库（原桥会 `POST /api/chats/save`，COT 格式化 swipe 靠它持久） | **P2** | **2026-10-17 进展（`6d720fd`）**：调用留痕已由逐次登记升级为**会话级**（`recordStubHitOnce`，消 MVU 每轮计数噪音），`deleteChatMessages` 补留痕（此前静默返回 false）；插件管理页可见。e2e 实机（2026-10-16）未发现相关回归。**落库（持久化）缺口仍在**，是否下沉 `/api/chats/save` 待影响评估后决定 |
 | 4 | ~~MVU 世界书读取失败（默认态 14 次/会话）~~ | — | ✅ **2026-10-16 已修并真机复验**：根因从真机卡 bundle 挖实 —— `runtime-body/part-08.ts` 的 `loadWorldInfo` 是恒返 `{}` 的空桩，命中 MVU `!_.isPlainObject(_.get(n,'entries'))` 判据必抛。现改为经 `getCharWorldbook` 桥取真实条目（`entries` 为**对象**形状，数组会假阴性）。**真机实测：`entryCount: 19`、`firstEntryComment: "尾巴与翅膀状态"`，`worldbookReadFailed` 66 → 0** |
 | 5 | quick-reply 未通（`SettingsUi.render()` 内 iframe 侧 `Failed to fetch`） | **P2** | 与第 1 条同源（UI 落在离屏容器）⇒ **维持阻塞**：用户 2026-10-16 再次确认口径 c，修好 fetch 白名单其 UI 也仍不可见，投入不值 |
 | 6 | ~~`triggerSlash` 返回值复验（大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`）~~ | — | ✅ **已随大堂删除而关闭**：该文件已于 S5 整文件删除（`f5c1a86`），bug 对象不存在；新共享实现本就取 `result.output` |
 
 - ✅ **2026-10-15 已关闭原表第 2 项**：「8 条大堂前置命令未下沉」已施工并合入主干（merge `6688343`，`slash-commands-compat.ts` + 三轨共调），已回填 TODOS.md「三轨并一轨」条目。
 - ✅ **2026-10-16 新增关闭一项**：**卡内 `triggerSlash` 缺口已修并真机复验**（本表 [P2-10] 第 1 项同源）。帧侧 `getContext().triggerSlash` + `window.triggerSlash` 已桥到宿主 `runPalinkSlash` action，命中走 `runPalinkSlashCommands`、未命中回落 `executeSlashCommandCompat`（与沙箱轨/getContext 轨同源）。单测 22 例覆盖；**真机实测两者均为 function，`/getchatname` 返回优雅降级空串**。
-- ✅ **S5 已于 2026-10-15 完工并待合入**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，分支 `s5-delete-lobby` 未 merge）。本表**第 3 项仍开放**，第 4/5/6 项已关闭或阻塞；S5 新发现的两处后续项见 **[P2-10]**。
+- ✅ **S5 已于 2026-10-15 完工并合入主干**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，merge `e86ad9a`），**A–H 八组实机评估全过**（`REPORT_s5-arch-e2e_2026-10-15.md`，2026-10-16 提交；C/D 两张口子已真跑）。本表**第 3 项仍开放**（落库缺口），第 4/5/6 项已关闭或阻塞；S5 新发现的两处后续项均已关闭，见 **[P2-10]**。
 - **背景与证据**：交接 `docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；补测报告 §7.4/§7.5；TODOS.md「三轨并一轨」条目下的同名单。
 - ⚠️ **别误判**：默认部署下 Extras 4 条新端点恒 **502**（转发目标 ST sidecar 已随 st-native 删除，`silly_tavern.py:6238` 注释明写）——这是设计使然，不是"补齐失败"。
 - **5 个测试插件**：用户 2026-10-15 拍板**保留**（复测靶子；删除路径见补测报告 §2.4）。
