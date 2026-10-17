@@ -103,7 +103,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   // 为什么不用 __stub 标记（SPEC T1 方案①）：getContextCompat 是每次调用新建的对象字面量，
   //   defineProperty 会让它变稠且仍不可枚举可见；真正要的「调用时留痕」由 reportStubApi 完成。
   const PALINK_STUB_API_NOTES = {
-    loadWorldInfo: '世界书内容读取在单间轨未接线，恒返回空对象（见 SPEC T3 立项）',
+    // [T6 2026-10-18] loadWorldInfo 不再是桩：T3 已合入 getCharWorldbook 桥取真实条目，
+    // 拆掉 stubApi 包装以免每帧产一条误报警告 toast。键保留在外部文档表里供卡作者参考。
     getWorldInfoPrompt: '世界书提示词恒返回空串，实际注入走后端 worldbook_service',
     saveWorldInfo: '写入为假成功（返回 true 但不落库），请改用 createOrReplaceWorldbook',
     getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
@@ -128,7 +129,10 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     stubApiReported[key] = true;
     try {
       reportDiagnostic({
-        severity: 'warning',
+        // [T6 2026-10-18] 从 warning 降为 info：桩命中是"兼容性提示"，不是用户可处理的
+        // 错误。宿主 handleSmartCardCompatDiagnostic 只对 severity !== 'info' 弹 toast
+        // ⇒ 降级后只进 console + 诊断通道，不再在右上角刷屏（用户主诉"顶部弹出很多报错"）。
+        severity: 'info',
         code: 'st_api_stub',
         apiName: key,
         message: 'ST API ' + key + ' 在 Palink 单间轨为无操作/部分实现：' + String(note || PALINK_STUB_API_NOTES[key] || ''),
@@ -315,8 +319,11 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     getMediaIndex: stubApi('getMediaIndex', () => -1),
     scrollChatToBottom: window.scrollChatToBottom,
     scrollOnMediaLoad: stubApi('scrollOnMediaLoad', () => true),
-    loadWorldInfo: stubApi('loadWorldInfo', async (name) => {
-      // [S5-COMPAT-AUDIT T3 2026-10-16] MVU 世界书读取失败的根因修复（66 次/会话）。
+    // [S5-COMPAT-AUDIT T3 2026-10-16] MVU 世界书读取失败的根因修复（66 次/会话）。
+    // [T6 2026-10-18] 不再包 stubApi：本函数已是经 getCharWorldbook 桥取真实条目的
+    // 真实现；包成 stubApi 只会每帧产一条 "st_api_stub" 警告 toast 给用户噪音。
+    // 同行 stubApi 列表（saveWorldInfo / reloadWorldInfoEditor / 等）保留为假实现。
+    loadWorldInfo: async (name) => {
       //
       // 根因（从真机卡 bundle backend/data/smart_card_assets/0c646fb31a….js 的 MVU beta
       // 原文挖出，非推测；调用形如 await SillyTavern.loadWorldInfo(t)，随后
@@ -354,7 +361,7 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
         post({ type: 'log', level: 'warn', message: 'loadWorldInfo 失败，返回空世界书' });
         return { name: String(name || ''), entries: {} };
       }
-    }),
+    },
     saveWorldInfo: stubApi('saveWorldInfo', async () => true),
     reloadWorldInfoEditor: stubApi('reloadWorldInfoEditor', async () => true),
     updateWorldInfoList: stubApi('updateWorldInfoList', async () => true),
@@ -825,10 +832,192 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     } catch { return ''; }
   };
 
+  // [T6 2026-10-18] 把 unknown error / [object Event] 兜底改成可读信号：
+  //   - window.onerror：补 filename:lineno:colno 与 stack 首行，便于定位"是哪个
+  //     资源 404 / 哪个脚本崩"；不要只回 uiText.unknownError。
+  //   - unhandledrejection：Event 序列化 event.type + 资源 URL（本次实拍是
+  //     https://drive.baibai.cv/.../Music.js，缺这条只能盲猜）。
+  // ⚠️ 本文件主体是注入 iframe 的模板字符串，不允许反引号/美元花括号。
+  const formatWindowErrorMessage = (event) => {
+    try {
+      const direct = String(event?.message || event?.error?.message || '').trim();
+      if (direct) {
+        if (event?.filename) {
+          return direct + ' @ ' + String(event.filename) + ':' + (event.lineno || 0) + ':' + (event.colno || 0);
+        }
+        return direct;
+      }
+      // [T6 2026-10-18] 注：本文件是模板字符串，源码里想产出 JS 字面量（被解析为换行符）
+      // 需要写两个反斜杠 + n；写单个反斜杠 + n 会被外层模板吃成真换行
+      // （generated-script-parse-guard 拦下）。下同：split 的字面量用了 反斜杠 反斜杠 n。
+      const stack = String(event?.error?.stack || '').split('\\n').find((line) => line.trim()) || '';
+      if (stack) return (uiText.unknownError || 'unknown error') + ' (' + stack.slice(0, 120) + ')';
+      if (event?.filename) {
+        return (uiText.unknownError || 'unknown error') + ' @ ' + String(event.filename) + ':' + (event.lineno || 0);
+      }
+      return uiText.unknownError || 'unknown error';
+    } catch (_e) {
+      return uiText.unknownError || 'unknown error';
+    }
+  };
+  const formatRejectionMessage = (reason) => {
+    try {
+      if (reason && typeof reason === 'object') {
+        // Event（如 <script> 加载失败）—— String(Event) === '[object Event]'
+        if (typeof reason.type === 'string' && (reason.target || reason.srcElement || reason.currentTarget)) {
+          const src = (reason.target && (reason.target.src || reason.target.href))
+            || (reason.srcElement && (reason.srcElement.src || reason.srcElement.href))
+            || (reason.currentTarget && (reason.currentTarget.src || reason.currentTarget.href))
+            || '';
+          return reason.type + (src ? ' @ ' + src : '');
+        }
+        if (typeof reason.message === 'string' && reason.message) {
+          return reason.message;
+        }
+      }
+      const text = String(reason || uiText.unhandledRejection || 'unhandled rejection');
+      return text;
+    } catch (_e) {
+      return uiText.unhandledRejection || 'unhandled rejection';
+    }
+  };
+
+  // [STYLE-GUARD-INFRAME 2026-10-18] 卡片样式自愈（帧内版，权威实现）。
+  //
+  // 为什么必须在帧内做：未信任卡 iframe 的 sandbox 只给 allow-scripts（P1-1 修复），
+  // 是 opaque origin ⇒ 父页面 iframe.contentDocument === null，父侧守护**根本装不上**
+  // （真机实测 window.__palinkStyleGuard === null、iframe 上无 data-palink-style-guard）。
+  //
+  // 现象：卡先正常渲染 2~3 秒（样式齐全），随后插件 bundle 把 document.head 整张
+  // replaceWith 掉 / 重置，卡片自己的 <style> 随之消失 → 整段消息退化成裸 HTML 文本
+  // （浮窗按钮变成一行字、背景色/字号调节全丢）。父侧 removeChild / innerHTML 三组
+  // 拦截实验 0 命中，说明是 head 节点级替换，不是子节点删除。
+  //
+  // 做法：DOMContentLoaded 时拍 head 里 style/link 的 outerHTML 快照；用
+  // MutationObserver 监听 documentElement 的 childList+subtree，**只在 removedNodes
+  // 里出现 STYLE / LINK / HEAD 时才做恢复**（避免卡片高频 DOM 更新时每次都跑全量比对）；
+  // 再挂一个 700ms × 60 次的 interval 兜住 observer 失效的极端路径。
+  // 恢复只补快照里登记过、当前文档里缺失的节点，幂等。
+  try {
+    (function installCardStyleGuardInFrame() {
+      var styleSnapshot = null;
+      var guardObserver = null;
+      var guardTimer = null;
+      var guardTicks = 0;
+      var GUARD_MAX_TICKS = 60;
+      var GUARD_INTERVAL_MS = 700;
+      var GUARD_SELECTOR = 'style, link[rel="stylesheet"]';
+
+      // 幂等：同一文档重复安装时先卸掉上一份（防重复 observer / 定时器叠加）。
+      try {
+        if (typeof window.__palinkStyleGuardDispose === 'function') {
+          window.__palinkStyleGuardDispose();
+        }
+      } catch (e) { /* 静默 */ }
+
+      function takeStyleSnapshot() {
+        try {
+          var head = document.head;
+          if (!head) return [];
+          var list = head.querySelectorAll(GUARD_SELECTOR);
+          var out = [];
+          for (var i = 0; i < list.length; i++) {
+            out.push(String(list[i].outerHTML || ''));
+          }
+          return out;
+        } catch (e) { return []; }
+      }
+
+      function restoreCardStyles() {
+        try {
+          if (!styleSnapshot || !styleSnapshot.length) return;
+          var head = document.head || document.documentElement;
+          if (!head) return;
+          var present = {};
+          var cur = head.querySelectorAll(GUARD_SELECTOR);
+          for (var i = 0; i < cur.length; i++) {
+            try { present[String(cur[i].outerHTML || '')] = true; } catch (e) {}
+          }
+          var restored = 0;
+          for (var j = 0; j < styleSnapshot.length; j++) {
+            var html = styleSnapshot[j];
+            if (!html || present[html]) continue;
+            var tpl = document.createElement('template');
+            tpl.innerHTML = html;
+            var node = tpl.content && tpl.content.firstElementChild;
+            if (node) { head.appendChild(node); restored += 1; }
+          }
+          if (restored > 0) {
+            try {
+              window.__palinkStyleGuardRestored = (window.__palinkStyleGuardRestored || 0) + restored;
+              window.__palinkStyleGuardLastAt = Date.now();
+            } catch (e) {}
+          }
+        } catch (e) { /* 静默 */ }
+      }
+
+      function needsRestore(records) {
+        try {
+          for (var i = 0; i < records.length; i++) {
+            var rem = records[i] && records[i].removedNodes;
+            if (!rem || !rem.length) continue;
+            for (var j = 0; j < rem.length; j++) {
+              var tag = String((rem[j] && rem[j].nodeName) || '').toUpperCase();
+              if (tag === 'STYLE' || tag === 'LINK' || tag === 'HEAD') return true;
+            }
+          }
+        } catch (e) { /* 静默 */ }
+        return false;
+      }
+
+      function startCardStyleGuard() {
+        try {
+          if (styleSnapshot) return;
+          styleSnapshot = takeStyleSnapshot();
+          if (!styleSnapshot.length) return;
+          try {
+            guardObserver = new MutationObserver(function (records) {
+              if (needsRestore(records)) restoreCardStyles();
+            });
+            guardObserver.observe(document.documentElement, { childList: true, subtree: true });
+          } catch (e) { /* 静默 */ }
+          try {
+            guardTimer = setInterval(function () {
+              guardTicks += 1;
+              if (guardTicks > GUARD_MAX_TICKS) {
+                if (guardTimer) clearInterval(guardTimer);
+                guardTimer = null;
+                return;
+              }
+              restoreCardStyles();
+            }, GUARD_INTERVAL_MS);
+          } catch (e) { /* 静默 */ }
+          try { window.__palinkStyleGuardSnapshot = styleSnapshot.length; } catch (e) {}
+          try {
+            window.__palinkStyleGuardDispose = function () {
+              try { if (guardObserver) guardObserver.disconnect(); } catch (e) {}
+              try { if (guardTimer) clearInterval(guardTimer); } catch (e) {}
+              guardObserver = null;
+              guardTimer = null;
+            };
+          } catch (e) {}
+        } catch (e) { /* 静默 */ }
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startCardStyleGuard, { once: true });
+      } else {
+        startCardStyleGuard();
+      }
+      // 兜底：load 时若还没拍成（DOMContentLoaded 被吃 / 样式是后注入的），再试一次。
+      window.addEventListener('load', startCardStyleGuard, { once: true });
+    })();
+  } catch (e) { /* 静默 */ }
+
   window.addEventListener('error', (event) => {
-    const message = String(event.message || event.error?.message || uiText.unknownError);
+    const message = formatWindowErrorMessage(event);
     const refMatch = message.match(/(?:ReferenceError:\\s*)?([A-Za-z_$][\\w$]*) is not defined/);
-    const stack = String(event.error?.stack || '');
+    const stack = String(event?.error?.stack || '');
     logCardError('脚本错误', message, stack);
     reportDiagnostic({
       severity: refMatch ? 'warning' : 'error',
@@ -840,8 +1029,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   });
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    const message = String(reason?.message || reason || uiText.unhandledRejection);
+    const reason = event?.reason;
+    const message = formatRejectionMessage(reason);
     const stack = String(reason?.stack || '');
     logCardError('未处理的异步错误', message, stack);
     reportDiagnostic({

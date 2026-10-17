@@ -24,6 +24,7 @@ import {
   isContrastEnhancementEnabled,
   type ContrastEnhancerHandle,
 } from './smart-card-runtime/contrast-enhancer';
+import { installCardStyleGuard, type CardStyleGuardHandle } from './smart-card-runtime/style-guard';
 import type { IframeRenderMode, SmartCardImmersiveTheme, SmartCardViewportContext, SmartCardResourcePlan, SmartCardAction } from './smart-card-runtime/shared';
 
 import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight, htmlSupportsOuterCollapse, htmlPrefersImmersive, hashSmartCardSource, stableSmartCardStringify, preloadSmartCardRuntimeConfig, getSmartCardBootContextSignature, compactSmartCardChatMessages, readSmartCardTrustGrant, writeSmartCardTrustGrant, getCurrentInterfaceLanguage, isIOSLikeDevice, resolveImmersiveTheme, inferImmersiveThemeFromHtml, estimateIframeInitialHeight, estimateIframeMaxHeight, getLayoutViewportHeight, isSmartCardVisualKeyboardLikelyOpen, collectSmartCardViewportContext, getNearestScrollContainer, getSmartCardAvailableHeight, extractHtmlRenderParts, getHtmlRenderSignature, safeJson, readSmartCardPersistedStorage, applySmartCardStoragePatch, adaptSmartCardRuntimeAccess, normalizeSmartCardScriptBlocks, addSmartCardScriptNonce, optimizeSmartCardHtmlForRuntime, buildSmartCardResourcePlan, mergeSmartCardResourcePlans, buildSillyTavernPluginResourcePlan, buildSmartCardResourceHints, scheduleSmartCardResourceWarmup, buildSmartCardAdapterStyle, resolveHtmlRenderMode, toSmartCardRuntimeMode, prepareInlineHtml, buildShim } from './smart-card-runtime/helpers';
@@ -187,6 +188,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
   const lastResizeSignalAtRef = useRef(0);
   // [CONTRAST-ENHANCE] 亮色模式对比度增强：作用于本 iframe 内（非沉浸式全屏）卡片文本。
   const contrastEnhancerRef = useRef<ContrastEnhancerHandle | null>(null);
+  // [STYLE-GUARD 2026-10-18] 4MB 插件 bundle 在 iframe 内跑起来后会重置 document.head，
+  // 偷走卡片自己的 <style>。挂一个守护：head childList 一有 STYLE/LINK 缺失就补回，
+  // 6 个 setTimeout 自愈点兜住 head 被整体换的极端路径。详见 smart-card-runtime/style-guard.ts。
+  const styleGuardRef = useRef<CardStyleGuardHandle | null>(null);
   // 显式要求内联渲染时（状态栏卡片由 Message.tsx 传入 presentationMode:'inline'），
   // 压过所有"沉浸式/全屏/可折叠"启发式——状态栏应像 ST 那样内联在聊天气泡里、始终可见、随 AI 输出刷新。
   const explicitInline = context?.presentationMode === 'inline';
@@ -584,6 +589,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // [CONTRAST-ENHANCE] iframe 卸载时释放对比度增强器（observer + 覆盖还原）
     contrastEnhancerRef.current?.dispose();
     contrastEnhancerRef.current = null;
+    // [STYLE-GUARD 2026-10-18] 释放样式守护的 MO + 6 个自愈定时器。
+    styleGuardRef.current?.dispose();
+    styleGuardRef.current = null;
     // [EP-BRIDGE] iframe 卸载时清理其在 promptInjection 中的扩展提示词 source，
     // 避免关闭全屏/切换角色后残留污染后续生成。
     try {
@@ -635,6 +643,17 @@ const IframeRenderer = React.memo(function IframeRenderer({
       themeRoot: document.documentElement,
       isEnabled: isContrastEnhancementEnabled,
     });
+    // [STYLE-GUARD] 装在对比度增强器之后；快照基于当前 head 的 style/link，3~5s 后插件
+    // 重置 head 时由 MO + 定时自愈把丢失的 <style> 补回去。
+    // ⚠️ 必须传 iframe 元素（不是 frameDoc）：插件可能换掉整个 document，只有
+    // 每次重新读 iframe.contentDocument 才能补到"当前"那份文档上（第一版踩过）。
+    // ⚠️ 返回 null 表示这份文档没有可守护的样式（例如二次 load 打进 about:blank）——
+    // 此时**保留旧守护**，不能先 dispose 再装空壳。
+    const nextStyleGuard = installCardStyleGuard(frame ?? frameDoc);
+    if (nextStyleGuard) {
+      styleGuardRef.current?.dispose();
+      styleGuardRef.current = nextStyleGuard;
+    }
   }, [liveContext.characterExtensions, postCardScriptsToFrame, postLiveContext, postPluginScriptsToFrame, prefersImmersive]);
 
   const updateViewportContext = useCallback((nextAvailableHeight = availableHeight) => {

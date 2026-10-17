@@ -329,3 +329,6 @@ _BACKUPS/**
 # 注：锚定说明（docs/）与校验脚本（scripts/check_st_citations.py）本身**入库**，
 #   只有源码副本排除 —— 与 _BACKUPS/ 的"台账入库、大产物排除"同一口径。
 _reference/
+
+# 真机探针临时目录（playwright 脚本 + 截图），不入库
+.tmp_probe/

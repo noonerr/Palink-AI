@@ -141,9 +141,12 @@ function buildFrame(overrides: {
   // ── T3：loadWorldInfo 真实现 ──
   // 该实现在 getContextCompat 对象字面量里，依赖 requestParent / activeLorebooks /
   // activeWorldbookName / post / reportStubApi。
+  // [T6 2026-10-18] 锚点从 'loadWorldInfo: stubApi('loadWorldInfo', ' 改为 'loadWorldInfo: '：
+  // 拆掉 stubApi 包装后函数名后是 `async (name) => {`，sliceArrowAfter 需要锚定到
+  // 箭头函数签名之前。sliceArrowAfter 仍按花括号配平取出完整箭头函数表达式。
   const loadWorldInfoRegion = sliceArrowAfter(
     COMPAT_V2_SOURCE,
-    "loadWorldInfo: stubApi('loadWorldInfo', ",
+    'loadWorldInfo: ',
   );
   let activeWorldbookName = overrides.activeWorldbookName || '';
   const loadWorldInfoFactory = new Function(
@@ -192,7 +195,9 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
     );
     kit.reportStubApi('writePresetExtensionField');
     expect(diags).toHaveLength(1);
-    expect(diags[0].severity).toBe('warning');
+    // [T6 2026-10-18] severity 由 warning 降为 info：桩命中只是兼容性提示，
+    // 宿主侧只对 severity !== 'info' 弹 toast ⇒ 降级后不再刷屏。
+    expect(diags[0].severity).toBe('info');
     expect(diags[0].code).toBe('st_api_stub');
     expect(diags[0].apiName).toBe('writePresetExtensionField');
     expect(String(diags[0].message)).toContain('writePresetExtensionField');
@@ -215,8 +220,9 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
 
   it('桩名说明表覆盖 getContextCompat 里所有被 flag 的 API（防加了 flag 漏写说明）', () => {
     const notes = sliceDeclaration(COMPAT_V2_SOURCE, 'const PALINK_STUB_API_NOTES = {');
+    // [T6 2026-10-18] 删 loadWorldInfo：T3 修复 + 拆掉 stubApi 后它不再属于桩。
     const flagged = [
-      'loadWorldInfo', 'getWorldInfoPrompt', 'saveWorldInfo', 'getSelectedPresetName',
+      'getWorldInfoPrompt', 'saveWorldInfo', 'getSelectedPresetName',
       'writePresetExtensionField', 'getRequestHeaders', 'getChatCompletionModel',
       'getMediaDisplay', 'getMediaIndex', 'appendMediaToMessage', 'scrollOnMediaLoad',
       'convertCharacterBook', 'getTextGenServer', 'renameChat', 'updateWorldInfoList',
@@ -229,7 +235,8 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
 
   it('源码层：getContextCompat 的桩确实被 stubApi 包裹（不是只建了 helper 没用）', () => {
     const ctx = sliceDeclaration(COMPAT_V2_SOURCE, 'const getContextCompat = () => ({');
-    ['loadWorldInfo', 'saveWorldInfo', 'getWorldInfoPrompt', 'convertCharacterBook',
+    // [T6 2026-10-18] 删 loadWorldInfo：拆掉 stubApi 后它不再是桩。
+    ['saveWorldInfo', 'getWorldInfoPrompt', 'convertCharacterBook',
       'getChatCompletionModel', 'getMediaDisplay', 'getMediaIndex', 'getTextGenServer',
       'renameChat', 'scrollOnMediaLoad', 'appendMediaToMessage',
       'getSelectedPresetName', 'writePresetExtensionField',
