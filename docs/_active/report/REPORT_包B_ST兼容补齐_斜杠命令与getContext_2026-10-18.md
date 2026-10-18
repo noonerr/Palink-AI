@@ -278,6 +278,11 @@ HANDOFF §5 要求"临时撤改动 → 覆盖回到 0、非真可用回到 15"�
   观测面：`window.__palinkSlashKnownNames`。
 - **`/help` 拉取失败时**（宿主未就绪），视图退化为"只有插件注册项"——行为等同修复前，不会更糟。
 - **`dist` 已重建**（`VITE_OUT_DIR=dist_new` → 增量 `cp` → `gzip-dist`），未跑 `npm run build`。
-  当前入口 chunk：`assets/index-Bbxm09JX.js`；卡片运行时：`assets/palink-smart-card-runtime-96de8a8b2f52.js`。
+  ⚠️ **产物同时包含包 A 的 srcdoc 瘦身**：包 A 于 11:57 提交 `3bc9cb7`，其源文件在 11:55:28 仍在修改，
+  而本包第一次构建跨了那个时间点 ⇒ **已从 HEAD（`3012820`，含 A+B 两笔提交）重建一次**，
+  重建后复跑真机探针，全部数字与首轮完全一致（`objKeys=135 / covered=87 / present=145 / nonReal=14`，
+  宿主高度 `[1569,1627,1611,2284,4555]` 两次采样相同，toast `(none)`）。
+  ⇒ 报告里的"完工后"数字来自**可复现的干净构建**，不是半成品混合体。
+  当前入口 chunk：`assets/index-*.js`；卡片运行时：`assets/palink-smart-card-runtime-*.js`（按内容 hash，重建后自动更新）。
 - **`.tmp_probe/` 下保留了全部探针与输出**（`probe-*.js`、`out*.txt`、`st-commands.json`、`engine-names.json`），
   供复核；该目录在 gitignore 内。
