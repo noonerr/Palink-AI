@@ -510,8 +510,9 @@
 | 4 | **srcdoc 单帧 ≤50,000 这条判据本身失效** | **P3** | 改前旧码就已 57,356 超线，大头是卡自带 `body-html` 24,796 + 内联卡脚本 22,539 + `style` 11,608，运行时体在外部资产 ⇒ **别再拿 50,000 当包间验收线**；要治的是"卡自带内容"的预算策略，另立议题 |
 | 5 | 包G 三项：`appendMediaToMessage` 端到端落库未证实（父侧恒回 success，根因线索在报告）、`libs` 里 DOMPurify/lodash 实测是垫片、宿主缺 `power_user` 真偏好源 | **P2** | 各自独立可立项，勿混；DOMPurify 若真是垫片会影响净化语义，**优先核这条** |
 | 6 | 包F 三项：176 个命令别名未下发、`caption` 缺消息媒体入参、`listvar scope=global` | **P3** | 别名未下发意味着卡脚本按别名探测仍看不到；剩余量级小，可与第 1 项合并处理 |
-| 7 | **上线状态**：F/G/H/I/L 六包**已提交未上线**（16000 仍服务旧 dist），J-3 与包J 两处的真机判据都要求跑在新产物上 | **P0** | 主控收尾重建 dist 后，按各包报告里点名的探针逐个回 16000 复跑；只有那次读数才能写进基线 |
+| 7 | ~~**上线状态**：F/G/H/I/L 六包**已提交未上线**（16000 仍服务旧 dist）~~ | **P0** | ✅ **2026-10-18 深夜已上线并逐包复跑**（主控两次重建：`dist_new` → `cp -r` 合并 → gzip；旧 dist 整份备份见 `_BACKUPS/2026-10-18_dist_批次FJ重建前/`）。回 :16000 实测：命令枚举 340 键 / 289 命中、`ctxMissing=[]`、`ctxNotReal` 只剩 6 项合法值、libs 30 键、TH 121 键、插件 CSS **t8→t16 全 7 帧 5/5 存活**、`guardSnapshot=8`、未授信 **7/7 opaque origin**、猫娘卡 nk style **1 份 / 3,156 字节**且美化仍生效、toast 0；帧内 `characterIdString` = 真 UUID（getContext 键数 194→196） |
 | 8 | `.gitignore` 的 `_BACKUPS` 规则自相矛盾：第 241 行 `_BACKUPS/` 把整个目录**剪掉**，使 300-317 行「放行 `_INDEX.md` 与各 `BACKUP_INFO.md`」的 allowlist **永不生效** | **P2** | 现象：新增的 `BACKUP_INFO.md` 必须 `git add -f` 才能入库，与 `AGENTS.md` §备份与清理规范第 7 条「台账与说明文件**必须入库**」相冲。修法二选一：删掉 241 行（让 314-317 那套生效），或把 allowlist 改成先 `!_BACKUPS/*/BACKUP_INFO.md` 再排除——**属仓库级配置改动，需用户点头**，主控本轮只用 `-f` 兜住、未动 `.gitignore` |
+| 9 | **卡帧内不存在 `window.context` 全局**（2026-10-18 包M 取证登记 · 包J 报告 §5 顺带查出） | **P2** | boot 的 ctx 是 `const`（`SillyTavernCompatRuntime.ts:264`），不挂 window ⇒ ST 侧插件里常见的 `window.context.xxx` 直读全部拿不到（不是"值为 0"，是**整个对象不存在**）。补法要先定语义：镜像 `getContext()` 快照？还是活引用？ST 里 `window.context` 是**可写**的（卡脚本会改 `context.chat`），照抄=允许卡改父侧数据，属安全/契约面 ⇒ **先拍板再动**，别顺手 `window.context = ctx` |
 
 - **已排期不在本表展开**：插件 CSS 守护竞态（包J J-1）、`getContext().characterId` 恒 0（包J J-2）、
   part-08 两处转义（包J J-3，已登记在 `runtime-source-carrier-fidelity.test.ts` 的 `KNOWN_ESCAPE_LOSS`）、

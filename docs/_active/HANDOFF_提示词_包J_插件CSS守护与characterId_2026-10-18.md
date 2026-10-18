@@ -5,6 +5,21 @@
 > 撰写，**两处坐标我已在本机 grep + 读源码逐条复核**（复核记录见 §1 末尾）。
 > 你（执行 agent）看不到之前的对话，本文档是自包含的：规格、红线、验收都在这儿。
 
+> ### ⚠️ 订正说明（2026-10-18 深夜 · 包J 完工 + 主控自修包M 后追加）
+> **§1/§2.2 里 J-2 的定位是错的，包J 的真机取证把它否证了，主控随后自己接了那一棒（`00a1248`）。**
+> 1. 帧内 `getContext().characterId` 恒 0 的**真断点不在宿主** `getContext.ts:1785` 的
+>    `Number(uuid)=NaN → findIndex → 0`（那只是下游症状），而在**帧内**：
+>    `part-08.ts` 的 `getContextCompat` 写的是 `characterId: window.this_chid`，
+>    而 Palink **从未往卡帧注入过 `this_chid` 这个 ST 全局** ⇒ 该键一直是 `undefined`。
+>    已改为：只接受有限数字的 `this_chid`，否则诚实给 `0`（不造伪 id），
+>    并新增与父侧同名的 `characterIdString` / `palink_character_id` 两个字符串身份键。
+> 2. **卡帧内不存在 `window.context` 这个全局**（boot 的 ctx 是 `const`，不挂 window）——
+>    本文件原假设"帧内 `window.context.characterId` 有值、只是为 0"不成立。
+>    这是与 ST 的一处**形状缺口**，登记在 `docs/OPEN_ISSUES.md` [P2-12]，本批未补。
+> 3. 上线后实测（重建 dist 后回 :16000 复跑）：帧内 `characterId = 0`、
+>    `characterIdString = palink_character_id = c28061bb-…`（UUID 到位）、getContext 键数 **194 → 196**。
+>    ⇒ 后续插件文档口径照旧生效：**数字 characterId 在 Palink 卡帧内语义不可靠，插件应改用字符串 id**。
+
 ## 0. 一句话任务
 
 修两个包E 实测出来、**不在 F/G/H/I 任何一包范围内**的缺陷：
