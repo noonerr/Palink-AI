@@ -200,7 +200,23 @@ curl --noproxy '*' -b ck.txt -H "X-CSRF-Token: $CSRF" -H 'Content-Type: applicat
 响应  {"summary":"用户询问天气，助手答今日晴、25度；用户致谢，助手回应不客气。"}
 ```
 
-### 5.6 sprites 完整闭环（真机）
+### 5.6 已知行为（非 bug，防假数据的一个真实案例）
+
+同一请求偶发 502 后重试成功：
+
+```
+POST /api/summarize  {"text":"smoke test", ...}   → 502  {"detail":"模型返回了空摘要","code":"EMPTY_SUMMARY"}
+POST /api/summarize  {"text":"smoke test", ...}   → 200  {"summary":"提供的原文仅为"smoke test"一词，不含任何人物、事件或对话内容，无法生成摘要。"}
+```
+
+**根因**：`_complete_once` 拿到的 `content` 为空 ⇒ 抛 `ServiceError("模型返回了空摘要", code="EMPTY_SUMMARY")`
+（`st_extras.py:402`）。这是**刻意设计**：如果改成返回 `{"summary": ""}`，memory 插件会把空串当真摘要存库，
+比报错更糟。温度 0.3 下模型对极短输入偶发空回复，属上游行为，重试即有结果。
+
+日志佐证（`docker compose logs backend`）：`POST /api/summarize` 在生产日志里 **1 次 502 / 3 次 200**，
+且**没有** `模型调用失败` 的 WARNING ⇒ 上游通、是模型回了空。
+
+### 5.7 sprites 完整闭环（真机）
 
 ```
 POST /api/sprites/upload        → 200 {"label":"joy","spriteName":"joy",
