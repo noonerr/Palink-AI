@@ -35,6 +35,10 @@ from .image_proxy import router as image_proxy_router
 from .plugins import router as plugins_router
 from .smart_card_assets import router as smart_card_assets_router
 from .silly_tavern import router as silly_tavern_router
+# 【2026-10-18 包 C】ST Extras 端点（classify/caption/summarize/translate/
+# kobold-embed/sprites）。从 silly_tavern.py 迁出并换成真实实现——原先
+# summarize/translate 转发到已删的 ST sidecar，恒 502。
+from .st_extras import router as st_extras_router
 from .st_groups import router as st_groups_router
 from .regex_scripts import router as regex_scripts_router
 from .tokenizer import router as tokenizer_router
@@ -53,6 +57,10 @@ api_router.include_router(chat_router)
 # MED-4: ST 兼容 router 统一挂 CSRF guard。ST 原生前端以 cookie 认证并携带
 # X-CSRF-Token；guard 对安全方法/带 Bearer 的请求放行，只拦"纯 cookie 跨站写请求"。
 api_router.include_router(silly_tavern_router, dependencies=[Depends(csrf_guard)])
+# 【2026-10-18 包 C】与同族 ST 兼容路由一致挂 csrf_guard。
+# 注意注册顺序：silly_tavern 里已删掉 summarize/translate 同名路由，
+# 此处不存在重复注册（重复会让先注册者静默胜出）。
+api_router.include_router(st_extras_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(st_groups_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(regex_scripts_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(expressions_router, dependencies=[Depends(csrf_guard)])

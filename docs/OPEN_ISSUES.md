@@ -261,6 +261,12 @@
 
 ### [P1-12] 后端容器镜像落后 6 笔提交（10-11 构建，未重建）· 2026-10-17 实测
 
+> ✅ **2026-10-18 已关闭（包 C 施工）**：镜像已重建 4 次（`docker compose build backend` +
+> `up -d backend`），上表 6 笔提交全部上线，且包 C 追加了 13 条 ST Extras 端点。
+> 真机复验：`/api/summarize`、`/api/translate/*` 均 200（不再是 404，也不再是 502）。
+> 报告 `docs/_active/report/REPORT_包C_后端Extras端点_2026-10-18.md`。
+> ⚠️ 下方「Extras 转发」相关内容（404 / 恒 502）是**重建前的历史事实，已不成立**。
+
 - **核实时点**：2026-10-17（一手实测）。
 - **事实**：运行中的 `palink-ai-backend-1` 镜像构建于 **2026-10-11 13:19:56**（`docker image inspect` 实证）；
   而 `backend/app` 此后有 **6 笔提交未上线**（`AGENTS.md` 纪律：`backend/app` 未挂载进容器 ⇒ 改宿主代码必须
@@ -445,7 +451,10 @@
 - ✅ **2026-10-16 新增关闭一项**：**卡内 `triggerSlash` 缺口已修并真机复验**（本表 [P2-10] 第 1 项同源）。帧侧 `getContext().triggerSlash` + `window.triggerSlash` 已桥到宿主 `runPalinkSlash` action，命中走 `runPalinkSlashCommands`、未命中回落 `executeSlashCommandCompat`（与沙箱轨/getContext 轨同源）。单测 22 例覆盖；**真机实测两者均为 function，`/getchatname` 返回优雅降级空串**。
 - ✅ **S5 已于 2026-10-15 完工并合入主干**（删码 `f5c1a86` + 测试 `fc6aa9a` + 报告 `f8288db`，tag `s5-done`，merge `e86ad9a`），**A–H 八组实机评估全过**（`REPORT_s5-arch-e2e_2026-10-15.md`，2026-10-16 提交；C/D 两张口子已真跑）。本表**第 3 项仍开放**（落库缺口），第 4/5/6 项已关闭或阻塞；S5 新发现的两处后续项均已关闭，见 **[P2-10]**。
 - **背景与证据**：交接 `docs/_active/HANDOFF_S4-S5剩余任务_2026-10-15.md`；补测报告 §7.4/§7.5；TODOS.md「三轨并一轨」条目下的同名单。
-- ⚠️ **别误判**：默认部署下 Extras 4 条新端点恒 **502**（转发目标 ST sidecar 已随 st-native 删除，`silly_tavern.py:6238` 注释明写）——这是设计使然，不是"补齐失败"。
+- ⚠️ **本条已过时（2026-10-18）**：Extras 4 条端点不再是「恒 502 的设计形态」——包 C 把它们从
+  「转发到已删 sidecar」改成「原生上游优先 + LLM 兜底」，真机实测 200。现在恒 502 的只剩
+  `/api/speech/elevenlabs/*` 七个端点（Palink 不持有 ElevenLabs key，`silly_tavern.py:6318`
+  的转发器仍在服务它们）。详见 `REPORT_包C_后端Extras端点_2026-10-18.md`。
 - **5 个测试插件**：用户 2026-10-15 拍板**保留**（复测靶子；删除路径见补测报告 §2.4）。
 
 ### [P2-10] S5 删大堂后的两处后续项（2026-10-16 登记 · 非 S5 回归）
