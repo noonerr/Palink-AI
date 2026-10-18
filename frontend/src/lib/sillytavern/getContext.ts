@@ -248,6 +248,11 @@ export interface StGetContext {
   name1: string;
   name2: string;
   characterId: number;
+  // [包J J-2 2026-10-18] characterId 是 ST 语义的 characters 数组下标，在 Palink 帧内
+  // **不可靠**（拿不到索引时按 ST 惯例为 0）。下面两个键携带真实角色标识（Palink UUID 字符串），
+  // 同值双名是为了让 camelCase 与 snake_case 两种插件写法都读得到。自家插件请改读它们。
+  characterIdString: string;
+  palink_character_id: string;
   groupId: string | null;
   character: StCharacter;
   personaName: string;
@@ -1780,17 +1785,34 @@ export function getContext(): StGetContext {
   const name2 = character.name || 'Assistant';
   // Task 11.8: 使用真实角色 ID，而非 chatId（会话 ID）
   // ST 1.18.0: characterId 是角色在 characters 数组中的索引（number），非 string
+  //
+  // [包J J-2 2026-10-18] 包E §4 F-2：Palink 的角色 id 是 UUID 字符串，Number(uuid)=NaN，
+  // 旧匹配只比 c.id / c.name，而卡帧里推下来的 characters 条目未必带 id、未必含当前这张卡
+  // （三张同卡克隆实测 characterId 恒 0）⇒ 数字下标拿不到。这里做两件事：
+  //   1) 把匹配面铺到 Palink 真正携带身份的字段（id / avatar 的 palink-<uuid>.png 形态 /
+  //      character_id / 名字），characters 里有这张卡时数字下标就能命中；
+  //   2) 命中不了时**照 ST 语义保持 0**（不填假值），但把真实字符串身份透出去，见
+  //      context.characterIdString / palinkCharacterId —— Palink 自家插件应改读字符串 id。
   const rawCharacterId = (ctx as any)?.characterId ?? messageManager.getCurrentCharacterId();
   const charactersArray = ctx?.characters ?? [];
+  const characterIdString: string = String(rawCharacterId ?? '').trim();
   const characterId: number = (() => {
     if (typeof rawCharacterId === 'number') return rawCharacterId;
     if (rawCharacterId == null || rawCharacterId === '') return 0;
     const num = Number(rawCharacterId);
     if (!Number.isNaN(num)) return num;
-    // 非数字字符串：查找在 characters 数组中的索引
-    const idx = charactersArray.findIndex(c =>
-      (c as any).id === rawCharacterId || c.name === rawCharacterId
-    );
+    // 非数字字符串（Palink UUID）：查找它在 characters 数组中的索引
+    if (!characterIdString) return 0;
+    const idx = charactersArray.findIndex((c: any) => {
+      if (!c) return false;
+      if (c.id === characterIdString || c.name === characterIdString) return true;
+      if (c.character_id === characterIdString || c.uuid === characterIdString) return true;
+      // avatar 是 Palink 侧稳定携带角色身份的位置，形态为 palink-<uuid>.png
+      const avatar = String(c.avatar ?? '');
+      if (avatar && avatar.includes(characterIdString)) return true;
+      const avatarUuid = /^palink-(.+)\.png$/i.exec(avatar);
+      return !!(avatarUuid && avatarUuid[1] === characterIdString);
+    });
     return idx >= 0 ? idx : 0;
   })();
   const groupId = groupChatManager.getActiveGroup()?.id ?? null;
@@ -1831,6 +1853,9 @@ export function getContext(): StGetContext {
     name1,
     name2,
     characterId,
+    // [包J J-2] 真实角色标识（Palink UUID 字符串）；数字下标拿不到时它仍然可达
+    characterIdString,
+    palink_character_id: characterIdString,
     groupId,
     character,
     personaName,
