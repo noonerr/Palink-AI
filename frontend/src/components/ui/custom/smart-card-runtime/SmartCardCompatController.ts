@@ -4,6 +4,7 @@ import { api, invalidateCache } from '@/services/api';
 import { worldbookApi } from '@/services/worldbookApi';
 import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
 import { executeSlashCommandCompat } from '@/lib/sillytavern/getContext';
+import { getStCompatCommandNames } from '@/lib/slash-engine/st-command-catalog';
 import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
@@ -806,6 +807,15 @@ export async function handleSmartCardCompatRequest(
     } else if (action.action === 'getWorldbookEntries') {
       // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
       result = (await resolveCharWorldbookExport(state, requestContext)).entries;
+    } else if (action.action === 'getStCompatCommandNames') {
+      // [包F F-1 2026-10-18] 帧内 SlashCommandParser.commands 的枚举种子：ST 1.18 权威命令名。
+      //
+      // 为什么走宿主而不是写在帧内：名单约 3KB，`runtime-body/part-*.ts` 是注入 iframe 的
+      // 模板字符串，内联会把包A 刚瘦下来的单帧 srcdoc（46,167 字节）又顶上去一截。
+      // 只读、无副作用，因此不在 SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE 名单里。
+      // 返回对象包一层 `{ names }`：帧内 requestParent v2 对**顶层数组/字符串**做对象展开
+      // （part-06.ts 的归一化），裸数组会变成索引键；包在对象里才能原样到达 `response.names`。
+      result = { names: getStCompatCommandNames() };
     } else if (action.action === 'runPalinkSlash') {
       // [S5-GDEP3 T2 2026-10-16] 卡内 triggerSlash 的宿主侧落点。
       //

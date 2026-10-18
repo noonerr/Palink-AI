@@ -557,6 +557,31 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     return slashKnownNamesCompat.has(name) ? synthesizeSlashEntryCompat(name) : undefined;
   };
   const primeSlashKnownNamesCompat = async () => {
+    // [包F F-1 2026-10-18] 枚举口径修复。
+    //
+    // 此前 known names 只由 /help 的返回文本解析而来 ⇒ 集合上限 = 宿主引擎真注册了的命令，
+    // 与 ST 1.18 的权威名单（静态抽取 293 条）对不上：三方卡脚本 / ST 插件用
+    // 'x' in SlashCommandParser.commands、Object.keys(commands)、for...in
+    // 做能力探测或命令补全时，看到的比 ST 少 200 多条。
+    //
+    // 现在先向宿主取**权威名单**（名单常量在宿主侧 lib/slash-engine/st-command-catalog.ts，
+    // 帧内只多一段请求 ⇒ 不把 293 个字面量写进模板串，srcdoc 体积红线不破），
+    // 再接住 /help 的解析结果补上 Palink 自有、ST 没有的名字。
+    //
+    // 语义不变的部分：这里只放开「存在性 / 枚举」，get 仍走 resolveSlashEntryCompat，
+    // 宿主没实现的名单项拿到的是合成 entry，执行时照旧得到引擎的 Unknown command
+    // （executeSlashCommandCompat 会把它折成空串）—— 不是假成功（红线 1）。
+    try {
+      const seedResponse = await requestParent('getStCompatCommandNames', {});
+      const seedNames = seedResponse && Array.isArray(seedResponse.names) ? seedResponse.names : [];
+      for (const seedName of seedNames) {
+        if (typeof seedName === 'string' && seedName) slashKnownNamesCompat.add(seedName);
+      }
+      window.__palinkSlashSeedNamesCount = seedNames.length;
+      window.__palinkSlashKnownNames = Array.from(slashKnownNamesCompat);
+    } catch (e) {
+      // 取不到名单就退回 /help 口径（等同修复前），不影响既有行为
+    }
     try {
       const response = await requestParent('runPalinkSlash', { command: '/help' });
       const text = response && typeof response.result === 'string' ? response.result : '';
@@ -585,6 +610,13 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     get(target, prop) {
       if (prop === 'size') return target.size;
       if (prop === Symbol.iterator) return target[Symbol.iterator].bind(target);
+      // [包F F-1 2026-10-18] has() 与 in 判定口径对齐：两者都算上权威名单种子里
+      // "宿主还没实现"的名字（in 走下面的 has 陷阱，这里别再退回裸 Map）。
+      // get/keys/values 等仍走 Map 本体 —— keys() 返回的是 Map 原型语义，
+      // 三方与探针的取键口径一律是 Object.keys(commands)（见 fixtures/README.md）。
+      if (prop === 'has') {
+        return (name) => target.has(name) || slashKnownNamesCompat.has(String(name));
+      }
       if (
         prop === 'get' || prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'clear'
         || prop === 'keys' || prop === 'values' || prop === 'entries' || prop === 'forEach'
