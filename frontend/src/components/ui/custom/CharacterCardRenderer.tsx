@@ -359,6 +359,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     sourceFingerprint,
     viewport: viewportContext,
     variables: context.variables,
+    // [包G G-1 #2 2026-10-18] 模型名走 context-update 热通道：切换模型不重建 iframe，
+    // 但帧内 getContext().getChatCompletionModel() 必须跟着变（boot 那份只到首帧）。
+    selectedModel: context.selectedModel,
   }), [
     context.characterId,
     context.characterName,
@@ -384,6 +387,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
     sourceFingerprint,
     trustedNative,
     viewportContext,
+    context.selectedModel,
   ]);
 
   const bootContextSignature = getSmartCardBootContextSignature(
@@ -414,6 +418,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     sessionId: context.sessionId,
     // [S1-G7 2026-10-13] 会话绑定世界书名随 bootContext 进 shim（构建期内联，首帧可用）。
     worldbookName: context.worldbookName,
+    // [包G G-1 #2 2026-10-18] 模型名同样随 boot 进 srcdoc（首帧同步可用；后续切换由
+    // context-update 热更，见上方 liveContext）。
+    selectedModel: context.selectedModel,
     // [S1-G6 2026-10-13] 在主框架读 IDB 分库止血开关并下发。帧内读不到主框架的
     // localStorage（未信任卡帧里 window.parent 是 legacy 安全代理），必须由这里读。
     // 每次构建 srcdoc 都重读 ⇒ 刷新即生效，仍满足"不用重新构建就能关掉"。

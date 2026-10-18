@@ -125,6 +125,9 @@ interface MessageProps {
   userAvatar?: string;
   userName?: string;
   models?: Model[];
+  // [包G G-1 #2 2026-10-18] 当前对话模型 id：透传给智能卡 iframe 的 ctx，
+  // 供帧内 getContext().getChatCompletionModel() 取真值（此前该 API 恒返空串）。
+  selectedModel?: string;
   streaming?: boolean;
   isLast?: boolean;
   t: Record<string, string>;
@@ -644,6 +647,7 @@ function MessageInner({
   userAvatar: _userAvatar,
   userName: _userName,
   models = [],
+  selectedModel: _selectedModel,
   streaming = false,
   isLast = false,
   t: _t,
@@ -1567,6 +1571,8 @@ function MessageInner({
                       userName: _userName,
                       // [S1-G7 2026-10-13] 会话绑定世界书名：进 bootContext → 构建期内联进 shim。
                       worldbookName: _characterWorldbookName,
+                      // [包G G-1 #2 2026-10-18] 当前模型名：帧内 getChatCompletionModel() 的真值。
+                      selectedModel: _selectedModel,
                       messageId: message.id,
                       // [P0-FIX 2026-09-30] 补传 messageIndex：渲染器用它做 chat 压缩与
                       // "当前消息"定位，ST 语义的 getCurrentMessageId 也依赖它。

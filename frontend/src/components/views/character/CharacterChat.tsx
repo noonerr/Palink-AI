@@ -1990,6 +1990,8 @@ export function CharacterChat(props: CharacterChatProps) {
                     : undefined
                 }
                 models={models}
+                // [包G G-1 #2 2026-10-18] 智能卡帧内 getChatCompletionModel() 需要当前模型名。
+                selectedModel={selectedModel}
                 streaming={(isGenerating && idx === totalMsgCount - 1) || regeneratingMessageIndex === idx}
                 isLast={idx === totalMsgCount - 1}
                 isCurrentLatestAssistant={isCurrentLatestAssistant}

@@ -179,6 +179,8 @@ function buildSmartCardCompatRuntimeBootPayload(options: SmartCardRuntimeV2Optio
     language: context.language || 'zh',
     // [S1-G7 2026-10-13] 会话绑定世界书名内联：帧内同步 API 首次调用即可取到真值。
     worldbookName: context.worldbookName || '',
+    // [包G G-1 #2 2026-10-18] 当前模型名进 boot：getContext().getChatCompletionModel() 的真值。
+    selectedModel: context.selectedModel || '',
     // [S1-G6 2026-10-13] IDB 分库止血开关：父侧读主框架 localStorage 后下发。
     // 帧内不能自己读 window.parent.localStorage —— 未信任卡帧里那是 legacy 安全代理。
     idbNamespaceDisabled: Boolean(context.idbNamespaceDisabled),

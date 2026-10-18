@@ -371,6 +371,11 @@ export interface CharacterSmartCardContext {
   // 让帧内**同步** API（getCharWorldbookNames / getCharLorebooks / getCurrentCharPrimaryLorebook）
   // 首次调用就有值 —— 帧内桥是异步的，不内联则首次必为空（MVU 只在模块顶层读一次，等不起）。
   worldbookName?: string;
+  // [包G G-1 #2 2026-10-18] 宿主当前选择的对话模型 id。帧内 getContext().getChatCompletionModel()
+  // 的真值来源（ST 侧该函数返回 openai 配置的模型名；Palink 的唯一真值就是这里的 selectedModel，
+  // 同一份值也喂给 generationEngine.setContext 与 SmartCardCompatRequestContext.selectedModel）。
+  // 未注入时帧内返回 ''（诚实空值）。
+  selectedModel?: string;
   // [S1-G6 2026-10-13] IDB 分库止血开关（主框架 localStorage `palink_idb_namespace === '0'`）。
   // 必须由父侧读好下发：卡 iframe 里 window.parent 是 legacy 安全代理，
   // 读不到主框架的 localStorage（详见 card-idb-namespace.ts 的 readIdbNamespaceKillSwitch）。

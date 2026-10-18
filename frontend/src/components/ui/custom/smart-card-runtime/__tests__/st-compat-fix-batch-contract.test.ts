@@ -222,29 +222,44 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
     const notes = sliceDeclaration(COMPAT_V2_SOURCE, 'const PALINK_STUB_API_NOTES = {');
     // [T6 2026-10-18] 删 loadWorldInfo：T3 修复 + 拆掉 stubApi 后它不再属于桩。
     // [包B B-3 2026-10-18] 删 saveWorldInfo：改为真写入（桥 createOrReplaceWorldbook）。
+    // [包G G-1 2026-10-18] 表里只剩「故意不补」的四项：13 个真问题项已换真实现或诚实失败，
+    // 连同它们的 stubApi 包裹一起移除（逐项理由见 part-08.ts 内 #1-#13 注释与包G 报告）。
+    // getRequestHeaders（安全决策）与 getSelectedPresetName / writePresetExtensionField
+    //（ST 预设体系，Palink 结构不同）必须**继续留在表里** —— 它们仍是桩。
     const flagged = [
-      'getWorldInfoPrompt', 'getSelectedPresetName',
-      'writePresetExtensionField', 'getRequestHeaders', 'getChatCompletionModel',
-      'getMediaDisplay', 'getMediaIndex', 'appendMediaToMessage', 'scrollOnMediaLoad',
-      'convertCharacterBook', 'getTextGenServer', 'renameChat', 'updateWorldInfoList',
-      'reloadWorldInfoEditor', 'fetch:/api/worldinfo',
+      'getSelectedPresetName',
+      'writePresetExtensionField', 'getRequestHeaders', 'fetch:/api/worldinfo',
     ];
     flagged.forEach((name) => {
       expect(notes, `missing note for ${name}`).toContain(name);
     });
+    // 反向断言：已修项不得再回到桩表（回到表里=又变成桩）。
+    const fixed = [
+      'getWorldInfoPrompt', 'getChatCompletionModel', 'getMediaDisplay', 'getMediaIndex',
+      'appendMediaToMessage', 'scrollOnMediaLoad', 'convertCharacterBook', 'getTextGenServer',
+      'renameChat', 'updateWorldInfoList', 'reloadWorldInfoEditor',
+    ];
+    fixed.forEach((name) => {
+      expect(notes, `${name} 已被包G 修成真实现，不该再出现在桩表里`).not.toContain(`${name}: '`);
+    });
   });
 
-  it('源码层：getContextCompat 的桩确实被 stubApi 包裹（不是只建了 helper 没用）', () => {
+  it('源码层：仍是桩的项确实被 stubApi 包裹；包G 修完的 13 项必须已拆掉 stubApi', () => {
     const ctx = sliceDeclaration(COMPAT_V2_SOURCE, 'const getContextCompat = () => ({');
-    // [T6 2026-10-18] 删 loadWorldInfo：拆掉 stubApi 后它不再是桩。
-    // [包B B-3 2026-10-18] 删 saveWorldInfo：同上，已改真写入。
-    ['getWorldInfoPrompt', 'convertCharacterBook',
-      'getChatCompletionModel', 'getMediaDisplay', 'getMediaIndex', 'getTextGenServer',
-      'renameChat', 'scrollOnMediaLoad', 'appendMediaToMessage',
-      'getSelectedPresetName', 'writePresetExtensionField',
-      'updateWorldInfoList', 'reloadWorldInfoEditor'].forEach((name) => {
+    // [T6/B-3] loadWorldInfo / saveWorldInfo 早已拆桩；[包G G-1] 再拆 13 项。
+    ['getSelectedPresetName', 'writePresetExtensionField'].forEach((name) => {
       const re = new RegExp(name + ":\\s*stubApi\\('" + name + "'");
       expect(re.test(ctx), `${name} should be wrapped by stubApi`).toBe(true);
+    });
+    const unwrapped = [
+      'getWorldInfoPrompt', 'convertCharacterBook',
+      'getChatCompletionModel', 'getMediaDisplay', 'getMediaIndex', 'getTextGenServer',
+      'renameChat', 'scrollOnMediaLoad', 'appendMediaToMessage',
+      'updateWorldInfoList', 'reloadWorldInfoEditor',
+    ];
+    unwrapped.forEach((name) => {
+      const re = new RegExp(name + ":\\s*stubApi\\('" + name + "'");
+      expect(re.test(ctx), `${name} 不该再被 stubApi 包裹（包G G-1 已拆）`).toBe(false);
     });
   });
 });

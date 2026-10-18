@@ -105,23 +105,23 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   const PALINK_STUB_API_NOTES = {
     // [T6 2026-10-18] loadWorldInfo 不再是桩：T3 已合入 getCharWorldbook 桥取真实条目，
     // 拆掉 stubApi 包装以免每帧产一条误报警告 toast。键保留在外部文档表里供卡作者参考。
-    getWorldInfoPrompt: '世界书提示词恒返回空串，实际注入走后端 worldbook_service',
-    // [包B B-3 2026-10-18] 删 saveWorldInfo：已改为真写入（桥 createOrReplaceWorldbook），
-    // 不再是桩。本条与 getContextCompat 里的 saveWorldInfo 实现必须同进同出。
+    // [包B B-3 2026-10-18] 删 saveWorldInfo：已改为真写入（桥 createOrReplaceWorldbook）。
+    // [包G G-1 2026-10-18] 本表按「仍是桩」的口径重写。以下 13 项已换真实现或**诚实失败**，
+    // 同时从 stubApi 包裹中移除（逐项处置见 buildPowerUserSettingsCompat 起的那一段注释，
+    // 编号对应 HANDOFF §2.1）：
+    //   #1 powerUserSettings  #2 getChatCompletionModel  #3 getTextGenServer
+    //   #4 convertCharacterBook  #5 getWorldInfoPrompt  #6 updateWorldInfoList
+    //   #7 reloadWorldInfoEditor  #8 appendMediaToMessage  #9 getMediaDisplay
+    //   #10 getMediaIndex  #11 scrollOnMediaLoad  #12 renameChat  #13 createCharacterData
+    // 留在表里的只剩两类，都是**故意不补**：
+    //   · getRequestHeaders —— 安全决策待用户拍板（给真实头 = 把 palink_session/palink_csrf
+    //     送进 opaque origin 帧，与 P1-1 沙箱红线冲突，见路线图 §4）。
+    //   · getSelectedPresetName / writePresetExtensionField —— ST 预设体系，Palink 结构
+    //     不同，硬补=形状对语义错（getPresetManager 同理由，故它连本表都不进）。
     getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
     writePresetExtensionField: '写入为假成功（返回 true 但不落库）',
     getRequestHeaders: 'Palink 由 api 服务统一注入认证头，此处恒空对象',
     'fetch:/api/worldinfo': 'iframe 侧 fetch 白名单对 /api/worldinfo 恒返回空 entries/data（真实内容走 getLorebookEntries 桥，见 SPEC T3）',
-    getChatCompletionModel: '模型名经 generationEngine 读取，此处恒空串',
-    getMediaDisplay: '消息媒体显示形态由 React 组件管理，此处为占位常量',
-    getMediaIndex: '消息媒体索引由 React 组件管理，此处为占位常量',
-    appendMediaToMessage: '消息媒体追加由后端 extra.media 管理，此处为假成功',
-    scrollOnMediaLoad: '滚动由宿主管理，此处为假成功',
-    convertCharacterBook: 'Palink 后端已存 ST 形状，此处为恒等占位',
-    getTextGenServer: 'Palink 不使用独立 textgen 服务器，占位空串',
-    renameChat: '会话改名入口未接线，此处为假成功',
-    updateWorldInfoList: '世界书列表由宿主 UI 管理，此处为假成功',
-    reloadWorldInfoEditor: '世界书编辑器由宿主 UI 管理，此处为假成功',
   };
   const stubApiReported = {};
   const reportStubApi = (apiName, note) => {
@@ -175,6 +175,274 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   };
   const chatCompletionSettingsCompat = buildCompletionSettingsCompat();
   const textCompletionSettingsCompat = buildCompletionSettingsCompat();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // [包G G-1 2026-10-18] getContext 真问题项的帧内真实现。
+  // 逐项处置表：docs/_active/HANDOFF_提示词_包G_getContext与libs补齐_2026-10-18.md §2.1
+  // 交付报告：docs/_active/report/REPORT_包G_getContext与libs_2026-10-18.md
+  // 红线：**不许假成功** —— 能接真通道就接真值，接不到的诚实返回 false / '' 并留痕；
+  // 修完的项一律拆掉 stubApi 包装（stubApi 每次调用产一条 st_api_stub 诊断，
+  // 是卡脚本调几次就弹几个 toast 的噪音源，见 :127 reportStubApi）。
+  // 14 号 getRequestHeaders（安全决策待用户拍板）与 15 号 getPresetManager
+  //（架构红线：Palink 预设体系与 ST 结构不同）**按拍板保持原样，本批未动**。
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // #1 powerUserSettings / power_user ——
+  // 宿主侧同语义实现见 lib/sillytavern/getContext.ts:3225-3235：读
+  // window.__palink_power_user（当前**没有写入者** ⇒ 落那份默认值）。
+  // 帧内取同样的三级优先级：宿主经 ctx 注入 > 帧内 __palink_power_user > 宿主默认值。
+  // ⚠️ 不许留空对象：空对象在真机探针口径里就是「非真可用」，且卡脚本读
+  // powerUserSettings.font_size 会拿到 undefined。language 用 ctx.language（宿主真值）。
+  const buildPowerUserSettingsCompat = () => {
+    const defaults = {
+      font_size: 14,
+      language: String(ctx.language || 'zh-CN'),
+      persona_show_user_name: false,
+      // ST power_user 的两项媒体相关默认值（本表 #9/#11 消费它们）。
+      scroll_on_media_load: true,
+      media_display: 'inline',
+    };
+    const injected = (ctx.powerUserSettings && typeof ctx.powerUserSettings === 'object')
+      ? ctx.powerUserSettings
+      : (window.__palink_power_user && typeof window.__palink_power_user === 'object' ? window.__palink_power_user : {});
+    return Object.assign(defaults, clone(injected));
+  };
+  const powerUserSettingsCompat = buildPowerUserSettingsCompat();
+  // 同一实例发布到 window.power_user：part-06 的 ensureObject('power_user', {}) 只给了
+  // **空对象**，而 ST 侧插件普遍直读全局（本运行时里 part-02:354 的 power_user 访问器、
+  // part-06:652 的 /api/settings/get 响应都在读它）⇒ 只补 getContext 不够，全局也得是真值。
+  // 用赋值而非 ensureObject，保证与 ctx.powerUserSettings 是**同一个引用**（ST 就是同一对象）。
+  try {
+    window.power_user = powerUserSettingsCompat;
+  } catch (e) { /* 全局被占用时静默：getContext 那份仍是真值 */ }
+
+  // #2 getChatCompletionModel —— 真值 = 宿主当前选择的模型名。
+  // 通道：CharacterChat.tsx 的 selectedModel（同一份值已喂给 generationEngine.setContext）
+  //   → Message.tsx 传给渲染器的 context.selectedModel
+  //   → 帧内 ctx（boot 白名单 + context-update 全量 Object.assign 都带）。
+  // 宿主尚未注入时返回 ''（诚实空值，不编造模型名）。
+  const getChatCompletionModelCompat = () => String(ctx.selectedModel || ctx.model || '');
+
+  // #3 getTextGenServer —— ST 语义 = 返回**已配置的 textgen 后端**服务器 URL；
+  // mainApi 不是 textgen 时 ST 自己同样返回空串。Palink 没有独立 textgen 服务器
+  //（mainApi 恒 'palink'）⇒ 空串就是诚实值，不是缺失。只接受宿主显式注入的
+  // ctx.textGenServer（当前无写入者）。此前挂 stubApi 只会白弹诊断，已拆。
+  const getTextGenServerCompat = async () => String(ctx.textGenServer || '');
+
+  // #4 convertCharacterBook —— ST 侧把 V2 character_book（entries 为数组）转成
+  // world_info 形状；Palink 后端存的**已经是 ST 形状**（entries 带 uid/content/keys/
+  // comment，见 SmartCardCompatController.ts mapCharBookStagesToEntries:370-377）
+  // ⇒ 恒等映射是**语义正确**的实现，不是占位假实现。stubApi 已拆。
+  const convertCharacterBookCompat = (book) => (book && typeof book === 'object' ? book : {});
+
+  // #5 getWorldInfoPrompt —— 复用同帧 loadWorldInfo 的取数通道（requestParent
+  // 'getCharWorldbook'，卡自建优先、缺失回退角色 character_book），把**启用**条目
+  // 按插入顺序组装成提示词串。宿主轨 lib/sillytavern/getContext.ts:2330 的同名 API
+  // 返回口径也是 string，两轨一致；无条目返回 ''（ST 空世界书同样返回空）。
+  // ⚠️ 实际注入仍由后端 worldbook_service.build_worldbook_context 完成，本函数是
+  // 给卡/插件看的展示口径（与宿主轨 F-1 的注记同义）。
+  const getWorldInfoPromptCompat = async () => {
+    try {
+      const detail = await requestParent('getCharWorldbook', { args: [] });
+      const list = detail && Array.isArray(detail.entries) ? detail.entries : [];
+      const ordered = list
+        .filter((entry) => entry && typeof entry === 'object')
+        .filter((entry) => entry.disabled !== true && entry.enabled !== false)
+        .slice()
+        .sort((a, b) => Number(a.insertion_order ?? a.order ?? a.insert_order ?? 100)
+          - Number(b.insertion_order ?? b.order ?? b.insert_order ?? 100));
+      const parts = [];
+      ordered.forEach((entry) => {
+        const content = String(entry.content ?? '').trim();
+        if (content) parts.push(content);
+      });
+      return parts.join('\\n');
+    } catch (e) {
+      post({ type: 'log', level: 'warn', message: 'getWorldInfoPrompt 桥接失败，返回空提示词：' + String(e && e.message || e) });
+      return '';
+    }
+  };
+
+  // #6 updateWorldInfoList —— ST 语义 = 重拉世界书列表（world_names，
+  // world-info.js:2061 走 /api/settings/get）。Palink 每角色绑定一份 character_book
+  // ⇒ 列表就是"当前角色绑定的那一本"，经既有 getCharWorldbook 桥刷新 window.world_names
+  //（getContext().getWorldInfoNames 读的就是这个数组）。桥失败时保留现状并 warn。
+  const updateWorldInfoListCompat = async () => {
+    try {
+      const detail = await requestParent('getCharWorldbook', { args: [] });
+      const name = String((detail && detail.name) || activeWorldbookName || ctx.worldbookName || '').trim();
+      const next = name ? [name] : [];
+      window.world_names = next;
+      if (name) activeWorldbookName = name;
+      return next.slice();
+    } catch (e) {
+      post({ type: 'log', level: 'warn', message: 'updateWorldInfoList 桥接失败，保留现有世界书列表：' + String(e && e.message || e) });
+      return Array.isArray(window.world_names) ? window.world_names.slice() : [];
+    }
+  };
+
+  // #7 reloadWorldInfoEditor —— 帧内**没有**世界书编辑器 UI（world-info.js:1040 的
+  // reloadEditor 只重画 #world_editor_select 下拉框）。本函数不写任何数据、无副作用
+  // 可失败 ⇒ 恒真是 by design，不是假成功；拆掉 stubApi 以免弹诊断噪音。
+  const reloadWorldInfoEditorCompat = async () => true;
+
+  // #8 appendMediaToMessage —— ST 侧是"把媒体画进消息块 DOM"（script.js:2157）；
+  // Palink 的权威口径是 message.extra.media（服务端快照，Message.tsx:1610 只认它）。
+  // ⇒ 帧内实现为：推进 extra.media 后经**既有** setChatMessage 父侧通道落库
+  //（part-05.ts:557 setChatMessageCompat 合并 extra → requestParent('setChatMessage')
+  // → SmartCardCompatController.ts:827 → CharacterChat.tsx applySmartCardMessageUpdate
+  // → PUT 消息）。找不到消息 / 拿不出可用媒体 ⇒ 返回 false（诚实失败）。
+  const resolveFrameMessageIndex = (mesOrId, options = {}) => {
+    try {
+      if (mesOrId && typeof mesOrId === 'object') {
+        const byId = compatChat.findIndex((message) => String(message?.id) === String(mesOrId.id ?? mesOrId.message_id ?? '')
+          || String(message?.message_id) === String(mesOrId.message_id ?? mesOrId.id ?? ''));
+        if (byId >= 0) return byId;
+        const byMesid = Number(mesOrId.mesid ?? mesOrId.index);
+        if (Number.isInteger(byMesid) && byMesid >= 0 && byMesid < compatChat.length) return byMesid;
+      }
+      return resolveMessageIndex(mesOrId, options);
+    } catch (e) {
+      return -1;
+    }
+  };
+  const resolveFrameMessage = (mesOrId) => {
+    const index = resolveFrameMessageIndex(mesOrId);
+    if (index < 0 || index >= compatChat.length) return null;
+    return compatChat[index] || null;
+  };
+  const newFrameMediaIdCompat = () => {
+    // 形态对齐后端 new_media_id 与前端 lib/messageMedia.ts:74 newMediaId：m_ + 12 位十六进制。
+    let hex = '';
+    while (hex.length < 12) hex += Math.floor(Math.random() * 0x1000000).toString(16).padStart(6, '0');
+    return 'm_' + hex.slice(0, 12);
+  };
+  const normalizeFrameMediaEntry = (value) => {
+    const urlOf = (candidate) => String(candidate?.url ?? candidate?.path ?? candidate?.src ?? '').trim();
+    if (typeof value === 'string') {
+      const url = value.trim();
+      if (!url) return null;
+      return { id: newFrameMediaIdCompat(), status: 'ready', url, width: null, height: null, created_at: new Date().toISOString() };
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const url = urlOf(value);
+    // 既无 url 又无既有 id 的对象（ST 侧传的是 jQuery 消息元素）在这里无法映射 ⇒ 诚实失败。
+    if (!url && !value.id) return null;
+    const status = value.status === 'pending' || value.status === 'failed' ? value.status : 'ready';
+    const next = clone(value);
+    next.id = String(value.id || newFrameMediaIdCompat());
+    next.status = status;
+    if (url) next.url = url;
+    return next;
+  };
+  const appendMediaToMessageCompat = async (mesOrId, fileOrElement) => {
+    const index = resolveFrameMessageIndex(mesOrId);
+    const target = index >= 0 && index < compatChat.length ? compatChat[index] : null;
+    if (!target) return false;
+    // ST 签名是 (mes, messageElement)；Palink 卡/插件常见第二种传参直接给媒体对象/URL。
+    // ⚠️ 只认**第二参**为媒体来源（第二参缺省时才回退看第一参是不是媒体对象本身）。
+    // 不做"第二参不是媒体就退回去把消息 id 当 URL"的猜测 —— ST 传 jQuery 元素时
+    // 那样会拿消息 id 当地址写进 extra.media，是假成功。映射不出来一律 false。
+    const mediaInput = fileOrElement === undefined || fileOrElement === null ? mesOrId : fileOrElement;
+    const entry = normalizeFrameMediaEntry(mediaInput);
+    if (!entry) return false;
+    const mediaList = Array.isArray(target.extra?.media) ? clone(target.extra.media) : [];
+    mediaList.push(entry);
+    const nextExtra = { ...(target.extra && typeof target.extra === 'object' ? clone(target.extra) : {}), media: mediaList };
+    if (Number.isInteger(nextExtra.media_index) === false) nextExtra.media_index = mediaList.length - 1;
+    // content 传 undefined：normalizeMessageUpdatePayload(part-05:490) 据此判定
+    // "无显式内容"，只合并 extra，不会把正文抹成空串。
+    const result = await setChatMessageCompat(undefined, target.message_id ?? target.id ?? index, { extra: nextExtra });
+    return Boolean(result && result.success !== false);
+  };
+
+  // #9 getMediaDisplay —— 真值 = message.extra.media_display。
+  // Palink 侧合法取值是 inline / gallery（lib/messageMedia.ts:141），ST 侧是 inline / list
+  //（script.js:2130）⇒ 三值原样透传，缺省落偏好值 power_user.media_display，再兜 'inline'。
+  const getMediaDisplayCompat = (mesOrId) => {
+    const message = resolveFrameMessage(mesOrId);
+    const stored = String(message?.extra?.media_display || '').trim();
+    if (stored === 'inline' || stored === 'gallery' || stored === 'list') return stored;
+    const pref = String(powerUserSettingsCompat.media_display || '').trim();
+    if (pref === 'inline' || pref === 'gallery' || pref === 'list') return pref;
+    return 'inline';
+  };
+
+  // #10 getMediaIndex —— 真值 = message.extra.media_index。
+  // 无媒体 ⇒ -1（包G 处置表口径；注意 ST 源码在此情形返回 0，差异已在报告记录）。
+  // 有媒体但索引越界/非法 ⇒ 0（与 ST script.js:2140 一致）。
+  const getMediaIndexCompat = (mesOrId) => {
+    const message = resolveFrameMessage(mesOrId);
+    const media = message?.extra?.media;
+    if (!Array.isArray(media) || media.length === 0) return -1;
+    const raw = Number(message?.extra?.media_index);
+    if (!Number.isFinite(raw) || raw < 0 || raw >= media.length) return 0;
+    return raw;
+  };
+
+  // #11 scrollOnMediaLoad —— ST 是**函数**（script.js:1532：媒体加载完后滚到底），
+  // 开关是 power_user.scroll_on_media_load。帧内保留函数形态（卡/插件按 ST 用法调用），
+  // 真值口径 = 偏好：偏好为真时走本帧既有 scrollChatToBottom 桥，返回是否执行；
+  // 偏好为 false 时不滚动并返回 false。缺省 true（ST 默认）。stubApi 已拆。
+  const scrollOnMediaLoadCompat = () => {
+    const enabled = powerUserSettingsCompat.scroll_on_media_load !== false;
+    if (!enabled) return false;
+    try {
+      if (typeof window.scrollChatToBottom === 'function') {
+        window.scrollChatToBottom();
+        return true;
+      }
+    } catch (e) { /* 静默：滚动失败不值得打断卡脚本 */ }
+    return enabled;
+  };
+
+  // #12 renameChat —— **诚实失败**。
+  // 已核实：单间轨没有任何可改会话标题的父侧通道（SmartCardCompatController.ts 的
+  // requestParent 动作表里没有 rename 类动作），故帧内无法完成改名 ⇒ 返回 false +
+  // 一次性 console.warn 留痕。不许假成功返 true。
+  // ⚠️ 后续项（写进包G 报告）：宿主轨 lib/sillytavern/getContext.ts:2439 走的
+  // POST /api/chats/rename-session（backend/app/api/silly_tavern.py:5838）是**存在且真改库**的，
+  // 缺的只是给单间轨补一个 requestParent 动作；补上即可把本函数换成真实现。
+  let renameChatWarnedCompat = false;
+  const renameChatCompat = async () => {
+    if (!renameChatWarnedCompat) {
+      renameChatWarnedCompat = true;
+      try {
+        console.warn('[palink-smart-card] getContext().renameChat：单间轨未接会话改名通道（宿主轨用的 POST /api/chats/rename-session 尚未桥到帧内），返回 false。后续项见 docs/_active/report/REPORT_包G_getContext与libs_2026-10-18.md');
+      } catch (e) { /* console 被治理时静默 */ }
+    }
+    return false;
+  };
+
+  // #13 createCharacterData —— ST 默认角色数据模板。
+  // 逐键照抄 _reference/sillytavern-1.18.0/public/script.js:569-592 的 create_save
+  //（注意 ST 用 first_message / mes_example，不是卡 JSON 的 first_mes / mes_example）；
+  // 三个默认量取 ST constants：talkativeness_default=0.5、depth_prompt_depth_default=4、
+  // depth_prompt_role_default='system'。此前恒 {} ⇒ 卡脚本 createCharacterData.name = x 直接炸。
+  const createCharacterDataCompat = {
+    name: '',
+    description: '',
+    creator_notes: '',
+    post_history_instructions: '',
+    character_version: '',
+    system_prompt: '',
+    tags: '',
+    creator: '',
+    personality: '',
+    first_message: '',
+    avatar: null,
+    scenario: '',
+    mes_example: '',
+    world: '',
+    talkativeness: 0.5,
+    alternate_greetings: [],
+    depth_prompt_prompt: '',
+    depth_prompt_depth: 4,
+    depth_prompt_role: 'system',
+    extensions: {},
+    extra_books: [],
+  };
+
   const getContextCompat = () => ({
     accountStorage: accountStorageCompat,
     chat: window.chat,
@@ -201,7 +469,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     streamingProcessor: null,
     getRequestHeaders: window.getRequestHeaders,
     reloadCurrentChat: window.reloadCurrentChat,
-    renameChat: stubApi('renameChat', async () => true),
+    // [包G G-1 #12] 后端无帧内可用的改名通道 ⇒ 诚实返回 false（详见 renameChatCompat 注释）。
+    renameChat: renameChatCompat,
     saveSettingsDebounced: window.saveSettingsDebounced,
     chatMetadata: window.chat_metadata || {},
     chat_metadata: window.chat_metadata || {},
@@ -308,8 +577,10 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     showLoader: () => true,
     hideLoader: () => true,
     mainApi: 'palink',
-    powerUserSettings: window.power_user,
-    power_user: window.power_user,
+    // [包G G-1 #1] 真值三级优先：宿主 ctx 注入 > 帧内 __palink_power_user > 宿主默认值
+    //（与 lib/sillytavern/getContext.ts:3225-3235 同语义）。不再留空对象。
+    powerUserSettings: powerUserSettingsCompat,
+    power_user: powerUserSettingsCompat,
     Mvu: window.Mvu,
     TavernHelper: window.TavernHelper,
     getChatMessages: window.getChatMessages,
@@ -341,7 +612,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     tags: [],
     tagMap: {},
     menuType: ctx.presentationMode || 'chat',
-    createCharacterData: {},
+    // [包G G-1 #13] ST create_save 默认模板（script.js:569-592），此前恒 {} ⇒ 卡脚本写字段即炸。
+    createCharacterData: createCharacterDataCompat,
     getCurrentMessageId: window.getCurrentMessageId,
     swipe: window.TavernHelper?.swipe || tavernHelperCompat.swipe,
     swipe_left: window.swipe_left,
@@ -350,7 +622,9 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     macros: window.macros,
     registerMacro: window.registerMacro,
     unregisterMacro: window.unregisterMacro,
-    appendMediaToMessage: stubApi('appendMediaToMessage', async () => true),
+    // [包G G-1 #8] 推进 message.extra.media 后经既有 setChatMessage 父侧通道落库；
+    // 拿不到消息或媒体不可映射时返回 false（诚实失败），不再假成功。
+    appendMediaToMessage: appendMediaToMessageCompat,
     ensureMessageMediaIsArray: (message) => {
       if (message && typeof message === 'object' && !Array.isArray(message.extra?.media)) {
         message.extra = message.extra && typeof message.extra === 'object' ? message.extra : {};
@@ -358,10 +632,11 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       }
       return message?.extra?.media || [];
     },
-    getMediaDisplay: stubApi('getMediaDisplay', () => 'inline'),
-    getMediaIndex: stubApi('getMediaIndex', () => -1),
+    // [包G G-1 #9/#10/#11] 真值来自 message.extra.* 与 power_user 偏好，stubApi 已拆。
+    getMediaDisplay: getMediaDisplayCompat,
+    getMediaIndex: getMediaIndexCompat,
     scrollChatToBottom: window.scrollChatToBottom,
-    scrollOnMediaLoad: stubApi('scrollOnMediaLoad', () => true),
+    scrollOnMediaLoad: scrollOnMediaLoadCompat,
     // [S5-COMPAT-AUDIT T3 2026-10-16] MVU 世界书读取失败的根因修复（66 次/会话）。
     // [T6 2026-10-18] 不再包 stubApi：本函数已是经 getCharWorldbook 桥取真实条目的
     // 真实现；包成 stubApi 只会每帧产一条 "st_api_stub" 警告 toast 给用户噪音。
@@ -426,15 +701,22 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
         return false;
       }
     },
-    reloadWorldInfoEditor: stubApi('reloadWorldInfoEditor', async () => true),
-    updateWorldInfoList: stubApi('updateWorldInfoList', async () => true),
-    convertCharacterBook: stubApi('convertCharacterBook', (book) => book || {}),
-    getWorldInfoPrompt: stubApi('getWorldInfoPrompt', async () => ''),
+    // [包G G-1 #7/#6/#5/#4] 世界书四项全部拆掉 stubApi：
+    //   reloadWorldInfoEditor 恒真 by design（帧内无编辑器 UI、无副作用可失败）；
+    //   updateWorldInfoList 经 getCharWorldbook 桥刷新 window.world_names；
+    //   getWorldInfoPrompt 用同帧真条目组装提示词串（空则 ''）；
+    //   convertCharacterBook 恒等映射（Palink 后端存的即 ST 形状，见其注释）。
+    reloadWorldInfoEditor: reloadWorldInfoEditorCompat,
+    updateWorldInfoList: updateWorldInfoListCompat,
+    convertCharacterBook: convertCharacterBookCompat,
+    getWorldInfoPrompt: getWorldInfoPromptCompat,
     getWorldInfoNames: () => Array.isArray(window.world_names) ? [...window.world_names] : [],
     CONNECT_API_MAP: {},
-    getTextGenServer: stubApi('getTextGenServer', async () => ''),
+    // [包G G-1 #3] Palink 无独立 textgen 后端；ST 在 mainApi != textgen 时同样返回空串。
+    getTextGenServer: getTextGenServerCompat,
     extractMessageFromData: (data) => data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || data?.text || data?.content || '',
-    getChatCompletionModel: stubApi('getChatCompletionModel', () => ''),
+    // [包G G-1 #2] 真值 = 宿主 ctx.selectedModel（CharacterChat.tsx 的 selectedModel）。
+    getChatCompletionModel: getChatCompletionModelCompat,
     printMessages: window.printMessages,
     clearChat: window.clearChat,
     ChatCompletionService: class ChatCompletionServiceCompat {},
@@ -509,20 +791,199 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   window.triggerSlashWithResult = triggerSlashCompat;
   window.getContext = getContextCompat;
   window.SillyTavern = window.SillyTavern || {};
-  window.SillyTavern.libs = {
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // [包G G-2 2026-10-18] SillyTavern.libs 补齐到 ST 1.18.0 的 **25 个权威键**。
+  // 权威口径：_reference/sillytavern-1.18.0/public/lib.js:84-110 的 default export
+  //（fixture 已入库：__tests__/fixtures/st-libs-25.json）。
+  // 硬约束：帧是 opaque origin 的 sandbox 文档，**拿不到宿主打包模块**；把库源码内联
+  // 进 srcdoc 会撑爆单帧（红线 ≤50,000，禁止）。⇒ 唯一兼顾"不撑 srcdoc + 不造假库"的形态：
+  //   **同步可见的 25 个键 + 首次访问才发起的 CDN 懒加载 getter**。
+  //   加载完成前取到 undefined（诚实，不是形状像的假对象），完成后变成真库；
+  //   加载失败静默降级（卡脚本自己会兜）。
+  // CDN 与卡脚本 bootstrap 同一供应商、同一风格（card-script-runner.ts:165-171 的
+  // dependencyUrls 走 jsdelivr +esm），版本按 ST 1.18.0 的 package.json 锁定。
+  // ══════════════════════════════════════════════════════════════════════════
+  const PALINK_ST_LIB_BASE = 'https://testingcf.jsdelivr.net/npm/';
+  // 键 → [拼在 base 后的包路径（版本锁定）, 取值方式]。
+  //   'default'   = 模块默认导出；
+  //   'namespace' = 整个模块命名空间（ST 源码是 import * as X，如 Popper/chevrotain）；
+  //   其它字符串  = 指定命名导出。**同一模块出多个键**时一次加载两键共享缓存
+  //     （@mozilla/readability → Readability + isProbablyReaderable；fflate → gzipSync + gzip）。
+  const PALINK_ST_LIB_PACKAGES = {
+    Fuse: ['fuse.js@7.1.0/+esm', 'default'],
+    hljs: ['highlight.js@11.11.1/+esm', 'default'],
+    css: ['@adobe/css-tools@4.4.4/+esm', 'default'],
+    Bowser: ['bowser@2.12.1/+esm', 'default'],
+    DiffMatchPatch: ['diff-match-patch@1.0.5/+esm', 'default'],
+    Readability: ['@mozilla/readability@0.6.0/+esm', 'Readability'],
+    isProbablyReaderable: ['@mozilla/readability@0.6.0/+esm', 'isProbablyReaderable'],
+    SVGInject: ['@iconfu/svg-inject@1.2.3/+esm', 'default'],
+    showdown: ['showdown@2.1.0/+esm', 'default'],
+    seedrandom: ['seedrandom@3.0.5/+esm', 'default'],
+    Popper: ['@popperjs/core@2.11.8/+esm', 'namespace'],
+    droll: ['droll@0.2.1/+esm', 'default'],
+    morphdom: ['morphdom@2.7.7/+esm', 'default'],
+    slideToggle: ['slidetoggle@4.0.0/+esm', 'toggle'],
+    chalk: ['chalk@5.6.0/+esm', 'default'],
+    yaml: ['yaml@2.8.3/+esm', 'namespace'],
+    chevrotain: ['chevrotain@11.2.0/+esm', 'namespace'],
+    gzipSync: ['fflate@0.8.2/+esm', 'gzipSync'],
+    gzip: ['fflate@0.8.2/+esm', 'gzip'],
+    sha256: ['js-sha256@0.11.1/+esm', 'sha256'],
+  };
+  // 已加载过就别再拉第二份；下列全局名是帧内既有的 CDN 通道产物（bootstrap 把
+  // showdown / yaml 挂成 window.showdown / window.YAML）与 ST initLibraryShims 同名全局习惯。
+  const PALINK_ST_LIB_WINDOW_GLOBALS = {
+    Fuse: 'Fuse',
+    hljs: 'hljs',
+    showdown: 'showdown',
+    yaml: 'YAML',
+    Popper: 'Popper',
+    droll: 'droll',
+    morphdom: 'morphdom',
+    SVGInject: 'SVGInject',
+    seedrandom: 'seedrandom',
+    chalk: 'chalk',
+  };
+  const stLibLoaded = {};
+  const stLibPending = {};
+  // 同一模块出多个键（@mozilla/readability → Readability + isProbablyReaderable、
+  // fflate → gzipSync + gzip）时按 **URL** 去重：一次网络请求喂两个 getter。
+  const stLibModuleByUrl = {};
+  const pickStLibValue = (mod, mode) => {
+    if (!mod || typeof mod !== 'object') return undefined;
+    if (mode === 'namespace') return mod;
+    if (mod[mode] !== undefined) return mod[mode];
+    return mod.default;
+  };
+  const pickWindowStLib = (key) => {
+    const globalName = PALINK_ST_LIB_WINDOW_GLOBALS[key];
+    if (!globalName) return undefined;
+    const value = window[globalName];
+    return value === undefined || value === null ? undefined : value;
+  };
+  // 对齐 ST lib.js:34 initLibraryShims —— 库到货后补一份同名全局，
+  // 让读 window.Fuse / window.hljs 的老扩展也能拿到（不覆盖已有值）。
+  const exposeStLibWindowGlobal = (key, value) => {
+    const globalName = PALINK_ST_LIB_WINDOW_GLOBALS[key];
+    if (!globalName || value === undefined) return;
+    try {
+      if (window[globalName] === undefined || window[globalName] === null) window[globalName] = value;
+    } catch (e) { /* 静默：全局被占用不是错误 */ }
+  };
+  const importStLibModule = (url) => {
+    // 默认路径就是真 CDN 动态 import（与 card-script-runner.ts:280 同款）。
+    // window.__palinkStLibImport 是**环境与离线镜像注入口**：宿主（或契约测试）可预先
+    // 注入 (url) => Promise<module>，用于 CDN 不可达的部署或确定性测试。
+    // 帧是 opaque origin，注入只影响本帧自身，不构成跨帧能力面。
+    if (typeof window.__palinkStLibImport === 'function') {
+      try {
+        return Promise.resolve(window.__palinkStLibImport(url));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    return import(url);
+  };
+  const ensureStLibCompat = (key) => {
+    const name = String(key || '');
+    if (!Object.prototype.hasOwnProperty.call(PALINK_ST_LIB_PACKAGES, name)) {
+      return Promise.resolve(stLibLoaded[name]);
+    }
+    if (stLibLoaded[name] !== undefined) return Promise.resolve(stLibLoaded[name]);
+    if (stLibPending[name]) return stLibPending[name];
+    const fromWindow = pickWindowStLib(name);
+    if (fromWindow !== undefined) {
+      stLibLoaded[name] = fromWindow;
+      return Promise.resolve(fromWindow);
+    }
+    const spec = PALINK_ST_LIB_PACKAGES[name];
+    const url = PALINK_ST_LIB_BASE + spec[0];
+    // 模块级缓存：另一个键已经在拉同一个 URL 就复用它的 promise。
+    const modulePromise = stLibModuleByUrl[url] || (stLibModuleByUrl[url] = importStLibModule(url));
+    stLibPending[name] = modulePromise
+      .then((mod) => {
+        delete stLibPending[name];
+        const value = pickStLibValue(mod, spec[1]);
+        if (value === undefined) {
+          post({ type: 'log', level: 'warn', message: 'SillyTavern.libs.' + name + ' 已加载但取不到导出 ' + spec[1] + '：' + url });
+          return undefined;
+        }
+        stLibLoaded[name] = value;
+        exposeStLibWindowGlobal(name, value);
+        return value;
+      })
+      .catch((error) => {
+        delete stLibPending[name];
+        // 失败静默降级（卡脚本自己会兜），只留一条 log 供取证。
+        post({ type: 'log', level: 'warn', message: 'SillyTavern.libs.' + name + ' CDN 加载失败：' + String(error && error.message || error) });
+        return undefined;
+      });
+    return stLibPending[name];
+  };
+  const defineStLibGetter = (target, key) => {
+    try {
+      Object.defineProperty(target, key, {
+        // enumerable: true ⇒ Object.keys(SillyTavern.libs) 能看到全部 25 个权威键（契约测试口径）。
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          if (stLibLoaded[key] === undefined && !stLibPending[key]) ensureStLibCompat(key);
+          return stLibLoaded[key];
+        },
+      });
+    } catch (e) {
+      // defineProperty 失败（被别的注入物占成不可配置属性）就退回普通键，
+      // 值仍由 ensureStLibCompat 异步补齐 —— 不因此丢键。
+      try { target[key] = stLibLoaded[key]; } catch (inner) { /* 静默 */ }
+    }
+  };
+  const stLibsCompat = {
     ...(window.SillyTavern.libs && typeof window.SillyTavern.libs === 'object' ? window.SillyTavern.libs : {}),
+    // Palink 自有项（ST 25 项之外的超集，包G 明确保留）：
     toastr: window.toastr,
     $: window.$,
     jQuery: window.jQuery || window.$,
-    DOMPurify: domPurifyCompat,
-    Handlebars: handlebarsCompat,
     _: lodashCompat,
-    lodash: lodashCompat,
-    moment: momentCompat,
     dayjs: window.dayjs || momentCompat,
     accountStorage: accountStorageCompat,
+    // 与 ST 同名且**已经是真库**（宿主 bootstrap 注入或 compat 常量）的 5 项权威键：
+    DOMPurify: domPurifyCompat,
+    Handlebars: handlebarsCompat,
+    lodash: lodashCompat,
+    moment: momentCompat,
     localforage: localforageCompat,
   };
+  Object.keys(PALINK_ST_LIB_PACKAGES).forEach((key) => {
+    // 已有真值（含别的注入物先塞进来的同名全局）就不覆盖；其余一律挂懒 getter。
+    if (stLibsCompat[key] !== undefined) {
+      stLibLoaded[key] = stLibsCompat[key];
+      return;
+    }
+    defineStLibGetter(stLibsCompat, key);
+  });
+  window.SillyTavern.libs = stLibsCompat;
+  // 取证/预热用：**不可枚举**，故 Object.keys(libs) 仍是 25 权威键 + Palink 超集，
+  // 不会因为这个辅助键而多出一项。
+  try {
+    Object.defineProperty(stLibsCompat, '__ensure', {
+      enumerable: false,
+      configurable: true,
+      value: (key) => (key === undefined || key === null || key === ''
+        ? Promise.all(Object.keys(PALINK_ST_LIB_PACKAGES).map((name) => ensureStLibCompat(name)))
+        : ensureStLibCompat(String(key))),
+    });
+    Object.defineProperty(stLibsCompat, '__packageMap', {
+      enumerable: false,
+      configurable: true,
+      value: Object.keys(PALINK_ST_LIB_PACKAGES).reduce((acc, name) => {
+        acc[name] = PALINK_ST_LIB_BASE + PALINK_ST_LIB_PACKAGES[name][0];
+        return acc;
+      }, {}),
+    });
+  } catch (e) { /* 静默 */ }
+  window.libs = window.libs || stLibsCompat;
   window.SillyTavern.getContext = getContextCompat;
   window.SillyTavern.getCurrentMessageId = window.getCurrentMessageId;
   window.SillyTavern.getChatMessages = window.getChatMessages;
