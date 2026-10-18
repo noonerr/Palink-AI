@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-18 23:52**　｜　扫描到 **368** 份 markdown
+> **生成时间：2026-10-19 00:04**　｜　扫描到 **368** 份 markdown
 
 ---
 
@@ -312,7 +312,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`REPORT_包H_TavernHelper广度_2026-10-18.md`](./_active/report/REPORT_包H_TavernHelper广度_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | 已完工待验收 | 2026-10-18 |
 | [`REPORT_包I_渲染整洁_2026-10-18.md`](./_active/report/REPORT_包I_渲染整洁_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-18 |
 | [`REPORT_包J_插件CSS守护与characterId_2026-10-18.md`](./_active/report/REPORT_包J_插件CSS守护与characterId_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | 已完工待验收 | 2026-10-18 |
-| [`REPORT_包K_富卡生态扩样_2026-10-18.md`](./_active/report/REPORT_包K_富卡生态扩样_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-18 |
+| [`REPORT_包K_富卡生态扩样_2026-10-18.md`](./_active/report/REPORT_包K_富卡生态扩样_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-19 |
 | [`REPORT_包L_测试载体不保真假绿清单_2026-10-18.md`](./_active/report/REPORT_包L_测试载体不保真假绿清单_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | 已完工待验收 | 2026-10-18 |
 | [`REPORT_卡片渲染iframe与ST直渲染_性能与兼容性解法_2026-10-18.md`](./_active/report/REPORT_卡片渲染iframe与ST直渲染_性能与兼容性解法_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-18 |
 | [`REPORT_卡状态面板取不到数据_可行性核验与施工决策_2026-10-07.md`](./_active/report/REPORT_卡状态面板取不到数据_可行性核验与施工决策_2026-10-07.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-07 |
