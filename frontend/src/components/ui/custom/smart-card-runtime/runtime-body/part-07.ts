@@ -231,7 +231,451 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     });
   });
 
+  // >>> H-TH134 FAMILY BEGIN
+  // [包H 2026-10-18] TavernHelper 134 权威键广度补齐（分类全表与理由见
+  // docs/_active/report/REPORT_包H_TavernHelper广度_2026-10-18.md §3）。
+  //
+  // 语义来源是**酒馆助手运行时源码本体**，不是自发明：
+  //   st-plugins/third-party/JS-Slash-Runner-main/src/function/variables.ts   变量族（作用域派发 :56-94）
+  //   .../src/function/{lorebook,worldbook,lorebook_entry}.ts                 lorebook 与 worldbook 同物（worldbook.ts:1-7 直接 import lorebook 的函数）
+  //   .../src/function/chat_message.ts                                        set/create/delete 三个消息写族
+  //   .../src/function/{character,raw_character}.ts                           角色只读族
+  //   .../src/function/{global,util,version}.ts                               initializeGlobal / errorCatched / 版本号
+  //
+  // 三条硬规矩（本区域逐条守）：
+  //  1) 宿主能力只走**已存在**的 requestParent 动作与帧内已注册的真实现，不新造父侧通道；
+  //  2) 没有真实现支撑的键（预设 / persona / 音频 / 扩展安装 / 角色库写侧 / 删书 / 正则对象模型 /
+  //     inject / rotateChatMessages / importRaw* / getModelList / 脚本按钮）**不在这里出现** ——
+  //     proxy 的 has() 会如实报缺，好过注册一个恒真的假成功；
+  //  3) 桥接一律**调用时**再取 window 上的实现：本段之后 part-08 才注册 triggerSlash 等全局。
+  const th134Warn = (message) => {
+    post({ type: 'log', level: 'warn', message: 'TavernHelper: ' + String(message) });
+  };
+  const th134GlobalFn = (name) => (typeof window[name] === 'function' ? window[name] : null);
+  const th134Bridge = (name) => (...args) => {
+    const fn = th134GlobalFn(name);
+    if (!fn) {
+      th134Warn(name + ' 依赖的帧内实现 ' + String(name) + ' 未注册，返回 undefined（不造值）');
+      return undefined;
+    }
+    return fn.apply(window, args);
+  };
+
+  // ---- 变量族：ST 用 option.type 决定落到哪张表（variables.ts:56-94）。
+  // Palink 帧内只有 chat / global / local 三张真表；preset / message / extension / character
+  // 四个作用域在帧内没有对应存储 ⇒ **诚实抛错**。静默返回空表更坏：MVU 这类卡会把"读不到"
+  // 当成"变量不存在"，然后把自己的初始值写进去覆盖真数据。
+  const th134VarStore = (option) => {
+    const type = String((option && option.type) || 'chat');
+    if (type === 'chat') return chatVariableStore;
+    if (type === 'global') return globalVariableStore;
+    if (type === 'local') return localVariableStore;
+    throw new Error('TavernHelper 不支持变量作用域 type=' + type + '（Palink 帧内只有 chat/global/local 三张表）');
+  };
+  const th134JsonClone = (value) => {
+    try { return JSON.parse(JSON.stringify(value === undefined ? {} : value)); }
+    catch (error) { return {}; }
+  };
+  const th134IsPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  // 对齐 lodash mergeWith(old, new, (lhs, rhs) => _.isArray(rhs) ? rhs : undefined)：
+  // 对象深合并、**数组整体替换**（variables.ts:246）。keepExisting = true 时源值不得覆盖已有键，
+  // 用于"只在缺口上生效"的语义；当前两个变量写入函数都把源顺序摆好后统一用 false（见 :th134Insert*）。
+  const th134DeepMerge = (target, source, keepExisting) => {
+    if (!th134IsPlainObject(source)) return target;
+    Object.keys(source).forEach((key) => {
+      const nextValue = source[key];
+      const currentValue = target[key];
+      if (th134IsPlainObject(nextValue) && th134IsPlainObject(currentValue)) {
+        th134DeepMerge(currentValue, nextValue, keepExisting);
+        return;
+      }
+      if (keepExisting && currentValue !== undefined) return;
+      target[key] = Array.isArray(nextValue) ? nextValue.slice() : nextValue;
+    });
+    return target;
+  };
+  const th134GetVariables = (option) => th134JsonClone(th134VarStore(option));
+  const th134ReplaceVariables = (variables, option) => {
+    const store = th134VarStore(option);
+    Object.keys(store).forEach((key) => { delete store[key]; });
+    th134DeepMerge(store, th134JsonClone(variables), false);
+    persistVariableStores();
+    if (store === chatVariableStore && typeof emitCompatEvent === 'function') {
+      // 与同帧 setVariable(:870-875) 同一条事件口径 —— 露缇雅「变量变化」面板靠它，不能少发。
+      emitCompatEvent('CHAT_VARIABLES_UPDATED', chatVariableStore);
+    }
+  };
+  const th134UpdateVariablesWith = (updater, option) => {
+    const variables = th134GetVariables(option);
+    const result = typeof updater === 'function' ? updater(variables) : variables;
+    if (result && typeof result.then === 'function') {
+      return result.then((resolved) => {
+        th134ReplaceVariables(resolved, option);
+        return th134JsonClone(resolved);
+      });
+    }
+    th134ReplaceVariables(result, option);
+    return th134JsonClone(result);
+  };
+  // insertOrAssign = mergeWith(old, new, ...) ⇒ 新值覆盖，对象深合并、数组整体替换。
+  // insert      = mergeWith({}, new, old, ...) ⇒ old 作为**后到的源**覆盖同名叶子，
+  //   净效果正是"传入值只在新键上生效、已有键保持原值"（variables.ts:261-269）。
+  //   注意别把这里的源顺序想反：写成 new 后置会得到"新值赢"，那就是 assign 了。
+  const th134InsertOrAssignVariables = (variables, option) => th134UpdateVariablesWith(
+    (oldVariables) => th134DeepMerge(oldVariables, th134JsonClone(variables), false),
+    option,
+  );
+  const th134InsertVariables = (variables, option) => th134UpdateVariablesWith(
+    (oldVariables) => th134DeepMerge(th134JsonClone(variables), oldVariables, false),
+    option,
+  );
+  // ST 的返回形状是 { variables, delete_occurred }（variables.ts:281-291），不是布尔。
+  const th134DeleteVariable = (path, option) => {
+    let deleteOccurred = false;
+    const variables = th134UpdateVariablesWith((oldVariables) => {
+      deleteOccurred = Boolean(typeof deleteByPath === 'function' ? deleteByPath(oldVariables, path) : false);
+      return oldVariables;
+    }, option);
+    return { variables: variables, delete_occurred: deleteOccurred };
+  };
+
+  // ---- lorebook / worldbook 族：ST 源码里两者是同一个东西（worldbook.ts 顶部直接
+  // import getCharLorebooks/getChatLorebook/setChatLorebook 并逐条转发），所以这里的
+  // "别名"是**上游本来的别名**，不是本包造的映射。
+  const th134BookNames = () => {
+    const fn = th134GlobalFn('getWorldbookNames');
+    const list = fn ? fn.apply(window, []) : [];
+    return Array.isArray(list) ? list.slice() : [];
+  };
+  const th134EntriesOf = async (target) => {
+    const getter = th134GlobalFn('getLorebookEntries') || th134GlobalFn('getWorldbookEntries');
+    if (!getter) throw new Error('TavernHelper: 帧内 getLorebookEntries 未注册，无法读世界书条目');
+    const raw = await getter.apply(window, [target]);
+    return Array.isArray(raw) ? raw : [];
+  };
+  const th134WriteEntries = async (target, entries, options) => {
+    const setter = th134GlobalFn('setWorldbookEntries');
+    if (!setter) throw new Error('TavernHelper: 帧内 setWorldbookEntries 未注册，无法写世界书条目');
+    return setter.apply(window, [target, Array.isArray(entries) ? entries : [], options || {}]);
+  };
+  // 上游 updateWorldbookWith 的形状：replace(name, await updater(await getWorldbook(name)))
+  // 然后回读一遍返回（worldbook.ts:432-439）。
+  const th134UpdateEntriesWith = async (target, updater, options) => {
+    const current = await th134EntriesOf(target);
+    const next = typeof updater === 'function' ? await updater(current) : current;
+    await th134WriteEntries(target, next, options);
+    return await th134EntriesOf(target);
+  };
+  const th134ReplaceWorldbook = async (target, entries, options) => {
+    if (th134BookNames().indexOf(String(target)) < 0) {
+      const create = th134GlobalFn('createOrReplaceWorldbook');
+      if (!create) throw new Error('TavernHelper: 帧内 createOrReplaceWorldbook 未注册');
+      await create.apply(window, [String(target), Array.isArray(entries) ? entries : [], options || {}]);
+      return;
+    }
+    await th134WriteEntries(target, entries, options);
+  };
+  const th134GetChatWorldbookName = () => {
+    // ST 语义：聊天文件绑定的书，没绑定时返回 null（lorebook.ts:310-322 会顺手清掉脏 metadata）。
+    // Palink 的书绑在角色 + 会话上，帧内可读的真值就是当前主绑定名。
+    const fn = th134GlobalFn('getCurrentCharPrimaryLorebook');
+    const value = fn ? fn.apply(window, []) : '';
+    return value ? String(value) : null;
+  };
+  // 上游 getOrCreateChatLorebook：已绑定就回名；没绑定就用传入名（重名则抛错）或
+  // 'Chat Book <chatId>' 归一化出来的名字建一本新书再绑（lorebook.ts:339-362）。
+  const th134GetOrCreateChatWorldbook = async (worldbookName) => {
+    const existing = th134GetChatWorldbookName();
+    if (existing) return existing;
+    const names = th134BookNames();
+    let wanted = '';
+    if (worldbookName) {
+      if (names.indexOf(String(worldbookName)) >= 0) {
+        throw new Error("TavernHelper: 尝试创建聊天世界书, 但该名称 '" + String(worldbookName) + "' 已存在");
+      }
+      wanted = String(worldbookName);
+    } else {
+      wanted = ('Chat Book ' + String(ctx.sessionId || ctx.characterName || 'palink'))
+        .replace(/[^a-z0-9]/gi, '_')
+        .replace(/_{2,}/g, '_')
+        .substring(0, 64);
+    }
+    const create = th134GlobalFn('createWorldbook');
+    if (!create) throw new Error('TavernHelper: 帧内 createWorldbook 未注册');
+    await create.apply(window, [wanted, []]);
+    const rebind = th134GlobalFn('rebindChatWorldbook');
+    if (rebind) await rebind.apply(window, ['current', wanted]);
+    else th134Warn('createWorldbook 成功但帧内 rebindChatWorldbook 不可用，聊天绑定未写入');
+    return wanted;
+  };
+
+  // ---- 角色只读族：数据来自 getContext().characters（构建期真内联，非帧内造）与 ctx。
+  // 写侧（create/delete/replace/update/importRawCharacter）一律不做：Palink 角色模型不同，
+  // 且本包边界禁止新增父侧动作。
+  const th134CharacterList = () => {
+    try {
+      const c = typeof window.getContext === 'function' ? window.getContext() : null;
+      return c && Array.isArray(c.characters) ? c.characters : [];
+    } catch (error) {
+      return [];
+    }
+  };
+  const th134AvatarBaseName = (value) => {
+    // 不用正则：本段是模板字符串，反斜杠会被外层吃掉（段首约束第 1 条），纯字符串操作最稳。
+    const text = String(value || '');
+    const slash = text.lastIndexOf('/');
+    const dot = text.lastIndexOf('.');
+    return dot > slash ? text.slice(0, dot) : text;
+  };
+  const th134FindCharacter = (name) => {
+    const list = th134CharacterList();
+    const currentName = String(ctx.characterName || '');
+    if (!name || name === 'current') {
+      const byName = list.filter((item) => String((item && item.name) || '') === currentName);
+      if (byName.length > 0) return byName[0];
+      const byIndex = Number(ctx.characterIndex);
+      return Number.isFinite(byIndex) && byIndex >= 0 ? (list[byIndex] || null) : (list[0] || null);
+    }
+    const wanted = String(name);
+    const hit = list.filter((item) => [item && item.name, item && item.avatar, th134AvatarBaseName(item && item.avatar)]
+      .filter(Boolean)
+      .some((value) => String(value) === wanted));
+    return hit.length > 0 ? hit[0] : null;
+  };
+
+  // ---- displayed_message 族：messageFormattingCompat 在本段之前已声明（part-03:719）。
+  const th134FormatAsDisplayedMessage = (text, option) => {
+    const messageId = option && option.message_id !== undefined ? Number(option.message_id) : ctx.messageId;
+    const lastId = typeof window.getLastMessageId === 'function' ? Number(window.getLastMessageId()) : -1;
+    if (Number.isFinite(messageId) && messageId >= 0 && lastId >= 0 && messageId > lastId) {
+      // ST 在楼层越界时抛错（displayed_message.d.ts:40 @throws），不返回空串。
+      throw new Error('TavernHelper: formatAsDisplayedMessage 的 message_id ' + messageId + ' 超出 [0, ' + lastId + ']');
+    }
+    const formatter = th134GlobalFn('messageFormatting');
+    if (formatter) return String(formatter.apply(window, [String(text ?? ''), ctx.characterName, false, false, messageId]));
+    return String(text ?? '');
+  };
+
+  // ---- global 族：上游就是 window[name] = value + 发一条 global_<name>_initialized
+  // （global.ts:8-25）。帧内 eventSource 是真实事件总线（part-07:845 的 eventOn 用的就是它）。
+  const th134InitializeGlobal = (name, value) => {
+    const key = String(name || '');
+    if (!key) throw new Error('TavernHelper: initializeGlobal 需要全局名');
+    window[key] = value;
+    if (window.eventSource && typeof window.eventSource.emit === 'function') {
+      window.eventSource.emit('global_' + key + '_initialized');
+    }
+  };
+  const th134WaitGlobalInitialized = (name) => {
+    const key = String(name || '');
+    if (!key) return Promise.reject(new Error('TavernHelper: waitGlobalInitialized 需要全局名'));
+    if (window[key] !== undefined) return Promise.resolve();
+    return new Promise((resolve) => {
+      if (window.eventSource && typeof window.eventSource.once === 'function') {
+        window.eventSource.once('global_' + key + '_initialized', () => { resolve(); });
+        return;
+      }
+      resolve();
+    });
+  };
+
+  // ---- util 族：errorCatched 是"上报后继续抛"（util.ts:17-42），不是吞异常。
+  const th134ErrorCatched = (fn) => (...args) => {
+    const report = (error) => {
+      th134Warn('errorCatched: ' + String((error && error.message) || error));
+      throw error;
+    };
+    try {
+      const result = typeof fn === 'function' ? fn.apply(null, args) : undefined;
+      if (result && typeof result.then === 'function') return result.then(undefined, report);
+      return result;
+    } catch (error) {
+      return report(error);
+    }
+  };
+  // ST 的 getMessageId 只是对 'TH-message--<id>--<n>' 这个 iframe 名做正则（util.ts:109-115），
+  // 名不对就抛 —— 逐字移植，不"顺手放宽"成"读当前 ctx.messageId"。
+  // 反斜杠走 regexBackslashCompat（段首约束第 1 条：模板串里的裸反斜杠会被外层吃掉）。
+  const th134MessageFramePattern = new RegExp(
+    '^TH-message--(' + regexBackslashCompat + 'd+)--' + regexBackslashCompat + 'd+(_' + regexBackslashCompat + 'd+)?$',
+  );
+  const th134GetMessageId = (iframeName) => {
+    const matched = th134MessageFramePattern.exec(String(iframeName || ''));
+    if (!matched) {
+      throw new Error('TavernHelper: 获取 ' + String(iframeName) + ' 所在楼层 id 时出错: 不要对全局脚本 iframe 调用 getMessageId!');
+    }
+    return parseInt(matched[1], 10);
+  };
+
+  // ---- chat_message 写族：content 走真写路径（帧内 setChatMessage → requestParent setChatMessage，
+  // 签名 (content, messageId, options) 见 part-05:557 / part-06:870）。
+  // name / is_hidden / extra / variables 父侧没有写通道 ⇒ 只更新帧内镜像 compatChat，
+  // 并**显式 warn**（沿用同帧 getCharLorebooks 按名查询的处理口径），不假装写成功了。
+  const th134MessageIndex = (messageId) => {
+    const list = Array.isArray(compatChat) ? compatChat : [];
+    const numeric = Number(messageId);
+    if (!Number.isFinite(numeric)) return -1;
+    const index = numeric < 0 ? list.length + numeric : numeric;
+    return index >= 0 && index < list.length ? index : -1;
+  };
+  const th134SetChatMessages = async (messages, option) => {
+    const list = Array.isArray(messages) ? messages : [];
+    const setter = th134GlobalFn('setChatMessage');
+    if (!setter) throw new Error('TavernHelper: 帧内 setChatMessage 未注册');
+    let mirrorOnlyCount = 0;
+    for (const item of list) {
+      const index = th134MessageIndex(item && item.message_id);
+      if (index < 0) continue;
+      const target = compatChat[index];
+      if (item.message !== undefined && target) {
+        target.mes = String(item.message ?? '');
+        await setter.apply(window, [String(item.message ?? ''), index, {}]);
+      }
+      const mirrorFields = ['name', 'role', 'is_hidden', 'extra', 'data', 'swipe_id', 'swipes', 'swipes_data', 'swipes_info'];
+      const touched = mirrorFields.filter((field) => item && item[field] !== undefined);
+      if (touched.length > 0 && target) {
+        touched.forEach((field) => { target[field] = item[field]; });
+        if (item.is_hidden !== undefined) target.is_system = Boolean(item.is_hidden);
+        if (item.role !== undefined) target.is_user = item.role === 'user';
+        mirrorOnlyCount += 1;
+      }
+    }
+    if (mirrorOnlyCount > 0) {
+      th134Warn('setChatMessages 有 ' + mirrorOnlyCount + ' 楼只更新了帧内镜像（父侧无 name/extra/variables 写通道）');
+    }
+    if (option && option.refresh === 'all') th134Bridge('reloadCurrentChat')();
+  };
+  const th134CreateChatMessages = async (messages, option) => {
+    const list = Array.isArray(messages) ? messages : [];
+    const insertBefore = option && option.insert_at !== undefined ? option.insert_at : (option && option.insert_before !== undefined ? option.insert_before : 'end');
+    if (insertBefore !== 'end') {
+      // 上游是 chat.splice + addOneMessage({insertBefore})；Palink 帧内 addOneMessage 只有追加语义，
+      // 插到中间会造成镜像与父侧顺序不一致 ⇒ 抛错而不是悄悄放到末尾。
+      throw new Error('TavernHelper: createChatMessages 暂不支持在指定楼层插入（帧内 addOneMessage 只能追加）');
+    }
+    const adder = th134GlobalFn('addOneMessage');
+    if (!adder) throw new Error('TavernHelper: 帧内 addOneMessage 未注册');
+    for (const item of list) {
+      const role = String((item && item.role) || 'assistant');
+      // 上游 convert()：显式 name 优先，否则 system 用 'system'、user 用 name1、其余用 name2
+      // （chat_message.ts:325-332）。
+      const fallbackName = role === 'system'
+        ? 'system'
+        : (role === 'user' ? String(ctx.userName || 'You') : String(ctx.characterName || 'Character'));
+      const payload = {
+        mes: String((item && item.message) ?? ''),
+        name: (item && item.name) !== undefined ? String(item.name) : fallbackName,
+        is_user: role === 'user',
+        is_system: Boolean(item && item.is_hidden),
+      };
+      if (item && item.extra) payload.extra = item.extra;
+      if (item && item.data) payload.variables = [item.data];
+      await adder.apply(window, [payload, {}]);
+    }
+    if (option && option.refresh === 'all') th134Bridge('reloadCurrentChat')();
+  };
+  const th134DeleteChatMessages = async (messageIds) => {
+    const deleter = th134GlobalFn('deleteMessage');
+    if (!deleter) throw new Error('TavernHelper: 帧内 deleteMessage 未注册');
+    const ids = (Array.isArray(messageIds) ? messageIds : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => b - a);
+    for (const id of ids) {
+      if (th134MessageIndex(id) < 0) continue;
+      await deleter.apply(window, [id, {}]);
+    }
+  };
+
+  const tavernHelperTh134Compat = {
+    // 变量族（写体，ST 的 option.type 语义；getVariables / replaceVariables 两个 A 类键不动，
+    // 它们既有实现是 Palink 已上线口径，改它属回归风险，只写进报告 §7 不当场改）
+    updateVariablesWith: th134UpdateVariablesWith,
+    insertOrAssignVariables: th134InsertOrAssignVariables,
+    insertVariables: th134InsertVariables,
+    deleteVariable: th134DeleteVariable,
+    // 世界书 / lorebook 族
+    getWorldbookNames: th134Bridge('getWorldbookNames'),
+    getGlobalWorldbookNames: th134Bridge('getGlobalWorldbookNames'),
+    rebindGlobalWorldbooks: th134Bridge('rebindGlobalWorldbooks'),
+    replaceWorldbook: th134ReplaceWorldbook,
+    updateWorldbookWith: th134UpdateEntriesWith,
+    getLorebooks: th134BookNames,
+    getLorebookEntries: th134Bridge('getLorebookEntries'),
+    getLorebookSettings: th134Bridge('getLorebookSettings'),
+    setLorebookSettings: th134Bridge('setLorebookSettings'),
+    getCharLorebooks: th134Bridge('getCharLorebooks'),
+    getCurrentCharPrimaryLorebook: th134Bridge('getCurrentCharPrimaryLorebook'),
+    createLorebook: th134Bridge('createWorldbook'),
+    createLorebookEntries: th134Bridge('createWorldbookEntries'),
+    deleteLorebookEntries: th134Bridge('deleteWorldbookEntries'),
+    setLorebookEntries: (target, entries, options) => th134WriteEntries(target, entries, options),
+    replaceLorebookEntries: (target, entries, options) => th134WriteEntries(target, entries, options),
+    updatelorebookEntriesWith: th134UpdateEntriesWith,
+    getChatWorldbookName: () => th134GetChatWorldbookName(),
+    getOrCreateChatWorldbook: th134GetOrCreateChatWorldbook,
+    getOrCreateChatLorebook: th134GetOrCreateChatWorldbook,
+    // 角色只读族
+    getCurrentCharacterName: () => (ctx.characterName ? String(ctx.characterName) : null),
+    getCurrentCharacterId: () => {
+      const found = th134FindCharacter('current');
+      const avatar = found && found.avatar ? th134AvatarBaseName(found.avatar) : '';
+      const fallback = ctx.characterId ? String(ctx.characterId) : '';
+      return avatar || fallback || null;
+    },
+    getCharacterNames: () => th134CharacterList().map((item) => String((item && item.name) || '')).filter(Boolean),
+    getCharacterIds: () => th134CharacterList().map((item) => th134AvatarBaseName(item && item.avatar)).filter(Boolean),
+    getCharData: (name) => {
+      const found = th134FindCharacter(name === undefined ? 'current' : name);
+      if (!found) return null;
+      return found.data && typeof found.data === 'object' ? found.data : found;
+    },
+    getCharAvatarPath: (name) => {
+      const found = th134FindCharacter(name === undefined ? 'current' : name);
+      return found && found.avatar ? String(found.avatar) : '';
+    },
+    getCharacter: async (name) => {
+      const found = th134FindCharacter(name === undefined ? 'current' : name);
+      if (!found) throw new Error("TavernHelper: 未找到角色卡 '" + String(name) + "'");
+      return found;
+    },
+    // displayed_message / util / global
+    formatAsDisplayedMessage: th134FormatAsDisplayedMessage,
+    refreshOneMessage: async () => {
+      // 帧内没有"重刷单楼显示"的通道，能落到的真能力是整卡重载（父侧 reloadCurrentChat）。
+      th134Warn('refreshOneMessage 落到整会话重载（Palink 帧内无单楼重绘通道）');
+      const reload = th134GlobalFn('reloadCurrentChat');
+      if (reload) await reload.apply(window, []);
+    },
+    getMessageId: th134GetMessageId,
+    errorCatched: th134ErrorCatched,
+    initializeGlobal: th134InitializeGlobal,
+    waitGlobalInitialized: th134WaitGlobalInitialized,
+    getTavernVersion: th134Bridge('getTavernVersion'),
+    getTavernHelperVersion: th134Bridge('getTavernHelperVersion'),
+    // substitudeMacros（util.ts:9 = substituteParamsExtended）：优先扩展宏，
+    // 回落到同帧既有 substituteParams，两者都没有时不造值（warn + 原样返回，可被调用方察觉）。
+    substitudeMacros: (text) => {
+      const extended = th134GlobalFn('substituteParamsExtended') || th134GlobalFn('substituteParams');
+      if (!extended) {
+        th134Warn('substitudeMacros 无宏替换实现可用，原样返回（不静默返回空串）');
+        return String(text ?? '');
+      }
+      return String(extended.apply(window, [String(text ?? '')]));
+    },
+    triggerSlash: th134Bridge('triggerSlash'),
+    stopAllGeneration: () => requestParent('stopGeneration', {}),
+    // chat_message 写族
+    setChatMessages: th134SetChatMessages,
+    createChatMessages: th134CreateChatMessages,
+    deleteChatMessages: th134DeleteChatMessages,
+  };
+  // <<< H-TH134 FAMILY END
+
   const tavernHelperCompat = {
+    // [包H] 上面那张 134 补齐表先展开：与下面既有键同名时**既有键胜出**（A 类不动，
+    // 零回归优先）。proxy 的 has() 走的是 prop in tavernHelperCompat，展开即生效。
+    ...tavernHelperTh134Compat,
     getContext: () => (typeof window.getContext === 'function' ? window.getContext() : window.SillyTavern?.getContext?.()),
     getChatMessages: (...args) => (typeof window.getChatMessages === 'function' ? window.getChatMessages(...args) : getCompatChatMessages()),
     getGroups: () => (typeof window.getGroups === 'function' ? window.getGroups() : getGroupsCompat()),

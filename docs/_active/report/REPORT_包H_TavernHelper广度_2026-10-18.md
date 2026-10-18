@@ -1,6 +1,7 @@
 # REPORT 包H — TavernHelper 命名空间广度（2026-10-18）
 
-> 状态：**施工中**（段① 分类全表 + fixture 已入库；段② 全局函数面体检、段③ C 类键补齐见 §5 之后）
+> 状态：**已完工待验收**（段① 分类全表 + fixture、段② 全局函数面体检、段③ C 类补齐 + 契约测试 +
+> 真机读数 全部到位；容器未重建 ⇒ 真机 :16000 仍是旧码，改后读数跑在 dev 5201 上，见 §6.2）
 > 任务书：`docs/_active/HANDOFF_提示词_包H_TavernHelper广度_2026-10-18.md`
 > 背景基线：`docs/_active/report/REPORT_完美兼容ST_现状天花板与路线图_2026-10-18更新版.md`
 > 同文件近期改动参照：`REPORT_包F_ST命令补全_2026-10-18.md` §2（真机测法）、§3（宿主注入姿势）
@@ -23,9 +24,10 @@
    **两个数不相干**。真机实测对 134 的命中只有 **13 个**（`n in window.TavernHelper`，7/7 帧一致）。
    ⇒ 真实起点是 **13/134（9.7%）**，不是 76/134。
 3. ⇒ 由此得出本包最重要的判据问题：**验收线 ≥110/134 与红线"禁止假实现"在本包可改文件边界内互斥**。
-   §4 给出逐族算术：能接宿主真实能力（既有 8 个世界书动作 + 4 个聊天动作 + 帧内变量表/显示管线/
-   ctx 真数据）的上界是 **71/134**；剩下 63 个键的宿主能力在 Palink 结构上不存在，
-   或需要新增父侧动作（本包边界禁止）。**本包按红线优先，做到 71 并逐个写明 D 类理由。**
+   §4 给出逐族算术：只接**已存在**的宿主能力（8 个世界书动作 + 聊天写动作 + 帧内变量表/显示管线/
+   ctx 真数据）的上界是 **58/134**（本包已做到，真机 7/7 帧一致）；剩下 76 个键的宿主能力
+   在 Palink 结构上不存在，或需要新增父侧动作（本包边界禁止）。
+   **本包按红线优先做到 58，并逐个写明 D 类理由** —— 不是"少干了一点"，是 110 这条线的分母基线本身错了。
 
 ## 2. 权威 134 键复现（命令与文件都入库）
 
@@ -58,8 +60,10 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 | └ 来自 part-b legacy 镜像 | 5 | 帧内键 ∩ fixture − 上面 8 |
 | Palink 自有但**不在** 134 里的键 | 63 | 76 − 13（别名/ST 全局镜像，如 `getContext`、`sendMessage`、`swipe`） |
 
-分类合计：**A = 13，B = 0，C = 58（本包补），D = 63（逐个理由）**，13 + 58 + 63 = 134，
-`py .tmp_probe/H/classify.py` 现场对账（族间零重叠、零遗漏，脚本会 assert）。
+分类合计（**初稿判定**）：**A = 13，B = 0，C = 58（计划补），D = 63（逐个理由）**，
+13 + 58 + 63 = 134，`py .tmp_probe/H/classify.py` 现场对账（族间零重叠、零遗漏，脚本会 assert）。
+**实现期改判后的终值**：A = 13、B = 0、C = 45、D = 76 —— 初稿 C 里有 14 个键在核实"有没有宿主写通道"
+时掉到 D（逐条见 §7.2），下表凡属这 14 个键的行仍以 §7.2 为准。
 
 | 类 | 族（判据） | 键数 | 键 | 依据 / 落点 |
 |---|---|---|---|---|
@@ -104,29 +108,171 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 | 可补上限的构成 | 键数 |
 |---|---|
 | A：已在场（不占工作量） | 13 |
-| C：本包能落到**已有**宿主能力上的 | 58 |
-| **本包上界 = A + C** | **71** |
-| D：无宿主能力 / 需新增父侧动作 / 结构不可达 | 63 |
+| C：本包真正落到**已有**宿主能力上的（净增、真机实调通过） | **45** |
+| **本包上界 = A + C（真机实测）** | **58** |
+| D：无宿主能力 / 需新增父侧动作 / 结构不可达 | **76** |
 
-D 的 63 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、
-世界书删除 2、原始导入 2、inject 2、DOM/opaque-origin 1、宏注册 1、按 id 停止 1。
+> 本节初稿写的是"上界 71 / D 63"，那是**实现前**的判定。实现期逐个核实后，
+> 有 14 个初稿标 C 的键其实没有宿主写通道，改判 D（逐条理由在 §7.2）。
+> 数字以真机实测为准，不以初稿为准。
+
+D 的 76 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、正则对象模型 5、
+原始导入 4（`importRawWorldbook`/`importRawChat`/`importRawTavernRegex` + 角色 1 已计入写侧族）、
+世界书删除 2、inject 2、聊天绑定写侧 2（`setCurrentCharLorebooks`/`rebindCharWorldbooks`）、
+DOM/opaque-origin 1、宏注册 1、按 id 停止 1、模型列表 1、脚本按钮 1、消息重排 1。
 其中**只有"新增父侧 requestParent 动作"才可能翻盘**的族是 persona(11) + 角色库写侧(7) +
-音频(8) + 删书(2) = 28 —— 即便全做，也只是 71 + 28 = 99，仍 < 110；
+音频(8) + 删书(2) + 聊天绑定(2) ≈ 30 —— 即便全做，也只是 58 + 30 = 88，仍 < 110；
 而且本包被明令"优先复用、别新造父侧通道"且只许改 `part-07.ts`。
-⇒ **要么把 D 里 39 个键做成假实现（红线禁止），要么承认 110 这个线本身是按
-"76/134 已覆盖"的错误基线定出来的**。本包选择：做满 71、把 39 个"父侧动作缺失"型 D 项
+⇒ **要么把 D 里 30+ 个键做成假实现（红线禁止），要么承认 110 这个线本身是按
+"76/134 已覆盖"的错误基线定出来的**。本包选择：按红线做到 58、把"父侧动作缺失"型 D 项
 列为**下一包的明确工程项**（§7），并把口径写死在这里，防止下一个人再按 110 排活。
 
 ---
 
-## 5. 段② 全局函数面体检（优先级 1）
+## 5. 段② 全局函数面体检（优先级 1）结论
 
-_（施工中，见本文件末尾的实测记录）_
+真机探针：`.tmp_probe/H/probe-globals.js`（对 134 个键逐个查帧内 `window[name]` 的在场性与桩痕迹）
++ `.tmp_probe/H/probe-th134.js`（7 帧逐个取 `Object.keys` / `in` / Mvu / getContext 键数）。
 
-## 6. 段③ C 类键补齐与真机读数
+- **优先级 1 那批全局函数没有一个是假实现**：`eventOn` `eventEmit` `getVariables` `setVariables`
+  `updateVariablesWith` `deleteVariable` `getChatMessages` `triggerSlash` `getCurrentMessageId`
+  `addOneMessage` `replaceScriptButtons` `errorCatched` `waitGlobalInitialized` `generate` `generateRaw`
+  逐个实测 `typeof === 'function'` 且源码文本无 `reportStubApi` / `makeMissingApiFunction` / 恒返空值的痕迹。
+- 交接单 §2 的优先级 1 清单里 **`insertOrUpdateVariablesWith` 这个名字在酒馆助手运行时源码与
+  @types 里都不存在**（真实名字是 `insertOrAssignVariables` / `insertVariables` /
+  `updateVariablesWith`，见 `src/function/variables.ts:241/261/203`）⇒ 与包F §4.1 同一类错误，
+  **不造这个名字**。
+- 体检查出的 4 个**语义偏差**（不是假实现，是形状/作用域不对，均落在本包不可改的段落里，只记录不越界改）：
 
-_（施工中）_
+| # | 位置 | 偏差 | 影响 |
+|---|---|---|---|
+| 1 | part-07:865 `window.getVariables = () => ({...global, ...chat, ...local})` | ST 的 `getVariables(option)` 默认只给 **chat**，`{type:'global'}` 只给 global（variables.ts:56-94） | 卡用 `{type:'chat'}` 读到全局/局部变量混进来；本包的 `insertOrAssignVariables` 等新键按 ST 语义实现，两者形状不一致已在测试里写明 |
+| 2 | part-07:889 `deleteVariable` 返回布尔 | ST 返回 `{ variables, delete_occurred }`（variables.d.ts:281） | 卡 `if (deleteVariable(x).delete_occurred)` 直接 TypeError |
+| 3 | part-07 `tavernHelperCompat.replaceVariables = (text) => 宏替换` | ST 的 `replaceVariables(variables, option)` 是**变量表整体写入**（variables.ts:128） | 命名撞车：卡片按 ST 语义传对象会被当字符串处理。本包不敢改（A 类既有口径），已列 §7 |
+| 4 | part-07:142 `normalizeCompatEntries` 的正则 | **模板串求值把 `/^\d+$/` 变成 `/^d+$/`**，实测求值后常量 `hasBrokenDPlus = true`（node 直接 import 该常量核对） | v2 requestParent 展开数组的还原分支在**生产里永远不命中**；而 `lorebook-family-contract.test.ts` 读的是**源码文本**（未经模板求值），所以本地绿、线上失效 —— 与 MEMORY.md「测试桩比生产数据更完整会掩盖真缺陷」同一类。**修法一行**（改 `regexBackslashCompat + 'd'`），但那是 S1-G11 段，不属本包可改区 |
 
-## 7. 剩余项
+⇒ 本包自己的代码**零裸反斜杠**（段内 `grep` 判据 0 行），并已把这条加成契约测试的守卫断言，
+防止后来人在 H 段重踩第 4 项。
 
-_（施工中）_
+## 6. 段③ C 类补齐与真机读数
+
+### 6.1 改了什么
+
+只在允许区内动了两处：`runtime-body/part-07.ts` 的
+**`>>> H-TH134 FAMILY BEGIN / <<< H-TH134 FAMILY END` 新区域**（45 个键的实现 + 一组私有 helper）
+与 `tavernHelperCompat` 字面量首行的 **`...tavernHelperTh134Compat` 展开**（既有 57 键优先，A 类零改动）。
+proxy 合并段本身没动 —— 它已经是 `Object.entries(tavernHelperCompat)` + `prop in tavernHelperCompat`，
+加键即生效。
+
+45 个键全部在 134 权威表内（测试有"禁止自发明名字"断言逐条拦），族分布：
+变量 4、世界书/lorebook 17、角色只读 7、displayed/util/global 11、chat 写族 3、其余 3。
+
+### 6.2 真机读数（口径：改前跑 16000 旧 dist，改后跑 dev 5201 = 当前工作区源码）
+
+探针 `.tmp_probe/H/probe-th134.js`（改前）与 `.tmp_probe/H/probe-after.js`（改后，
+分母直接从 fixture 注入，修正过一次"手抄名单只有 132 个"的口径错误 ——
+**56 → 58 这一版才是对的**，判据是 `present.length + absent134.length === 134`）。
+跑在哪份代码上：**改后列 = 真 Chromium + 真 iframe + 真 postMessage 桥 + 未提交前的当前工作区源码**
+（`npx vite --config .tmp_probe/H/vite.hprobe.config.ts --port 5201`，`/api` 代理指 :16000，
+用完已 taskkill）。零计费：只加载角色页，未触发任何生成端点。
+
+| 指标 | 改前（:16000 旧 dist） | 改后（:5201 当前源码） |
+|---|---|---|
+| iframe 帧数 | 7 | **7** |
+| `Object.keys(TavernHelper)` | 76 | **121** |
+| **134 命中（`n in TavernHelper`）** | **13** | **58**（45 个净增全部来自本包，逐键核对 `gained not from H table = 0`） |
+| `getContext` 键数（7 帧） | 194 / 194 / … | **194 / 194 / …**（零回归） |
+| `Mvu` 键数（7 帧） | 6 | **6**（零回归） |
+| 帧 body 字节（第 4、6 帧） | 79145 / 79593 | 79213 / 79661（+68，跨代码基线，含包F/包G 在途改动，不可归因本包） |
+| 变量变化面板所依赖的事件 | — | 写 chat 作用域仍发 `CHAT_VARIABLES_UPDATED`（测试 B 组第 5 条守住） |
+
+### 6.3 抽 20+ 高频键实调形状（同一帧内实测，不是推断）
+
+| 键 | 实调返回形状 |
+|---|---|
+| `getVariables()` / `({type:'global'})` | `object{stat_data,__extension_prompts,__extension_fields,…}` |
+| `getLorebooks()` / `getWorldbookNames()` / `getGlobalWorldbookNames()` | `array[0]`（该会话确实没绑全局书，空数组是真值不是桩） |
+| `getLorebookSettings()` | `object{scan_depth,context_percentage,budget_cap,min_activations,max_depth,…}` |
+| `getCharLorebooks()` | `promise`（与 S1-G10 的 await 口径一致） |
+| `getCurrentCharPrimaryLorebook()` / `getChatWorldbookName()` | `string:'露缇雅1.2'` |
+| `getCharacterNames()` / `getCharacterIds()` | `array[1]` |
+| `getCurrentCharacterName()` / `getCurrentCharacterId()` | `露缇雅1.2` / `c28061bb-a9b7-46a9-a255-2692d57001fc` |
+| `getCharData('current')` | `object{name,extensions,first_mes,alternate_greetings}` |
+| `formatAsDisplayedMessage('台词测试')` | `string:'<span class="mes-name">露缇雅1.2</span>…'` |
+| `getMessageId('TH-message--3--0')` | `number:3`；`getMessageId('palink-x')` → 抛错（与 ST 一致） |
+| `substitudeMacros('{{char}}')` | `string:'露缇雅1.2'` |
+| `getTavernVersion()` / `getTavernHelperVersion()` | `1.12.0` / `3.4.17`（桥到帧内既有实现，未硬编） |
+| `errorCatched(() => 42)` / `errorCatched(throw)` | `number:42` / 抛错并留痕 |
+| `initializeGlobal('__palinkHProbe',{v:1})` | `object{v}` 挂上 window |
+| 写族（**净零探针**：写探针键后立刻删） | `insertOrAssignVariables`→object、`insertVariables`→object、`deleteVariable`→`object{variables,delete_occurred:true}`、`netZero:true` |
+| 未实调的写键（会真改数据/发消息，只验在场） | `setLorebookEntries` `replaceLorebookEntries` `updatelorebookEntriesWith` `updateVariablesWith` `setChatMessages` `createChatMessages` `deleteChatMessages` `refreshOneMessage` `triggerSlash` `stopAllGeneration` `replaceWorldbook` `updateWorldbookWith` `getOrCreateChatWorldbook` `createLorebook(Entries)` `deleteLorebookEntries` `getCharacter` `waitGlobalInitialized` `getLorebookEntries` → 全部 `typeof === 'function'` |
+
+### 6.4 门禁与反证
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | **rc=0，0 error** |
+| `npx vitest run`（全量） | **87 文件 / 1154 passed / 3 skipped / failed = 0 / errors = 0**（rc=0；本包无"非本包红"需要归因） |
+| 本包契约测试 | `h-tavernhelper-134-contract.test.ts` **40 例全绿** |
+| 既有相邻测试 | `generated-script-parse-guard` + `lorebook-family-contract` + `getcharworldbooknames-contract` 46 例全绿 |
+
+反证（改坏必红 → 还原必绿），原始输出：
+
+改坏 3 处（`insertOrAssignVariables` 摘掉注册、`getCharacterNames` 改成恒返空数组、
+`setLorebookEntries` 改成空函数；备份 `.tmp_probe/H/part-07.H_backup.ts`，`cp` 还原，未走 git 破坏性命令）：
+
+```text
+ × setLorebookEntries / replaceLorebookEntries 都落到 setWorldbookEntries(target, entries, options)
+ × 名字与 id 从 characters 来，id = 头像文件名去扩展名（character.ts:26-33）
+ × 帧内写实现缺席时一律抛错，不返回一个假成功
+ Test Files  1 failed (1)
+      Tests  3 failed | 36 passed (39)
+rc=1
+```
+
+还原后：
+
+```text
+ Test Files  1 passed (1)
+      Tests  39 passed (39)
+rc=0
+```
+
+（还原后又补了 §5 第 4 项那条"裸反斜杠"守卫断言，本包测试变成 40 例，仍全绿。）
+
+## 7. 剩余项（下一位可直接接手）
+
+1. **≥110/134 这条验收线要按 §4 的算术重定**：当前真实基线 13（不是 76），本包做完 58，
+   剩下 76 个全是 D。要再往上走只有两条路，都要先立项：
+   - **新增父侧 requestParent 动作**（可解锁 persona 11 + 角色库写侧 7 + 音频 8 + 删书 2 ≈ 28 个键）；
+   - 或接受"预设 / 扩展安装 / inject"这三族永远不补（路线图 §4 天花板已拍板过一次）。
+2. **报告初稿把 14 个键标成 C，实现期核实为无宿主写通道，已改判 D**（不改判就得写假实现）：
+   `setCurrentCharLorebooks` `rebindCharWorldbooks`（要写角色卡 `extensions.world` /
+   `world_info.charLore`，父侧无通道，且用 `createOrReplaceCharWorldbook` 顶替会把已有书清空）、
+   正则族 5 键（`getTavernRegexes` `replaceTavernRegexes` `updateTavernRegexesWith`
+   `isCharacterTavernRegexesEnabled` `formatAsTavernRegexedString` —— `window.getRegexScripts` 只读，
+   `TavernRegex` 对象模型与 Palink `regex_scripts` 字段不同名，半程移植会造出没形状的对象）、
+   `importRawWorldbook` `importRawChat` `importRawTavernRegex`（`src/function/import_raw.ts` 是
+   往 ST 后端上传原始文件）、`getAllEnabledScriptButtons`（帧内根本没有脚本按钮存储，
+   只有主页面 realm 的 `card-script-runner.ts:199` 有）、`getModelList`（打 ST 的
+   `/api/backends/chat-completions/status`，Palink 无此端点且属计费面）。
+   `rotateChatMessages`（父侧无重排消息通道）与 `getMessageId` 的兄弟 `retrieveDisplayedMessage`
+   （opaque origin 读不到父页面 DOM）同理。
+3. **§5 表的 4 个语义偏差**：#1 `getVariables` 的 option、#2 `deleteVariable` 的返回形状、
+   #3 `replaceVariables` 的命名撞车、#4 `normalizeCompatEntries` 的 `\d` 求值丢失。
+   #4 是**生产真失效**（本地测试读源码文本所以绿），改法一行，但落在 S1-G11 段，
+   需要该段所有者动，并建议顺手给"模板求值后的产物"加一条守卫（本包只加了 H 段自己的）。
+4. **重建 dist 后在 :16000 复跑 §6.2 那张表**（本包边界不许我 build）。判据：
+   `present = 58`、`Object.keys(TavernHelper) = 121`、`getCharData('current')` 给对象、
+   `getMessageId('TH-message--3--0') === 3`。命令：
+   `playwright-cli -s=<名> open http://localhost:16000/` 与
+   `run-code --filename=.tmp_probe/H/probe-after.js` 写在同一条 bash 命令里，输出重定向到文件再读。
+5. **`docs/_CATALOG.md` 口径**：本包新增报告后立刻跑
+   `py scripts/docs/gen_docs_catalog.py` + `--check` ⇒ `OK 362 docs, catalog up to date`；
+   收尾时再跑 `--check` 变成 **STALE**（并行包在这半小时里又动了 docs/），
+   所以该生成物**没随本包提交**（它此刻还含包F/包G 的未提交文档，我把别人的目录状态一起带走会污染
+   他们的边界），由主脑收尾统一重生成并提交一次。
+6. **dev 探针已收尾**：`.tmp_probe/H/vite.hprobe.config.ts`（端口 5201，与包G 的 5199 分开）
+   用完已 `taskkill /PID <监听进程> /T /F`，实测端口不再响应；`.tmp_probe/` 全目录不入库。
+   ⚠️ 别用 `taskkill /IM node.exe` 关自己的 dev server —— 那是全机 node，会打断并行 agent。
+
