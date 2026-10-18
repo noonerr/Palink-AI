@@ -452,8 +452,19 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     getGroupChat: window.getGroupChat,
     name1: ctx.userName,
     name2: ctx.characterName,
-    characterId: window.this_chid,
+    // [包M 2026-10-18 主控自修] 帧内身份链路取证订正：
+    //   ① Palink 从没给帧内设过 window.this_chid ⇒ 原写法让 ST 侧唯一被读的
+    //      getContext().characterId 恒为 undefined（包E/包J 报的「恒 0」其实是这里的下游症状，
+    //      不是宿主 getContext.ts 的 Number(uuid)=NaN 兜底）。ST 语义是 characters 数组下标，
+    //      Palink 卡帧里 characters 为空 ⇒ **诚实给 0，不填假值**。
+    //   ② Palink 的真实角色标识是 boot ctx 里那个 UUID 字符串（本帧以 characterUuid 暴露）。
+    //      与父侧 lib/sillytavern/getContext.ts 的包J J-2 保持同键名，插件 camel/snake 两种写法都读得到。
+    //   ③ 帧内**不存在** window.context 这个全局（boot 的 ctx 是 const，不挂 window）——
+    //      这是与 ST 的又一处形状缺口，本包不顺手补，登记在 docs/OPEN_ISSUES.md。
+    characterId: (typeof window.this_chid === 'number' && Number.isFinite(window.this_chid)) ? window.this_chid : 0,
     characterUuid: ctx.characterId,
+    characterIdString: ctx.characterId || '',
+    palink_character_id: ctx.characterId || '',
     this_chid: window.this_chid,
     groupId: window.selected_group,
     selected_group: window.selected_group,

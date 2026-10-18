@@ -335,6 +335,22 @@ describe('A 包G G-1 —— getContext 13 个真问题项', () => {
     expect(stillFake, `以下项仍被探针判为假货: ${stillFake.join(', ')}`).toEqual([]);
   });
 
+  it('包M 帧内角色标识：characterId 是数字（拿不到下标就 0，不填假值），字符串身份走 characterIdString/palink_character_id', () => {
+    const ctxObj = evalGetContext(buildFrame());
+    expect(typeof ctxObj.characterId).toBe('number');
+    expect(Number.isFinite(ctxObj.characterId)).toBe(true);
+    expect(ctxObj.characterId).toBe(0);
+    expect(ctxObj.characterIdString).toBe('c28061bb-a9b7-46a9-a255-2692d57001fc');
+    expect(ctxObj.palink_character_id).toBe('c28061bb-a9b7-46a9-a255-2692d57001fc');
+    expect(ctxObj.characterUuid).toBe('c28061bb-a9b7-46a9-a255-2692d57001fc');
+
+    // boot ctx 缺角色标识时：数字仍是 0、字符串仍是空串，**不许**造出伪 id
+    const bare = evalGetContext(buildFrame({ ctx: { characterId: '' } }));
+    expect(bare.characterId).toBe(0);
+    expect(bare.characterIdString).toBe('');
+    expect(bare.palink_character_id).toBe('');
+  });
+
   it('#1 powerUserSettings 非空且带宿主默认值（language 取 ctx.language）', () => {
     const deps = buildFrame();
     const ctx = evalGetContext(deps);
