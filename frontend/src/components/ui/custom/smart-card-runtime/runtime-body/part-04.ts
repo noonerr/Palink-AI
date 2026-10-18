@@ -709,7 +709,43 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
   const createElementsFromHtmlCompat = (html) => {
     const template = document.createElement('template');
     template.innerHTML = String(html || '').trim();
-    return Array.from(template.content.childNodes).filter((node) => node.nodeType === 1);
+    // [P2-CREATE-OWNERDOC] template.content 的子节点属于「模板内容文档」，不是本帧文档：
+    // 线上实测那份文档没有 documentElement、childNodes 为 0、location 为 null、URL about:blank，
+    // 且两次调用拿到的是同一个对象（HTMLTemplateElement 规范行为，不是谁造的临时文档）。
+    // 真 jQuery 交付的节点归本帧文档 ⇒ 这里与之对齐，把解析结果归入 live document，
+    // 下游按 ownerDocument 判归属时不再把节点当外来物。
+    var created = [];
+    Array.from(template.content.childNodes).forEach(function(node) {
+      if (node.nodeType !== 1) return;
+      created.push(node.ownerDocument === document ? node : document.importNode(node, true));
+    });
+    return created;
+  };
+  // [P2-MOVE-ARG-KIND] append/prepend 的入参判定：兼容层集合是 nativeFallback Proxy，
+  // 对它取任何未知属性都会返回一个函数，所以旧写法「if value 的 nodeType 为真就把整条集合
+  // 交给 appendChild」恒成立 —— 于是 append(集合) 与 appendTo/prependTo（内部就是
+  // targets.append(this)）双双抛 TypeError 又被 catch 吞掉，整段静默空转：
+  // 卡侧「建容器 → 把 head 里的 style 塞进容器 → appendTo head」因此样式永远回不到生效文档。
+  // 判节点必须用「nodeType 是数字」这种严格形状；集合一律摊平成节点数组。
+  const isDomNodeLikeCompat = (value) => Boolean(value) && typeof value === 'object'
+    && typeof value.nodeType === 'number' && value.nodeType > 0;
+  const dollarMoveTargetsCompat = (value) => {
+    if (value === undefined || value === null) return [];
+    if (typeof value === 'string') return [value];
+    if (isDomNodeLikeCompat(value)) return [value];
+    if (Array.isArray(value) || typeof value.get === 'function') {
+      try {
+        var listed = typeof value.get === 'function' ? value.get() : value;
+        return Array.prototype.slice.call(listed || []);
+      } catch {
+        try { return Array.prototype.slice.call(value || []); } catch { return []; }
+      }
+    }
+    return [value];
+  };
+  const dollarMovedItemMarkupCompat = (item) => {
+    if (item && typeof item === 'object' && item.__palinkParentElement) return String(item.innerHTML || '');
+    return String(item === undefined || item === null ? '' : item);
   };
   const parentDocumentStore = {
     __palinkParentDocument: true,
@@ -830,38 +866,30 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
       return this;
     };
     collection.append = function(value) {
+      // [P2-MOVE-ARG-KIND] 与真 jQuery 对齐：集合参数摊平成节点后逐个搬，
+      // 节点本身不克隆（跨文档由 appendChild 自己 adopt），字符串走 insertAdjacentHTML。
+      var items = dollarMoveTargetsCompat(value);
       this.forEach((node) => {
-        try {
-          if (value?.nodeType) {
-            node.appendChild?.(value);
-          } else if (Array.isArray(value) || typeof value?.get === 'function') {
-            const values = typeof value.get === 'function' ? value.get() : value;
-            values.forEach((item) => item?.nodeType ? node.appendChild?.(item) : node.insertAdjacentHTML?.('beforeend', String(item ?? '')));
-          } else if (value?.__palinkParentElement) {
-            node.insertAdjacentHTML?.('beforeend', value.innerHTML || '');
-          } else {
-            node.insertAdjacentHTML?.('beforeend', String(value ?? ''));
-          }
-        } catch {}
+        items.forEach(function(item) {
+          try {
+            if (isDomNodeLikeCompat(item)) node.appendChild?.(item);
+            else node.insertAdjacentHTML?.('beforeend', dollarMovedItemMarkupCompat(item));
+          } catch {}
+        });
       });
       return this;
     };
     collection.prepend = function(value) {
+      // [P2-MOVE-ARG-KIND] 同 append：先摊平集合，再按倒序插到最前，结果与 jQuery 一致。
+      var items = dollarMoveTargetsCompat(value);
       this.forEach((node) => {
-        try {
-          if (value?.nodeType) {
-            node.insertBefore?.(value, node.firstChild || null);
-          } else if (Array.isArray(value) || typeof value?.get === 'function') {
-            const values = typeof value.get === 'function' ? value.get() : value;
-            values.slice().reverse().forEach((item) => item?.nodeType
-              ? node.insertBefore?.(item, node.firstChild || null)
-              : node.insertAdjacentHTML?.('afterbegin', String(item ?? '')));
-          } else if (value?.__palinkParentElement) {
-            node.insertAdjacentHTML?.('afterbegin', value.innerHTML || '');
-          } else {
-            node.insertAdjacentHTML?.('afterbegin', String(value ?? ''));
-          }
-        } catch {}
+        var head = node.firstChild || null;
+        items.slice().reverse().forEach(function(item) {
+          try {
+            if (isDomNodeLikeCompat(item)) node.insertBefore?.(item, head);
+            else node.insertAdjacentHTML?.('afterbegin', dollarMovedItemMarkupCompat(item));
+          } catch {}
+        });
       });
       return this;
     };
