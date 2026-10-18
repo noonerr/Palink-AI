@@ -41,7 +41,7 @@
 | 3 | `getTextGenServer` | 诚实值 + 去 stubApi 噪音 | `''` + 弹诊断 → `''`（不弹） | Palink 无独立 textgen 后端，`mainApi` 恒 `'palink'`；ST 在 `mainApi != textgen` 时同样返回空串 ⇒ 空串是**语义正确**；只透传宿主显式注入的 `ctx.textGenServer` | ✅ |
 | 4 | `convertCharacterBook` | 恒等映射 + 注释说明 | `stubApi` 包裹 → 纯恒等函数 | Palink 后端存的即 ST 形状（`SmartCardCompatController.ts` `mapCharBookStagesToEntries`）⇒ 恒等不是占位；注释已写明依据 | ✅ |
 | 5 | `getWorldInfoPrompt` | 补真值（激活条目组装成串） | `''` → `len=27727`（露缇雅1.2 真条目） | 复用同帧 `loadWorldInfo` 的 `requestParent('getCharWorldbook')` 通道，过滤 `disabled`、按 `insertion_order` 排序、`join('\n')`；空世界书返回 `''`；桥失败 → warn + `''` | ✅ |
-| 6 | `updateWorldInfoList` | 补真值（重拉列表） | `stubApi(async()=>true)` → `["露缇雅1.2"]` 并写 `window.world_names` | ST 语义 = 重拉 `world_names`（`world-info.js:2061`）；Palink 每角色绑一本 ⇒ 列表即当前绑定；桥失败保留现状 + warn，不清空 | ✅ |
+| 6 | `updateWorldInfoList` | 补真值（重拉列表） | `stubApi(async()=>true)` → `["露缇雅1.2"]` 并写 `window.world_names` | ST 语义 = 重拉 `world_names`（`world-info.js:2061`）；Palink 每角色绑一本 ⇒ 列表即当前绑定；桥失败保留现状 + warn，不清空。写入后**立刻可见**：两处读方都是活访问器（`part-02.ts:483` 的 `world_names: () => (window.world_names || [])`、`part-06.ts:622`），不是构建期快照 ⇒ 跨 part 写全局在这里是安全的 | ✅ |
 | 7 | `reloadWorldInfoEditor` | 恒真 by design，去 stubApi | `stubApi` → `true` | 帧内**没有**世界书编辑器 UI，函数无副作用可失败 ⇒ 恒真不是假成功；注释写明 | ✅ |
 | 8 | `appendMediaToMessage` | 推 `extra.media` 并经既有 `setChatMessage` 落库 | `stubApi(async()=>true)` → 真写帧内 `extra.media` + 调 `setChatMessageCompat` | 映射不出媒体 / 找不到消息一律 `false`；**不做**「第二参不行就把消息 id 当 URL」的猜测（那是假成功，测试 §A 有反例钉住）；父侧 `hasSmartCardDisplayLayerOptions` 含 `extra` 键 ⇒ 空正文也能持久化 | ✅（真机端到端落库**未证实**，见 §6 遗留 3） |
 | 9 | `getMediaDisplay` | 真值 = `extra.media_display`，缺省 inline | `'inline'`（常量占位）→ 按消息取真值，缺省 `inline` | Palink 取值域 `inline/gallery`（`lib/messageMedia.ts:141`）+ ST 的 `list` 原样透传；缺省落偏好 `power_user.media_display` | ✅ |
@@ -160,6 +160,10 @@ srcdoc 归因另跑 `.tmp_probe/probe-srcdoc-attrib-g.js`。
    会话 `updated_at` 仍停在 2026-10-15 ⇒ 帧内 → 宿主通道走通了、宿主 → 后端那一段没观察到写入
    （最可能卡在 `handleEditMessage` 的 messageId 形状匹配：帧侧给的是 ST mes 形状 id）。
    ⚠️ 探针用的 URL 是 `/probe-not-saved.png` 且 DB 里 0 命中 ⇒ **未污染用户数据**（这条是有意设计）。
+   ⚠️ 根因线索（给下一个 agent 省时间）：`SmartCardCompatController.ts:837-849` 对
+   `setChatMessage`/`updateMessageBlock` **无条件**回 `{ success: true, content }`（`requestContext.setChatMessage`
+   缺失或内部 return 早退也照样 success）⇒ 帧内 `Boolean(result && result.success !== false)` 这个判据
+   拿不到"真的落了库"这件事。修法要么在父侧回真实结果，要么帧内改成写后回读比对（`getChatMessages` 复核）。
    ⇒ 需要一条「宿主收到 extra-only 更新后必须回真 success/false」的闭环；在此之前 #8 的帧内契约绿、
    真机落库**不许**宣布达成。
 4. **libs 里 5 个「已有键」其实部分是垫片**（任务书把 DOMPurify/Handlebars/lodash/moment/localforage 记作
