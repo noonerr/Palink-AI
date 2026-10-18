@@ -500,6 +500,25 @@
 
 ---
 
+### [P2-12] 分包批次 F/G/H/I/E/L 收尾遗留（2026-10-18 登记 · 已排期的只列不重复展开）
+
+| # | 项 | 档位 | 现在该做什么 |
+|---|---|---|---|
+| 1 | **202 条 ST 命令"枚举里有、执行静默返空串"要不要加可诊断信号** | **P2** | ⛔ **等用户拍板**（产品取舍：维持现状对卡最像 ST；加标记则插件/卡能分辨"没实现"）。现状：`part-07.ts` 把 `Error: Unknown command` 折成空串、`synthesize` 的 entry `helpString` 为空 ⇒ 探测面说"有"，执行无痕。见 `REPORT_包F_ST命令补全_2026-10-18.md` §4.2 |
+| 2 | **动态 import 型死链的 reason 不在 I-2 分类口径内** | **P2** | 包I 留的问题：`TypeError: Failed to fetch` 形态不属于「Event / target 是资源元素」⇒ 仍会弹 toast。要拍板是否扩口径（扩了就有"一刀切吞 error"的反例风险） |
+| 3 | **`legacy-st-sim-parts/part-c.ts:362-363` 同款转义 + 产物含 5 个退格控制字符** | **P2** | 包L 顺带扫出但**未擅动**：`[\s>+~]` 在 legacy 产物里被模板求值吞掉反斜杠（`parentSelectorMatches` 的 send_textarea/send_but 分支），另有单反斜杠 `b` 落成退格符。legacy 侧载体本身保真 ⇒ 属"无人断言"，需先补断言再改码 |
+| 4 | **srcdoc 单帧 ≤50,000 这条判据本身失效** | **P3** | 改前旧码就已 57,356 超线，大头是卡自带 `body-html` 24,796 + 内联卡脚本 22,539 + `style` 11,608，运行时体在外部资产 ⇒ **别再拿 50,000 当包间验收线**；要治的是"卡自带内容"的预算策略，另立议题 |
+| 5 | 包G 三项：`appendMediaToMessage` 端到端落库未证实（父侧恒回 success，根因线索在报告）、`libs` 里 DOMPurify/lodash 实测是垫片、宿主缺 `power_user` 真偏好源 | **P2** | 各自独立可立项，勿混；DOMPurify 若真是垫片会影响净化语义，**优先核这条** |
+| 6 | 包F 三项：176 个命令别名未下发、`caption` 缺消息媒体入参、`listvar scope=global` | **P3** | 别名未下发意味着卡脚本按别名探测仍看不到；剩余量级小，可与第 1 项合并处理 |
+| 7 | **上线状态**：F/G/H/I/L 六包**已提交未上线**（16000 仍服务旧 dist），J-3 与包J 两处的真机判据都要求跑在新产物上 | **P0** | 主控收尾重建 dist 后，按各包报告里点名的探针逐个回 16000 复跑；只有那次读数才能写进基线 |
+| 8 | `.gitignore` 的 `_BACKUPS` 规则自相矛盾：第 241 行 `_BACKUPS/` 把整个目录**剪掉**，使 300-317 行「放行 `_INDEX.md` 与各 `BACKUP_INFO.md`」的 allowlist **永不生效** | **P2** | 现象：新增的 `BACKUP_INFO.md` 必须 `git add -f` 才能入库，与 `AGENTS.md` §备份与清理规范第 7 条「台账与说明文件**必须入库**」相冲。修法二选一：删掉 241 行（让 314-317 那套生效），或把 allowlist 改成先 `!_BACKUPS/*/BACKUP_INFO.md` 再排除——**属仓库级配置改动，需用户点头**，主控本轮只用 `-f` 兜住、未动 `.gitignore` |
+
+- **已排期不在本表展开**：插件 CSS 守护竞态（包J J-1）、`getContext().characterId` 恒 0（包J J-2）、
+  part-08 两处转义（包J J-3，已登记在 `runtime-source-carrier-fidelity.test.ts` 的 `KNOWN_ESCAPE_LOSS`）、
+  富卡生态扩样（包K）、信任分级最后一公里（包D，用户已拍板时机=四包收工后）。
+
+---
+
 ## P3 已知 · 主动不做
 
 _（当前无）_
