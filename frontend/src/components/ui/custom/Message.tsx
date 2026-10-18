@@ -34,7 +34,7 @@ import { ttsService } from '@/services/tts';
 import { useTtsMessageStatus } from '@/hooks/useTtsMessageStatus';
 import { messageFormatter, applySillyTavernDisplayPipeline, stripVoiceDescriptionMarkers, downgradeUnconsumedBubbleMarkers, stripUnrenderedSemanticTags } from '@/utils/sillyTavernDisplayPipeline';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
-import { stripHtmlFenceLeftovers } from './smart-card-runtime/primitives';
+import { hashSmartCardSource, stripHtmlFenceLeftovers } from './smart-card-runtime/primitives';
 import {
   attachContrastEnhancer,
   isContrastEnhancementEnabled,
@@ -341,6 +341,85 @@ function sanitizeStCompatCss(css: string): string {
     }
     return result;
   }
+}
+
+// ─── [I-1 2026-10-18] 内联 CSS 去重（内容 hash + 引用计数）───────────────────
+// 病灶（REPORT_真实角色卡兼容性实测_酒馆助手卡_2026-10-18 §4）：旧实现把去重标记打在
+// **源** <style> 元素上，而 .mes_text 的 innerHTML 每次被 React/正则/流式重建时源元素是新的、
+// 标记随之丢失；已移走的 clone 挂在 document.body 里，container.querySelectorAll 看不见它，
+// 于是每轮渲染净增一份 —— 猫娘卡实测同一份 CSS（3,156B）在 body 里堆了 15 份（47,340B）。
+// 修法：在 **body 端**按净化后 CSS 的内容 hash 复用同一个槽位，并引用计数，归零才移除。
+// 计数口径 = 「本消息持有该 hash」，不是「本轮新增了几个 clone」—— 同一消息内多份同 hash
+// 只加一次计数，否则卸载时永远归不了零（交接单 §2.1 的告警）。
+const PALINK_CSS_HASH_ATTR = 'data-palink-css-hash';
+const PALINK_MES_STYLE_MOVED_ATTR = 'data-palink-mes-style-moved';
+
+type PalinkStyleSlot = HTMLStyleElement & { __palinkRefCount?: number };
+
+function palinkCssHashKey(css: string): string {
+  // 长度 + FNV-1a36（与 smart-card 运行时同源的原语）。长度先进去，是为了让 32 位 hash
+  // 万一撞车时还有第二道区分；不是加密用途，只要稳定 + 够分散。
+  return `${css.length.toString(36)}.${hashSmartCardSource(css)}`;
+}
+
+function findPalinkStyleSlot(doc: Document, key: string): PalinkStyleSlot | null {
+  if (!doc.body) return null;
+  return doc.body.querySelector(`style[${PALINK_CSS_HASH_ATTR}="${key}"]`) as PalinkStyleSlot | null;
+}
+
+function releasePalinkStyleHold(slot: PalinkStyleSlot): void {
+  const next = Math.max(0, (slot.__palinkRefCount || 0) - 1);
+  slot.__palinkRefCount = next;
+  if (next <= 0) slot.remove();
+}
+
+/**
+ * 把 container（.mes_text）内的 <style> 净化后移出到 doc.body，按内容 hash 复用槽位。
+ * 返回 detach（每轮渲染调用一次）与 release（卸载时调用一次）。
+ * 导出仅供测试直接驱动 5 轮重建 —— 生产路径只有一个调用点（下方 useEffect）。
+ */
+export function createMesStyleDeduper(options: { container: HTMLElement; doc?: Document }) {
+  const doc = options.doc || document;
+  const container = options.container;
+  // 本消息持有的 hash → 当时那个槽位元素（槽位可能被外部换掉，故要记实例而不是只记 hash）
+  const held = new Map<string, PalinkStyleSlot>();
+
+  const detachStyleFromMesText = () => {
+    const styles = Array.from(container.querySelectorAll('style'));
+    for (const styleEl of styles) {
+      if (styleEl.getAttribute(PALINK_MES_STYLE_MOVED_ATTR) === '1') continue;
+      const cleanCss = sanitizeStCompatCss(styleEl.textContent || '');
+      // 源元素无论如何都要 remove：.mes_text 不留 style，插件读 innerHTML 得纯净正文（原行为）
+      styleEl.remove();
+      // 净化后无有效规则的直接丢弃，不注入 body（避免空 style 及泄漏）
+      if (!cleanCss) continue;
+      const key = palinkCssHashKey(cleanCss);
+      let slot = findPalinkStyleSlot(doc, key);
+      if (!slot) {
+        slot = doc.createElement('style') as PalinkStyleSlot;
+        slot.setAttribute(PALINK_MES_STYLE_MOVED_ATTR, '1');
+        slot.setAttribute(PALINK_CSS_HASH_ATTR, key);
+        slot.textContent = cleanCss;
+        slot.__palinkRefCount = 0;
+        doc.body?.appendChild(slot);
+      }
+      const previous = held.get(key);
+      if (previous === slot) continue;   // 本轮已计数（同 hash 多份只算一次）
+      held.set(key, slot);
+      slot.__palinkRefCount = (slot.__palinkRefCount || 0) + 1;
+      if (previous) releasePalinkStyleHold(previous);  // 旧槽位被换掉（外部重建/移除）⇒ 撤掉本消息在它身上的计数
+    }
+  };
+
+  const release = () => {
+    held.forEach((slot, key) => {
+      // 槽位可能在持有期间被外部重建：能查到就减新实例的计数，查不到就退回自己记的那个
+      releasePalinkStyleHold(findPalinkStyleSlot(doc, key) || slot);
+    });
+    held.clear();
+  };
+
+  return { detachStyleFromMesText, release, held };
 }
 
 function sanitizeStCompatHtml(html: string): string {
@@ -1004,25 +1083,14 @@ function MessageInner({
   // 净化（sanitizeStCompatCss）是关键兜底：角色卡可能写出未约束的全局规则（如
   // body{display:flex}），style 一旦注入主文档即全局生效，会污染页面布局（移动端 #root
   // 宽度塌陷 → 白屏）。此处对所有进入 document.body 的 style 统一过滤 html/body 等全局规则。
+  // [I-1 2026-10-18] 注入 body 时不再每轮新建 clone：按净化后 CSS 的内容 hash 复用同一槽位
+  // 并做引用计数（去重标记必须打在 body 端的槽位上，打在源元素上会随 innerHTML 重建丢失，
+  // 实测猫娘卡因此堆了 15 份相同 CSS / 47KB）。逻辑抽在 createMesStyleDeduper，见其注释。
   useEffect(() => {
     const container = contentContainerRef.current;
     if (!container) return;
-    const movedStyles: HTMLStyleElement[] = [];
-    const detachStyleFromMesText = () => {
-      const styles = Array.from(container.querySelectorAll('style'));
-      for (const styleEl of styles) {
-        if (styleEl.getAttribute('data-palink-mes-style-moved') === '1') continue;
-        const cleanCss = sanitizeStCompatCss(styleEl.textContent || '');
-        styleEl.remove();
-        // 净化后无有效规则的直接丢弃，不注入 body（避免空 style 及泄漏）
-        if (!cleanCss) continue;
-        const clone = document.createElement('style');
-        clone.setAttribute('data-palink-mes-style-moved', '1');
-        clone.textContent = cleanCss;
-        document.body.appendChild(clone);
-        movedStyles.push(clone);
-      }
-    };
+    const deduper = createMesStyleDeduper({ container });
+    const detachStyleFromMesText = () => deduper.detachStyleFromMesText();
     detachStyleFromMesText();
     // 流式/正则处理会持续更新 .mes_text 内容（React 替换 innerHTML 时新 style 重新出现），
     // 用 MutationObserver 兜底持续移出。
@@ -1030,7 +1098,7 @@ function MessageInner({
     observer.observe(container, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
-      for (const styleEl of movedStyles) styleEl.remove();
+      deduper.release();
     };
   }, []);
 
