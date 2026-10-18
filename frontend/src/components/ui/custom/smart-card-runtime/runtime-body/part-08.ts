@@ -523,7 +523,9 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     substituteParamsExtended: window.substituteParams,
     getTokenCount: (text) => String(text ?? '').length,
     getTokenCountAsync: async (text) => String(text ?? '').length,
-    getTextTokens: (text) => String(text ?? '').split(/\s+/).filter(Boolean),
+    // [包J J-3 2026-10-18] 反斜杠必须成对写：本文件是模板字符串，单反斜杠会被求值吞掉，
+    // 空字符类正则会退化成「按字母 s 切词」。与 part-07 的同名实现写法保持一致。
+    getTextTokens: (text) => String(text ?? '').split(/\\s+/).filter(Boolean),
     tokenizers: window.tokenizers || {},
     getTokenizerModel: () => 'palink',
     extensionSettings: window.extension_settings,
@@ -1352,7 +1354,9 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     try {
       const first = cardErrorLog[0];
       if (!first) return '';
-      return String(first.message || '').replace(/\s+/g, ' ').slice(0, 160);
+      // [包J J-3 2026-10-18] 反斜杠成对写：单反斜杠会被模板求值吞掉，空字符类正则退化成
+      // 「把连续字母 s 换成空格」，多行报错摘要的空白根本没被折叠。
+      return String(first.message || '').replace(/\\s+/g, ' ').slice(0, 160);
     } catch { return ''; }
   };
 

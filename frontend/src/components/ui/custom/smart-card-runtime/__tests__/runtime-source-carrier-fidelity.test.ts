@@ -30,6 +30,7 @@ import {
 
 const BS = String.fromCharCode(92);   // 反斜杠：一律用 charCode 取，避免本文件自己踩转义
 const BT = String.fromCharCode(96);   // 反引号
+const SQ = String.fromCharCode(39);   // 单引号
 const LF = String.fromCharCode(10);
 const CR = String.fromCharCode(13);
 
@@ -89,10 +90,15 @@ function findEatenBackslashes(body: string, firstBodyLine: number) {
  * 已知反斜杠丢失登记（**登记表外的新命中一律红**；修完请把登记项删掉）。
  * 定位用代码片段而不是行号 —— part-08 正被并行包改动，行号会漂。
  */
-const KNOWN_ESCAPE_LOSS = [
-  { part: 'part-08.ts', seq: BS + 's', fragment: 'getTextTokens: (text) =>', owner: '包J' },
-  { part: 'part-08.ts', seq: BS + 's', fragment: "return String(first.message || '').replace(", owner: '包J' },
-];
+/**
+ * 已知反斜杠丢失登记（**登记表外的新命中一律红**；修完请把登记项删掉）。
+ * 定位用代码片段而不是行号 —— part-08 正被并行包改动，行号会漂。
+ *
+ * 包L 登记的两处 part-08 缺陷已由包J 于 2026-10-18 改成成对反斜杠，登记表**清空**。
+ * 表本身留着：C1 的口径是「表外一个都不许多」，将来谁再写单反斜杠就在这里挂号。
+ * 修完的两处语义由 C3（文本钉）+ C4/C5（求值后载体的行为断言）守住。
+ */
+const KNOWN_ESCAPE_LOSS: Array<{ part: string; seq: string; fragment: string; owner: string }> = [];
 const knownKey = (part: string, seq: string, fragment: string) => `${part} | ${seq} | ${fragment}`;
 
 // ============================================================
@@ -202,9 +208,51 @@ describe('C 段文件模板体里「会被求值吃掉」的写法必须逐项�
     expect(COMPAT_V2_RUNTIME_ARTIFACT).toContain('const normalizeCompatEntries = (result) => {');
   });
 
-  it('C3 登记表里那两处 part-08 缺陷在产物里仍然是坏的（等包J 修；修完本条应转红→删登记项）', () => {
-    expect(COMPAT_V2_RUNTIME_ARTIFACT).toContain('split(/s+/)');
-    expect(COMPAT_V2_RUNTIME_ARTIFACT).toContain(`replace(/s+/g, ' ')`);
+  it('C3 包J 修复的文本钉：part-08 两处空白正则在生产产物里必须是「空白字符类」形态', () => {
+    expect(COMPAT_V2_RUNTIME_ARTIFACT).toContain('split(/' + BS + 's+/)');
+    expect(COMPAT_V2_RUNTIME_ARTIFACT).not.toContain('split(/s+/)');
+    expect(COMPAT_V2_RUNTIME_ARTIFACT).toContain('replace(/' + BS + 's+/g, ' + SQ + ' ' + SQ + ')');
+    expect(COMPAT_V2_RUNTIME_ARTIFACT).not.toContain('replace(/s+/g, ' + SQ + ' ' + SQ + ')');
+  });
+
+  /**
+   * 从**求值后产物**里把一行表达式的右值抠出来，交给 new Function 真跑。
+   * C4/C5 用它做行为断言 —— 包L 的教训是「源码里有某个字面量」不等于生产行为对，
+   * 而抠出来的这段文本已经是 iframe 真正拿到的那一份（反斜杠只剩一个）。
+   * 入参只允许来自本仓构建产物 COMPAT_V2_RUNTIME_ARTIFACT（自家代码，非任何外部/用户数据）。
+   */
+  function execExpressionFromArtifact(marker: string, prefix: string, argName: string) {
+    const line = COMPAT_V2_RUNTIME_ARTIFACT.split(LF)
+      .find((rawLine) => rawLine.includes(marker));
+    expect(line, `产物里找不到锚点：${marker}`).toBeTruthy();
+    const start = String(line).indexOf(prefix) + prefix.length;
+    const expr = String(line).slice(start).trim().replace(/[;,]+$/, '');
+    expect(expr.length, `锚点 ${marker} 抠出的表达式为空`).toBeGreaterThan(0);
+    // eslint-disable-next-line no-new-func
+    if (argName) return new Function(argName, 'return (' + expr + ');');
+    // eslint-disable-next-line no-new-func
+    return new Function('return (' + expr + ');')();
+  }
+
+  it('C4 行为断言（包J J-3）：产物里的 getTextTokens 真的按空白切词，不是按字母 s 切', () => {
+    const getTextTokens = execExpressionFromArtifact(
+      'getTextTokens: (text) =>', 'getTextTokens: ', '',
+    ) as (text: unknown) => string[];
+    // 单反斜杠写法（split(/s+/)）在下面这条输入上返回 1 项 —— 改坏必红已实测，见包J 报告
+    expect(getTextTokens('alpha   beta\n  gamma\tdelta')).toEqual(['alpha', 'beta', 'gamma', 'delta']);
+    expect(getTextTokens('你好 世界')).toEqual(['你好', '世界']);
+    expect(getTextTokens('')).toEqual([]);
+    expect(getTextTokens(null)).toEqual([]);
+  });
+
+  it('C5 行为断言（包J J-3）：产物里的卡内错误摘要真的折叠空白，多行 stack 不挤成一行噪声', () => {
+    const fold = execExpressionFromArtifact(
+      'String(first.message', 'return ', 'first',
+    ) as (first: { message?: string }) => string;
+    expect(fold({ message: 'Error  at line1\n  at line2' })).toBe('Error at line1 at line2');
+    expect(fold({ message: 'a\n\n\nb' })).toBe('a b');
+    expect(fold({})).toBe('');
+    expect(fold({ message: 'x '.repeat(200) })).toHaveLength(160);
   });
 });
 
