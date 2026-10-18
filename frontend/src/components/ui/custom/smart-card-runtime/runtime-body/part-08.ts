@@ -1472,14 +1472,24 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     // 取证通道只有一条：source 'palink-smart-card-frame' + type 'frame-error'
     // 是父侧写 __palinkFrameErrors 认的形状；st:diagnostic 那条会走 toast，所以这里不用它。
     // 帧内直写父窗口不可能（sandbox 只给 allow-scripts ⇒ opaque origin），只能 postMessage。
+    // [包N K-4 2026-10-19] 只补取证字段（kind / colno / 兜底非空 message），
+    // 不改分类口径、不碰 reportDiagnostic、不弹 toast。
     try {
+      var evidenceMessage = (typeof message === 'string' && message)
+        ? message
+        : 'evidence_message_unavailable: 取证调用未带可读 message（帧内兜底标记，非空串）';
+      var evidenceFilename = (typeof filename === 'string' && filename)
+        ? filename
+        : '<filename-absent>';
       window.parent.postMessage({
         source: 'palink-smart-card-frame',
         frameId: frameId,
         type: 'frame-error',
-        message: message,
-        filename: filename || '',
+        kind: 'resource_load_failed',
+        message: evidenceMessage,
+        filename: evidenceFilename,
         lineno: 0,
+        colno: -1,
       }, '*');
     } catch (e) { /* 父窗口不可达时静默：console 与 cardErrorLog 已经留过痕 */ }
   }

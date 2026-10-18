@@ -303,6 +303,61 @@ export const LEGACY_ST_SIM_SEGMENT_PART_A = `  // [MVU-EVENTS 2026-10-05] MVU �
     }
   } catch (e) { /* ignore */ }
 
+  // [包N 2026-10-19 K-4] frame-error 取证增强。
+  //   病灶（REPORT_包K §5.4）：本段旧写法把帧内错误一律压成 detail = 栈 或 message 或
+  //   一个 unknown 兜底串，跨源脚本错误被浏览器脱敏后 message/stack 都空，
+  //   于是 __palinkFrameErrors 里 14/14 条都是 message="unknown error"、filename=""，
+  //   把 K-1/K-3 的归因彻底卡死。下面三个 helper 把每条上报补成**可归因**：
+  //     - message 永远非空（拿不到原文就明写"为什么拿不到"，不再用空串 / unknown error 交差）；
+  //     - filename / lineno / colno 缺就标缺失标记（<...> 或 -1），不写空串；
+  //     - 附带 kind / errorReason 便于父侧分类。
+  //   约束：本段是注入 iframe 的模板字符串，只能 ES5、禁反引号/美元花括号、注释与串里禁裸反斜杠。
+  var PALINK_FRAME_ERR_MSG_MISSING = 'message_unavailable: 跨源脚本错误被浏览器脱敏（error 与 message 均不可读）';
+  var PALINK_FRAME_ERR_FILE_MISSING = '<filename-absent>';
+  var PALINK_FRAME_ERR_PROMISE_FILE = '<promise-rejection-no-filename>';
+  function palinkFrameErrorReason(errObj) {
+    try {
+      if (!errObj) return '<no-error-object>';
+      if (errObj.name) return String(errObj.name);
+      if (errObj.constructor && errObj.constructor.name) return String(errObj.constructor.name);
+      return '<unnamed-error>';
+    } catch (e) { return '<reason-unreadable>'; }
+  }
+  function palinkFrameErrorDetail(e) {
+    try {
+      var stack = (e && e.error && e.error.stack) ? String(e.error.stack) : '';
+      if (stack) return stack;
+      var msg = (e && e.message) ? String(e.message) : '';
+      if (msg) return msg;
+      // message/error 皆空 —— 典型 opaque origin / 跨源脱敏：明写缺失原因，再补可读线索。
+      var loc = '';
+      if (e && typeof e.filename === 'string' && e.filename) {
+        loc = ' @ ' + e.filename + ':' + (e.lineno || 0) + ':' + (e.colno || 0);
+      }
+      return PALINK_FRAME_ERR_MSG_MISSING + loc;
+    } catch (err) { return PALINK_FRAME_ERR_MSG_MISSING; }
+  }
+  function palinkFrameErrorNumber(value) {
+    var n = Number(value);
+    return isNaN(n) ? -1 : n;
+  }
+  function palinkFrameErrorFilename(e) {
+    try {
+      if (e && typeof e.filename === 'string' && e.filename) return e.filename;
+      return PALINK_FRAME_ERR_FILE_MISSING;
+    } catch (err) { return PALINK_FRAME_ERR_FILE_MISSING; }
+  }
+  function palinkRejectionDetail(reason) {
+    try {
+      if (reason && reason.stack) return String(reason.stack);
+      if (reason && typeof reason.message === 'string' && reason.message) {
+        return String(reason.name || 'Error') + ': ' + reason.message;
+      }
+      if (typeof reason === 'string' && reason) return reason;
+      return 'rejection_reason_unreadable: reason 既无 stack/message 也非字符串（typeof=' + (typeof reason) + '）';
+    } catch (e) { return 'rejection_reason_unreadable'; }
+  }
+
   // [STATUSBAR-DEBUG] iframe 内部错误捕获：脚本执行抛错或被 CSP 拦截时，
   // 以 postMessage（frame-error / frame-csp）上报父页面，避免直接 console 噪音。
   try {
@@ -320,13 +375,17 @@ export const LEGACY_ST_SIM_SEGMENT_PART_A = `  // [MVU-EVENTS 2026-10-05] MVU �
           var failedTag = String(failedTarget.tagName || '').toUpperCase();
           if (failedTag === 'SCRIPT' && failedTarget.isConnected && window.parent && window.parent.postMessage) {
             var failedUrl = String(failedTarget.src || failedTarget.href || '');
-            window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', message: 'script resource failed to load (HTML-as-JS suspect): ' + failedUrl, filename: failedUrl, lineno: 0 }, '*');
+            // [包N K-4] 补 colno + kind：资源 URL 即定位线索，colno 对资源事件无意义填 0，
+            // 但显式带出来，父侧 __palinkFrameErrors 就能按 kind 区分"脚本资源失败"与真错误。
+            window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', kind: 'script_resource_failed', message: 'script resource failed to load (HTML-as-JS suspect): ' + failedUrl, filename: failedUrl, lineno: 0, colno: 0 }, '*');
           }
           return;
         }
-        var detail = (e && e.error && e.error.stack) ? e.error.stack : ((e && e.message) || 'unknown error');
+        // [包N K-4] 真脚本错误：detail 走 palinkFrameErrorDetail（永远非空），
+        // filename / lineno / colno 用显式缺失标记（不再空串），带 errorReason 便于归因。
+        var detail = palinkFrameErrorDetail(e);
         if (window.parent && window.parent.postMessage) {
-          window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', message: detail, filename: e && e.filename, lineno: e && e.lineno }, '*');
+          window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', kind: 'script_error', message: detail, filename: palinkFrameErrorFilename(e), lineno: palinkFrameErrorNumber(e && e.lineno), colno: palinkFrameErrorNumber(e && e.colno), errorReason: palinkFrameErrorReason(e && e.error) }, '*');
         }
       } catch (_) {}
     }, true);
@@ -340,7 +399,10 @@ export const LEGACY_ST_SIM_SEGMENT_PART_A = `  // [MVU-EVENTS 2026-10-05] MVU �
     window.addEventListener('unhandledrejection', function (e) {
       try {
         if (window.parent && window.parent.postMessage) {
-          window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', message: e.reason && (e.reason.stack || e.reason) }, '*');
+          // [包N K-4] rejection 也补齐取证：message 非空、filename 明写"promise 无文件名"、
+          // lineno/colno 填 -1（真缺失），带 errorReason（reason 的 name/类型）便于归因。
+          var rejReason = e ? e.reason : undefined;
+          window.parent.postMessage({ source: 'palink-smart-card-frame', frameId: frameId, type: 'frame-error', kind: 'unhandled_rejection', message: palinkRejectionDetail(rejReason), filename: PALINK_FRAME_ERR_PROMISE_FILE, lineno: -1, colno: -1, errorReason: palinkFrameErrorReason(rejReason) }, '*');
         }
       } catch (_) {}
     });

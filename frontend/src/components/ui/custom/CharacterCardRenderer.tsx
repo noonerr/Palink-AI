@@ -906,7 +906,27 @@ const IframeRenderer = React.memo(function IframeRenderer({
           // [P0 2026-09-30] filename/lineno 必须透传：shim 的 window.onerror 上报里
           // 带 e.filename（脚本级 parse error 时即出错资源的 sourceURL/URL），此前在
           // 这里被丢掉，__palinkFrameErrors 只剩 message，定位"HTML 冒充 JS"只能盲猜。
-          const entry = { frameId: frameIdRef.current, type: data.type, message: data.message, directive: data.directive, blockedURI: data.blockedURI, filename: data.filename, lineno: data.lineno, at: Date.now() };
+          // [包N K-4 2026-10-19] 帧内 shim 现把 message 补成永远非空、filename 缺省给
+          // <filename-absent>，并额外带 kind / colno / errorReason / node（节点身份取证）。
+          // 父侧照单全收进观测面，同时留一条兜底：万一收到旧形状的空 message，就地打
+          // 缺失标记，绝不再以空串 / unknown error 交差（那正是把归因卡死的东西）。
+          const frameMessageText = (typeof data.message === 'string' && data.message)
+            ? data.message
+            : 'message_unavailable: 帧内上报未携带可读 message（父侧兜底标记，非空串）';
+          const entry = {
+            frameId: frameIdRef.current,
+            type: data.type,
+            message: frameMessageText,
+            kind: typeof data.kind === 'string' ? data.kind : '<kind-absent>',
+            directive: data.directive,
+            blockedURI: data.blockedURI,
+            filename: (typeof data.filename === 'string' && data.filename) ? data.filename : '<filename-absent>',
+            lineno: typeof data.lineno === 'number' ? data.lineno : -1,
+            colno: typeof data.colno === 'number' ? data.colno : -1,
+            errorReason: typeof data.errorReason === 'string' ? data.errorReason : '<reason-absent>',
+            node: data.node && typeof data.node === 'object' ? data.node : undefined,
+            at: Date.now(),
+          };
           try {
             const w = window as unknown as { __palinkFrameErrors?: unknown[] };
             w.__palinkFrameErrors = w.__palinkFrameErrors || [];
