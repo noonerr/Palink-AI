@@ -1406,6 +1406,77 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     }
   };
 
+  // [包I I-2 2026-10-18] 「资源加载失败」与「脚本错误」分家（唯一切分口径）。
+  //
+  // 实拍（REPORT_真实角色卡兼容性实测_酒馆助手卡_2026-10-18 §6）：露缇雅帧里一个死外链
+  // https://drive.baibai.cv/f/ZKEBuW/Music.js 加载失败，reason 是 Event 形态，
+  // 经 unhandled_rejection → reportDiagnostic → 宿主 handleSmartCardCompatDiagnostic
+  // → Sonner toast「error @ …Music.js」。ST 对这类失败**只落 console**，不弹 toast
+  // —— 这正是用户主诉「顶部弹出很多报错」的来源之一。
+  // ⚠️ 包G 之后 SillyTavern.libs 是 18 个 jsdelivr CDN 的**懒加载** ⇒ 外链失败在生产里
+  // 只会比以前更常发生，这条切分是必需的，不是锦上添花。
+  //
+  // 切分只认一种形态（**严禁**扩成"吞掉所有 error"）：
+  //   · window error：event.target 是 SCRIPT/LINK/IMG/SOURCE/AUDIO/VIDEO/TRACK **且带 src/href**；
+  //   · unhandledrejection：reason 本身是上述资源元素，或 reason 是 Event 形态
+  //     （有 type，且 target/srcElement/currentTarget 里能取出上面那种元素）。
+  // 命中后的处置：console.error + cardErrorLog（logCardError 一次做全这两件）
+  //   + 一条 frame-error 消息，由父侧 CharacterCardRenderer 收进 window.__palinkFrameErrors
+  //   （上限 50 条）⇒ **取证不丢**，排查死链还得靠它；但**不调 reportDiagnostic** ⇒ 不弹 toast。
+  // 其余一律走原有 reportDiagnostic 路径（含 undefined_global 的 severity 降级），一行不改。
+  var PALINK_RESOURCE_ERROR_TAGS = { SCRIPT: 1, LINK: 1, IMG: 1, SOURCE: 1, AUDIO: 1, VIDEO: 1, TRACK: 1 };
+  function palinkResourceElementInfo(node) {
+    try {
+      if (!node || typeof node !== 'object') return null;
+      var tagName = String(node.tagName || '').toUpperCase();
+      if (!PALINK_RESOURCE_ERROR_TAGS[tagName]) return null;
+      var url = '';
+      try { url = String(node.src || node.href || node.currentSrc || ''); } catch (e) { url = ''; }
+      if (!url) return null;
+      return { tagName: tagName, url: url };
+    } catch (e) {
+      return null;
+    }
+  }
+  function palinkResourceFailureFrom(source) {
+    try {
+      if (!source || typeof source !== 'object') return null;
+      var direct = palinkResourceElementInfo(source);
+      if (direct) return direct;
+      var isEventShape = typeof source.type === 'string'
+        && Boolean(source.target || source.srcElement || source.currentTarget);
+      if (!isEventShape) return null;
+      return palinkResourceElementInfo(source.target)
+        || palinkResourceElementInfo(source.srcElement)
+        || palinkResourceElementInfo(source.currentTarget);
+    } catch (e) {
+      return null;
+    }
+  }
+  function palinkRecordFrameErrorForEvidence(message, filename) {
+    // 取证通道只有一条：source 'palink-smart-card-frame' + type 'frame-error'
+    // 是父侧写 __palinkFrameErrors 认的形状；st:diagnostic 那条会走 toast，所以这里不用它。
+    // 帧内直写父窗口不可能（sandbox 只给 allow-scripts ⇒ opaque origin），只能 postMessage。
+    try {
+      window.parent.postMessage({
+        source: 'palink-smart-card-frame',
+        frameId: frameId,
+        type: 'frame-error',
+        message: message,
+        filename: filename || '',
+        lineno: 0,
+      }, '*');
+    } catch (e) { /* 父窗口不可达时静默：console 与 cardErrorLog 已经留过痕 */ }
+  }
+  function palinkReportResourceLoadFailure(channel, info) {
+    // 消息里带上标签名与 URL：父侧 __palinkFrameErrors 只有这两样就能判断是哪个外链死了。
+    var message = 'resource_load_failed[' + String(channel || '') + '] '
+      + String(info.tagName || '') + ' @ ' + String(info.url || '');
+    logCardError('资源加载失败（静默，不弹 toast）', message, '');
+    palinkRecordFrameErrorForEvidence(message, info.url);
+    return message;
+  }
+
   // [STYLE-GUARD-INFRAME 2026-10-18] 卡片样式自愈（帧内版，权威实现）。
   //
   // 为什么必须在帧内做：未信任卡 iframe 的 sandbox 只给 allow-scripts（P1-1 修复），
@@ -1539,6 +1610,12 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   } catch (e) { /* 静默 */ }
 
   window.addEventListener('error', (event) => {
+    // [包I I-2] 资源加载失败先分流；真脚本错误（下面的 message/refMatch 逻辑）行为一字未改。
+    const resourceFailure = palinkResourceFailureFrom(event && event.target);
+    if (resourceFailure) {
+      palinkReportResourceLoadFailure('window_error', resourceFailure);
+      return;
+    }
     const message = formatWindowErrorMessage(event);
     const refMatch = message.match(/(?:ReferenceError:\\s*)?([A-Za-z_$][\\w$]*) is not defined/);
     const stack = String(event?.error?.stack || '');
@@ -1554,6 +1631,12 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
 
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event?.reason;
+    // [包I I-2] Event 形态且 target 是资源元素 ⇒ 外链加载失败，静默 + 取证，不弹 toast。
+    const resourceFailure = palinkResourceFailureFrom(reason);
+    if (resourceFailure) {
+      palinkReportResourceLoadFailure('unhandled_rejection', resourceFailure);
+      return;
+    }
     const message = formatRejectionMessage(reason);
     const stack = String(reason?.stack || '');
     logCardError('未处理的异步错误', message, stack);
