@@ -26,7 +26,14 @@ import { join } from 'node:path';
 import { LEGACY_ST_SIM_SEGMENT } from '../frame-shim/legacy-st-sim';
 import { buildShim } from '../helpers';
 // [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，改为读拼接后的源码文本。
-import { COMPAT_V2_RUNTIME_SOURCE as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 两个载体各按语义取用：
+//   · COMPAT_V2_ARTIFACT = 求值后产物（生产 iframe 逐字节同源）⇒ 帧内那两行断言用它；
+//   · COMPAT_V2_SOURCE   = 未求值源码文本 ⇒ 只用于 TS 侧 boot payload 白名单
+//     （`buildSmartCardCompatRuntimeBootPayload` 是宿主 TS 代码，不在注入产物里）。
+import {
+  COMPAT_V2_RUNTIME_SOURCE as COMPAT_V2_SOURCE,
+  COMPAT_V2_RUNTIME_ARTIFACT as COMPAT_V2_ARTIFACT,
+} from './compat-v2-runtime-source';
 
 const SEED_PATTERN = /let activeWorldbookName = String\(\(ctx && ctx\.worldbookName\) \|\| ''\);/;
 
@@ -61,6 +68,8 @@ describe('A boot context 内联 —— 两个构建器都要带上 worldbookName
 
   it('[红→S1 转绿] buildSillyTavernCompatRuntimeV2Shim（compatV2 段）同样内联', () => {
     // 只断言源码层面的 contextJson 白名单含该字段（构建器依赖 esbuild 打包环境，不便直接跑）
+    // [包L] 这一条判的是宿主 TS 侧 `buildSmartCardCompatRuntimeBootPayload` 的字段白名单，
+    // 它在**注入产物之外**（产物里只剩序列化结果），所以只能用未求值源码载体。
     expect(COMPAT_V2_SOURCE).toMatch(/worldbookName: context\.worldbookName \|\| ''/);
   });
 
@@ -82,7 +91,8 @@ describe('B seed 消费 —— 内联值必须真的被帧内缓存采纳', () =
   });
 
   it('[红→S1 转绿] SillyTavernCompatRuntime 的 activeWorldbookName 同样以 ctx.worldbookName 为初值', () => {
-    expect(COMPAT_V2_SOURCE).toMatch(SEED_PATTERN);
+    // [包L] 断言对象是**注入 iframe 的求值后产物**（宿主真正跑的那份），不是源码文本。
+    expect(COMPAT_V2_ARTIFACT).toMatch(SEED_PATTERN);
   });
 
   it('[回归钉] 内联源必须是角色 character_book，不是 sessionStatus（真机实测后者恒空）', () => {

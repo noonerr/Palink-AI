@@ -12,7 +12,9 @@
  * 运行: npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/style-guard-inframe-contract.test.ts
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { COMPAT_V2_RUNTIME_SOURCE as SRC } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 执行型测试（sliceIife + new Function）⇒ 用求值后载体，
+// 未求值源码文本的模板转义语义与生产相反，会假绿。
+import { COMPAT_V2_RUNTIME_ARTIFACT as SRC } from './compat-v2-runtime-source';
 
 /** 从 `(function xxx()` 起按花括号配平切出完整 IIFE（含尾部 )();）。 */
 function sliceIife(src: string, marker: string): string {

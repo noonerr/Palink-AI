@@ -19,7 +19,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
-import { COMPAT_V2_RUNTIME_SOURCE as SRC } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 两个载体各按语义取用：
+//   · SRC     = 求值后产物（生产 iframe 逐字节同源）⇒ new Function 执行断言一律用它；
+//   · SRC_RAW = 未求值源码文本 ⇒ 只用于「H 段源码里一个裸反斜杠都没有」这类
+//     **针对源码写法本身**的纪律断言（该断言判的就是「有没有会被模板求值吃掉的转义」）。
+import { COMPAT_V2_RUNTIME_ARTIFACT as SRC, COMPAT_V2_RUNTIME_SOURCE as SRC_RAW } from './compat-v2-runtime-source';
 
 const FIXTURE = JSON.parse(
   readFileSync(join(process.cwd(), 'src/components/ui/custom/smart-card-runtime/__tests__/fixtures/th134-names.json'), 'utf8'),
@@ -28,6 +32,11 @@ const TH134: string[] = FIXTURE.names;
 
 const BEGIN = '>>> H-TH134 FAMILY BEGIN';
 const END = '<<< H-TH134 FAMILY END';
+
+/** 行尾归一：源文件 CRLF / 模板求值产物 LF，两者只差行尾时不应判为语义差异。 */
+const flatNewlines = (s: string) => s
+  .split(String.fromCharCode(13) + String.fromCharCode(10)).join(String.fromCharCode(10))
+  .split(String.fromCharCode(13)).join('');
 
 function sliceRegion(src: string): string {
   const begin = src.indexOf(BEGIN);
@@ -166,10 +175,17 @@ describe('A fixture 与注册口径', () => {
   });
 
   it('H 段源码里一个裸反斜杠都没有（模板串求值会把反斜杠d变成d；包H 因此只用 regexBackslashCompat 与纯字符串操作）', () => {
-    const region = sliceRegion(SRC);
+    // 这条判的是**源码写法本身** —— 区域里只要出现单反斜杠，模板求值就会把它吞掉，
+    // 所以必须用未求值载体 SRC_RAW（换成求值后产物这条就失去意义了）。
+    const region = sliceRegion(SRC_RAW);
     const bs = String.fromCharCode(92);
     expect(region.split('\n').filter((line) => line.indexOf(bs) >= 0)).toEqual([]);
     expect(region.indexOf('regexBackslashCompat')).toBeGreaterThan(-1);
+    // 推论并实测：无裸反斜杠 ⇒ 该区域求值前后逐字节一致 ⇒ 本文件的 new Function 行为
+    // 断言与生产 iframe 同语义（包L 的假绿这一类在这里不成立）。
+    // 唯一允许的差别是行尾：源文件是 CRLF，而模板求值按 ECMAScript 规范把 CR/CRLF 归一成
+    // LF —— 与 JS 语义无关，故比对前先做行尾归一，否则会出现「只差一个回车」的假阴性。
+    expect(flatNewlines(sliceRegion(SRC))).toBe(flatNewlines(region));
   });
 
   it('D 类键一个都没注册（假实现红线；名单逐条来自报告 §3 分类全表）', () => {

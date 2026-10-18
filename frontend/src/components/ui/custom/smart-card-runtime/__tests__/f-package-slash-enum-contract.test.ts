@@ -15,7 +15,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { COMPAT_V2_RUNTIME_SOURCE as SRC } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 执行型测试（sliceBetween + new Function）⇒ 用求值后载体：
+// 未求值源码文本里单反斜杠转义与生产语义相反，本地绿线上坏。
+import { COMPAT_V2_RUNTIME_ARTIFACT as SRC } from './compat-v2-runtime-source';
 import { ST_118_COMMAND_NAMES } from '@/lib/slash-engine/st-command-catalog';
 
 const PROBE_289: string[] = JSON.parse(

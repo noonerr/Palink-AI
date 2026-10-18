@@ -26,7 +26,9 @@
  * 运行: npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/st-compat-fix-batch-contract.test.ts
  */
 import { describe, it, expect, vi } from 'vitest';
-import { COMPAT_V2_RUNTIME_SOURCE as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 执行型测试（切段 + new Function）⇒ 用求值后载体：
+// 未求值源码文本里单反斜杠转义与生产语义相反，会「本地绿、线上坏」。
+import { COMPAT_V2_RUNTIME_ARTIFACT as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
 
 // ── 工具：按 marker 切出帧内真实源码区域并独立求值 ────────────────
 

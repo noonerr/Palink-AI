@@ -49,8 +49,10 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 // [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，改为读拼接后的源码文本。
+// [包L 2026-10-18] 本文件是**执行型**测试（切区域 + new Function）⇒ 必须用求值后载体
+// COMPAT_V2_RUNTIME_ARTIFACT：未求值文本里单反斜杠转义与生产语义相反，会假绿。
 // vitest 固定以 frontend/ 为 cwd 运行（同 storage-isolation-contract.test.ts）
-import { COMPAT_V2_RUNTIME_SOURCE as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
+import { COMPAT_V2_RUNTIME_ARTIFACT as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
 
 const BEGIN_MARKER = '>>> S1-G10 LOREBOOK FAMILY BEGIN';
 const END_MARKER = '<<< S1-G10 LOREBOOK FAMILY END';

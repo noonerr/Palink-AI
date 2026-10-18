@@ -139,7 +139,10 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       // ⚠️ 不能用 result.length 判：数组的 length 是**不可枚举**自有属性，
       // 展开（{...arr}）时不会复制过来 —— 真机实测该对象**没有 length**。
       // 只能按下标键还原。
-      const indexKeys = Object.keys(result).filter((k) => /^\d+$/.test(k));
+      // ⚠️ [包L 2026-10-18] 本段在模板字符串里，想让 iframe 看到「反斜杠 + d」必须**成对写两个
+      // 反斜杠**：原先只写了一个，模板求值会把反斜杠吞掉，生产产物退化成「只匹配字母 d」的
+      // 正则 ⇒ 这个还原分支在线上永不命中。旧测试读的是未求值源码文本，所以本地一直绿。
+      const indexKeys = Object.keys(result).filter((k) => /^\\d+$/.test(k));
       if (indexKeys.length > 0) {
         return indexKeys
           .map((k) => Number(k))

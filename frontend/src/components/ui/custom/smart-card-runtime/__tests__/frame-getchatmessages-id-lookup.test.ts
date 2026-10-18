@@ -23,7 +23,8 @@
 import { describe, it, expect } from 'vitest';
 import { LEGACY_ST_SIM_SEGMENT } from '../frame-shim/legacy-st-sim';
 // [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，改为读拼接后的源码文本。
-import { COMPAT_V2_RUNTIME_SOURCE as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 执行型测试 ⇒ 用求值后载体（与生产 iframe 逐字节一致），未求值文本会假绿。
+import { COMPAT_V2_RUNTIME_ARTIFACT as COMPAT_V2_SOURCE } from './compat-v2-runtime-source';
 
 /** 从源码/模板字符串里原样切出一个箭头函数体（不重写逻辑，避免测到一份"我以为的实现"）。 */
 function sliceArrowFn(src: string, marker: string): string {

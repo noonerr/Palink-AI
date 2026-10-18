@@ -23,7 +23,9 @@
  * 运行: npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/b-package-slash-and-context-contract.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { COMPAT_V2_RUNTIME_SOURCE as SRC } from './compat-v2-runtime-source';
+// [包L 2026-10-18] 本文件既有字符串断言也有 new Function 执行断言 ⇒ 统一用求值后载体
+// （未求值源码文本里单反斜杠转义与生产语义相反，本地绿线上坏）。
+import { COMPAT_V2_RUNTIME_ARTIFACT as SRC } from './compat-v2-runtime-source';
 import { SlashCommandEngine } from '@/lib/slash-engine';
 import {
   ensureSlashCommandsBootstrapped,
