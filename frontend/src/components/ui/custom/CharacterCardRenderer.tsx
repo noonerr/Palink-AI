@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
-import { Maximize2, Shield, ShieldCheck, X } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { readIdbNamespaceKillSwitch } from '@/lib/sillytavern/card-idb-namespace';
 import type { CharacterSmartCardContext, SillyTavernPluginRuntimeConfig, SmartCardRenderMode } from '@/types';
@@ -25,6 +25,14 @@ import {
   type ContrastEnhancerHandle,
 } from './smart-card-runtime/contrast-enhancer';
 import { installCardStyleGuard, type CardStyleGuardHandle } from './smart-card-runtime/style-guard';
+// [包D D-2 2026-10-18] 「信任此卡」入口抽出为可测组件：判定与写授权仍在本文件，
+// 这里只接管"按钮 + 事前确认弹窗"的呈现，并把入口从仅沉浸式扩到内联卡操作角。
+import {
+  SmartCardTrustButton,
+  SmartCardTrustConfirmDialog,
+  nextSmartCardTrustAction,
+  shouldShowSmartCardTrustControl,
+} from './smart-card-runtime/trust-control';
 import type { IframeRenderMode, SmartCardImmersiveTheme, SmartCardViewportContext, SmartCardResourcePlan, SmartCardAction } from './smart-card-runtime/shared';
 
 import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight, htmlSupportsOuterCollapse, htmlPrefersImmersive, hashSmartCardSource, stableSmartCardStringify, preloadSmartCardRuntimeConfig, getSmartCardBootContextSignature, compactSmartCardChatMessages, readSmartCardTrustGrant, writeSmartCardTrustGrant, getCurrentInterfaceLanguage, isIOSLikeDevice, resolveImmersiveTheme, inferImmersiveThemeFromHtml, estimateIframeInitialHeight, estimateIframeMaxHeight, getLayoutViewportHeight, isSmartCardVisualKeyboardLikelyOpen, collectSmartCardViewportContext, getNearestScrollContainer, getSmartCardAvailableHeight, extractHtmlRenderParts, getHtmlRenderSignature, safeJson, readSmartCardPersistedStorage, applySmartCardStoragePatch, adaptSmartCardRuntimeAccess, normalizeSmartCardScriptBlocks, addSmartCardScriptNonce, optimizeSmartCardHtmlForRuntime, buildSmartCardResourcePlan, mergeSmartCardResourcePlans, buildSillyTavernPluginResourcePlan, buildSmartCardResourceHints, scheduleSmartCardResourceWarmup, buildSmartCardAdapterStyle, resolveHtmlRenderMode, toSmartCardRuntimeMode, prepareInlineHtml, buildShim } from './smart-card-runtime/helpers';
@@ -1197,7 +1205,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
   const toggleTrustedNative = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    setPendingTrustAction(trustedNative ? 'revoke' : 'enable');
+    setPendingTrustAction(nextSmartCardTrustAction(trustedNative));
   }, [trustedNative]);
 
   const cancelTrustedNative = useCallback((event?: React.MouseEvent<HTMLElement>) => {
@@ -1336,7 +1344,12 @@ const IframeRenderer = React.memo(function IframeRenderer({
   const frameHeight = prefersAvailableHeight ? (contentOverrideActive ? height : availableHeight) : height;
   const frameMinHeight = prefersAvailableHeight ? (contentOverrideActive ? INLINE_MIN_HEIGHT : availableHeight) : minMeasuredHeight;
   const iframeKey = `${frameIdRef.current}-${effectiveMode}-${sourceFingerprint}`;
-  const showTrustedControl = prefersImmersive && (mode === 'iframe-js' || mode === 'trusted-native');
+  // [包D D-2 2026-10-18] 入口可达性：此前是 `prefersImmersive && (mode === 'iframe-js' || mode === 'trusted-native')`，
+  // 而 Message.tsx 给非 launcher 卡一律传 presentationMode:'inline' ⇒ explicitInline ⇒ prefersImmersive 恒 false
+  // ⇒ **内联卡在真机上根本没有信任入口**（实测：全页 86 个可点元素，搜「信任/native」零命中）。
+  // 现在按"这帧会不会跑脚本"判定：iframe-js / trusted-native 给入口，static-html 不给（无脚本可信任）。
+  // ⚠️ 这只加**入口**，sandbox 字符串与授权读写逻辑一行没动 —— 未授信卡仍是 opaque origin。
+  const showTrustedControl = shouldShowSmartCardTrustControl(effectiveMode);
   const immersiveStableViewportHeight = Math.max(
     IFRAME_AVAILABLE_MIN_HEIGHT,
     Math.round(stableViewportSizeRef.current.height || viewportContext.height || getLayoutViewportHeight()),
@@ -1420,11 +1433,11 @@ const IframeRenderer = React.memo(function IframeRenderer({
           style={{ top: isIOSDevice ? `calc(${immersiveTopInsetPx} + 12px)` : '50%', transform: isIOSDevice ? 'none' : 'translateY(-50%)' }}
         >
           {showTrustedControl && (
-            <button
-              type="button"
+            <SmartCardTrustButton
+              trusted={trustedNative}
+              text={smartCardText}
+              onToggle={toggleTrustedNative}
               className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2"
-              title={trustedNative ? smartCardText.nativeEnabled : smartCardText.enableNative}
-              aria-label={trustedNative ? smartCardText.nativeEnabled : smartCardText.enableNative}
               style={{
                 color: immersiveToolbarTextColor,
                 background: immersiveToolbarButtonBackground,
@@ -1432,14 +1445,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
                 backdropFilter: immersiveToolbarBackdrop,
                 WebkitBackdropFilter: immersiveToolbarBackdrop,
               }}
-              onClick={toggleTrustedNative}
-            >
-              {trustedNative ? (
-                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-              ) : (
-                <Shield className="h-4 w-4" aria-hidden="true" />
-              )}
-            </button>
+            />
           )}
           <button
             type="button"
@@ -1463,43 +1469,14 @@ const IframeRenderer = React.memo(function IframeRenderer({
           </button>
         </div>
         {pendingTrustAction && (
-          <div
+          <SmartCardTrustConfirmDialog
+            action={pendingTrustAction}
+            text={smartCardText}
+            titleId={`${frameIdRef.current}-trust-title`}
+            onConfirm={confirmTrustedNative}
+            onCancel={cancelTrustedNative}
             className="absolute inset-0 z-[3] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm"
-            onClick={cancelTrustedNative}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby={`${frameIdRef.current}-trust-title`}
-              className="w-full max-w-sm rounded-lg border border-white/15 bg-zinc-950/95 p-4 text-white shadow-2xl"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <h2 id={`${frameIdRef.current}-trust-title`} className="text-base font-semibold">
-                {pendingTrustAction === 'enable' ? smartCardText.enableNative : smartCardText.revokeNative}
-              </h2>
-              <p className="mt-3 whitespace-pre-line text-sm leading-6 text-white/75">
-                {pendingTrustAction === 'enable'
-                  ? smartCardText.enableNativeConfirm
-                  : smartCardText.revokeNativeConfirm}
-              </p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center rounded-md border border-white/15 px-3 text-sm text-white/80 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-                  onClick={cancelTrustedNative}
-                >
-                  {smartCardText.cancel}
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-white px-3 text-sm font-medium text-zinc-950 transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-                  onClick={confirmTrustedNative}
-                >
-                  {smartCardText.confirm}
-                </button>
-              </div>
-            </div>
-          </div>
+          />
         )}
       </div>
     );
@@ -1519,20 +1496,37 @@ const IframeRenderer = React.memo(function IframeRenderer({
 
   return (
     <div ref={wrapperRef} className="relative w-full" data-palink-smart-card-frame={frameIdRef.current}>
-      {supportsOuterCollapse && (
-        <button
-          type="button"
-          className="absolute right-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-black/35 text-white shadow-lg backdrop-blur transition-colors hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
-          title={smartCardText.collapse}
-          aria-label={smartCardText.collapse}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setCollapsed(true);
-          }}
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </button>
+      {/* [包D D-2 2026-10-18] 内联卡操作角：把「信任此卡」入口补到非沉浸式分支
+          （此前入口只在沉浸式覆盖层里渲染，而 Message.tsx 给非 launcher 卡一律
+          传 presentationMode:'inline'，真机上永远走不到 ⇒ 能力写完却没人能按）。
+          沿用本分支既有的右上角悬浮按钮位（收起 X 同一簇），不改 sandbox、不改授权逻辑。 */}
+      {(showTrustedControl || supportsOuterCollapse) && (
+        <div className="absolute right-2 top-2 z-20 flex items-center gap-2">
+          {showTrustedControl && (
+            <SmartCardTrustButton
+              trusted={trustedNative}
+              text={smartCardText}
+              onToggle={toggleTrustedNative}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-black/35 text-white shadow-lg backdrop-blur transition-opacity hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+              style={{ opacity: trustedNative ? 1 : 0.7 }}
+            />
+          )}
+          {supportsOuterCollapse && (
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-black/35 text-white shadow-lg backdrop-blur transition-colors hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+              title={smartCardText.collapse}
+              aria-label={smartCardText.collapse}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setCollapsed(true);
+              }}
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       )}
       <iframe
         ref={iframeRef}
@@ -1555,6 +1549,16 @@ const IframeRenderer = React.memo(function IframeRenderer({
         title={smartCardText.iframeTitle}
         onLoad={handleFrameLoad}
       />
+      {pendingTrustAction && (
+        <SmartCardTrustConfirmDialog
+          action={pendingTrustAction}
+          text={smartCardText}
+          titleId={`${frameIdRef.current}-trust-title`}
+          onConfirm={confirmTrustedNative}
+          onCancel={cancelTrustedNative}
+          className="absolute inset-0 z-30 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm"
+        />
+      )}
     </div>
   );
 });

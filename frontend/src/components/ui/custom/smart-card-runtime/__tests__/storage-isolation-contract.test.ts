@@ -28,6 +28,7 @@ import {
   writeSmartCardTrustGrant,
 } from '../storage';
 import { getSmartCardTrustKey } from '../primitives';
+import { SMART_CARD_TRUST_SESSION_TTL_MS } from '../shared';
 import type { CharacterSmartCardContext } from '@/types';
 
 // 文本级契约用（S2 迁移守门钉在源码上）：vitest 固定以 frontend/ 为 cwd
@@ -259,5 +260,63 @@ describe('A8 信任授予读回（双存储迁移兼容）', () => {
     writeSmartCardTrustGrant('c1', 'fp1', false);
     expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
     expect(window.localStorage.getItem(key)).toBeNull();
+  });
+
+  // ---- 包D D-2 补覆盖：授予的三维隔离与"会话级"边界 ----
+
+  it('writeSmartCardTrustGrant(true) 只落 sessionStorage（会话级，关浏览器即失效）', () => {
+    writeSmartCardTrustGrant('c1', 'fp1', true);
+    const key = getSmartCardTrustKey('c1', 'fp1');
+    const raw = window.sessionStorage.getItem(key);
+    expect(raw).not.toBeNull();
+    const grant = JSON.parse(raw as string) as { mode: string; expiresAt: number };
+    expect(grant.mode).toBe('trusted-native');
+    // TTL 上界必须存在且落在 SMART_CARD_TRUST_SESSION_TTL_MS 附近（不是永久授权）
+    const remain = grant.expiresAt - Date.now();
+    expect(remain).toBeGreaterThan(SMART_CARD_TRUST_SESSION_TTL_MS - 60_000);
+    expect(remain).toBeLessThanOrEqual(SMART_CARD_TRUST_SESSION_TTL_MS);
+    expect(window.localStorage.getItem(key)).toBeNull();
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(true);
+  });
+
+  it('按源码指纹隔离：改了卡（指纹变）授权即失效，不会跟着新内容走', () => {
+    writeSmartCardTrustGrant('c1', 'fp1', true);
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(true);
+    expect(readSmartCardTrustGrant('c1', 'fp2')).toBe(false);
+  });
+
+  it('按角色隔离：A 角色的授权不给 B 角色（同指纹也不行）', () => {
+    writeSmartCardTrustGrant('c1', 'fp1', true);
+    expect(readSmartCardTrustGrant('c2', 'fp1')).toBe(false);
+  });
+
+  it('无 characterId 落 unknown 桶，读回口径一致（不因缺 id 而放宽）', () => {
+    writeSmartCardTrustGrant(undefined, 'fp1', true);
+    expect(getSmartCardTrustKey(undefined, 'fp1')).toContain('unknown');
+    expect(readSmartCardTrustGrant(undefined, 'fp1')).toBe(true);
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
+  });
+
+  it('mode 不是 trusted-native 的 grant → false（只认这一种授权形态）', () => {
+    const key = getSmartCardTrustKey('c1', 'fp1');
+    window.sessionStorage.setItem(key, JSON.stringify({ mode: 'iframe-js', expiresAt: Date.now() + 60_000 }));
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
+    expect(window.sessionStorage.getItem(key)).toBeNull();
+  });
+
+  it('损坏 JSON / 缺 expiresAt → false 且不抛（读路径绝不冒泡）', () => {
+    const key = getSmartCardTrustKey('c1', 'fp1');
+    window.sessionStorage.setItem(key, '{not json');
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
+    window.sessionStorage.setItem(key, JSON.stringify({ mode: 'trusted-native' }));
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
+  });
+
+  it('撤销后回到未信任（授权不是单向门）', () => {
+    writeSmartCardTrustGrant('c1', 'fp1', true);
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(true);
+    writeSmartCardTrustGrant('c1', 'fp1', false);
+    expect(readSmartCardTrustGrant('c1', 'fp1')).toBe(false);
+    expect(window.sessionStorage.getItem(getSmartCardTrustKey('c1', 'fp1'))).toBeNull();
   });
 });
