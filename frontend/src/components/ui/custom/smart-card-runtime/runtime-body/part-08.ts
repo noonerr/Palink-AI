@@ -106,7 +106,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     // [T6 2026-10-18] loadWorldInfo 不再是桩：T3 已合入 getCharWorldbook 桥取真实条目，
     // 拆掉 stubApi 包装以免每帧产一条误报警告 toast。键保留在外部文档表里供卡作者参考。
     getWorldInfoPrompt: '世界书提示词恒返回空串，实际注入走后端 worldbook_service',
-    saveWorldInfo: '写入为假成功（返回 true 但不落库），请改用 createOrReplaceWorldbook',
+    // [包B B-3 2026-10-18] 删 saveWorldInfo：已改为真写入（桥 createOrReplaceWorldbook），
+    // 不再是桩。本条与 getContextCompat 里的 saveWorldInfo 实现必须同进同出。
     getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
     writePresetExtensionField: '写入为假成功（返回 true 但不落库）',
     getRequestHeaders: 'Palink 由 api 服务统一注入认证头，此处恒空对象',
@@ -149,6 +150,31 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     return wrapped;
   };
   window.__palinkStubApiNotes = PALINK_STUB_API_NOTES;
+  // [包B B-3 2026-10-18] ST 1.18 有、此前单间轨缺的 9 个 getContext 键的配套实现。
+  //
+  // registerHelper / registerDebugFunction：ST 语义是"登记后返回 void"，这里真的写进
+  //   一张表（不是空转），便于插件自检；无可观测副作用，因此不归入 stubApi（桩的判据
+  //   是 reportStubApi 留痕，这两个不属于"假成功"）。
+  // chatCompletionSettings / textCompletionSettings：ST 里这两个是**可写对象**，
+  //   MVU 会写 runtimes.is_function_call_enabled。本段上方记过的教训是"给空对象会在
+  //   写 runtimes.* 时 TypeError" ⇒ 必须带 runtimes 子对象；且必须是**同一实例**
+  //   （每次新建会让写入丢失，MVU 会以为工具调用被关掉）。
+  const registeredHelpersCompat = {};
+  const registeredDebugFunctionsCompat = {};
+  const buildCompletionSettingsCompat = () => {
+    const preset = parseMaybeJsonObject(ctx.presetData, {});
+    const base = preset && typeof preset === 'object' ? preset : {};
+    const runtimes = base.runtimes && typeof base.runtimes === 'object' ? base.runtimes : {};
+    return {
+      ...base,
+      runtimes: {
+        ...runtimes,
+        is_function_call_enabled: runtimes.is_function_call_enabled === true,
+      },
+    };
+  };
+  const chatCompletionSettingsCompat = buildCompletionSettingsCompat();
+  const textCompletionSettingsCompat = buildCompletionSettingsCompat();
   const getContextCompat = () => ({
     accountStorage: accountStorageCompat,
     chat: window.chat,
@@ -295,6 +321,23 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     getCharacterSource: () => '',
     importFromExternalUrl: async () => null,
     importTags: async () => [],
+    // [包B B-3 2026-10-18] 补齐 ST 1.18 有、单间轨缺的 9 个键。
+    // 前三个的实现在本帧早已存在（TavernHelper 上有，只是没挂到 getContext 契约上）。
+    timestampToMoment: timestampToMomentCompat,
+    uuidv4: window.uuidv4,
+    humanizedDateTime: humanizedDateTimeCompat,
+    registerHelper: (name, fn) => {
+      const key = String(name || '');
+      if (key) registeredHelpersCompat[key] = fn;
+    },
+    registerDebugFunction: (name, fn) => {
+      const key = String(name || '');
+      if (key) registeredDebugFunctionsCompat[key] = fn;
+    },
+    renderExtensionTemplate: window.renderExtensionTemplate,
+    renderExtensionTemplateAsync: window.renderExtensionTemplateAsync,
+    chatCompletionSettings: chatCompletionSettingsCompat,
+    textCompletionSettings: textCompletionSettingsCompat,
     tags: [],
     tagMap: {},
     menuType: ctx.presentationMode || 'chat',
@@ -362,7 +405,27 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
         return { name: String(name || ''), entries: {} };
       }
     },
-    saveWorldInfo: stubApi('saveWorldInfo', async () => true),
+    // [包B B-3 2026-10-18] saveWorldInfo 由"假成功"改为真写入。
+    // 此前是 stubApi(async () => true)：返回 true 但不落库，MVU / 世界书编辑类插件会
+    // 静默丢数据（比报错更糟）。现桥到既有的 createOrReplaceWorldbook 通道
+    // （part-07 已接到宿主 createOrReplaceSmartCardWorldBook，真写后端）。
+    // 入参按 ST 形状 { entries: { uid: entry } } 收，数组与对象两种都兼容；
+    // 空条目直接返回 false（不谎报成功），写入失败也返回 false。
+    saveWorldInfo: async (name, data) => {
+      const source = data && typeof data === 'object' ? data : {};
+      const rawEntries = source.entries && typeof source.entries === 'object' ? source.entries : {};
+      const list = Array.isArray(rawEntries)
+        ? rawEntries
+        : Object.keys(rawEntries).map((key) => rawEntries[key]).filter((entry) => entry && typeof entry === 'object');
+      if (!list.length) return false;
+      try {
+        const result = await window.createOrReplaceWorldbook(String(name || ''), list, {});
+        return Boolean(result && result.success !== false);
+      } catch (e) {
+        post({ type: 'log', level: 'warn', message: 'saveWorldInfo 失败：' + String(e && e.message || e) });
+        return false;
+      }
+    },
     reloadWorldInfoEditor: stubApi('reloadWorldInfoEditor', async () => true),
     updateWorldInfoList: stubApi('updateWorldInfoList', async () => true),
     convertCharacterBook: stubApi('convertCharacterBook', (book) => book || {}),

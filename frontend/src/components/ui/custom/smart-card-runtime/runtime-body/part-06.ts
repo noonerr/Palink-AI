@@ -146,7 +146,25 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
     if (!pending) return;
     pendingRequests.delete(data.requestId);
     clearTimeout(pending.timeout);
-    pending.resolve(data.ok ? { ok: true, ...(data.result ?? { success: true }) } : { ok: false, success: false, error: data.error || uiText.requestFailed });
+    // [包B B-1 2026-10-18] 响应归一化：此前一律对 data.result 做对象展开，而
+    // runPalinkSlash 的返回值是**字符串**（/getchatname 返回 palink-session-<id>.jsonl 等），
+    // 展开字符串只会得到 {0:'p',1:'a',...} 这种索引键对象 ⇒ 调用方读 response.result
+    // 恒 undefined ⇒ 卡内 triggerSlash 对 Palink 九条专有命令一律返回空串。
+    // 现在按类型分流：null/undefined 走默认成功体，对象（含数组）照旧展开以保持既有
+    // 消费点（.content/.entries/.success）不变，标量（string/number/boolean）包成
+    // { ok, success, result } —— 与宿主 action.respond({ ok, result }) 的原始形状对齐。
+    const rawResult = data.result;
+    let resolvedPayload;
+    if (!data.ok) {
+      resolvedPayload = { ok: false, success: false, error: data.error || uiText.requestFailed };
+    } else if (rawResult === null || typeof rawResult === 'undefined') {
+      resolvedPayload = { ok: true, success: true };
+    } else if (typeof rawResult === 'object') {
+      resolvedPayload = { ok: true, ...rawResult };
+    } else {
+      resolvedPayload = { ok: true, success: true, result: rawResult };
+    }
+    pending.resolve(resolvedPayload);
   });
 
   const missingApiAddMessagePatternCompat = new RegExp('(?:^|' + regexBackslashCompat + '.)(?:add|append|insert|create)(?:one)?(?:chat)?message');

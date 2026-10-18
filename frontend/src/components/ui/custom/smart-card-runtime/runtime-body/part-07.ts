@@ -429,7 +429,9 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     };
   };
   const executeSlashCommandCompat = async (source, context = {}) => {
-    const text = String(source || '').trim().replace(/^\\/+/, '');
+    const rawSourceCompat = String(source || '').trim();
+    const hadLeadingSlashCompat = rawSourceCompat.charAt(0) === '/';
+    const text = rawSourceCompat.replace(/^\\/+/, '');
     if (!text) return '';
     const spaceIndex = text.search(new RegExp(regexBackslashCompat + 's'));
     const name = spaceIndex === -1 ? text : text.slice(0, spaceIndex);
@@ -497,10 +499,36 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       if (lowerName === 'getlocalvar') return window.getLocalVariable?.(key, '');
       return window.getVariable?.(key, '');
     }
-    if (['append', 'add', 'insert', 'create'].includes(lowerName)) {
+    // [包B B-1 2026-10-18] 'add' 已从本组移除：ST 1.18 的 /add 是**数值求和**
+    // （variables.js:addValuesCallback），不是"追加一条消息"。留在本地分支会让
+    // 卡脚本里最常见的 /add 10 20 恒返回一条消息对象而不是 30。
+    // append / insert / create 是 Palink 自有的消息追加别名，保留。
+    if (['append', 'insert', 'create'].includes(lowerName)) {
       return addOneMessageCompat({ role: 'assistant', name: ctx.characterName, content: args });
     }
-    return '';
+    // [包B B-1 2026-10-18] 本地未命中 → 桥到宿主，不再直接返回空串。
+    //
+    // 此前这里 return ''：帧内只有上面这十几个硬编码分支，其余命令（/echo /abs /let /if
+    // /while /times 以及宿主引擎的 75 条内置命令）在卡脚本里**一律拿到空串**。
+    // 宿主落点即 SmartCardCompatController 的 runPalinkSlash：
+    //   命中 Palink 九条专有命令 → 返回其结果；未命中 → 回落宿主 executeSlashCommandCompat
+    //   → SlashCommandEngine.execute（与沙箱轨 / getContext 轨同一份实现）。
+    //
+    // 只在原文带前导斜杠时桥接：executeSlashCommandsOnChatInput 会用本函数处理普通聊天
+    // 输入（无斜杠），那条热路径必须留在本地，否则每次发消息都多一次 RPC。
+    if (!hadLeadingSlashCompat) return '';
+    try {
+      const bridged = await requestParent('runPalinkSlash', { command: '/' + text });
+      if (!bridged || bridged.success === false) return '';
+      const bridgedResult = typeof bridged.result === 'string' ? bridged.result : '';
+      // 引擎对未知命令返回 "Error: Unknown command: /x"（execute 的 catch 分支把它当 output）。
+      // 对卡脚本来说"没这条命令"应当等价于空串，否则卡里的 if(!result) 判定会被带偏。
+      if (bridgedResult.indexOf('Error: Unknown command') === 0) return '';
+      return bridgedResult;
+    } catch (e) {
+      post({ type: 'log', level: 'warn', message: 'slash 桥接失败：' + String(e && e.message || e) });
+      return '';
+    }
   };
   window.SlashCommandParser = window.SlashCommandParser && typeof window.SlashCommandParser === 'object'
     ? window.SlashCommandParser
@@ -509,7 +537,89 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   window.SlashCommandParser.addCommand = (name, callback, aliases, helpString, interrupt, purgeFromMessage) => (
     registerSlashCommandCompat(name, callback, aliases, helpString, interrupt, purgeFromMessage)
   );
-  window.SlashCommandParser.commands = slashCommandStoreCompat;
+  // [包B B-1 2026-10-18] 帧内 commands 视图只有"插件注册过的"那几条（真机实测 7 条），
+  // 宿主引擎里那 100+ 条命令对三方代码**不可见**：
+  //   if (SlashCommandParser.commands['echo']) ...  ⇒ 恒假 ⇒ 走"不支持"降级分支。
+  // 这里补一层懒代理：宿主引擎实际注册了哪些命令，从 /help 的返回里取（那是引擎
+  // getAllCommands 的权威输出，不是我们自己维护的名单，避免"名单说有、实际调不到"）。
+  // 取到之前枚举偏少、取到之后完整；名字对应的 entry 是**真能执行的**合成项，
+  // callback 直接桥到宿主（executeSlashCommandCompat 未命中分支 → runPalinkSlash）。
+  const slashKnownNamesCompat = new Set();
+  const synthesizeSlashEntryCompat = (name) => ({
+    name,
+    aliases: [],
+    helpString: '',
+    callback: (args) => executeSlashCommandCompat('/' + name + (args ? ' ' + args : '')),
+  });
+  const resolveSlashEntryCompat = (name) => {
+    const existing = slashCommandStoreCompat.get(name);
+    if (existing) return existing;
+    return slashKnownNamesCompat.has(name) ? synthesizeSlashEntryCompat(name) : undefined;
+  };
+  const primeSlashKnownNamesCompat = async () => {
+    try {
+      const response = await requestParent('runPalinkSlash', { command: '/help' });
+      const text = response && typeof response.result === 'string' ? response.result : '';
+      const namePattern = new RegExp('^/([A-Za-z0-9:_-]+) ', 'gm');
+      let matched = namePattern.exec(text);
+      while (matched) {
+        slashKnownNamesCompat.add(matched[1]);
+        matched = namePattern.exec(text);
+      }
+      window.__palinkSlashKnownNames = Array.from(slashKnownNamesCompat);
+    } catch (e) {
+      // 拿不到就保持"只有插件注册项"，不影响既有行为
+    }
+  };
+  // [包B B-1 2026-10-18] SlashCommandParser.commands 必须是 ST 形状的普通对象视图。
+  //
+  // 此前直接赋 Map（slashCommandStoreCompat）。ST 1.18 里 commands 是普通对象，三方代码
+  // 惯用 commands['echo'] / Object.keys(commands) / 'echo' in commands —— 这三种在 Map 上
+  // 全部失效（Map 的键不在 Object.keys 里，属性访问也拿不到值）。
+  // 真机探针也因此把"已有 7 条命令"误读成"0 条"（Map 上 Object.keys 恒为 []）。
+  //
+  // 这里用 Proxy 做双面视图：Map 的 get/has/set/delete/keys/entries/values/forEach/size
+  // 继续可用（帧内既有调用点走 slashCommandStoreCompat 本体，不受影响），
+  // 同时让 [name] 取值、Object.keys 枚举、in 判定、for...in 全部按对象语义工作。
+  const slashCommandViewCompat = new Proxy(slashCommandStoreCompat, {
+    get(target, prop) {
+      if (prop === 'size') return target.size;
+      if (prop === Symbol.iterator) return target[Symbol.iterator].bind(target);
+      if (
+        prop === 'get' || prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'clear'
+        || prop === 'keys' || prop === 'values' || prop === 'entries' || prop === 'forEach'
+      ) {
+        const method = target[prop];
+        return typeof method === 'function' ? method.bind(target) : method;
+      }
+      if (typeof prop === 'string') return resolveSlashEntryCompat(prop);
+      return undefined;
+    },
+    has(target, prop) {
+      if (typeof prop !== 'string') return false;
+      return target.has(prop) || slashKnownNamesCompat.has(prop);
+    },
+    set(target, prop, value) {
+      if (typeof prop !== 'string') return true;
+      target.set(prop, value);
+      return true;
+    },
+    deleteProperty(target, prop) {
+      if (typeof prop !== 'string') return true;
+      return target.delete(prop);
+    },
+    ownKeys(target) {
+      return Array.from(new Set([...target.keys(), ...slashKnownNamesCompat]));
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop !== 'string') return undefined;
+      const entry = resolveSlashEntryCompat(prop);
+      if (!entry) return undefined;
+      return { value: entry, writable: true, enumerable: true, configurable: true };
+    },
+  });
+  window.SlashCommandParser.commands = slashCommandViewCompat;
+  primeSlashKnownNamesCompat();
   window.SlashCommandParser.execute = executeSlashCommandCompat;
   window.SlashCommandParser.parse = executeSlashCommandCompat;
   setCompatFunction('registerSlashCommand', (name, callback, aliases, helpString, interrupt, purgeFromMessage) => (

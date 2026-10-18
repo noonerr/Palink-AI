@@ -221,8 +221,9 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
   it('桩名说明表覆盖 getContextCompat 里所有被 flag 的 API（防加了 flag 漏写说明）', () => {
     const notes = sliceDeclaration(COMPAT_V2_SOURCE, 'const PALINK_STUB_API_NOTES = {');
     // [T6 2026-10-18] 删 loadWorldInfo：T3 修复 + 拆掉 stubApi 后它不再属于桩。
+    // [包B B-3 2026-10-18] 删 saveWorldInfo：改为真写入（桥 createOrReplaceWorldbook）。
     const flagged = [
-      'getWorldInfoPrompt', 'saveWorldInfo', 'getSelectedPresetName',
+      'getWorldInfoPrompt', 'getSelectedPresetName',
       'writePresetExtensionField', 'getRequestHeaders', 'getChatCompletionModel',
       'getMediaDisplay', 'getMediaIndex', 'appendMediaToMessage', 'scrollOnMediaLoad',
       'convertCharacterBook', 'getTextGenServer', 'renameChat', 'updateWorldInfoList',
@@ -236,7 +237,8 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
   it('源码层：getContextCompat 的桩确实被 stubApi 包裹（不是只建了 helper 没用）', () => {
     const ctx = sliceDeclaration(COMPAT_V2_SOURCE, 'const getContextCompat = () => ({');
     // [T6 2026-10-18] 删 loadWorldInfo：拆掉 stubApi 后它不再是桩。
-    ['saveWorldInfo', 'getWorldInfoPrompt', 'convertCharacterBook',
+    // [包B B-3 2026-10-18] 删 saveWorldInfo：同上，已改真写入。
+    ['getWorldInfoPrompt', 'convertCharacterBook',
       'getChatCompletionModel', 'getMediaDisplay', 'getMediaIndex', 'getTextGenServer',
       'renameChat', 'scrollOnMediaLoad', 'appendMediaToMessage',
       'getSelectedPresetName', 'writePresetExtensionField',
