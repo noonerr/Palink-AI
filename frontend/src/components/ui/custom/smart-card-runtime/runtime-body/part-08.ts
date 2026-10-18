@@ -1714,6 +1714,127 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     })();
   } catch (e) { /* 静默 */ }
 
+  // [包N ② 2026-10-19] 「节点被移除/被替换」取证观察器（**纯观测面，不改变任何行为**）。
+  //   病灶（REPORT_包K §5.1 K-1）：卡自己的 <style>（tavern-cg-album-style 12KB、
+  //   galgame-ui-plugin-styles 440KB）在 t8→t16 被整体抹掉，但 __palinkFrameErrors 只有
+  //   unknown error，答不出"是谁、用什么方式删的"。这里给移除/替换事件补**节点身份取证**：
+  //     - 被移除节点：tagName、id、data-* / data-palink-* 关键属性、文本长度（字节近似）；
+  //     - 触发线索：record.target 身份、同批 addedNodes（有 addedNodes = 替换，无 = 纯删除）、
+  //       removedNodes 计数；MutationObserver 回调本身是异步微任务，拿不到删除方的同步栈，
+  //       所以可得的"方式"线索就是上面这几项（同步栈捕获只在 .tmp_probe 临时探针里做，不进仓库）。
+  //   ⛔ 红线：本观察器**只**把取证经 palinkRecordFrameErrorForEvidence 送进 __palinkFrameErrors，
+  //   不改 STYLE-GUARD 恢复范围、不碰 reportDiagnostic、不弹 toast、不改 guardSnapshot。
+  //   约束：模板字符串，只能 ES5，禁反引号/美元花括号/裸反斜杠。
+  try {
+    (function installStyleRemovalForensicsInFrame() {
+      var STYLE_REMOVAL_MAX_REPORTS = 24;
+      var styleRemovalReportCount = 0;
+      var styleRemovalObserver = null;
+
+      function styleRemovalByteLen(text) {
+        var s = String(text || '');
+        return s.length;
+      }
+
+      function styleRemovalKeyAttrs(node) {
+        var out = {};
+        try {
+          var attrs = node && node.attributes;
+          if (!attrs || !attrs.length) return out;
+          var seen = 0;
+          for (var i = 0; i < attrs.length && seen < 12; i += 1) {
+            var nm = String(attrs[i].name || '');
+            if (nm.indexOf('data-') === 0 || nm === 'id' || nm === 'rel' || nm === 'href') {
+              out[nm] = String(attrs[i].value || '').slice(0, 80);
+              seen += 1;
+            }
+          }
+        } catch (e) { /* 属性不可读时给空集 */ }
+        return out;
+      }
+
+      function styleRemovalNodeIdentity(node) {
+        var ident = { tagName: '', id: '', attrs: {}, textLen: 0 };
+        try {
+          ident.tagName = String((node && node.tagName) || (node && node.nodeName) || '').toUpperCase();
+          ident.id = String((node && node.id) || '');
+          ident.attrs = styleRemovalKeyAttrs(node);
+          var tc = (node && node.textContent) || '';
+          ident.textLen = styleRemovalByteLen(tc);
+        } catch (e) { /* 已脱离文档的节点取不到内容时保持已取到的部分 */ }
+        return ident;
+      }
+
+      function styleRemovalIsStyledNode(node) {
+        var tag = String((node && (node.tagName || node.nodeName)) || '').toUpperCase();
+        return tag === 'STYLE' || tag === 'LINK' || tag === 'HEAD';
+      }
+
+      function handleStyleRemovalRecords(records) {
+        try {
+          if (styleRemovalReportCount >= STYLE_REMOVAL_MAX_REPORTS) return;
+          for (var r = 0; r < records.length; r += 1) {
+            if (styleRemovalReportCount >= STYLE_REMOVAL_MAX_REPORTS) return;
+            var record = records[r];
+            var removed = record && record.removedNodes;
+            if (!removed || !removed.length) continue;
+            var removedStyled = [];
+            for (var n = 0; n < removed.length; n += 1) {
+              if (styleRemovalIsStyledNode(removed[n])) removedStyled.push(styleRemovalNodeIdentity(removed[n]));
+            }
+            if (!removedStyled.length) continue;
+            // 同批 addedNodes 身份 = 这是"替换"还是"纯删除"的关键线索
+            var added = record.addedNodes || [];
+            var addedStyled = [];
+            for (var a = 0; a < added.length && a < 12; a += 1) {
+              addedStyled.push(styleRemovalNodeIdentity(added[a]));
+            }
+            var targetIdent = styleRemovalNodeIdentity({
+              tagName: (record.target && record.target.nodeName) || '',
+              id: (record.target && record.target.id) || '',
+              textContent: '',
+            });
+            var kind = addedStyled.length ? 'node_replaced' : 'node_removed';
+            var first = removedStyled[0];
+            var message = 'style_removal[' + kind + '] removedStyledCount=' + removedStyled.length
+              + ' addedCount=' + added.length
+              + ' target=' + targetIdent.tagName + '#' + (targetIdent.id || '-')
+              + ' first=' + first.tagName + '#' + (first.id || '-') + ' textLen=' + first.textLen;
+            var filename = first.attrs.href || first.id || '';
+            try {
+              window.parent.postMessage({
+                source: 'palink-smart-card-frame',
+                frameId: frameId,
+                type: 'frame-error',
+                kind: kind,
+                message: message,
+                filename: filename || '<no-filename>',
+                lineno: -1,
+                colno: -1,
+                errorReason: 'style_removal_forensics',
+                node: {
+                  removedStyled: removedStyled,
+                  addedStyled: addedStyled,
+                  target: targetIdent.tagName + '#' + (targetIdent.id || '-'),
+                  removedTotal: removed.length,
+                  addedTotal: added.length,
+                },
+              }, '*');
+              styleRemovalReportCount += 1;
+            } catch (postErr) { /* 父不可达时静默 */ }
+          }
+        } catch (e) { /* 取证自身异常绝不影响页面 */ }
+      }
+
+      try {
+        styleRemovalObserver = new MutationObserver(function (records) {
+          handleStyleRemovalRecords(records);
+        });
+        styleRemovalObserver.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (e) { /* MutationObserver 不可用时静默：不改变任何行为 */ }
+    })();
+  } catch (e) { /* 静默 */ }
+
   window.addEventListener('error', (event) => {
     // [包I I-2] 资源加载失败先分流；真脚本错误（下面的 message/refMatch 逻辑）行为一字未改。
     const resourceFailure = palinkResourceFailureFrom(event && event.target);
