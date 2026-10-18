@@ -31,7 +31,8 @@
 ## 1. G-1：getContext 15 项逐项状态表
 
 坐标全部在 `frontend/src/components/ui/custom/smart-card-runtime/runtime-body/part-08.ts`
-（`getContextCompat` 定义于 :340 起）。读数列「真机」= §2 的 dev 探针 `ctxBehavior`。
+（G-1 助手区 :190 起，`getContextCompat` 定义于 :446；G-2 libs 区 :807-975）。
+读数列「真机」= §2 的 dev 探针 `ctxBehavior`。
 
 | # | 项 | 处置（§2.1） | 改前 → 改后（真机读数） | 真值来源 / 诚实性依据 | 状态 |
 |---|---|---|---|---|---|
@@ -180,7 +181,7 @@ srcdoc 归因另跑 `.tmp_probe/probe-srcdoc-attrib-g.js`。
 
 ## 7. G-2：libs 25 键逐项映射与实测
 
-实现位置 `part-08.ts:790-980`（`PALINK_ST_LIB_PACKAGES` / `ensureStLibCompat` / `defineStLibGetter`）。
+实现位置 `part-08.ts:807-975`（`PALINK_ST_LIB_PACKAGES` / `ensureStLibCompat` / `defineStLibGetter`）。
 基址 `https://testingcf.jsdelivr.net/npm/`（与卡脚本 bootstrap 的 `dependencyUrls` 同供应商同风格，
 见 `lib/sillytavern/card-script-runner.ts:165-171`），全部 `+esm`、全部锁三段版本号。
 **版本一律取 ST 1.18.0 `package.json` 的 caret 下界**（本轮逐键比对过，18/18 完全一致），
@@ -235,11 +236,14 @@ srcdoc 归因另跑 `.tmp_probe/probe-srcdoc-attrib-g.js`。
 
 ## 8. 交付文件清单（本批提交范围）
 
-修改：`runtime-body/part-08.ts`、`CharacterCardRenderer.tsx`、`Message.tsx`、
-`views/character/CharacterChat.tsx`、`types/index.ts`、`SillyTavernCompatRuntime.ts`、
-`__tests__/st-compat-fix-batch-contract.test.ts`
-新增：`__tests__/g-getcontext-and-libs-contract.test.ts`、`__tests__/fixtures/st-libs-25.json`、
-`frontend/scripts/gen-st-libs-fixture.cjs`、本报告
+提交：`adb09bd`（分支 `three-tracks-merge-20261012`，11 files / +1650 −43；
+`git show --stat` 复核过不含任何别人的文件，pre-commit secret-scan OK）。
+
+修改：`runtime-body/part-08.ts`(+523)、`CharacterCardRenderer.tsx`(+7)、`Message.tsx`(+6)、
+`views/character/CharacterChat.tsx`(+2)、`types/index.ts`(+5)、`SillyTavernCompatRuntime.ts`(+2)、
+`__tests__/st-compat-fix-batch-contract.test.ts`(+39/−25)
+新增：`__tests__/g-getcontext-and-libs-contract.test.ts`(+744)、`__tests__/fixtures/st-libs-25.json`(+34)、
+`frontend/scripts/gen-st-libs-fixture.cjs`(+82)、本报告
 不带：`docs/` 下主控未提交的其它文档、`.workbuddy-ai/`、`_BACKUPS/`、包F/包E 的任何文件
 
 **docs 目录证据**（AGENTS.md 强制项）：`py scripts/docs/gen_docs_catalog.py` rc=0，随后
