@@ -1507,11 +1507,79 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       var GUARD_INTERVAL_MS = 700;
       var GUARD_SELECTOR = 'style, link[rel="stylesheet"]';
 
+      // [包J J-1 2026-10-18] 快照只在 DOMContentLoaded / load 先到先得地拍一次，而 Palink
+      // 自家插件的 CSS 是**等父侧 postMessage 之后**才由 injectStPluginCssCompat 异步注进来的
+      // （包E 实测：卡侧外部 bundle 用 head.innerHTML 整体重写后 8 条只剩 3 条基样式，
+      // 丢的 5 条全是插件 CSS，守护对它完全无感）。这里开一条**只追加**的登记通道：
+      //   - 追加的是调用方交来的插件自有节点的外层 HTML 原文；
+      //   - 绝不重拍快照 —— 重拍会把卡侧自己塞进 head 的动态样式一并吸进基线，守护就此失效。
+      // 观测面：__palinkStyleGuardSnapshot = 基线快照条数 + 追加登记条数。
+      var styleGuardExtraNodes = [];
+      var styleGuardPendingNodes = null;
+
+      function styleGuardSetSnapshotCount() {
+        try {
+          window.__palinkStyleGuardSnapshot =
+            (styleSnapshot ? styleSnapshot.length : 0) + styleGuardExtraNodes.length;
+        } catch (e) { /* 观测面写不进去不影响守护本身 */ }
+      }
+
+      function styleGuardPushExtraNode(outerHtml) {
+        var text = String(outerHtml || '');
+        if (!text) return false;
+        // 已经在基线快照里的（插件 CSS 恰好早于快照登场）不要再登记一遍 ——
+        // 否则恢复时会把同一个 id 的节点补两次。
+        if (styleSnapshot) {
+          for (var s = 0; s < styleSnapshot.length; s++) {
+            if (styleSnapshot[s] === text) return false;
+          }
+        }
+        for (var i = 0; i < styleGuardExtraNodes.length; i++) {
+          if (styleGuardExtraNodes[i] === text) return false;
+        }
+        styleGuardExtraNodes.push(text);
+        return true;
+      }
+
+      function styleGuardAddNode(node) {
+        try {
+          if (!node) return;
+          var outerHtml = String(node.outerHTML || '');
+          if (!outerHtml) return;
+          // 插件 CSS 比快照还早（少数路径）：先挂起，等拍完快照再补登记
+          if (!styleSnapshot) {
+            if (!styleGuardPendingNodes) styleGuardPendingNodes = [];
+            for (var p = 0; p < styleGuardPendingNodes.length; p++) {
+              if (styleGuardPendingNodes[p] === outerHtml) return;
+            }
+            styleGuardPendingNodes.push(outerHtml);
+            return;
+          }
+          if (!styleGuardPushExtraNode(outerHtml)) return;
+          try {
+            window.__palinkStyleGuardPluginCss = (window.__palinkStyleGuardPluginCss || 0) + 1;
+          } catch (e) { /* 静默 */ }
+          styleGuardSetSnapshotCount();
+        } catch (e) { /* 守护自身出问题也不许影响插件 CSS 注入 */ }
+      }
+
+      function styleGuardFlushPendingNodes() {
+        if (!styleGuardPendingNodes || !styleGuardPendingNodes.length) return;
+        for (var i = 0; i < styleGuardPendingNodes.length; i++) {
+          styleGuardPushExtraNode(styleGuardPendingNodes[i]);
+        }
+        styleGuardPendingNodes = null;
+      }
+
       // 幂等：同一文档重复安装时先卸掉上一份（防重复 observer / 定时器叠加）。
       try {
         if (typeof window.__palinkStyleGuardDispose === 'function') {
           window.__palinkStyleGuardDispose();
         }
+      } catch (e) { /* 静默 */ }
+      // [包J J-1] 登记口对帧内其他段可见（part-01 的 injectStPluginCssCompat 用它补快照）。
+      try {
+        window.__palinkStyleGuardAddNode = styleGuardAddNode;
       } catch (e) { /* 静默 */ }
 
       function takeStyleSnapshot() {
@@ -1546,6 +1614,16 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
             var node = tpl.content && tpl.content.firstElementChild;
             if (node) { head.appendChild(node); restored += 1; }
           }
+          // [包J J-1] 第二趟：恢复「快照之后才登记」的插件自有节点。
+          // 只有显式登记过的才会进来，卡侧自己往 head 里塞的样式永远不会被补回来。
+          for (var k = 0; k < styleGuardExtraNodes.length; k++) {
+            var extraHtml = styleGuardExtraNodes[k];
+            if (!extraHtml || present[extraHtml]) continue;
+            var extraTpl = document.createElement('template');
+            extraTpl.innerHTML = extraHtml;
+            var extraNode = extraTpl.content && extraTpl.content.firstElementChild;
+            if (extraNode) { head.appendChild(extraNode); restored += 1; }
+          }
           if (restored > 0) {
             try {
               window.__palinkStyleGuardRestored = (window.__palinkStyleGuardRestored || 0) + restored;
@@ -1573,6 +1651,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
         try {
           if (styleSnapshot) return;
           styleSnapshot = takeStyleSnapshot();
+          // [包J J-1] 比快照还早登场的插件 CSS 在这里补登记（方案 a 的挂起队列）
+          styleGuardFlushPendingNodes();
           if (!styleSnapshot.length) return;
           try {
             guardObserver = new MutationObserver(function (records) {
@@ -1591,7 +1671,7 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
               restoreCardStyles();
             }, GUARD_INTERVAL_MS);
           } catch (e) { /* 静默 */ }
-          try { window.__palinkStyleGuardSnapshot = styleSnapshot.length; } catch (e) {}
+          try { styleGuardSetSnapshotCount(); } catch (e) {}
           try {
             window.__palinkStyleGuardDispose = function () {
               try { if (guardObserver) guardObserver.disconnect(); } catch (e) {}

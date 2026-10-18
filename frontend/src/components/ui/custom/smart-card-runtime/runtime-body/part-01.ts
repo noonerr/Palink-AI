@@ -825,6 +825,17 @@ ${IDB_NS_RUNTIME_SOURCE}
         style.setAttribute('data-palink-st-plugin', String(plugin.name || plugin.id || ''));
         style.textContent = rewriteStPluginCssUrlsCompat(resource.content, plugin, resource.zip_path || resource.path || '');
         (document.head || document.documentElement).appendChild(style);
+        // [包J J-1 2026-10-18] 插件 CSS 晚于帧内样式守护的快照登场（本函数的调用点全是
+        // 等父侧 postMessage 的异步路径），卡侧外部 bundle 用 head.innerHTML 整体重写时
+        // 守护只认快照里那几条基样式，插件 CSS 被抹掉后永久丢失（包E 实测 8 条到 3 条，
+        // 丢的正是 Quick Replies 44KB 这类自家插件样式）。所以每成功 append 一条就向守护
+        // 登记一次 —— 只登记插件自有节点，绝不重拍快照（重拍会把卡侧动态样式吸进基线）。
+        // 守护尚未初始化时该调用走挂起队列，不影响注入本身。
+        try {
+          if (typeof window.__palinkStyleGuardAddNode === 'function') {
+            window.__palinkStyleGuardAddNode(style);
+          }
+        } catch (guardError) { /* 守护缺席/异常一律不影响插件 CSS 注入 */ }
       });
     });
   };
