@@ -46,8 +46,10 @@ export const SMART_CARD_DEFERRED_RESOURCE_DELAY_MS = 80;
 export const SMART_CARD_RESOURCE_WARM_TIMEOUT_MS = 15000;
 export const SMART_CARD_ASSET_PROXY_ENDPOINT = '/api/smart-card-assets?url=';
 export const SMART_CARD_ASSET_PREFETCH_ENDPOINT = '/api/smart-card-assets/prefetch';
-export const SMART_CARD_IFRAME_IMAGE_INITIAL_LOAD_COUNT = 3;
-export const SMART_CARD_IFRAME_IMAGE_QUEUE_DELAY_MS = 120;
+// [LEGACY-EXTERNAL 2026-10-18] 两个图片队列常量搬到 frame-shim/legacy-shim-source.ts
+// （该模块零外部依赖，可被 vite 插件在「配置加载期」安全 import），此处只做 re-export
+// 以保持既有导入面不变、单一真源不变。
+export { SMART_CARD_IFRAME_IMAGE_INITIAL_LOAD_COUNT, SMART_CARD_IFRAME_IMAGE_QUEUE_DELAY_MS } from './frame-shim/legacy-shim-source';
 export const SMART_CARD_RENDER_CACHE_LIMIT = 32;
 export const SMART_CARD_CSP_NONCE = 'palink-smart-card';
 export const SMART_CARD_TRUST_STORAGE_PREFIX = 'palink-smart-card-trust:';

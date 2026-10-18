@@ -116,7 +116,9 @@ function extractBuildShim(tsxPath) {
   }
   const shimName = nameMatch[1];
 
-  const script = `${buildStubPrelude()}\n${code}\n;globalThis.__buildShim = typeof ${shimName} === 'function' ? ${shimName} : null;`;
+  const script = `${buildStubPrelude()}\n${code}\n;globalThis.__buildShim = typeof ${shimName} === 'function' ? ${shimName} : null;
+globalThis.__buildLegacyExternal = typeof buildSmartCardLegacyExternalScript === 'function' ? buildSmartCardLegacyExternalScript : null;
+globalThis.__legacySegment = typeof LEGACY_ST_SIM_SEGMENT !== 'undefined' ? LEGACY_ST_SIM_SEGMENT : null;`;
 
   const sandbox = {
     globalThis: undefined,
@@ -137,11 +139,79 @@ function extractBuildShim(tsxPath) {
   if (typeof fn !== 'function') {
     throw new Error(`未能从 ${tsxPath} 取出 buildShim（可能已重命名或未定义）`);
   }
-  return fn;
+  return {
+    buildShim: fn,
+    buildLegacyExternal: sandbox.__buildLegacyExternal,
+    legacySegment: sandbox.__legacySegment,
+  };
+}
+
+/**
+ * [LEGACY-EXTERNAL 2026-10-18] 外部化等价性校验。
+ *
+ * 为什么不能沿用 `compare` 的「整份产物逐字节一致」：外部化必然把 ~135KB 代码搬出
+ * srcdoc、换成两个 <script> 标签 —— 整份产物的字节**注定**不同，拿它当判据只会
+ * 得到必然的假失败。
+ *
+ * 真正的判据是「只搬位置、不改行为」，拆成两条可机器校验的命题：
+ *   1. body 逐字节一致：内联产物与外部资产源码，从 LEGACY_ST_SIM_SEGMENT 起点
+ *      到 IIFE 收尾必须完全相同（只允许引导头不同）；
+ *   2. 引导数据完整：外部化产物的内联脚本必须定义 window.__palinkLegacyBoot__，
+ *      且其中 ctx / frameId 与内联路径的 ctx / frameId 同值。
+ */
+function cmdLegacyIdentity(tsxPath) {
+  const { buildShim, buildLegacyExternal, legacySegment } = extractBuildShim(tsxPath);
+  if (typeof buildLegacyExternal !== 'function') throw new Error('未能取出 buildSmartCardLegacyExternalScript');
+  if (!legacySegment) throw new Error('未能取出 LEGACY_ST_SIM_SEGMENT');
+
+  const externalUrl = '/assets/palink-smart-card-legacy-verify000000.js';
+  const inline = buildShim(FIXED_CONTEXT, FIXED_FRAME_ID);
+  const external = buildShim(FIXED_CONTEXT, FIXED_FRAME_ID, { externalLegacyUrl: externalUrl });
+  const assetSource = buildLegacyExternal();
+
+  const tail = (text) => String(text).slice(String(text).indexOf(legacySegment)).replace(/\s*<\/script>\s*$/, '');
+  const inlineBody = tail(inline);
+  const assetBody = tail(assetSource);
+  const shaInline = crypto.createHash('sha256').update(inlineBody, 'utf8').digest('hex');
+  const shaAsset = crypto.createHash('sha256').update(assetBody, 'utf8').digest('hex');
+
+  // 引导数据同值校验：从两条产物里各取一段 JSON 比较
+  const grab = (text, from, to) => {
+    const start = String(text).indexOf(from);
+    if (start < 0) return null;
+    const rest = String(text).slice(start + from.length);
+    const end = rest.indexOf(to);
+    return end < 0 ? null : rest.slice(0, end);
+  };
+  const inlineCtx = grab(inline, 'const ctx = ', ';\n  const frameId');
+  const bootCtx = grab(external, 'ctx: ', ',\n  frameId');
+  const inlineFrameId = grab(inline, 'const frameId = ', ';\n');
+  const bootFrameId = grab(external, 'frameId: ', ',\n};');
+
+  const checks = [
+    ['body 逐字节一致', shaInline === shaAsset, `${shaInline.slice(0, 16)}… vs ${shaAsset.slice(0, 16)}…`],
+    ['引导 ctx 与内联 ctx 同值', inlineCtx !== null && inlineCtx === bootCtx, `${(inlineCtx || '').length} 字符`],
+    ['引导 frameId 与内联 frameId 同值', inlineFrameId !== null && inlineFrameId === bootFrameId, `${inlineFrameId}`],
+    ['外部资产不含 HTML 外壳', !/^\s*<script/i.test(assetSource), '首字符 ' + JSON.stringify(assetSource.slice(0, 12))],
+    ['外部资产从引导对象取数', assetSource.includes('window.__palinkLegacyBoot__'), ''],
+  ];
+
+  console.log(`[legacy] 源文件        : ${tsxPath}`);
+  console.log(`[legacy] 内联产物字节  : ${Buffer.byteLength(inline, 'utf8')}`);
+  console.log(`[legacy] 外部化后字节  : ${Buffer.byteLength(external, 'utf8')}`);
+  console.log(`[legacy] 外部资产字节  : ${Buffer.byteLength(assetSource, 'utf8')}`);
+  console.log(`[legacy] body 字节     : ${Buffer.byteLength(inlineBody, 'utf8')} / ${Buffer.byteLength(assetBody, 'utf8')}`);
+  let failed = 0;
+  for (const [label, ok, detail] of checks) {
+    if (!ok) failed += 1;
+    console.log(`[legacy] ${ok ? '✅' : '❌'} ${label}${detail ? '  (' + detail + ')' : ''}`);
+  }
+  console.log(`\n[legacy] failed = ${failed}`);
+  if (failed) process.exitCode = 1;
 }
 
 function cmdSnapshot(tsxPath, outPath) {
-  const buildShim = extractBuildShim(tsxPath);
+  const { buildShim } = extractBuildShim(tsxPath);
   const out = buildShim(FIXED_CONTEXT, FIXED_FRAME_ID);
   if (typeof out !== 'string' || !out.length) {
     throw new Error('buildShim 返回值非字符串或为空');
@@ -181,8 +251,9 @@ const [, , cmd, arg1, arg2] = process.argv;
 try {
   if (cmd === 'snapshot' && arg1 && arg2) cmdSnapshot(arg1, arg2);
   else if (cmd === 'compare' && arg1 && arg2) cmdCompare(arg1, arg2);
+  else if (cmd === 'legacy-identity' && arg1) cmdLegacyIdentity(arg1);
   else {
-    console.error('用法:\n  node scripts/verify-shim-identity.mjs snapshot <tsx路径> <输出.txt>\n  node scripts/verify-shim-identity.mjs compare <基线.txt> <当前.txt>');
+    console.error('用法:\n  node scripts/verify-shim-identity.mjs snapshot <tsx路径> <输出.txt>\n  node scripts/verify-shim-identity.mjs compare <基线.txt> <当前.txt>\n  node scripts/verify-shim-identity.mjs legacy-identity <tsx路径>');
     process.exitCode = 2;
   }
 } catch (err) {

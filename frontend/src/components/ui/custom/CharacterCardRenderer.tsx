@@ -31,6 +31,7 @@ import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight,
 import { getSmartCardPluginScriptBundle, getSmartCardPluginSourceKey, slimSmartCardPluginScriptBundle } from './smart-card-runtime/primitives';
 import { persistFrameExtensionPrompts, computeSmartCardBundleSourceKey } from '@/services/extensionPromptPersistence';
 import { SMART_CARD_RUNTIME_URL } from './smart-card-runtime/runtime-url';
+import { SMART_CARD_LEGACY_URL } from './smart-card-runtime/legacy-url';
 
 export { looksLikeSmartCardHtml, looksLikeRenderableCardHtml } from './smart-card-runtime/helpers';
 export type { SmartCardInspectTarget, SmartCardAction } from './smart-card-runtime/shared';
@@ -447,7 +448,11 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // （每次重建 = 一次导航 = 一条 Safari 联合历史幽灵条目）
   const srcDocHtml = useStabilizedCardHtml(html);
   const srcDoc = useMemo(() => {
-    const legacyShim = buildShim(bootContext, frameIdRef.current);
+    const legacyShim = buildShim(bootContext, frameIdRef.current, {
+      // [LEGACY-EXTERNAL 2026-10-18] 外部资产可用时用 <script src> 引用（跨卡复用 V8
+      // code cache），否则回退为全内联（旧行为）。实测该段 135KB，是单帧第二大的代码块。
+      externalLegacyUrl: SMART_CARD_LEGACY_URL,
+    });
     const compatV2Shim = buildSillyTavernCompatRuntimeV2Shim({
       context: bootContext,
       frameId: frameIdRef.current,
@@ -617,6 +622,13 @@ const IframeRenderer = React.memo(function IframeRenderer({
   const handleFrameLoad = useCallback(() => {
     // iframe 文档重建 = 帧内运行时是新实例，重新允许一次初始化事件。
     mvuInitPendingRef.current = true;
+    // [P0-CTX-REPLAY 2026-10-18] 必须重置去重签名。
+    // 新文档的 message 监听器是全新实例，上一份文档收到的 context-update 不会随之迁移；
+    // 而 postNow 按 signature 去重，若 context 自上次投递后未变化（srcdoc 重建、LRU 逐出唤醒、
+    // 插件换文档等场景），这条唯一的补投会被静默丢弃 ⇒ 帧内永远停在 boot 快照上。
+    // 旧行为靠 srcdoc 内联全量数据兜底，所以问题不显；[P0-SRCDOC-SLIM] 把
+    // characterExtensions / chatMessages 移出 boot 后，这里就是数据到达的唯一通道。
+    lastPostedContextSignatureRef.current = '';
     postLiveContext();
     // [P0-SRCDOC-SLIM] iframe onload（已稳定）时强制推送插件脚本包。
     // 解析期由 shim 发出的 request-plugin-scripts 触发的推送可能在 srcDoc 后续

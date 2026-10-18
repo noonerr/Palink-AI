@@ -2,10 +2,8 @@
 // 源: src/components/ui/custom/CharacterCardRenderer.tsx
 import type { CharacterSmartCardContext } from '@/types';
 import { getCurrentInterfaceLanguage, safeJson } from './primitives';
-import { SMART_CARD_CSP_NONCE, SMART_CARD_IFRAME_IMAGE_INITIAL_LOAD_COUNT, SMART_CARD_IFRAME_IMAGE_QUEUE_DELAY_MS } from './shared';
-import { LEGACY_ST_SIM_SEGMENT } from './frame-shim/legacy-st-sim';
-import { buildFrameMeasureSegment } from './frame-shim/frame-measure';
-
+import { SMART_CARD_CSP_NONCE } from './shared';
+import { buildLegacyShimBody } from './frame-shim/legacy-shim-source';
 
 export * from './primitives';
 export * from './hashing';
@@ -16,8 +14,27 @@ export * from './script-norm';
 export * from './html-extract';
 export * from './resource';
 export * from './adapter-css';
+// [LEGACY-EXTERNAL 2026-10-18] 外部 legacy 脚本构造器对外暴露（Vite 插件与 identity 校验共用）。
+export { buildSmartCardLegacyExternalScript } from './frame-shim/legacy-shim-source';
 
-export function buildShim(context: CharacterSmartCardContext, frameId: string): string {
+/** [LEGACY-EXTERNAL 2026-10-18] 外部化选项。 */
+export interface BuildShimOptions {
+  /**
+   * legacy shim 的外部脚本 URL。给了就只输出「引导数据 + <script src>」，
+   * 没给就回退全内联（独立测试环境 / 插件未加载时没有外部资产，必须保留这条路）。
+   */
+  externalLegacyUrl?: string;
+}
+
+function escapeScriptAttribute(value: string): string {
+  return String(value || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+export function buildShim(
+  context: CharacterSmartCardContext,
+  frameId: string,
+  options: BuildShimOptions = {},
+): string {
   const contextJson = safeJson({
     characterId: context.characterId || '',
     characterName: context.characterName || '',
@@ -41,8 +58,13 @@ export function buildShim(context: CharacterSmartCardContext, frameId: string): 
     // globalRegexScripts/stPluginRuntimeConfig 拿到空值。这里把当前快照嵌入
     // contextJson，卡片脚本首帧即可用；晚到的更新仍经 context-update postMessage
     // 热更新（Object.assign(ctx, nextContext) 覆盖，行为不变，不重建文档）。
-    characterExtensions: (context.characterExtensions && typeof context.characterExtensions === 'object')
-      ? context.characterExtensions : {},
+    //
+    // [P0-SRCDOC-SLIM 2026-10-18] characterExtensions 已**移出** srcdoc：
+    // 实测它占单帧 355,892 字节（本 shim 一份 + compat v2 boot 一份 = 711,784，
+    // 占单帧 893,342 的 79.6%），而对同一角色的所有卡片完全相同 ⇒ 纯冗余。
+    // 数据仍经 context-update 全量到达（父侧 postLiveContext → Object.assign(ctx, …)），
+    // 帧内唯一同步读取点 getContext().characters[0].data.extensions（part-b.ts:215）
+    // 在函数体内惰性求值，首帧之后调用即拿到真值。
     globalRegexScripts: Array.isArray(context.globalRegexScripts) ? context.globalRegexScripts : [],
     stPluginRuntimeConfig: (context.stPluginRuntimeConfig && typeof context.stPluginRuntimeConfig === 'object')
       ? context.stPluginRuntimeConfig : null,
@@ -57,29 +79,26 @@ export function buildShim(context: CharacterSmartCardContext, frameId: string): 
   });
   const frameIdJson = safeJson(frameId);
 
+  if (options.externalLegacyUrl) {
+    // [LEGACY-EXTERNAL 2026-10-18] 外部化路径：内联引导数据（KB 级）+ 外部脚本。
+    // ⚠️ 两个 <script> 必须保持文档顺序且都不加 async/defer：
+    // 引导数据脚本先执行定义 window.__palinkLegacyBoot__，外部脚本随后读取它。
+    return `
+<script nonce="${SMART_CARD_CSP_NONCE}">
+window.__palinkLegacyBoot__ = {
+  ctx: ${contextJson},
+  frameId: ${frameIdJson},
+};
+</script>
+<script nonce="${SMART_CARD_CSP_NONCE}" src="${escapeScriptAttribute(options.externalLegacyUrl)}"></script>`;
+  }
+
+  // 回退路径：全内联（旧行为，供无外部资产环境使用）。
   return `
 <script nonce="${SMART_CARD_CSP_NONCE}">
-(() => {
-  // [SEC-2026-09-02 F-1] 帧内密钥（gesture token）——只被本 IIFE 闭包持有。
-  // 卡片脚本与本 IIFE 同处一个 realm，任何「写在源码里」或「经 postMessage 传输」的密钥
-  // 都能被恶意卡片读到（读 script.textContent / 监听 message 事件）。唯一安全的投递方式：
-  // 放在 <head> 里的 <meta> 上，由本段（注入位置在所有卡片内容之前）**读取后立即移除**，
-  // 之后的卡片脚本既读不到 meta 也读不到本闭包变量。
-  const __palinkFrameSecret = (() => {
-    try {
-      var el = document.querySelector('meta[name="palink-frame-secret"]');
-      if (!el) return '';
-      var value = String(el.getAttribute('content') || '');
-      if (el.parentNode) el.parentNode.removeChild(el);
-      return value;
-    } catch (e) { return ''; }
-  })();
-  const ctx = ${contextJson};
-  const frameId = ${frameIdJson};
-${LEGACY_ST_SIM_SEGMENT}
-${buildFrameMeasureSegment(SMART_CARD_IFRAME_IMAGE_INITIAL_LOAD_COUNT, SMART_CARD_IFRAME_IMAGE_QUEUE_DELAY_MS)}
-})();
+${buildLegacyShimBody([
+    `  const ctx = ${contextJson};`,
+    `  const frameId = ${frameIdJson};`,
+  ].join('\n'))}
 </script>`;
 }
-
-

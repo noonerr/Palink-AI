@@ -6,6 +6,12 @@ declare module 'virtual:palink-smart-card-runtime-url' {
   export default runtimeUrl;
 }
 
+// [LEGACY-EXTERNAL 2026-10-18] legacy shim 外部资产 URL（hash 文件名）。
+declare module 'virtual:palink-smart-card-legacy-url' {
+  const legacyUrl: string;
+  export default legacyUrl;
+}
+
 declare module 'virtual:pwa-register/react' {
   export interface RegisterSWOptions {
     immediate?: boolean;

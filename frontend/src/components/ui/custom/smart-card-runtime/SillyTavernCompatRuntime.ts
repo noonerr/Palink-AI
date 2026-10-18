@@ -188,7 +188,17 @@ function buildSmartCardCompatRuntimeBootPayload(options: SmartCardRuntimeV2Optio
     chatMessages: Array.isArray(context.chatMessages) ? context.chatMessages : [],
     firstMes: context.firstMes || '',
     alternateGreetings: Array.isArray(context.alternateGreetings) ? context.alternateGreetings : [],
-    characterExtensions: context.characterExtensions || {},
+    // [P0-SRCDOC-SLIM 2026-10-18] characterExtensions **不再进 boot 载荷**。
+    // 实测该项在真机占 355,892 字节（同一份 extensions 在 legacy shim 与这里各内联一次，
+    // 合计 711,784 = 单帧 893,342 的 79.6%），而对同一角色的所有卡片完全相同。
+    // 帧内两个启动期同步读取点均已自愈：
+    //   · part-03.ts:436 `scopedRegexScripts = normalizeRegexListCompat(ctx.characterExtensions)`
+    //     → undefined 时 normalizeRegexListCompat 直接 return []（part-03.ts:419）
+    //   · part-04.ts:119 `parseMaybeJsonObject(ctx.characterExtensions, {})`
+    //     → undefined 时返回 {}（part-03.ts:369）
+    // 首个 context-update 到达后 applyParentContextUpdateCompat（part-06.ts:58）做
+    // Object.assign(ctx, …)，随后 refreshDerivedContextStoresCompat（part-05.ts:884）
+    // 重算 scopedRegexScripts 与 primaryCharacter.data.extensions ⇒ 无需新增拉取通道。
     presetData: context.presetData || null,
     globalRegexScripts: Array.isArray(context.globalRegexScripts) ? context.globalRegexScripts : [],
     stPluginRuntimeConfig: context.stPluginRuntimeConfig && typeof context.stPluginRuntimeConfig === 'object'
