@@ -22,11 +22,20 @@
  *
  * 命名冲突：与 Palink 已有命令同名的（`abs` `random` `sort` `pick` `length` 等）
  * **不覆盖**——引擎 Map 后写覆盖先写，覆盖会静默改变既有行为。
+ *
+ * 包 F F-2（2026-10-18）继续在本文件补：`trimstart` `trimend`（逐字移植 ST utils.js
+ * 的句子裁剪）、`clipboard-get` `clipboard-set`（浏览器能力）、
+ * `translate` `summarize`（B 类薄转发到包C 的 st_extras.py 端点，实测存在：
+ * 空体 POST 得 403 而非 404）。交接单 A 类清单里 `matches` `titlecase` `array-foreach`
+ * `array-map` `array-filter` `array-length` `split` `join` `trim` `delglobalvar`
+ * `listglobalvars` `wait` 等在 ST 1.18 参照源码中**不是注册命令名**，一律未实现
+ * （详见 docs/_active/report/REPORT_包F_ST命令补全_2026-10-18.md 的不符清单）。
  */
 
 import { SlashCommandEngine, ARGUMENT_TYPE } from './index';
 import type { CommandDefinition } from './index';
 import { variableManager } from '../variables/manager';
+import { api } from '../../services/api';
 
 /** ST 的数值序列解析：空格分隔 / JSON 数组 / 变量名，非法值直接丢弃。 */
 function parseNumericSeries(value: unknown): number[] {
@@ -95,6 +104,94 @@ function parseArrayLoose(raw: string): string[] | null {
 }
 
 const registered = new Set<string>();
+
+/** 文本型未命名参数的通用声明（/trimend /clipboard-set /translate 都用它）。 */
+const strArg = (name: string, description: string) => ({
+  name,
+  description,
+  type: [ARGUMENT_TYPE.STRING],
+  isRequired: false,
+});
+
+/**
+ * ST utils.js:883 trimToEndSentence 的逐字移植（包 F F-2）。
+ * 出处：_reference/sillytavern-1.18.0/public/scripts/utils.js:875-911。
+ * 标点集合与「前一个字符是空白就把 last 退到空白前」这两条口径不许改。
+ */
+function trimToEndSentence(input: string): string {
+  if (!input) return '';
+  const isEmoji = (x: string) => /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu.test(x);
+  const punctuation = new Set(['.', '!', '?', '*', '"', ')', '}', '`', ']', '$', '。', '！', '？', '”', '）', '】', '’', '」', '_']);
+  let last = -1;
+  const characters = Array.from(input);
+  for (let i = characters.length - 1; i >= 0; i -= 1) {
+    const char = characters[i];
+    const emoji = isEmoji(char);
+    if (punctuation.has(char) || emoji) {
+      if (!emoji && i > 0 && /[\s\n]/.test(characters[i - 1])) {
+        last = i - 1;
+      } else {
+        last = i;
+      }
+      break;
+    }
+  }
+  if (last === -1) return input.trimEnd();
+  return characters.slice(0, last + 1).join('').trimEnd();
+}
+
+/**
+ * ST utils.js:914 trimToStartSentence 的逐字移植（包 F F-2）。
+ * 出处：_reference/sillytavern-1.18.0/public/scripts/utils.js:913-935。
+ * 注意 ST 的怪癖：first 起点取的是 '.' 的下标（可能为 -1），
+ * 因此文本里没有 '.' 时，'!' / '?' / '\n' 都**不会**被当成切点 —— 照抄，别"顺手修好"。
+ */
+function trimToStartSentence(input: string): string {
+  if (!input) return '';
+  const p1 = input.indexOf('.');
+  const p2 = input.indexOf('!');
+  const p3 = input.indexOf('?');
+  const p4 = input.indexOf('\n');
+  let first = p1;
+  let skip1 = false;
+  if (p2 > 0 && p2 < first) { first = p2; }
+  if (p3 > 0 && p3 < first) { first = p3; }
+  if (p4 > 0 && p4 < first) { first = p4; skip1 = true; }
+  if (first > 0) {
+    if (skip1) return input.substring(first + 1);
+    return input.substring(first + 2);
+  }
+  return input;
+}
+
+/**
+ * ST utils.js copyText 的两级口径（clipboard-set 用）。
+ * 先试异步 Clipboard API，不可用或抛错时退回临时 textarea + execCommand。
+ */
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      console.error('Error writing clipboard:', error);
+    }
+  }
+  if (typeof document === 'undefined') return;
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.style.position = 'fixed';
+  textArea.style.opacity = '0';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  try {
+    document.execCommand('copy');
+  } catch (error) {
+    console.error('Error writing clipboard (fallback):', error);
+  }
+  document.body.removeChild(textArea);
+}
 
 /** 幂等注册一条命令；与既有命令重名时跳过（不覆盖）。 */
 function register(name: string, def: Omit<CommandDefinition, 'name'>): void {
@@ -405,6 +502,108 @@ export function registerStCompatCommands(): string[] {
       const text = textOf(u, c?.pipe ?? '');
       console.log('[slash /log]', text);
       return text;
+    },
+  });
+
+  // ── [包F F-2] 句子裁剪（纯函数，语义逐字照 ST utils.js）─────────
+  // 出处：slash-commands.js:2858/2881 注册 trimstart/trimend，
+  //       实现 utils.js:883/914；空输入一律返回 ''（trimStartCallback 的 !value 分支）。
+  register('trimend', {
+    description: 'Trim text to the end of the last full sentence',
+    unnamedArgs: [strArg('text', 'text (or pipe)')],
+    callback: (_n, u, c) => {
+      const text = textOf(u, c?.pipe ?? '');
+      return text ? trimToEndSentence(text) : '';
+    },
+  });
+  register('trimstart', {
+    description: 'Trim text to the start of the first full sentence',
+    unnamedArgs: [strArg('text', 'text (or pipe)')],
+    callback: (_n, u, c) => {
+      const text = textOf(u, c?.pipe ?? '');
+      return text ? trimToStartSentence(text) : '';
+    },
+  });
+
+  // ── [包F F-2] 剪贴板（宿主浏览器能力，无 UI 依赖）───────────────
+  // 出处：slash-commands.js:3506 clipboard-get（无 clipboard API 时 warn + 返回 ''，
+  //       读失败 console.error + 返回 ''）、slash-commands.js:3527 clipboard-set
+  //       （copyText(text) 后返回 ''，helpString 明写 "Returns an empty string"）。
+  register('clipboard-get', {
+    description: 'Read the OS clipboard text',
+    callback: async () => {
+      if (typeof navigator === 'undefined' || !navigator.clipboard) {
+        console.warn('Clipboard API not available in this context.');
+        return '';
+      }
+      try {
+        return await navigator.clipboard.readText();
+      } catch (error) {
+        console.error('Error reading clipboard:', error);
+        return '';
+      }
+    },
+  });
+  register('clipboard-set', {
+    description: 'Copy the provided text to the OS clipboard',
+    unnamedArgs: [strArg('text', 'text to copy to the clipboard')],
+    callback: async (_n, u, c) => {
+      const text = textOf(u, c?.pipe ?? '');
+      await copyTextToClipboard(text);
+      return '';
+    },
+  });
+
+  // ── [包F F-2] B 类薄转发：目标端点是包C 的 st_extras.py（实测存在）─
+  // /translate ← extensions/translate/index.js:779-803：
+  //   named: target(语言码) / provider；unnamed: 待译文本；returns: 译文字符串。
+  //   ST 缺省 target 取扩展设置，Palink 无该设置 ⇒ 交给后端的 zh-CN 缺省
+  //   （TranslateRequest.lang 默认值，st_extras.py:422-427），不在前端另立口径。
+  register('translate', {
+    description: 'Translate text to a target language',
+    namedArgs: [
+      { name: 'target', description: 'target language code', type: [ARGUMENT_TYPE.STRING], isRequired: false },
+      { name: 'provider', description: 'translation provider', type: [ARGUMENT_TYPE.STRING], isRequired: false },
+    ],
+    unnamedArgs: [strArg('text', 'the text to translate')],
+    callback: async (n, u, c) => {
+      const text = textOf(u, c?.pipe ?? '');
+      if (!text) return '';
+      const target = String(n.target ?? '').trim();
+      const provider = String(n.provider ?? '').trim();
+      // provider 参与后端 URL 拼接，后端有白名单（_ST_TRANSLATE_PROVIDERS），
+      // 非法值由后端 4xx ⇒ 引擎 catch 成 "Error: ..."，不在前端假装成功。
+      const url = provider
+        ? `/api/translate/${encodeURIComponent(provider)}`
+        : '/api/extra/translate';
+      const translated = await api.post<string>(url, { text, lang: target || 'zh-CN' });
+      return typeof translated === 'string' ? translated : '';
+    },
+  });
+  // /summarize ← extensions/memory/index.js:1085-1105：
+  //   named: source / prompt / quiet；unnamed: 待摘要文本。
+  //   ST 的"无文本就摘要整段聊天"依赖它自己的会话对象，宿主引擎拿不到消息历史，
+  //   因此无文本时 warn + 返回 ''（可诊断），不返回一段编出来的摘要。
+  register('summarize', {
+    description: 'Summarize the provided text',
+    namedArgs: [
+      { name: 'source', description: 'API to use for summarization', type: [ARGUMENT_TYPE.STRING], isRequired: false },
+      { name: 'prompt', description: 'prompt to use for summarization', type: [ARGUMENT_TYPE.STRING], isRequired: false },
+      { name: 'quiet', description: 'suppress the toast message', type: [ARGUMENT_TYPE.BOOLEAN], isRequired: false },
+    ],
+    unnamedArgs: [strArg('text', 'text to summarize')],
+    callback: async (n, u, c) => {
+      const text = textOf(u, c?.pipe ?? '');
+      if (!text) {
+        console.warn('WARN: /summarize 需要文本（整段聊天摘要依赖 Palink 会话消息，命令引擎不可达）');
+        return '';
+      }
+      const prompt = String(n.prompt ?? '').trim();
+      const response = await api.post<{ summary?: string }>('/api/summarize', {
+        text,
+        params: prompt ? { prompt } : {},
+      });
+      return typeof response?.summary === 'string' ? response.summary : '';
     },
   });
 
