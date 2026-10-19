@@ -65,6 +65,18 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 **实现期改判后的终值**：A = 13、B = 0、C = 45、D = 76 —— 初稿 C 里有 14 个键在核实"有没有宿主写通道"
 时掉到 D（逐条见 §7.2），下表凡属这 14 个键的行仍以 §7.2 为准。
 
+> **订正（2026-10-20，包AA C）**：上面这组终值里 **`registerMacroLike` 一个键从 D 挪到 C**
+> ⇒ **C = 45 → 46、D = 76 → 75、本包上界 A + C = 58 → 59**（A = 13、B = 0 不变；13 + 46 + 75 = 134 仍闭合）。
+> 挪动依据（不是为了让守卫变绿，是底层能力当天才真的有了）：
+> ① 成员形态一手在 `st-plugins/third-party/JS-Slash-Runner-main/@types/function/index.d.ts:98`
+>    （`readonly registerMacroLike` 就写在 TavernHelper 的成员清单里，与 `deleteLorebook` 同一张清单）；
+> ② 实现真实存在于 `runtime-body/part-03.ts` 的 `registerMacroLikeCompat`（主脑独立复跑
+>    `z-package-macro-register.test.ts` 10/10 绿），帧内成员键由 `part-07.ts` H 段
+>    `th134Bridge('registerMacroLike')` 桥到**同一个**窗口全局实现，不复制第二份逻辑。
+> 原文照留不改写；守卫同步改判见
+> `frontend/src/components/ui/custom/smart-card-runtime/__tests__/h-tavernhelper-134-contract.test.ts`
+> 的 D 名单注释，台账另见 `REPORT_包AA_别名进表与listvar照ST与宏成员键_2026-10-20.md`。
+
 | 类 | 族（判据） | 键数 | 键 | 依据 / 落点 |
 |---|---|---|---|---|
 | C | lorebook 族（ST 里 lorebook ≡ worldbook 同物异名，宿主 8 个世界书动作已在） | 14 | `getLorebooks`、`getLorebookEntries`、`getLorebookSettings`、`setLorebookSettings`、`createLorebook`、`createLorebookEntries`、`deleteLorebookEntries`、`replaceLorebookEntries`、`setLorebookEntries`、`updatelorebookEntriesWith`、`getCharLorebooks`、`getCurrentCharPrimaryLorebook`、`setCurrentCharLorebooks`、`getOrCreateChatLorebook` | 桥到 S1-G10 已注册的 lorebook 全局 + requestParent 的 createWorldbook/setWorldbookEntries/createWorldbookEntries/deleteWorldbookEntries/getWorldbookEntries/getCharWorldbook |
@@ -115,6 +127,13 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 > 本节初稿写的是"上界 71 / D 63"，那是**实现前**的判定。实现期逐个核实后，
 > 有 14 个初稿标 C 的键其实没有宿主写通道，改判 D（逐条理由在 §7.2）。
 > 数字以真机实测为准，不以初稿为准。
+
+> **订正（2026-10-20，包AA C）**：上表三行数同日更新 ——
+> **C 45 → 46**（`registerMacroLike` 成员形态已实现，依据与实测见 §3 下面的 2026-10-20 订正段）、
+> **A + C 本包上界 58 → 59**、**D 76 → 75**。
+> 下面"D 的 76 个键按族是……"一行的族计数与"58 + 30 = 88"那段算术**按订正前口径保留原文**，
+> 复算时请用 D = 75：正则对象模型族少 1 个键（`registerMacroLike` 已从 D 名单移出），
+> 上界算术变成 59 + 30 ≈ 89，仍 < 110 —— 本节结论（≥110 这条线本身错）不因这次改判而改变。
 
 D 的 76 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、正则对象模型 5、
 原始导入 4（`importRawWorldbook`/`importRawChat`/`importRawTavernRegex` + 角色 1 已计入写侧族）、

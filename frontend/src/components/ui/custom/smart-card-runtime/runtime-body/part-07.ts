@@ -672,11 +672,16 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     setChatMessages: th134SetChatMessages,
     createChatMessages: th134CreateChatMessages,
     deleteChatMessages: th134DeleteChatMessages,
-    // [包Z 批次三 macro_register] 注意：**不**在 taverhelperTh134Compat 里加 registerMacroLike 键。
-    // 包H 把它归为 D 类（未实现），而 h-tavernhelper-134-contract 的"D 类键一个都没注册"
-    // 是**诚实红线**：往这里塞键等于把"未实现"改写成"已实现"，不能靠改守卫凑绿。
-    // 本包只提供 window 全局形态（下方 setCompatFunction），与 getVariables /
-    // substituteParams 等既有项同一形态 —— 真实卡按全局函数调用它，成员形态等主脑重分类后再加。
+    // [包Z 批次三 macro_register → 包AA C 2026-10-20 放行成员形态]
+    // 一手依据：st-plugins/third-party/JS-Slash-Runner-main/@types/function/index.d.ts:98
+    //   'readonly registerMacroLike' 就写在 **TavernHelper 的成员清单**里（同清单含 deleteLorebook 等），
+    //   ⇒ 成员形态是上游真实存在的形状，不是我们造的。
+    // 包Z 当时没加这一行，是因为底层实现还没交付前它属包H 的 D 类（未实现），
+    // 而"D 类键一个都没注册"是**诚实红线**；现在实现已在 part-03（registerMacroLikeCompat，
+    // 主脑复跑 10/10 绿）并经下面 :1410 附近的 setCompatFunction 暴露成窗口全局 ⇒ 成员键有实物。
+    // 用 th134Bridge 桥到**同一个**窗口全局函数（与真实卡按全局调用的那份实现完全同一），
+    // 不复制第二份逻辑；桥在实现缺席时 warn + undefined，不造返回值。
+    registerMacroLike: th134Bridge('registerMacroLike'),
   };
   // <<< H-TH134 FAMILY END
 

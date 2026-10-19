@@ -208,9 +208,14 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
 
   // [ST-GAP:macro_register] 助手宏注册表：**窗口全局形态已实现**（2026-10-19 包Z 批次三，
   //   part-03 macroLikeRegistryCompat + part-07 setCompatFunction，契约 JS-Slash-Runner
-  //   @types/function/macro_like.d.ts:27-37）；仍缺的是 **TavernHelper.registerMacroLike 成员形态** ——
-  //   包H 把它归 D 类、h-tavernhelper-134-contract 的"D 类键一个都没注册"是诚实红线，
-  //   不许靠改守卫凑绿，等主脑重分类后再加成员键。卡调用缺失成员时仍按本 id 聚合。
+  //   @types/function/macro_like.d.ts:27-37）；**TavernHelper.registerMacroLike 成员形态也已实现
+  //   于 2026-10-20 包AA C**（part-07 H 段 `registerMacroLike: th134Bridge('registerMacroLike')`
+  //   桥到上面同一个窗口全局实现；成员形态一手依据 @types/function/index.d.ts:98，
+  //   与 deleteLorebook 同一张成员清单）。⇒ 本 id 的两形态都不再是缺口，计数与分类的订正段见
+  //   docs/_active/report/REPORT_包H_TavernHelper广度_2026-10-18.md（C 45→46、D 76→75、上界 58→59）
+  //   与 docs/_active/report/REPORT_包AA_别名进表与listvar照ST与宏成员键_2026-10-20.md（含提交号）。
+  //   ⚠️ 键名本身**保留**：ST_GAP_BY_NAME 是"卡按这个名字调过"的聚合账，删键会让
+  //   st-gap-ledger-guard.test.ts 的 D 组红，且历史卡调用仍按本 id 归类。
   registerMacroLike: 'macro_register',
 
   // [ST-GAP:stop_by_id] 按 generation id 中止；Palink 只有全局停止，把"按 id"折成"全停"是语义不符。

@@ -190,6 +190,15 @@ describe('A fixture 与注册口径', () => {
 
   it('D 类键一个都没注册（假实现红线；名单逐条来自报告 §3 分类全表）', () => {
     const registered = new Set(topLevelKeys(SRC, 'tavernHelperTh134Compat'));
+    // ⚠️ 2026-10-20 包AA C 改判：'registerMacroLike' 已从本 D 名单移出（D 76→75、C 45→46）。
+    //   移出**不是**为了凑绿这条守卫，而是底层能力当天才真的有了：
+    //   ① 成员形态一手依据：st-plugins/third-party/JS-Slash-Runner-main/@types/function/index.d.ts:98
+    //      （`readonly registerMacroLike` 就写在 TavernHelper 的成员清单里，与 deleteLorebook 同列）；
+    //   ② 真实实现：runtime-body/part-03.ts 的 registerMacroLikeCompat（主脑独立复跑 10/10 绿：
+    //      注册后对正文生效、返回 { unregister }、同 source+flags 去重、注销后失效、与 {{}} 宏先后顺序），
+    //      帧内成员键由 part-07.ts 的 th134Bridge('registerMacroLike') 桥到**同一个**窗口全局实现。
+    //   台账同步：docs/_active/report/REPORT_包H_TavernHelper广度_2026-10-18.md（订正段）、
+    //   docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2 macro_register 行。
     const forbidden = [
       'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
       'createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter',
@@ -197,11 +206,14 @@ describe('A fixture 与注册口径', () => {
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
       'injectPrompts', 'uninjectPrompts', 'deleteWorldbook', 'deleteLorebook',
-      'retrieveDisplayedMessage', 'registerMacroLike', 'stopGenerationById', 'getModelList',
+      'retrieveDisplayedMessage', 'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
       'setCurrentCharLorebooks', 'rebindCharWorldbooks', 'getTavernRegexes', 'formatAsTavernRegexedString',
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
+    // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
+    expect(registered.has('registerMacroLike')).toBe(true);
+    expect(SRC.indexOf("registerMacroLike: th134Bridge('registerMacroLike')")).toBeGreaterThan(-1);
     // 而且 proxy 也不会为它们造假存在性：H 段没有往 tavernHelperCompat 里塞同名键
     ['getPreset', 'createCharacter', 'playAudio', 'getModelList'].forEach((n) => {
       expect(topLevelKeys(SRC, 'tavernHelperCompat')).not.toContain(n);
