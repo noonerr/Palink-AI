@@ -672,6 +672,11 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     setChatMessages: th134SetChatMessages,
     createChatMessages: th134CreateChatMessages,
     deleteChatMessages: th134DeleteChatMessages,
+    // [包Z 批次三 macro_register] 注意：**不**在 taverhelperTh134Compat 里加 registerMacroLike 键。
+    // 包H 把它归为 D 类（未实现），而 h-tavernhelper-134-contract 的"D 类键一个都没注册"
+    // 是**诚实红线**：往这里塞键等于把"未实现"改写成"已实现"，不能靠改守卫凑绿。
+    // 本包只提供 window 全局形态（下方 setCompatFunction），与 getVariables /
+    // substituteParams 等既有项同一形态 —— 真实卡按全局函数调用它，成员形态等主脑重分类后再加。
   };
   // <<< H-TH134 FAMILY END
 
@@ -1400,6 +1405,10 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     const lowerDeleted = macroRegistryCompat.delete(normalized.toLowerCase());
     return deleted || lowerDeleted;
   });
+  // [包Z 批次三 macro_register] 窗口全局入口（卡脚本按助手习惯直接调全局函数）。
+  // 契约：JS-Slash-Runner-main/@types/function/macro_like.d.ts:27-37。
+  setCompatFunction('registerMacroLike', (regex, replace) => registerMacroLikeCompat(regex, replace));
+  setCompatFunction('unregisterMacroLike', (regex) => unregisterMacroLikeCompat(regex));
   const macrosCompat = {
     register: window.registerMacro,
     unregister: window.unregisterMacro,

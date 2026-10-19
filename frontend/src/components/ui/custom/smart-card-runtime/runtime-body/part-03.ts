@@ -270,6 +270,78 @@ export const RUNTIME_BODY_PART_03 = `                    message: 'Activate hook
     return next;
   };
   const macroRegistryCompat = new Map();
+  // [包Z 批次三 macro_register 2026-10-19] 助手宏（macro-like）注册表。
+  // 契约来源（一手）：st-plugins/third-party/JS-Slash-Runner-main/@types/function/macro_like.d.ts:1-38
+  //   registerMacroLike(regex: RegExp, replace: (context, substring, ...args) => string)
+  //     → { unregister(): void }        (:27-31)
+  //   unregisterMacroLike(regex: RegExp): void    (:37)
+  //   MacroLikeContext = { message_id?: number, role?: 'user'|'assistant'|'system' }    (:4-7)
+  // 与 registerMacro(name, handler) 的区别：那张表按**名字**换 {{name}}，
+  // 这张表按**正则**对替换后的正文做一遍后处理 —— 两者独立、互不影响。
+  // 注意：本段是模板字符串，禁止裸反引号、禁止模板插值、禁止单反斜杠；这里不写正则字面量
+  // （正则由调用方以对象传入），用 Array.prototype.slice 取分组，规避 this/arguments 依赖。
+  const macroLikeRegistryCompat = [];
+  const getMacroLikeContextCompat = () => {
+    // 自包含实现：不依赖 part-05 的 resolveMessageIndex（跨段 const 在求值早期不可见），
+    // 当前消息按 id 找，找不到再退回下标，最后退回末条 —— 与帧内其它取消息的降级顺序一致。
+    const list = Array.isArray(compatChat) ? compatChat : [];
+    let index = -1;
+    for (let i = 0; i < list.length; i += 1) {
+      const item = list[i] || {};
+      if ((item.message_id ?? item.id) === ctx.messageId) { index = i; break; }
+    }
+    if (index === -1 && Number.isFinite(Number(ctx.messageId)) && Number(ctx.messageId) >= 0 && Number(ctx.messageId) < list.length) {
+      index = Number(ctx.messageId);
+    }
+    if (index === -1) index = list.length - 1;
+    const message = list[index] || {};
+    return {
+      message_id: ctx.messageId ?? message.message_id ?? message.id ?? index,
+      role: message.role ?? (message.is_user ? 'user' : 'assistant'),
+    };
+  };
+  const regexKeyCompat = (regex) => String((regex && regex.source) || '') + '/' + String((regex && regex.flags) || '');
+  const unregisterMacroLikeCompat = (regex) => {
+    if (!(regex instanceof RegExp)) return false;
+    const key = regexKeyCompat(regex);
+    let removed = 0;
+    for (let index = macroLikeRegistryCompat.length - 1; index >= 0; index -= 1) {
+      if (macroLikeRegistryCompat[index].key === key) {
+        macroLikeRegistryCompat.splice(index, 1);
+        removed += 1;
+      }
+    }
+    return removed > 0;
+  };
+  const registerMacroLikeCompat = (regex, replace) => {
+    if (!(regex instanceof RegExp) || typeof replace !== 'function') {
+      // 不假成功：参数不合规就不注册，把手柄返回去也是空操作
+      post({ type: 'error', message: 'registerMacroLike 需要RegExp与替换函数两个参数，本次未注册' });
+      return { unregister: () => { } };
+    }
+    macroLikeRegistryCompat.push({ key: regexKeyCompat(regex), regex, replace });
+    return { unregister: () => unregisterMacroLikeCompat(regex) };
+  };
+  const applyMacroLikeCompat = (text) => {
+    let output = String(text ?? '');
+    if (macroLikeRegistryCompat.length === 0) return output;
+    for (const entry of macroLikeRegistryCompat) {
+      const context = getMacroLikeContextCompat();
+      output = output.replace(entry.regex, function () {
+        const all = Array.prototype.slice.call(arguments);
+        // replace 回调末两个参数是 offset 与整个字符串，前面是 match 与各分组
+        const groups = all.slice(0, Math.max(1, all.length - 2));
+        const rest = all.slice(1, all.length - 2);
+        try {
+          return String(entry.replace(context, groups[0], ...rest));
+        } catch (error) {
+          post({ type: 'error', message: 'registerMacroLike 替换回调失败：' + String((error && error.message) || error) });
+          return groups[0];
+        }
+      });
+    }
+    return output;
+  };
   const normalizeMacroNameCompat = (name) => String(name || '').replace(/^{{|}}$/g, '').trim();
   const getMacroValueCompat = (value, macroName, rawMatch) => {
     if (typeof value === 'function') {
@@ -359,6 +431,9 @@ export const RUNTIME_BODY_PART_03 = `                    message: 'Activate hook
       if (globalValue !== undefined) return String(globalValue ?? '');
       return rawMatch;
     });
+    // [包Z 批次三] 助手宏（registerMacroLike）在 {{}} 替换之后跑一遍；
+    // 放在 postProcessFn 之前，与"宏先生成再后处理"的顺序一致。
+    result = applyMacroLikeCompat(result);
     const postProcessFn = resolvedOptions.postProcessFn;
     if (typeof postProcessFn === 'function') {
       try { result = postProcessFn(result); } catch (error) { post({ type: 'error', message: String(error?.message || error) }); }

@@ -206,7 +206,11 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   'regex-state': 'regex_object',
   'regex-toggle': 'regex_object',
 
-  // [ST-GAP:macro_register] 助手宏注册表：Palink 没有酒馆助手那张宏表。
+  // [ST-GAP:macro_register] 助手宏注册表：**窗口全局形态已实现**（2026-10-19 包Z 批次三，
+  //   part-03 macroLikeRegistryCompat + part-07 setCompatFunction，契约 JS-Slash-Runner
+  //   @types/function/macro_like.d.ts:27-37）；仍缺的是 **TavernHelper.registerMacroLike 成员形态** ——
+  //   包H 把它归 D 类、h-tavernhelper-134-contract 的"D 类键一个都没注册"是诚实红线，
+  //   不许靠改守卫凑绿，等主脑重分类后再加成员键。卡调用缺失成员时仍按本 id 聚合。
   registerMacroLike: 'macro_register',
 
   // [ST-GAP:stop_by_id] 按 generation id 中止；Palink 只有全局停止，把"按 id"折成"全停"是语义不符。
