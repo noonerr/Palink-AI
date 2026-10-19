@@ -525,14 +525,30 @@ describe('A 包G G-1 —— getContext 13 个真问题项', () => {
     delete (window as any).scrollChatToBottom;
   });
 
-  it('#12 renameChat 恒 false（后端未桥接改名通道），且 warn 只留一次', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const ctx = evalGetContext(buildFrame());
-    expect(await ctx.renameChat('新名字')).toBe(false);
-    expect(await ctx.renameChat()).toBe(false);
-    expect(await ctx.renameChat('再试一次')).toBe(false);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    warnSpy.mockRestore();
+  it('#12 renameChat 走 requestParent 桥：父侧 success 才 true，失败/空名一律诚实 false', async () => {
+    // [包N B-3 2026-10-19] 契约变更：此前"恒 false + 一次性 warn"是**未接通道**的诚实降级，
+    // 现在已接 requestParent('renameChat') → 宿主 POST /api/chats/rename-session。
+    // 仍然是"不许假成功"：只有父侧 success === true 才回 true。
+    const okDeps = buildFrame();
+    const okCtx = evalGetContext(okDeps);
+    expect(await okCtx.renameChat('新名字')).toBe(true);
+    // 请求契约：会话标识走宿主侧 file_name 约定，帧内只传 title
+    expect(okDeps.parentCalls).toEqual([{ action: 'renameChat', payload: { title: '新名字' } }]);
+
+    // 空名不发请求（不发无意义 RPC，也不报成功）
+    expect(await okCtx.renameChat()).toBe(false);
+    expect(await okCtx.renameChat('   ')).toBe(false);
+    expect(okDeps.parentCalls).toHaveLength(1);
+
+    // 父侧失败（无会话 / 后端 4xx）⇒ false
+    const failDeps = buildFrame({
+      parentByAction: { renameChat: { success: false, error: 'no_active_session' } },
+    });
+    expect(await evalGetContext(failDeps).renameChat('新名字')).toBe(false);
+
+    // 父侧通道炸了 ⇒ false（不把异常抛给卡脚本）
+    const throwDeps = buildFrame({ parentThrows: true });
+    expect(await evalGetContext(throwDeps).renameChat('新名字')).toBe(false);
   });
 
   it('#13 createCharacterData 是 ST create_save 形状（可写字段不炸）', () => {
@@ -707,14 +723,17 @@ describe('B 包G G-2 —— SillyTavern.libs 对齐 ST 1.18.0 的 25 个权威�
 // C. 红线：不许假成功 / 两项不许动
 // ============================================================
 describe('C 包G 红线 —— 不许假成功，两项按拍板保持原样', () => {
-  it('renameChat 无论怎么调都不返回 true（处置表 #12：诚实失败）', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const ctx = evalGetContext(buildFrame());
+  it('renameChat 已接桥（包N B-3）：通道失败时不返回 true（红线仍是"不许假成功"）', async () => {
+    // [包N B-3 2026-10-19] 契约变更：原"无论怎么调都不返回 true"是**未接通道**时的诚实降级；
+    // 现已桥到 POST /api/chats/rename-session。红线不变 —— 父侧不 success 就不许回 true。
+    const failDeps = buildFrame({
+      parentByAction: { renameChat: { success: false, error: 'no_active_session' } },
+    });
+    const failCtx = evalGetContext(failDeps);
     const results = await Promise.all([
-      ctx.renameChat('a'), ctx.renameChat('a', { force: true }), ctx.renameChat(),
+      failCtx.renameChat('a'), failCtx.renameChat('a', { force: true }), failCtx.renameChat(),
     ]);
     expect(results.every((value) => value === false)).toBe(true);
-    warnSpy.mockRestore();
   });
 
   it('#14 getRequestHeaders 保持恒空对象决策（安全红线，本批未动）', () => {

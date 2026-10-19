@@ -86,6 +86,11 @@ export const SMART_CARD_UI_TEXT: Record<Language, {
   confirm: string;
   contrastAdjustedBadge: string;
   contrastAdjustedBadgeClose: string;
+  // [包N C-1 2026-10-19] 导入时信任提示（见 import-trust-prompt.tsx）
+  importTrustTitle: string;
+  importTrustBody: string;
+  importTrustAccept: string;
+  importTrustSkip: string;
 }> = {
   zh: {
     expand: '展开角色卡',
@@ -105,6 +110,10 @@ export const SMART_CARD_UI_TEXT: Record<Language, {
     confirm: '确认',
     contrastAdjustedBadge: '已优化 {n} 处低对比文字，暗色模式显示原始样式',
     contrastAdjustedBadgeClose: '关闭',
+    importTrustTitle: '这张卡会执行自带脚本',
+    importTrustBody: '信任后，它的内容可以和本页共享同源（插件可读其 DOM，卡脚本可读写该角色的本地存储）。\n\n你随时可以在卡片的「信任」开关里撤销。',
+    importTrustAccept: '信任此卡',
+    importTrustSkip: '暂不信任',
   },
   en: {
     expand: 'Expand smart card',
@@ -124,6 +133,10 @@ export const SMART_CARD_UI_TEXT: Record<Language, {
     confirm: 'Confirm',
     contrastAdjustedBadge: 'Adjusted {n} low-contrast text(s); original colors show in dark mode',
     contrastAdjustedBadgeClose: 'Dismiss',
+    importTrustTitle: 'This card runs its own scripts',
+    importTrustBody: 'If you trust it, its content can share this page\u2019s origin (plugins can read its DOM, and its scripts can read and write this character\u2019s local storage).\n\nYou can revoke it any time from the card\u2019s trust toggle.',
+    importTrustAccept: 'Trust this card',
+    importTrustSkip: 'Not now',
   },
 };
 
@@ -145,6 +158,10 @@ SMART_CARD_UI_TEXT.zh = {
   confirm: '确认',
   contrastAdjustedBadge: '已优化 {n} 处低对比文字，暗色模式显示原始样式',
   contrastAdjustedBadgeClose: '关闭',
+  importTrustTitle: '这张卡会执行自带脚本',
+  importTrustBody: '信任后，它的内容可以和本页共享同源（插件可读其 DOM，卡脚本可读写该角色的本地存储）。\n\n你随时可以在卡片的「信任」开关里撤销。',
+  importTrustAccept: '信任此卡',
+  importTrustSkip: '暂不信任',
 };
 
 Object.assign(SMART_CARD_UI_TEXT.zh, {

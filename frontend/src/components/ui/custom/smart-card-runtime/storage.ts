@@ -45,6 +45,81 @@ export function writeSmartCardTrustGrant(characterId: string | undefined, finger
 }
 
 
+/* ─────────────── 导入时信任提示（包N C-1，TOFU + 指纹绑定） ───────────────
+ *
+ * 为什么不能"导入时直接写 grant"：信任指纹（sourceFingerprint）是**渲染时**按该条消息的
+ * 智能卡 HTML + customCss 算的（CharacterCardRenderer.tsx:270-273），导入阶段根本拿不到；
+ * 而且 grant 是 cid:fingerprint + sessionStorage + 30 分钟 TTL（shared.ts:56）。
+ * 直接写 grant 会写到一个永远对不上的指纹上 ⇒ "点了信任却不生效"。
+ *
+ * 所以用 TOFU（首次使用即绑定）：
+ *   导入时用户点"信任" ⇒ 写 { pending: true }（localStorage，持久）
+ *   首次渲染读到时    ⇒ 把**当前** sourceFingerprint 绑上去并视为已授信
+ *   之后再读到 { fingerprint: X } ⇒ 只有 X === 当前指纹才授信（卡内容一改即失效）
+ *
+ * ⚠️ 这是**安全口径变更**（会话级 30 分钟 TTL → 持久 + 指纹绑定）。补偿：
+ *   ① 只对用户在导入弹窗里显式点过"信任"的卡生效（纯文本卡不弹、不写）；
+ *   ② 绑定源码指纹，卡内容一改信任自动失效；
+ *   ③ 卡片"信任"开关撤销时**同时清本键**（见 CharacterCardRenderer.confirmTrustedNative），
+ *      否则撤了又被自动授信 —— 那是 bug。
+ */
+export const SMART_CARD_TRUST_OPTIN_PREFIX = 'palink:card-trust-optin:v1:';
+
+/** 新键（与 getSmartCardTrustKey 的 `cid:fingerprint` 会话键**不同键**，别复用）。 */
+export function getSmartCardTrustOptInKey(characterId: string | undefined): string {
+  return `${SMART_CARD_TRUST_OPTIN_PREFIX}${characterId || 'unknown'}`;
+}
+
+/** 导入时用户点了"信任" ⇒ 记 pending（等首次渲染绑定指纹）。 */
+export function writeSmartCardTrustOptIn(characterId: string | undefined): void {
+  if (typeof window === 'undefined' || !characterId) return;
+  try {
+    window.localStorage.setItem(
+      getSmartCardTrustOptInKey(characterId),
+      JSON.stringify({ pending: true, at: Date.now() }),
+    );
+  } catch {
+    // 存储不可用 ⇒ 退化为"没有 optin"，用户仍可在卡片里手动信任（不抛）。
+  }
+}
+
+export function clearSmartCardTrustOptIn(characterId: string | undefined): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(getSmartCardTrustOptInKey(characterId));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 读取并**采纳** optin。
+ *   { pending: true }        → 把当前 fingerprint 写进去并返回 true（TOFU 绑定）
+ *   { fingerprint: X }       → 仅 X === fingerprint 时 true（卡改即失效）
+ *   其他/损坏/无键            → false
+ * 注意：本函数带一次写副作用（pending → 绑定），调用点只在信任解析里，且幂等。
+ */
+export function readSmartCardTrustOptIn(characterId: string | undefined, fingerprint: string): boolean {
+  if (typeof window === 'undefined' || !characterId || !fingerprint) return false;
+  try {
+    const raw = window.localStorage.getItem(getSmartCardTrustOptInKey(characterId));
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { pending?: unknown; fingerprint?: unknown; at?: unknown };
+    if (!parsed || typeof parsed !== 'object') return false;
+    if (parsed.pending === true) {
+      window.localStorage.setItem(
+        getSmartCardTrustOptInKey(characterId),
+        JSON.stringify({ fingerprint, at: Date.now() }),
+      );
+      return true;
+    }
+    return typeof parsed.fingerprint === 'string' && parsed.fingerprint === fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+
 export type SmartCardPersistedStorage = {
   localStorage: Record<string, string>;
   sessionStorage: Record<string, string>;

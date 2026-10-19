@@ -25,6 +25,11 @@ import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 import { RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
+// [包N C-1 2026-10-19] 导入时信任提示（TOFU：导入检测到脚本才弹 → 写持久 optin →
+// 首次渲染采纳当前 sourceFingerprint；指纹变化即失效；撤销同时清 optin）
+import { CardScriptTrustPrompt, detectCardScripts } from '@/components/ui/custom/smart-card-runtime/import-trust-prompt';
+import { writeSmartCardTrustOptIn } from '@/components/ui/custom/smart-card-runtime/storage';
+import { SMART_CARD_UI_TEXT } from '@/components/ui/custom/smart-card-runtime/shared';
 
 interface CharacterViewProps {
   token: string;
@@ -288,6 +293,14 @@ export function CharacterView({
   // 页面切到聊天后继续遮住，消息到位才消失，视觉上就是「跳进对话 + 全屏加载」。
   const [chatEnterStage, setChatEnterStage] = useState<ChatEnterStage | null>(null);
   const [chatEnterProgress, setChatEnterProgress] = useState(0);
+  // [包N C-1 2026-10-19] 导入时的信任询问：非 null 时渲染弹窗，用户选择后 resolve 该 Promise。
+  // 用 Promise 而不是"先弹窗再异步打开"是因为信任必须在卡片首次渲染**之前**落盘，
+  // 否则首帧已经按 opaque origin 建好 iframe，点了信任也要等下次渲染才生效。
+  const [cardTrustPrompt, setCardTrustPrompt] = useState<{
+    characterName?: string;
+    reasons: string[];
+    resolve: (accepted: boolean) => void;
+  } | null>(null);
 
   // 进度平滑爬升：只在当前阶段的上限内前进（所以百分比是真实完成度的**下界**，不虚报）；
   // 阶段停留超过 CHAT_ENTER_SLOW_AFTER_MS 后改为极慢爬行，避免进度条看起来卡死。
@@ -987,6 +1000,20 @@ export function CharacterView({
     }
   };
 
+  // [包N C-1 2026-10-19] 导入时的信任询问：只有「这张卡真的会执行脚本」才弹（纯文本卡不打扰）。
+  // 返回用户是否点了"信任"；点了才写 optin（pending，等首次渲染绑定指纹）。
+  const askImportedCardTrust = useCallback((character: any): Promise<boolean> => {
+    const detection = detectCardScripts(character);
+    if (!detection.executes || !character?.id) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      setCardTrustPrompt({
+        characterName: typeof character.name === 'string' ? character.name : undefined,
+        reasons: detection.reasons,
+        resolve,
+      });
+    });
+  }, []);
+
   const handleImportCharacter = async (file: File) => {
     const taskId = `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const placeholderId = `__importing_${taskId}`;
@@ -1064,6 +1091,13 @@ export function CharacterView({
         _status: 'processing',
         _message: '上传完成，正在解析角色卡...',
       });
+
+      // [包N C-1 2026-10-19] 信任询问必须发生在**打开该角色之前**（首帧渲染前落盘）。
+      // 只在卡片确实会执行脚本时才问；用户点"暂不信任"不写任何键（卡片里仍可随时信任）。
+      const trustAccepted = await askImportedCardTrust(result?.character);
+      if (trustAccepted && result?.character?.id) {
+        writeSmartCardTrustOptIn(result.character.id);
+      }
 
       // [PLUGIN-ON-DEMAND] 后端识别出的插件建议（空数组 = 不插入勾选步骤）
       const pluginSuggestions: PluginSuggestion[] = Array.isArray(result?.plugin_suggestions)
@@ -2054,6 +2088,31 @@ export function CharacterView({
           characterDisplayMode={characterDisplayMode}
         />
       )}
+
+      {/* [包N C-1 2026-10-19] 导入时的信任提示（只对会执行脚本的卡弹一次）。
+          放在视图层最外层：导入完成后会立刻打开该角色的聊天页，挂在内层会被一起卸载。 */}
+      {cardTrustPrompt && (() => {
+        const smartCardText = SMART_CARD_UI_TEXT[lang === 'en' ? 'en' : 'zh'];
+        return (
+          <CardScriptTrustPrompt
+            text={{
+              title: smartCardText.importTrustTitle,
+              body: smartCardText.importTrustBody,
+              accept: smartCardText.importTrustAccept,
+              skip: smartCardText.importTrustSkip,
+            }}
+            characterName={cardTrustPrompt.characterName}
+            onAccept={() => {
+              cardTrustPrompt.resolve(true);
+              setCardTrustPrompt(null);
+            }}
+            onSkip={() => {
+              cardTrustPrompt.resolve(false);
+              setCardTrustPrompt(null);
+            }}
+          />
+        );
+      })()}
 
       {/* [PERF-2026-10-07 问题1] 进入对话的全屏加载覆盖层。
           刻意做成 fixed 全局层（而非挂在被点击的角色卡上）：点击后先遮住列表页，

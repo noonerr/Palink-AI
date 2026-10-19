@@ -35,7 +35,7 @@ import {
 } from './smart-card-runtime/trust-control';
 import type { IframeRenderMode, SmartCardImmersiveTheme, SmartCardViewportContext, SmartCardResourcePlan, SmartCardAction } from './smart-card-runtime/shared';
 
-import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight, htmlSupportsOuterCollapse, htmlPrefersImmersive, hashSmartCardSource, stableSmartCardStringify, preloadSmartCardRuntimeConfig, getSmartCardBootContextSignature, compactSmartCardChatMessages, readSmartCardTrustGrant, writeSmartCardTrustGrant, getCurrentInterfaceLanguage, isIOSLikeDevice, resolveImmersiveTheme, inferImmersiveThemeFromHtml, estimateIframeInitialHeight, estimateIframeMaxHeight, getLayoutViewportHeight, isSmartCardVisualKeyboardLikelyOpen, collectSmartCardViewportContext, getNearestScrollContainer, getSmartCardAvailableHeight, extractHtmlRenderParts, getHtmlRenderSignature, safeJson, readSmartCardPersistedStorage, applySmartCardStoragePatch, adaptSmartCardRuntimeAccess, normalizeSmartCardScriptBlocks, addSmartCardScriptNonce, optimizeSmartCardHtmlForRuntime, buildSmartCardResourcePlan, mergeSmartCardResourcePlans, buildSillyTavernPluginResourcePlan, buildSmartCardResourceHints, scheduleSmartCardResourceWarmup, buildSmartCardAdapterStyle, resolveHtmlRenderMode, toSmartCardRuntimeMode, prepareInlineHtml, buildShim } from './smart-card-runtime/helpers';
+import { isFullHtmlDocument, htmlUsesViewportHeight, htmlPrefersAvailableHeight, htmlSupportsOuterCollapse, htmlPrefersImmersive, hashSmartCardSource, stableSmartCardStringify, preloadSmartCardRuntimeConfig, getSmartCardBootContextSignature, compactSmartCardChatMessages, readSmartCardTrustGrant, writeSmartCardTrustGrant, readSmartCardTrustOptIn, clearSmartCardTrustOptIn, getCurrentInterfaceLanguage, isIOSLikeDevice, resolveImmersiveTheme, inferImmersiveThemeFromHtml, estimateIframeInitialHeight, estimateIframeMaxHeight, getLayoutViewportHeight, isSmartCardVisualKeyboardLikelyOpen, collectSmartCardViewportContext, getNearestScrollContainer, getSmartCardAvailableHeight, extractHtmlRenderParts, getHtmlRenderSignature, safeJson, readSmartCardPersistedStorage, applySmartCardStoragePatch, adaptSmartCardRuntimeAccess, normalizeSmartCardScriptBlocks, addSmartCardScriptNonce, optimizeSmartCardHtmlForRuntime, buildSmartCardResourcePlan, mergeSmartCardResourcePlans, buildSillyTavernPluginResourcePlan, buildSmartCardResourceHints, scheduleSmartCardResourceWarmup, buildSmartCardAdapterStyle, resolveHtmlRenderMode, toSmartCardRuntimeMode, prepareInlineHtml, buildShim } from './smart-card-runtime/helpers';
 import { getSmartCardPluginScriptBundle, getSmartCardPluginSourceKey, slimSmartCardPluginScriptBundle } from './smart-card-runtime/primitives';
 import { persistFrameExtensionPrompts, computeSmartCardBundleSourceKey } from '@/services/extensionPromptPersistence';
 import { SMART_CARD_RUNTIME_URL } from './smart-card-runtime/runtime-url';
@@ -273,7 +273,13 @@ const IframeRenderer = React.memo(function IframeRenderer({
   );
   const [collapsed, setCollapsed] = useState(false);
   const [trustedNative, setTrustedNative] = useState(() => (
-    mode === 'trusted-native' || readSmartCardTrustGrant(context.characterId, sourceFingerprint)
+    mode === 'trusted-native'
+    // 现有：会话级授权（cid:fingerprint + sessionStorage + 30 分钟 TTL）
+    || readSmartCardTrustGrant(context.characterId, sourceFingerprint)
+    // [包N C-1 2026-10-19] 新增：导入时的 TOFU 授权（localStorage，持久 + 指纹绑定）。
+    // 读到 { pending: true } ⇒ 把当前 sourceFingerprint 绑上去并视为已授信；
+    // 读到 { fingerprint: X } ⇒ 仅 X 与当前指纹一致才授信（卡内容一改即失效）。
+    || readSmartCardTrustOptIn(context.characterId, sourceFingerprint)
   ));
   const [pendingTrustAction, setPendingTrustAction] = useState<'enable' | 'revoke' | null>(null);
   // [N-22] 供零依赖 useCallback 在调用时读取最新信任态（避免闭包捕获过期值）
@@ -451,7 +457,12 @@ const IframeRenderer = React.memo(function IframeRenderer({
   ]);
 
   useEffect(() => {
-    setTrustedNative(mode === 'trusted-native' || readSmartCardTrustGrant(context.characterId, sourceFingerprint));
+    setTrustedNative(
+      mode === 'trusted-native'
+      || readSmartCardTrustGrant(context.characterId, sourceFingerprint)
+      // [包N C-1] TOFU 授权（与 useState 初始化同一条三级判定，切换消息/改卡后重算）
+      || readSmartCardTrustOptIn(context.characterId, sourceFingerprint),
+    );
     setPendingTrustAction(null);
   }, [context.characterId, mode, sourceFingerprint]);
 
@@ -1241,6 +1252,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
 
     const nextTrusted = pendingTrustAction === 'enable';
     writeSmartCardTrustGrant(context.characterId, sourceFingerprint, nextTrusted);
+    // [包N C-1 2026-10-19] 撤销时必须**同时清 TOFU 键**：否则 localStorage 里的
+    // { fingerprint } 会在下一次渲染把信任自动授回来 —— "撤了又自动授信"是 bug。
+    if (!nextTrusted) clearSmartCardTrustOptIn(context.characterId);
     setTrustedNative(nextTrusted);
     setPendingTrustAction(null);
   }, [context.characterId, pendingTrustAction, sourceFingerprint]);

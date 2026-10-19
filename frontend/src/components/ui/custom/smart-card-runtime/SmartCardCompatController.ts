@@ -9,6 +9,8 @@ import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
 import { PopupType } from '@/lib/popup-system/types';
+// [包N B-3 2026-10-19] 会话改名的宿主侧广播（与 lib/sillytavern/getContext.ts 的宿主轨同源）
+import { emitEvent } from '@/lib/event-bus';
 
 type SmartCardWorldBookEntry = Record<string, any>;
 
@@ -328,6 +330,57 @@ async function createOrReplaceSmartCardWorldBook(
     name: baseName,
     world_book_id: worldBook.id,
   };
+}
+
+/**
+ * [包N B-3 2026-10-19] 帧内 getContext().renameChat 的宿主侧落点。
+ *
+ * 照抄宿主轨 lib/sillytavern/getContext.ts:2464-2496 的既有实现，**请求契约不要改**：
+ *   body = { file_name: 'palink-session-' + chatId, new_name, avatar_url? }
+ *   （不是 { session_id, title } —— 会话标识走 file_name 约定，后端
+ *     silly_tavern.py:5838 的 _session_for_file 据此解析；avatar_url 让后端定位角色）
+ * 成功返回 {"result":"ok"}；失败 400/404。CSRF 由 services/api 对 mutating 方法自动注入。
+ *
+ * 返回 { success, error? }：帧内据此决定 true/false —— **不许假成功**，
+ * 所以每个提前返回都是 success:false 并带机器可读的 error 码。
+ */
+export async function renameSmartCardChatSession(
+  context: SmartCardCompatRequestContext,
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; name?: string; error?: string }> {
+  const newName = String(payload.title ?? payload.newName ?? payload.name ?? '').trim();
+  if (!newName) return { success: false, error: 'new_name_required' };
+
+  const { selectedSession, sessionId: fallbackSessionId, selectedCharacterId } = context;
+  const resolvedSessionId = selectedSession && selectedSession.id !== '__pending__'
+    ? selectedSession.id
+    : String(fallbackSessionId || '').trim();
+  if (!resolvedSessionId || resolvedSessionId === '__pending__') {
+    return { success: false, error: 'no_active_session' };
+  }
+
+  const body: Record<string, string> = {
+    file_name: `palink-session-${resolvedSessionId}`,
+    new_name: newName,
+  };
+  if (selectedCharacterId) body.avatar_url = `palink-${selectedCharacterId}.png`;
+
+  try {
+    await api.post('/api/chats/rename-session', body);
+  } catch (error) {
+    return {
+      success: false,
+      error: String((error as { message?: unknown })?.message || 'rename_failed'),
+    };
+  }
+
+  // 与宿主轨同口径：广播会话改名，插件侧（eventBus 订阅者）可即时感知。
+  try {
+    emitEvent('session:renamed', { sessionId: resolvedSessionId, newName });
+  } catch {
+    // 事件总线异常不影响改名结果本身（改名已落库）
+  }
+  return { success: true, name: newName };
 }
 
 function buildSmartCardWorldBookExport(state: SmartCardCompatControllerState) {
@@ -834,6 +887,12 @@ export async function handleSmartCardCompatRequest(
       } else {
         result = await executeSlashCommandCompat(command);
       }
+    } else if (action.action === 'renameChat') {
+      // [包N B-3 2026-10-19] 帧内 getContext().renameChat 的落点。
+      // 不进手势闸门：与 setChatMessage（改消息内容）同级，属于卡片最常见的无手势正当用法
+      //（见 SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE 上方的兼容性论证）。
+      // 返回值统一 { success, error? }；帧内只认 success === true。
+      result = await renameSmartCardChatSession(requestContext, payload);
     } else if (action.action === 'setChatMessage' || action.action === 'updateMessageBlock') {
       const content = extractMessageContentFromPayload(payload);
       const options = extractMessageOptionsFromPayload(payload);

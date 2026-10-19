@@ -1529,6 +1529,73 @@ export function CharacterChat(props: CharacterChatProps) {
     };
   }, [smartCardChatMessages, selectedSession?.id]);
 
+  // [包N B-1 2026-10-19] 插件沙箱轨 appendMediaToMessage 的落库桥。
+  //
+  // 为什么需要宿主桥：沙箱（主 window）拿不到 React 的 messages 权威副本 ——
+  //   · window.__palinkChatMessages 里的 mes 被 stripStyleBlocks 洗过，直接回写会**抹掉样式块**；
+  //   · applyStChatMessages 只写内存态，还会派发 palink:chatMessagesUpdated 让
+  //     CharacterView 从服务端重载（CharacterView.tsx:1642-1646）⇒ 刚写的图立刻消失。
+  // 所以由宿主用**权威 content + 合并后的 extra** 走 PUT 落库，再本地 setMessages 刷新。
+  //
+  // 契约（与 lib/plugin-system/st-message-media.ts 对齐）：
+  //   入参 { index, media }；返回 { success: boolean, error?, media_index? }。
+  //   index 与 __palinkChatMessages 同序（= displayedMessages 顺序）。
+  //   任何一步不成立都返回 success:false —— 不许假成功。
+  useEffect(() => {
+    const w = window as any;
+    w.__palinkAppendMessageMedia = async (payload: { index?: unknown; media?: unknown } | null) => {
+      const index = Number(payload?.index);
+      const media = payload?.media;
+      if (!selectedSession) return { success: false, error: 'no_active_session' };
+      if (!Number.isInteger(index) || index < 0 || !media || typeof media !== 'object' || Array.isArray(media)) {
+        return { success: false, error: 'invalid_request' };
+      }
+      const target = displayedMessagesRef.current[index];
+      const dbId = Number(target?.id);
+      if (!target || !Number.isInteger(dbId) || dbId <= 0) {
+        return { success: false, error: 'message_not_persisted' };
+      }
+      const currentExtra = (target.extra && typeof target.extra === 'object')
+        ? target.extra as Record<string, unknown>
+        : {};
+      const existingMedia = Array.isArray(currentExtra.media) ? currentExtra.media : [];
+      const nextMedia = [...existingMedia, media];
+      const rawIndex = Number(currentExtra.media_index);
+      const nextMediaIndex = Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < existingMedia.length
+        ? rawIndex
+        : nextMedia.length - 1;
+      try {
+        await api.put(`/api/character-sessions/${selectedSession.id}/messages/${dbId}`, {
+          // content 必填（后端 MessageEditRequest.content: str 且会覆盖正文）⇒ 用**权威原文**回写；
+          // 绝不拿 __palinkChatMessages 里 stripStyleBlocks 洗过的 mes，那会抹掉消息内的样式块。
+          content: String(target.content ?? (target as any).mes ?? ''),
+          extra: { ...currentExtra, media: nextMedia, media_index: nextMediaIndex },
+        });
+      } catch (error) {
+        return {
+          success: false,
+          error: String((error as { message?: unknown })?.message || 'persist_failed'),
+        };
+      }
+      setMessages(prev => prev.map(msg => (
+        String(msg.id) === String(dbId)
+          ? {
+            ...msg,
+            extra: {
+              ...((msg.extra && typeof msg.extra === 'object') ? msg.extra : {}),
+              media: nextMedia,
+              media_index: nextMediaIndex,
+            },
+          }
+          : msg
+      )));
+      return { success: true, media_index: nextMediaIndex };
+    };
+    return () => {
+      delete (w as any).__palinkAppendMessageMedia;
+    };
+  }, [selectedSession, setMessages]);
+
   // Fix 2: 注册 ST 桥接钩子，供 Galgame 等插件通过隐藏虚拟元素（#send_but /
   // #option_regenerate）或 SillyTavern.Generate 驱动真实聊天发送与重生成。
   // 桥接虚拟元素在 sillyTavernPluginRuntime 的 setup script 中创建，这里只注册回调。

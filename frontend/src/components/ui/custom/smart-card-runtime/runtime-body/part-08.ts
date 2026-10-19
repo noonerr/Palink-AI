@@ -396,22 +396,24 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     return enabled;
   };
 
-  // #12 renameChat —— **诚实失败**。
-  // 已核实：单间轨没有任何可改会话标题的父侧通道（SmartCardCompatController.ts 的
-  // requestParent 动作表里没有 rename 类动作），故帧内无法完成改名 ⇒ 返回 false +
-  // 一次性 console.warn 留痕。不许假成功返 true。
-  // ⚠️ 后续项（写进包G 报告）：宿主轨 lib/sillytavern/getContext.ts:2439 走的
-  // POST /api/chats/rename-session（backend/app/api/silly_tavern.py:5838）是**存在且真改库**的，
-  // 缺的只是给单间轨补一个 requestParent 动作；补上即可把本函数换成真实现。
-  let renameChatWarnedCompat = false;
-  const renameChatCompat = async () => {
-    if (!renameChatWarnedCompat) {
-      renameChatWarnedCompat = true;
-      try {
-        console.warn('[palink-smart-card] getContext().renameChat：单间轨未接会话改名通道（宿主轨用的 POST /api/chats/rename-session 尚未桥到帧内），返回 false。后续项见 docs/_active/report/REPORT_包G_getContext与libs_2026-10-18.md');
-      } catch (e) { /* console 被治理时静默 */ }
+  // #12 renameChat —— 走 requestParent 桥（包N B-3 2026-10-19）。
+  // 事实：宿主轨 lib/sillytavern/getContext.ts:2464 的 POST /api/chats/rename-session
+  //（backend/app/api/silly_tavern.py:5838）**存在且真改库**，缺的只是帧内到父侧的桥。
+  // 现在父侧动作 renameChat（SmartCardCompatController）照抄宿主轨实现：
+  //   body = { file_name: 'palink-session-' + chatId, new_name, avatar_url? }
+  //   （不是 { session_id, title } —— 会话标识走 file_name 约定，后端 _session_for_file 解析）
+  // 返回 { success: boolean, error? }：只有 success === true 才回 true，失败一律 false。
+  // ⚠️ 不许假成功：requestParent 超时/失败/后端 4xx 都必须落 false。
+  const renameChatCompat = async (title) => {
+    const newName = String(title == null ? '' : title).trim();
+    if (!newName) return false;
+    try {
+      const response = await requestParent('renameChat', { title: newName });
+      // 归一化后的响应形如 { ok: true, success: true, ... }；父侧失败时 success 为 false。
+      return Boolean(response && response.success === true);
+    } catch (e) {
+      return false;
     }
-    return false;
   };
 
   // #13 createCharacterData —— ST 默认角色数据模板。
@@ -459,8 +461,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     //      Palink 卡帧里 characters 为空 ⇒ **诚实给 0，不填假值**。
     //   ② Palink 的真实角色标识是 boot ctx 里那个 UUID 字符串（本帧以 characterUuid 暴露）。
     //      与父侧 lib/sillytavern/getContext.ts 的包J J-2 保持同键名，插件 camel/snake 两种写法都读得到。
-    //   ③ 帧内**不存在** window.context 这个全局（boot 的 ctx 是 const，不挂 window）——
-    //      这是与 ST 的又一处形状缺口，本包不顺手补，登记在 docs/OPEN_ISSUES.md。
+    //   ③ 帧内 window.context 全局由 [包N B-2 2026-10-19] 补齐（见下方 window.context 定义），
+    //      与 getContextCompat() 同源；此前缺失是登记在 docs/OPEN_ISSUES.md 的形状缺口。
     characterId: (typeof window.this_chid === 'number' && Number.isFinite(window.this_chid)) ? window.this_chid : 0,
     characterUuid: ctx.characterId,
     characterIdString: ctx.characterId || '',
@@ -480,7 +482,7 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     streamingProcessor: null,
     getRequestHeaders: window.getRequestHeaders,
     reloadCurrentChat: window.reloadCurrentChat,
-    // [包G G-1 #12] 后端无帧内可用的改名通道 ⇒ 诚实返回 false（详见 renameChatCompat 注释）。
+    // [包N B-3 2026-10-19] 已接 requestParent('renameChat') 桥，失败仍诚实 false（详见 renameChatCompat）。
     renameChat: renameChatCompat,
     saveSettingsDebounced: window.saveSettingsDebounced,
     chatMetadata: window.chat_metadata || {},
@@ -774,6 +776,21 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     triggerSlash: (...args) => triggerSlashCompat(...args),
   });
   window.getContext = getContextCompat;
+  // [包N B-2 2026-10-19] 补 ST 的 window.context 全局。
+  // 事实：ST 1.18 的 context 是 st-context.js 里的 export const context = getContext()
+  // ——**一次性快照**，不是实时对象。插件里大量直接读 context.chat / context.name1 /
+  // context.characterId（比走 getContext() 更常见），Palink 帧内此前只有 window.getContext，
+  // 没有 window.context ⇒ 这类插件在帧内直接 ReferenceError。
+  // 实现：挂 getter（每次读都拿最新），是 ST 快照语义的超集且无副作用；
+  // 定义失败时静默（帧环境被治理时不值得打断卡脚本）。
+  // ⚠️ 本文件是模板字符串：禁裸反引号 / 插值 / 注释里裸换行转义。
+  try {
+    Object.defineProperty(window, 'context', {
+      configurable: true,
+      enumerable: true,
+      get: () => getContextCompat(),
+    });
+  } catch (e) { /* 静默：defineProperty 被拒不影响其余兼容面 */ }
   // [S5-GDEP3 2026-10-16] 卡内 triggerSlash 缺口补齐（承接 REPORT_S5架构重建评审 §3.1 /
   // SPEC_ST兼容层修复计划 T2 / OPEN_ISSUES.md [P2-10] 第 1 项）。
   //

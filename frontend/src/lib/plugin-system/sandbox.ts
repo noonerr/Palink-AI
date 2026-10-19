@@ -31,6 +31,8 @@ import { SlashCommandEngine } from '../slash-engine';
 // 产物的 terser drop_console 剥掉，只有登记进 window.__palinkCompatStats 才能
 // 在插件管理页降级统计面板被看见。
 import { recordStubHit, recordStubHitOnce } from './compat-stub-registry';
+// [包N B-1 2026-10-19] appendMediaToMessage 的纯映射 + 落库编排（见 st-message-media.ts 文件头）
+import { appendStMessageMedia } from './st-message-media';
 import {
   globalExtensionSettings,
   getExtensionSettingsNs,
@@ -2758,6 +2760,11 @@ export class PluginSandbox {
         var __sandbox = arguments[0];
         var require = __sandbox.require;
         var getContext = __sandbox.getContext;
+        // [包N B-2 2026-10-19] ST 的 context 是 st-context.js 的 export const context = getContext()
+        // ——一次性快照。插件普遍直接读 context.chat / context.name1（比走 getContext() 更常见），
+        // 此前沙箱作用域里没有这个标识符 ⇒ 这类插件在沙箱轨直接 ReferenceError。
+        // 这里给的是同一个惰性 Proxy（属性访问仍实时），是 ST 快照语义的超集。
+        var context = getContext();
         var eventSource = __sandbox.eventSource;
         var eventTypes = __sandbox.eventTypes;
         var registerSlashCommand = __sandbox.registerSlashCommand;
@@ -4614,6 +4621,17 @@ export class PluginSandbox {
     const moduleMap: Record<string, Record<string, unknown>> = {
       // script.js — ST 主脚本（最常被导入的模块）
       'script.js': {
+        // [包N B-2 2026-10-19] ST 的 script.js 导出 `context`（st-context.js 的一次性快照）。
+        // 插件写 `import { context } from '../../../../script.js'` 时，转译产物是
+        // `var { context } = require('script.js')` ⇒ 这里缺键就拿到 undefined，
+        // 且会**覆盖**包装壳里预置的 var context。故必须显式提供（getter 保实时）。
+        get context() {
+          try {
+            return (sandbox as any).getContext();
+          } catch {
+            return undefined;
+          }
+        },
         // P-5/N7 修复（批次 F）: characters 与 chat/chat_metadata 同款实时 getter——
         // 此前为 createMockRequire 构建时快照（stContext.characters 取一次），
         // 卡切换/新增后模块仍指向旧数组（characters 是 P-5 批次漏改的一项）。
@@ -4720,10 +4738,35 @@ export class PluginSandbox {
         animation_easing: 'ease',
         activateSendButtons: () => {},
         deactivateSendButtons: () => {},
-        // [ST-ALIGN] appendMediaToMessage：ST 语义是把消息内媒体渲染进**消息 DOM 元素**，
-        // Palink 消息渲染是 React 管线且插件拿不到真实消息元素 → 无法正确桥接，
-        // 强行实现只会让插件误以为渲染成功（与 refreshOneMessage 同批，需渲染管线配合）。
-        appendMediaToMessage: () => {},
+        // [包N B-1 2026-10-19] appendMediaToMessage：ST 语义是把消息内媒体渲染进
+        // **消息 DOM 元素**；Palink 消息渲染是 React 管线，插件拿不到真实消息元素
+        // ⇒ 不做 DOM 桥接（原空实现的理由仍然成立），改走**等价落库通道**：
+        //   ① 纯映射（st-message-media.ts）：ST 入参 → { index, media(MediaItem) }；
+        //      映射不出来一律 false（绝不把消息 id 当 URL 写进 extra.media）；
+        //   ② 落库：宿主 CharacterChat 注册的 window.__palinkAppendMessageMedia
+        //      （写 message.extra.media 并经 PUT /api/character-sessions/…/messages/…
+        //       持久化，刷新后仍在；与卡内轨 setChatMessage 同一条写入路径）。
+        // ⚠️ 不用 applyStChatMessages：它只写内存态，且会派发 palink:chatMessagesUpdated
+        //    触发 CharacterView 从服务端重载（CharacterView.tsx:1642-1646）⇒ 图会立刻消失。
+        appendMediaToMessage: async (mes: any, messageElement: any) => {
+          try {
+            const w = window as any;
+            const chat = Array.isArray(w.__palinkChatMessages)
+              ? w.__palinkChatMessages
+              : (buildStContext() as any)?.chat;
+            if (!Array.isArray(chat) || chat.length === 0) return false;
+            return await appendStMessageMedia({
+              mesOrId: mes,
+              mediaSource: messageElement,
+              chat,
+              persist: typeof w.__palinkAppendMessageMedia === 'function'
+                ? (payload) => w.__palinkAppendMessageMedia(payload)
+                : undefined,
+            });
+          } catch {
+            return false;
+          }
+        },
         saveChatConditional: async () => {},
         // P-6: shared.js 顶层 import（CONNECT_API_MAP/createModelIcon）→ 此前缺失 undefined
         CONNECT_API_MAP: {
