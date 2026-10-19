@@ -1010,6 +1010,16 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   // 取到之前枚举偏少、取到之后完整；名字对应的 entry 是**真能执行的**合成项，
   // callback 直接桥到宿主（executeSlashCommandCompat 未命中分支 → runPalinkSlash）。
   const slashKnownNamesCompat = new Set();
+  // [包AA A 2026-10-20] 别名**进表**（此前是包Z §2.4 的待裁决遗留，主脑已裁决按 ST 补）。
+  // 依据一手：slash-commands/SlashCommandParser.js:95 'this.commands[command.name] = command;'、
+  // :97-100 'command.aliases.forEach((alias) => { this.commands[alias] = command; });'
+  // ⇒ ST 的 Object.keys(commands) 里**本来就有别名**，而且 commands[alias] 与 commands[base]
+  //   是同一个对象（不是两份）。重名时 :79-82 只 console.trace 告警，:95/:99 照样赋值。
+  // 这张表只记 alias 到 base 的**指向**，不新增独立命令条目：取值仍解析到 base 的那一个 entry。
+  const slashKnownAliasesCompat = new Map();
+  // 合成项缓存：主名每次取值必须是同一个对象（ST 表里存的是注册时那个对象），
+  // 否则 commands[alias] 与 commands[base] 会各自 new 一份，「同一个对象」这条语义就守不住。
+  const slashSynthEntryCacheCompat = new Map();
   const synthesizeSlashEntryCompat = (name) => ({
     name,
     aliases: [],
@@ -1019,7 +1029,23 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   const resolveSlashEntryCompat = (name) => {
     const existing = slashCommandStoreCompat.get(name);
     if (existing) return existing;
-    return slashKnownNamesCompat.has(name) ? synthesizeSlashEntryCompat(name) : undefined;
+    // 顺序照 ST 的表语义：真注册过的（Map 本体）优先 ⇒ 主名次之 ⇒ 别名最后折到主名。
+    // 对账实测权威主名与别名**交集为 0**（.tmp_probe/AA/reconcile_out.txt），
+    // 所以第三条分支不会把某个真命令名盖掉；宿主名单之外也不会凭空造键。
+    if (slashKnownNamesCompat.has(name)) {
+      const cachedByName = slashSynthEntryCacheCompat.get(name);
+      if (cachedByName) return cachedByName;
+      const createdByName = synthesizeSlashEntryCompat(name);
+      slashSynthEntryCacheCompat.set(name, createdByName);
+      return createdByName;
+    }
+    const baseName = slashKnownAliasesCompat.get(name);
+    if (!baseName || !slashKnownNamesCompat.has(baseName)) return undefined;
+    const cached = slashSynthEntryCacheCompat.get(baseName);
+    if (cached) return cached;
+    const created = synthesizeSlashEntryCompat(baseName);
+    slashSynthEntryCacheCompat.set(baseName, created);
+    return created;
   };
   const primeSlashKnownNamesCompat = async () => {
     // [包F F-1 2026-10-18] 枚举口径修复。
@@ -1042,8 +1068,27 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       for (const seedName of seedNames) {
         if (typeof seedName === 'string' && seedName) slashKnownNamesCompat.add(seedName);
       }
+      // [包AA A 2026-10-20] 同一个种子里的别名表（alias → base）。
+      // **计数口径分家**：__palinkSlashSeedNamesCount 仍是「权威主名数」，必须保持 293；
+      // 别名只登记到 slashKnownAliasesCompat，另给一个 __palinkSlashSeedAliasCount（176），
+      // 表内键计数由 Object.keys(commands) 自己反映（主名 ∪ 别名），两者不许混成一个数。
+      // 宿主没给 aliases 时这里就是空操作 ⇒ 退回修复前的表形状（不炸、不凭空造键）。
+      const seedAliases = seedResponse && seedResponse.aliases && typeof seedResponse.aliases === 'object'
+        ? seedResponse.aliases
+        : null;
+      if (seedAliases) {
+        for (const aliasKey of Object.keys(seedAliases)) {
+          const aliasBaseName = seedAliases[aliasKey];
+          // 只承认「主名本身在权威名单里」的别名：不认识的主名不发明键（红线：不造 ST 没有的形状）。
+          if (!aliasKey || typeof aliasBaseName !== 'string' || !aliasBaseName) continue;
+          if (!slashKnownNamesCompat.has(aliasBaseName)) continue;
+          slashKnownAliasesCompat.set(aliasKey, aliasBaseName);
+        }
+      }
       window.__palinkSlashSeedNamesCount = seedNames.length;
+      window.__palinkSlashSeedAliasCount = slashKnownAliasesCompat.size;
       window.__palinkSlashKnownNames = Array.from(slashKnownNamesCompat);
+      window.__palinkSlashKnownAliases = Array.from(slashKnownAliasesCompat.keys());
     } catch (e) {
       // 取不到名单就退回 /help 口径（等同修复前），不影响既有行为
     }
@@ -1080,7 +1125,9 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       // get/keys/values 等仍走 Map 本体 —— keys() 返回的是 Map 原型语义，
       // 三方与探针的取键口径一律是 Object.keys(commands)（见 fixtures/README.md）。
       if (prop === 'has') {
-        return (name) => target.has(name) || slashKnownNamesCompat.has(String(name));
+        return (name) => target.has(name)
+          || slashKnownNamesCompat.has(String(name))
+          || slashKnownAliasesCompat.has(String(name));
       }
       if (
         prop === 'get' || prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'clear'
@@ -1094,7 +1141,8 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     },
     has(target, prop) {
       if (typeof prop !== 'string') return false;
-      return target.has(prop) || slashKnownNamesCompat.has(prop);
+      // [包AA A] 别名同样是表里的键（ST SlashCommandParser.js:97-100）⇒ in 判定要认它。
+      return target.has(prop) || slashKnownNamesCompat.has(prop) || slashKnownAliasesCompat.has(prop);
     },
     set(target, prop, value) {
       if (typeof prop !== 'string') return true;
@@ -1106,7 +1154,13 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       return target.delete(prop);
     },
     ownKeys(target) {
-      return Array.from(new Set([...target.keys(), ...slashKnownNamesCompat]));
+      // [包AA A] 表内键 = 真注册项 ∪ 权威主名 ∪ 别名（ST 的 commands 就是这三者的并集，
+      // 见 SlashCommandParser.js:95/:97-100）。键数由此上涨，与「权威名计数」是两个口径。
+      return Array.from(new Set([
+        ...target.keys(),
+        ...slashKnownNamesCompat,
+        ...slashKnownAliasesCompat.keys(),
+      ]));
     },
     getOwnPropertyDescriptor(target, prop) {
       if (typeof prop !== 'string') return undefined;

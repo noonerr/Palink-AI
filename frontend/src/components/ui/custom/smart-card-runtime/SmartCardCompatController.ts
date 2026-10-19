@@ -4,7 +4,7 @@ import { api, invalidateCache } from '@/services/api';
 import { worldbookApi } from '@/services/worldbookApi';
 import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
 import { executeSlashCommandCompat } from '@/lib/sillytavern/getContext';
-import { getStCompatCommandNames } from '@/lib/slash-engine/st-command-catalog';
+import { getStCompatCommandAliases, getStCompatCommandNames } from '@/lib/slash-engine/st-command-catalog';
 import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
@@ -868,7 +868,13 @@ export async function handleSmartCardCompatRequest(
       // 只读、无副作用，因此不在 SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE 名单里。
       // 返回对象包一层 `{ names }`：帧内 requestParent v2 对**顶层数组/字符串**做对象展开
       // （part-06.ts 的归一化），裸数组会变成索引键；包在对象里才能原样到达 `response.names`。
-      result = { names: getStCompatCommandNames() };
+      //
+      // [包AA A 2026-10-20] 同一个响应再带上 `aliases`（alias → base，176 条）。
+      // 依据 ST 一手：slash-commands/SlashCommandParser.js:95 主名进表、:97-100 别名同样进表，
+      // 且 commands[alias] 与 commands[base] 指向同一个对象 ⇒ 帧内要枚举到别名键、取值也要命中同一 entry。
+      // `names` 的语义**不变**（仍是 293 个权威主名 ⇒ 帧内 __palinkSlashSeedNamesCount 恒 293），
+      // 别名只进「表内键」口径；两个计数在帧内分别是 __palinkSlashSeedNamesCount / __palinkSlashSeedAliasCount。
+      result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases() };
     } else if (action.action === 'runPalinkSlash') {
       // [S5-GDEP3 T2 2026-10-16] 卡内 triggerSlash 的宿主侧落点。
       //
