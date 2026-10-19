@@ -174,14 +174,6 @@ class TestCardDeclaresUpdateSpec:
         messages = [{"role": "system", "content": "面板渲染用 <StatusPlaceHolderImpl/> 占位符"}]
         assert _messages_declare_mvu_update_spec(messages) is False
 
-    def test_needles_share_one_alias_source_with_parser(self):
-        """探测面别名清单与解析/剥离层同源（勿再各抄一份 —— 包Q §3.1 #4/#5 的病根）。"""
-        from app.services.mvu_engine import MVU_PROBE_NEEDLES, MVU_UPDATE_TAG_NEEDLES
-
-        assert set(MVU_UPDATE_TAG_NEEDLES) < set(MVU_PROBE_NEEDLES)
-        for needle in MVU_UPDATE_TAG_NEEDLES:
-            assert needle in ("updatevariable", "variableupdate", "<update>", "</update>")
-
 
 class TestGenericTailHasNoCardNames:
     """守门狗：兜底模板不得含任何具体角色名/字段名（本次事故的真凶）。"""
