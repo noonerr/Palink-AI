@@ -222,6 +222,15 @@ rc=1
    Palink `listvar` 未实现 `scope` namedArg（`variables.js:904-933` 有）。约 10 行，可单独收尾。
 5. **aliases 未下发**：本次只把 293 个权威**命令名**注入帧内；176 个 alias 不在
    `Object.keys(commands)` 里（ST 亦然，alias 走 `getAliases`），如后续有插件按 alias 探测再说。
+   > **订正（2026-10-20 主控，一手读 ST 源码后推翻本条括号的判断）**：`getAliases` 在
+   > `_reference/sillytavern-1.18.0` 与 `/d/SillyTavern-release` 两棵树里**全树 0 命中**；
+   > 别名是命令实例字段 `public/scripts/slash-commands/SlashCommand.js:56`，且注册时
+   > **`SlashCommandParser.js:97-100`** 逐个 `this.commands[alias] = command` ⇒
+   > **ST 的 `Object.keys(commands)` 本来就含别名**，本条括号写反了。
+   > 真实偏离方向是**我们比 ST 少**这 175/176 个别名键。本条"如后续有插件按 alias 探测再说"因此作废，
+   > 由 `pkg-AA` 按方案 A 补齐（同一对象、两个计数口径）。
+   > ⚠️ 连带：主脑 2026-10-19 把这句错话抄进了排期 §2 第 9 条的"订正"里，等于**用订正传播错误**，
+   > 已在那份文件上做二次订正。规矩回写：**二手结论进订正说明之前，自己读一遍源码。**
 6. **包G 并行冲突提醒**：`.tmp_probe/F_*` 是本包产物（探针输出、备份、临时配置），不入库、可清理。
 
 ## 7. 边界与红线自查

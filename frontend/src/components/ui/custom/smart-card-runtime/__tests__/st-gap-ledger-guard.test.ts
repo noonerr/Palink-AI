@@ -182,6 +182,19 @@ describe('E 运行时字段与缺口排行', () => {
     expect(classifyStGap({ owner: 'host_capability', kind: 'missing_api', name: 'whatever-we-have-not-mapped' })).toBe(ST_GAP_UNKNOWN);
   });
 
+  it('继承来的属性名不得当成归族结果（constructor / toString / __proto__ ⇒ unknown）', () => {
+    // 中括号取对象字面量会命中 Object.prototype 上的成员，返回的是函数；
+    // 上层 String() 之后会把整段函数源码写进 missingStSubsystem，排行里凭空多出键名为源码的条目。
+    for (const inherited of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__']) {
+      expect(classifyStGap({ owner: 'host_capability', kind: 'missing_api', name: inherited }), `名字 ${inherited} 必须落 unknown`).toBe(ST_GAP_UNKNOWN);
+    }
+    const rec = recordPalinkDiag({ owner: 'host_capability', kind: 'missing_api', name: 'constructor' });
+    expect(rec?.missingStSubsystem).toBe(ST_GAP_UNKNOWN);
+    // 计数项里只允许出现登记过的 id 或 unknown，绝不能出现"键名是一段源码"的条目
+    const gapKeys = Object.keys(palinkDiagTotals()).filter((k) => k.startsWith('stGap:'));
+    expect(gapKeys).toEqual(['stGap:unknown']);
+  });
+
   it('非 host_capability 不参与聚合（归属口径不被污染）', () => {
     expect(classifyStGap({ owner: 'frame_compat', kind: 'script_error', name: 'deleteLorebook' })).toBe('');
     expect(classifyStGap({ owner: 'card_authored', kind: 'card_script_injection_failed', name: 'RawCharacter' })).toBe('');

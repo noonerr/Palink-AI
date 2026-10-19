@@ -242,7 +242,13 @@ export function classifyStGap(input: { owner?: string; kind?: string; name?: str
   if (!input || input.owner !== 'host_capability') return '';
   const raw = String(input.name || '');
   const bare = raw.indexOf('TavernHelper.') === 0 ? raw.slice('TavernHelper.'.length) : raw;
-  return ST_GAP_BY_NAME[bare] || ST_GAP_UNKNOWN;
+  // 必须只认**自有属性**：ST_GAP_BY_NAME 是对象字面量，带 Object.prototype 上的继承成员。
+  // 卡调用的全局名可能是 `constructor` / `toString` / `hasOwnProperty`（名字面直接进 name），
+  // 用中括号取会拿到继承来的函数 ⇒ 调用方 String() 之后整段源码被写进 missingStSubsystem，
+  // 排行里凭空多出一个键名是源码的条目（本仓 2026-10-20 自查发现，同坑见 part-03:425 的写法）。
+  return Object.prototype.hasOwnProperty.call(ST_GAP_BY_NAME, bare)
+    ? ST_GAP_BY_NAME[bare]
+    : ST_GAP_UNKNOWN;
 }
 
 
