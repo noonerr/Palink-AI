@@ -1873,11 +1873,15 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     // [包W 2026-10-19] 这一行是「卡伸手拿我们没摆出来的全局」**唯一真正可观测的路径**：
     // 卡按 ST 习惯读一个我们没注册的全局 ⇒ ReferenceError ⇒ refMatch 命中。
     // 之前它只出 toast + __palinkFrameErrors，不进统一记录器 ⇒ 派不到单。
-    // 现在：命中 ReferenceError 记 global_shape_absent（该谁修 = 前端兼容层），
-    // 其余脚本错误记 script_error（同归 frame_compat，由主控按 detail 再分）。
+    // 现在：命中 ReferenceError 记 global_shape_absent（该谁修 = 前端兼容层）；
+    // 其余脚本错误记 script_error，owner 按报错文本定 —— 语法类（SyntaxError / Unexpected token）
+    // 归 card_authored（包V 裁决：帧内 runtime 正文由 parse-guard 逐字节验过，能报语法错的
+    // 只有卡自己的脚本正文），其它归 frame_compat。
     // 上面 reportDiagnostic / logCardError 一字未动 ⇒ 弹框与分类口径不变。
     if (typeof palinkDiagRecord === 'function') palinkDiagRecord({
-      owner: 'frame_compat',
+      owner: (message.indexOf('SyntaxError') >= 0 || message.indexOf('Unexpected token') >= 0)
+        ? 'card_authored'
+        : 'frame_compat',
       kind: refMatch ? 'global_shape_absent' : 'script_error',
       name: refMatch ? String(refMatch[1]) : message.slice(0, 120),
       detail: refMatch

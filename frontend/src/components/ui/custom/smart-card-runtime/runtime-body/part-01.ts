@@ -298,20 +298,44 @@ ${bootHeader}
     var limit = typeof max === 'number' ? max : 400;
     return text.length > limit ? text.slice(0, limit) : text;
   }
-  function palinkDiagFirstStackLine(stack) {
+  // 位置行与消息行不是一回事：V8 的栈第一行是 "Error: 消息"，位置在后面的 "at … :81:1"。
+  // 直接取第一行会让 filename 恒为空（真机实测 rejection 轨那条就是这样丢的位置）。
+  function palinkDiagLocationLine(stack) {
     var lines = palinkDiagSafeText(stack, 4000).split(PALINK_DIAG_LF);
     for (var i = 0; i < lines.length; i += 1) {
       var line = lines[i];
-      if (line && line.length > 0) return line.slice(0, 300);
+      if (!line) continue;
+      if (line.indexOf('at ') >= 0 || line.indexOf('@') >= 0) {
+        if (line.indexOf('Error:') === 0 || line.indexOf('TypeError:') === 0 || line.indexOf('ReferenceError:') === 0) continue;
+        return line.slice(0, 300);
+      }
     }
     return '';
   }
+  // 前缀剥离：位置行的两种真实形态各自带一个会粘进文件名的前缀 ——
+  //   Chrome 裸形「at url:line:col」和 Firefox/Safari 形「fn@url:line:col」。
+  // 不剥就会实测拿到 "execute@about:srcdoc"（包W 守卫用例 C 钉这条）。
+  // 保守条件：只有 @ 之前那段看起来像标识符（不含 / 也不含 :）才剥，
+  // 免得把 http://user@host/x.js 这种带 userinfo 的 URL 切坏。
+  function palinkDiagLocationCore(head) {
+    var core = palinkDiagSafeText(head, 400);
+    if (typeof core.trim === 'function') core = core.trim();
+    if (core.indexOf('at ') === 0) core = core.slice(3);
+    var at = core.lastIndexOf('@');
+    if (at >= 0) {
+      var fnPart = core.slice(0, at);
+      if (fnPart.indexOf('/') < 0 && fnPart.indexOf(':') < 0) core = core.slice(at + 1);
+    }
+    return core;
+  }
   function palinkDiagFilenameFromStack(stack) {
-    var line = palinkDiagFirstStackLine(stack);
+    var line = palinkDiagLocationLine(stack);
+    if (!line) return '';
     var open = line.indexOf('(');
     var head = open >= 0 ? line.slice(open + 1) : line;
     var close = head.indexOf(')');
     if (close >= 0) head = head.slice(0, close);
+    head = palinkDiagLocationCore(head);
     var parts = head.split(':');
     if (parts.length < 3) return '';
     var colno = parts[parts.length - 1];
@@ -320,7 +344,8 @@ ${bootHeader}
     return parts.slice(0, parts.length - 2).join(':');
   }
   function palinkDiagLineFromStack(stack) {
-    var line = palinkDiagFirstStackLine(stack);
+    var line = palinkDiagLocationLine(stack);
+    if (!line) return { lineno: -1, colno: -1 };
     var parts = line.split(':');
     if (parts.length < 3) return { lineno: -1, colno: -1 };
     var colno = parseInt(parts[parts.length - 1], 10);
