@@ -34,6 +34,34 @@ class TestThinkingAndFunctionBlocks:
         out = clean_memory_content("正文</UpdateVariable>残留")
         assert "UpdateVariable" not in out
 
+    # ---- [包U · R4 2026-10-19] 别名面与解析/剥离层同源 ----
+    @pytest.mark.parametrize("raw,tag", [
+        ('正文\n<update><JSONPatch>[{"op":"replace","path":"/a","value":1}]</JSONPatch></update>', "update"),
+        ('正文\n<VariableUpdate>[{"op":"replace","path":"/a","value":1}]</VariableUpdate>', "VariableUpdate"),
+        ('正文\n<JSONPatch>[{"op":"replace","path":"/a","value":1}]</JSONPatch>', "JSONPatch"),
+        ('正文\n<UPDATEVARIABLE><Analysis>x</Analysis></UPDATEVARIABLE>', "UPDATEVARIABLE"),
+    ])
+    def test_alias_variable_blocks_removed(self, raw, tag):
+        """上游三种别名 + 裸 <JSONPatch> 一律不许整块进向量记忆。
+
+        改前 utils.clean_memory_content 手抄了一份只认 ``<UpdateVariable>`` 的私有正则
+        （包Q §3.1 #2/#3），别名块整块进记忆 ⇒ 检索时 [:200] 截出半截标签，
+        正是 2026-09-23「残缺标签进记忆→推理模型反复自我审查」的同型事故面。
+        """
+        out = clean_memory_content(raw)
+        assert "正文" in out
+        assert tag.lower() not in out.lower(), f"{tag} 标签残留在记忆里"
+        assert '"op"' not in out, f"{tag} 的 patch 载荷残留在记忆里"
+
+    @pytest.mark.parametrize("orphan", [
+        "</update>", "<update>", "</VariableUpdate>", "<variableupdate>",
+        "</JSONPatch>", "<json_patch>", "</UpdateVariable>",
+    ])
+    def test_orphan_alias_tags_cleaned(self, orphan):
+        """截断残留的孤立别名标签同样不许进记忆（第 3 步清扫的别名面）。"""
+        out = clean_memory_content(f"正文{orphan}残留")
+        assert orphan.lower() not in out.lower()
+
 
 class TestMarkdownTableScaffold:
     def test_scaffold_rows_removed_text_kept(self):

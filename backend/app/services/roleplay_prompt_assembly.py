@@ -3341,9 +3341,17 @@ def _messages_declare_mvu_update_spec(messages: list[dict[str, Any]]) -> bool:
     """提示词里是否已有卡片自己声明的变量更新规范。
 
     判据只来自卡片文本、不含任何角色名/字段名：同一条消息里既出现变量协议标签
-    （`<UpdateVariable>` / `[mvu_update]`），又出现 JSON Patch 规范字样，即算已声明。
+    （``<UpdateVariable>`` 系，含上游别名 ``<update>`` / ``<variableupdate>``，
+    大小写不敏感）或 ``[mvu_update]`` 记号，又出现 JSON Patch 规范字样，即算已声明。
     看的是**装配结果**而不是数据库，因为条目可能被 token 预算裁掉——被裁掉就等于没声明。
+
+    ⚠️ [包U · R5 2026-10-19] 别名面引用 ``mvu_engine.MVU_UPDATE_TAG_NEEDLES``，
+    不再手抄字面 ``"<UpdateVariable>"``。改前卡里若用别名写说明（``<update>`` 等）
+    这里判不出「已声明」→ Palink 再贴一份写死的兜底模板 → 模型照抄模板里的示例
+    路径，把卡片声明的 object 结构覆盖成字符串（2026-10-05 面板恒 0 事故的同型面）。
     """
+    from ..services.mvu_engine import MVU_UPDATE_TAG_NEEDLES as _UPDATE_TAG_NEEDLES
+
     for m in messages:
         content = m.get("content")
         if isinstance(content, list):
@@ -3352,9 +3360,12 @@ def _messages_declare_mvu_update_spec(messages: list[dict[str, Any]]) -> bool:
             )
         if not isinstance(content, str):
             continue
-        if "[mvu_update]" not in content and "<UpdateVariable>" not in content:
+        lowered = content.lower()
+        if "[mvu_update]" not in lowered and not any(
+            k in lowered for k in _UPDATE_TAG_NEEDLES
+        ):
             continue
-        if "JSON Patch" in content or "JSONPatch" in content or '"op"' in content:
+        if "json patch" in lowered or "jsonpatch" in lowered or '"op"' in lowered:
             return True
     return False
 

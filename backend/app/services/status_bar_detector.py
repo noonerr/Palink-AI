@@ -347,9 +347,10 @@ def build_detect_instruction(lang: str) -> str:
 def _card_has_mvu_scripts(char) -> bool:
     """卡片是否自带 MVU 体系脚本（<UpdateVariable> / <StatusPlaceHolderImpl/>）。
 
-    MVU 卡（酒馆助手体系）的变量更新走 <UpdateVariable> JSON Patch，面板渲染走
-    <StatusPlaceHolderImpl/> 占位符；若仍注入 Palink 的 <status> 指令，AI 会输出
-    <status> 而 MVU 引擎（mvu_engine）只认 <UpdateVariable> → stat_data 永不更新
+    MVU 卡（酒馆助手体系）的变量更新走 <UpdateVariable> 系 JSON Patch（包Q 起
+    mvu_engine 认三种别名 <update> / <updatevariable> / <variableupdate>），面板
+    渲染走 <StatusPlaceHolderImpl/> 占位符；若仍注入 Palink 的 <status> 指令，AI 会输出
+    <status> 而 MVU 引擎不认 → stat_data 永不更新
     → 面板恒显示初始值（2026-08-18 实锤：AI 输出 <status>，好感度永不变化）。
     """
     try:
@@ -359,10 +360,17 @@ def _card_has_mvu_scripts(char) -> bool:
         ext = json.loads(ext_raw) if isinstance(ext_raw, str) else ext_raw
         if not isinstance(ext, dict):
             return False
+        from .mvu_engine import MVU_PROBE_NEEDLES as _MVU_NEEDLES
+
         for _rs in (ext.get("regex_scripts") or []):
             if isinstance(_rs, dict):
-                _fr = str(_rs.get("findRegex", ""))
-                if "UpdateVariable" in _fr or "StatusPlaceHolderImpl" in _fr:
+                # [包U · R5 2026-10-19] 别名面对齐 mvu_engine（包Q 已补齐三种别名）。
+                # 改前这里按字面 "UpdateVariable" 大小写敏感匹配，卡里写
+                # `<update>` / `<variableupdate>` / 小写 `updatevariable` 时判不出
+                # 「这是 MVU 卡」→ 继续注入 Palink 的 <status> 指令 → stat_data 永不更新
+                # （正是 2026-08-18 那条实锤的另一个触发面）。
+                _fr = str(_rs.get("findRegex", "")).lower()
+                if any(k in _fr for k in _MVU_NEEDLES):
                     return True
     except Exception:
         return False

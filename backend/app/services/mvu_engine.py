@@ -34,6 +34,8 @@ __all__ = [
     "extract_schema_defaults",
     "build_initial_stat_data",
     "MvuEngine",
+    "MVU_UPDATE_TAG_NEEDLES",
+    "MVU_PROBE_NEEDLES",
 ]
 
 # ---------------------------------------------------------------------------
@@ -72,6 +74,31 @@ _JSONPATCH_BLOCK_SRC = _MVU_BLOCK_PATTERN % (_MVU_JSONPATCH_TAG_ALIAS, _MVU_BLOC
 
 _UPDATE_VAR_RE = re.compile(_UPDATE_BLOCK_SRC, re.IGNORECASE)
 _JSONPATCH_RE = re.compile(_JSONPATCH_BLOCK_SRC, re.IGNORECASE)
+
+#: [包U · R5 2026-10-19] **变量更新标签家族**的字面 needle（小写），与
+#: ``_MVU_UPDATE_TAG_ALIAS`` 同源。给「这段文本/这张卡有没有声明变量更新协议」
+#: 这类**只针对更新标签**的探测用（roleplay_prompt_assembly 的卡自带格式说明探测）。
+#: ⚠️ 不要在这里放 ``jsonpatch`` / ``statusplaceholderimpl``：那两个是「这张卡属于
+#:    MVU 体系」的判据，放进「已声明输出规范」的判据会误判 ⇒ Palink 该注入的兜底
+#:    说明反而不注入，模型不输出块 → stat_data 永不更新。
+MVU_UPDATE_TAG_NEEDLES: tuple[str, ...] = (
+    "updatevariable",
+    "variableupdate",
+    "<update>",
+    "</update>",
+)
+
+#: [包U · R5 2026-10-19] 「这张卡是不是 MVU 体系卡」的**探测面**字面 needle（小写）。
+#: 这类探测只能按字面在正则/脚本文本里找标签名，无法跑正则，所以单独给一份
+#: 与 ``_MVU_UPDATE_TAG_ALIAS`` 同源的别名清单（更新标签 + JSONPatch + 面板占位符）。
+#: ⚠️ 凡新写这类探测，**引用本常量**，不要手抄 ``"UpdateVariable" in text``：
+#:    手抄的那份只认一种写法，别名卡就漏判（status_bar_detector、
+#:    roleplay_prompt_assembly 两处历史上各抄了一份，包Q 补齐别名面时都没跟上）。
+MVU_PROBE_NEEDLES: tuple[str, ...] = MVU_UPDATE_TAG_NEEDLES + (
+    "jsonpatch",
+    "json_patch",
+    "statusplaceholderimpl",
+)
 # 块独占整行时连同块后换行一并移除（strip 第一遍用），避免正文留下孤立空行。
 _UPDATE_VAR_LINE_RE = re.compile(
     r"(?m)^[ \t]*" + _UPDATE_BLOCK_SRC + r"[ \t]*$\n?", re.IGNORECASE

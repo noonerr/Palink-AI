@@ -341,3 +341,68 @@ class TestNoRegression:
         text = "他更新了自己，写了 <b>粗体</b> 与 [1] 脚注。"
         assert extract_update_variable_blocks(text) == []
         assert strip_update_variable_blocks(text) == text
+
+
+class TestProbeNeedleAliases:
+    """[包U · R5 2026-10-19] 探测面（非正则、按字面找标签名）的别名回归。
+
+    包Q §3.1 #4/#5 登记的两处手抄字面判断：
+      · status_bar_detector._card_has_mvu_scripts —— 「这张卡是不是 MVU 卡」
+      · roleplay_prompt_assembly._messages_declare_mvu_update_spec —— 「卡有没有自带输出规范」
+    两处改前都只认字面 ``UpdateVariable``/``<UpdateVariable>``，别名卡漏判。
+    """
+
+    @staticmethod
+    def _char_with(find_regex: str):
+        import json as _json
+
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            extensions=_json.dumps({"regex_scripts": [{"findRegex": find_regex}]})
+        )
+
+    @pytest.mark.parametrize("find_regex", [
+        "/<UpdateVariable>[\\s\\S]*?<\\/UpdateVariable>/",
+        "/<update>[\\s\\S]*?<\\/update>/",
+        "/<variableupdate>/i",
+        "/<updatevariable>/i",
+        "/<StatusPlaceHolderImpl\\/>/g",
+        "/<JSONPatch>/i",
+    ])
+    def test_alias_cards_are_recognised_as_mvu(self, find_regex):
+        from app.services.status_bar_detector import _card_has_mvu_scripts
+
+        assert _card_has_mvu_scripts(self._char_with(find_regex)) is True, (
+            f"卡里写 {find_regex} 判不出 MVU 体系 → 会继续注入 Palink <status> 指令"
+        )
+
+    @pytest.mark.parametrize("find_regex", [
+        "/<status>[\\s\\S]*?<\\/status>/",
+        "/\\{\\{char\\}\\}/g",
+    ])
+    def test_non_mvu_cards_stay_unclassified(self, find_regex):
+        from app.services.status_bar_detector import _card_has_mvu_scripts
+
+        assert _card_has_mvu_scripts(self._char_with(find_regex)) is False
+
+    def test_probe_needles_come_from_one_source(self):
+        """两张探测清单必须是包含关系，且「已声明输出规范」不许混进占位符/patch 标签。"""
+        from app.services.mvu_engine import MVU_PROBE_NEEDLES, MVU_UPDATE_TAG_NEEDLES
+
+        assert set(MVU_UPDATE_TAG_NEEDLES) < set(MVU_PROBE_NEEDLES)
+        # 混进占位符/patch 会把「只写了面板占位符」误判成「已声明输出规范」
+        # ⇒ 该注入兜底说明的卡反而不注入 → 模型不输出块 → stat_data 永不更新
+        assert "statusplaceholderimpl" not in MVU_UPDATE_TAG_NEEDLES
+        assert "jsonpatch" not in MVU_UPDATE_TAG_NEEDLES
+
+    def test_probe_needles_all_parse_at_the_engine_layer(self):
+        """探测清单里每一个更新标签名，解析层正则必须真的认 —— 否则两面又分叉。"""
+        from app.services.mvu_engine import _UPDATE_VAR_RE, MVU_UPDATE_TAG_NEEDLES
+
+        for needle in MVU_UPDATE_TAG_NEEDLES:
+            bare = needle.strip("<>/")
+            text = f"<{bare}><JSONPatch>[]</JSONPatch></{bare}>"
+            assert _UPDATE_VAR_RE.search(text), (
+                f"探测清单含 {needle!r} 但解析层正则不认 ⇒ 识别面再次分叉"
+            )

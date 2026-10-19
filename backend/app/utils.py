@@ -233,12 +233,27 @@ def clean_memory_content(text: Optional[str]) -> str:
     if not text:
         return ""
     s = str(text)
-    # 1) 剥离完整 <UpdateVariable> 功能块（含内嵌 <Analysis>/<JSONPatch>，跨行）
-    s = re.sub(r"<UpdateVariable(?:\s[^>]*)?[\s\S]*?</UpdateVariable\s*>", "", s, flags=re.IGNORECASE)
+    # 1) [包U · R4 2026-10-19] 剥离变量更新功能块 —— 改走 mvu_engine 的**同一条**
+    #    剥离正则，与解析层/落库层共用一个别名面。
+    #    改前这里手抄了一份只认 `<UpdateVariable>` 的私有正则，上游 MVU 另两种别名
+    #    `<update>` / `<variableupdate>` 与裸 `<JSONPatch>` 块一概不认 ⇒ 残缺标签
+    #    整块进向量记忆。本仓 2026-09-23 已因同类问题出过事故（文件头注释即那次记录），
+    #    包Q 又把解析/剥离面补齐成三种别名 —— 识别面必须只有一份，否则又是
+    #    「剥了但没解析 / 解析了但留在正文」的多入口不一致复发。
+    from .services.mvu_engine import strip_update_variable_blocks
+
+    s = strip_update_variable_blocks(s)
     # 2) 剥离思维链块（推理模型常见的 <thinking> 或 <think>）
     s = re.sub(r"<(?:think|thinking)(?:\s[^>]*)?[\s\S]*?</(?:think|thinking)\s*>", "", s, flags=re.IGNORECASE)
-    # 3) 清扫因截断而残留的孤立功能标签（防止残缺标签进入记忆）
-    s = re.sub(r"</?(?:UpdateVariable|Analysis|JSONPatch|Patch|think|thinking)\b[^>]*>", "", s, flags=re.IGNORECASE)
+    # 3) 清扫因截断而残留的孤立功能标签（防止残缺标签进入记忆）。
+    #    别名面与第 1 步的 mvu_engine._MVU_UPDATE_TAG_ALIAS 保持一致：
+    #    update / updatevariable / variableupdate / json_?patch。
+    s = re.sub(
+        r"</?(?:update|updatevariable|variableupdate|json_?patch|analysis|patch|think|thinking)\b[^>]*>",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
 
     # 4) HTML：style/script 无条件整块删；带 class|style 的块级元素整块删，
     #    但若删完几乎不剩内容（说明该条正文靠 HTML 承载）则退回"只拆标签"，

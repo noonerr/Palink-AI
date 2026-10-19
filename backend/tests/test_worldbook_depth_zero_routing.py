@@ -149,6 +149,39 @@ class TestCardDeclaresUpdateSpec:
         ]}]
         assert _messages_declare_mvu_update_spec(messages) is True
 
+    # ---- [包U · R5 2026-10-19] 别名面：探测必须与 mvu_engine 的解析/剥离同一套写法 ----
+    @pytest.mark.parametrize("tag_text", [
+        "<update>\n<JSONPatch>\n[{\"op\":\"replace\",\"path\":\"/a\",\"value\":1}]\n</JSONPatch>\n</update>",
+        "<VariableUpdate> 规范，见 JSON Patch (RFC 6902)",
+        "<updateVariable> 规范 + \"op\"",
+        "<UPDATEVARIABLE> 规范 + JSON Patch",
+    ])
+    def test_alias_tag_writings_are_detected(self, tag_text):
+        """卡里用上游别名（或任意大小写）写说明 ⇒ 必须判为「已声明」，不再重复注入。
+
+        改前判据是大小写敏感的字面 ``"<UpdateVariable>"``，别名写法一律漏判
+        → Palink 贴自己的兜底模板 → 模型照抄模板示例路径，把卡片声明的结构覆盖掉。
+        """
+        messages = [{"role": "system", "content": f"变量输出格式: {tag_text}"}]
+        assert _messages_declare_mvu_update_spec(messages) is True
+
+    def test_placeholder_only_does_not_count_as_declared_spec(self):
+        """只有面板占位符、没有更新标签 ⇒ 不算「已声明输出规范」。
+
+        守门狗：这条判据若误用 MVU_PROBE_NEEDLES（含 jsonpatch/StatusPlaceHolderImpl），
+        本例会变 True ⇒ 该注入兜底说明的卡反而不注入 → 模型不输出块 → stat_data 永不更新。
+        """
+        messages = [{"role": "system", "content": "面板渲染用 <StatusPlaceHolderImpl/> 占位符"}]
+        assert _messages_declare_mvu_update_spec(messages) is False
+
+    def test_needles_share_one_alias_source_with_parser(self):
+        """探测面别名清单与解析/剥离层同源（勿再各抄一份 —— 包Q §3.1 #4/#5 的病根）。"""
+        from app.services.mvu_engine import MVU_PROBE_NEEDLES, MVU_UPDATE_TAG_NEEDLES
+
+        assert set(MVU_UPDATE_TAG_NEEDLES) < set(MVU_PROBE_NEEDLES)
+        for needle in MVU_UPDATE_TAG_NEEDLES:
+            assert needle in ("updatevariable", "variableupdate", "<update>", "</update>")
+
 
 class TestGenericTailHasNoCardNames:
     """守门狗：兜底模板不得含任何具体角色名/字段名（本次事故的真凶）。"""
