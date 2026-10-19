@@ -489,9 +489,48 @@ export function registerStCompatCommands(): string[] {
       return '';
     },
   });
+  // [包Z Z-1] `scope` 命名参数对齐 ST 一手源码（本机 /d/SillyTavern-release）：
+  //   注册处 public/scripts/variables.js:902-932 —— :904 name、:906 aliases:['listchatvar']、
+  //   :910-922 `scope`（:914 defaultValue 'all'、:916 forceEnum、:918-920 enumList all|local|global）。
+  //   实现处 public/scripts/variables.js:263-302 —— :268 归一（lowercase+trim，空值→'all'）、
+  //   :273-274 include 判定、:291-294 JSON 形状 [{key,value,scope}]、:301 doReturn 默认 popup-html。
+  // 非法值：ST 的 forceEnum 只喂自动补全（SlashCommandArgument.js:55 定义、
+  //   SlashCommandAutoCompleteNameResult.js:119/188 转 forceMatch），执行期**不抛错**；
+  //   未知 scope 使 :273-274 两个 include 恒假 ⇒ 文本分支为空串。这里照抄"不抛错 + 空串"。
+  // global 分支是**真通道**：frontend/src/lib/variables/global.ts:15 GlobalVariableStorage
+  //   （落后端 /api/variables/global，与上面 :446 addglobalvar / :464 incglobalvar /
+  //   :473 decglobalvar / :479 flushglobalvar 读写同一张表）⇒ 不是把局部表换个名字再列一遍。
+  // 两处有据可查的**偏离**（详见 docs/_active/report/REPORT_包Z_紧要批次一小收尾_2026-10-19.md）：
+  //   ① 缺省值：ST 为 'all'，但改前本仓 `/listvar` 就是"只列局部表"，HANDOFF §1 Z-1 验收标准
+  //      要求"不给 scope 与改前逐字节一致" ⇒ 缺省仍走 local，`scope=all` 才出 ST 的两组形状。
+  //   ② `chat` 不在 ST 枚举里（ST 会当非法值出空串），此处按同一验收标准当作 local 的同义词。
+  // 不做：`return` 参数（ST :923-930）——Palink 引擎没有 popup/object 返回通道，照抄就是空壳。
   register('listvar', {
-    description: 'List all local variables as JSON',
-    callback: () => JSON.stringify(variableManager.local.list()),
+    description: 'List variables; scope=local|global|all (ST variables.js:910-922)',
+    namedArgs: [
+      {
+        name: 'scope',
+        description: 'filter variables by scope',
+        type: [ARGUMENT_TYPE.STRING],
+        isRequired: false,
+        enumList: ['all', 'local', 'global', 'chat'],
+      },
+    ],
+    callback: (named) => {
+      const scope = String(named?.scope ?? '').toLowerCase().trim(); // ST :268
+      const localVars = variableManager.local.list();
+      const globalVars = variableManager.global.list();
+      const includeLocal = scope === '' || scope === 'all' || scope === 'local' || scope === 'chat';
+      const includeGlobal = scope === 'global' || scope === 'all';
+      if (!includeLocal && !includeGlobal) return ''; // ST :273-274 双假 ⇒ 空串，不抛错
+      if (scope === 'all') {
+        return JSON.stringify([
+          ...Object.entries(localVars).map(([key, value]) => ({ key, value, scope: 'local' })),
+          ...Object.entries(globalVars).map(([key, value]) => ({ key, value, scope: 'global' })),
+        ]);
+      }
+      return JSON.stringify(includeGlobal ? globalVars : localVars);
+    },
   });
 
   // ── 诊断 ──────────────────────────────────────────────────────
