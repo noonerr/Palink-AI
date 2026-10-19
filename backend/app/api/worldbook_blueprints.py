@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..core import get_db
-from ..core.cache import invalidate_cache
+from ..core.cache import invalidate_user_cache
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.worldbook import WorldBook, WorldBookBlueprint
@@ -139,7 +139,12 @@ async def apply_blueprint_endpoint(
         raise HTTPException(404, str(e))
 
     # 失效世界书相关缓存
-    invalidate_cache(f"worldbook_list:user={user.id}")
+    # [ST-BRIDGE-BOOKBIND 2026-10-20] 与 api/worldbook.py 同一次修：原写法以
+    #   ``worldbook_list:user=<id>`` 当**前缀**去匹配 key，而实际 key 形如
+    #   ``worldbook_list:character_id=<hash>:type=<hash>:user=<id>``（core/cache.py:93-110
+    #   按 kwargs 键名字典序拼），startswith 恒不匹配 ⇒ 15s 内列表读到的仍是旧值。
+    #   改走用户级后缀匹配，与 character.py:379 保持一致。
+    invalidate_user_cache("worldbook_list", user.id)
 
     return {
         "status": "ok",

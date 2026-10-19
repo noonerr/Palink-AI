@@ -49,6 +49,32 @@ class WorldBookUpdate(BaseModel):
     # [WB-CHAR-BIND 2026-10-03] 角色绑定。传 null = 解绑（回到全局源）。
     # 用 ``model_fields_set`` 区分"没传"与"显式传 null"（见 api/worldbook.py）。
     character_id: Optional[str] = None
+    # [ST-BRIDGE-BOOKBIND 2026-10-20] 世界书类型可写（此前全仓无 API 写通道）。
+    #
+    # 为什么必须补：ST 的 ``world_info.charLore.primary`` 只是"这本是该角色的角色书"，
+    #   绑定这件事在 Palink 落到两个列上 —— ``character_id``（归属）与 ``type``（角色书标记）。
+    #   后者同时被两处消费，缺它绑定就写不回来：
+    #     · api/worldbook.py list_worldbooks 的 ``type == "character_book"`` 过滤
+    #       ⇒ 前端 SmartCardCompatController.resolveCharWorldbookExport 认 primary 靠它；
+    #     · services/mvu_entry_filter.select_character_book_contents:42 的同名过滤
+    #       ⇒ MVU 的 <initvar> / schema 提取靠它。
+    #   改前 ``type`` 只在"角色卡导入"时由 service 内部赋值，PUT 不可改；仅改 character_id
+    #   会让卡调到 setCurrentCharLorebooks 后**读不回来**（重新加载仍是旧绑定），
+    #   属"只在某个 API 里生效"的假通道 —— 按护栏要求不得这么交付。
+    #
+    # 不传该键 = 不改（与 character_id 同一手法，靠 model_fields_set 区分）。
+    # 取值限定两枚举，不接受任意串（避免造出既非角色书也非全局书的第三态）。
+    type: Optional[str] = None
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = str(v).strip()
+        if value not in ("world_book", "character_book"):
+            raise ValueError("type 只能是 'world_book' 或 'character_book'")
+        return value
 
     @field_validator("name")
     @classmethod

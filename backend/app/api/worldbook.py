@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session, selectinload
 
 from ..core import get_db
-from ..core.cache import cached, invalidate_cache
+from ..core.cache import cached, invalidate_user_cache
 from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
 from ..api.dependencies import get_current_user
 from ..models import User
@@ -338,7 +338,7 @@ async def create_worldbook(
     db.add(wb)
     db.commit()
     db.refresh(wb)
-    invalidate_cache(f"worldbook_list:user={user.id}")
+    invalidate_user_cache("worldbook_list", user.id)
 
     # 触发 ST DATA_ROOT 同步（后台非阻塞）
     try:
@@ -414,10 +414,28 @@ async def update_worldbook(
     # 就会把已有绑定悄悄抹掉。
     if "character_id" in req.model_fields_set:
         wb.character_id = _resolve_bindable_character_id(db, user.id, req.character_id)
+    # [ST-BRIDGE-BOOKBIND 2026-10-20] type 可写（此前该列没有 API 写通道）。
+    #   与 character_id 同一手法：只在**请求体显式带了 type** 时才落值。
+    #   安全面：type 只收 'world_book' / 'character_book' 两枚举（见 WorldBookUpdate.type
+    #   的 validator），且本端点前面已按 ``user_id == user.id`` 过滤 ⇒ 改不到别人的书。
+    if "type" in req.model_fields_set and req.type is not None:
+        wb.type = req.type
     wb.updated_at = _utc_now()
     db.commit()
     db.refresh(wb)
-    invalidate_cache(f"worldbook_list:user={user.id}")
+    # [ST-BRIDGE-BOOKBIND 2026-10-20] 这里原本写的是
+    #   ``invalidate_cache(f"worldbook_list:user={user.id}")`` —— **无效失效**。
+    # 根因：list_worldbooks 的缓存 key 由 _build_key 拼成
+    #   ``worldbook_list:character_id=<hash>:type=<hash>:user=<id>``
+    # （core/cache.py:93-110，按 kwargs 键名字典序拼接），而 invalidate_cache 走的是
+    #   ``k.startswith(key_prefix)``（core/cache.py:75）。拿 ``worldbook_list:user=<id>``
+    #   当**前缀**去匹配，永远命中不了 ⇒ 世界书列表缓存要等 TTL=15s 自然过期才刷新。
+    # 后果直击本批次：卡调 rebindCharWorldbooks / setCurrentCharLorebooks 之后立刻按角色源
+    #   重查，读回来的仍是改前的绑定（"重新加载仍在新绑定"这条验收直接不成立）。
+    # 正解是走 character.py:379 那套用户级后缀匹配（本项目既有正解）：
+    #   invalidate_user_cache("worldbook_list", user.id)  # 同文件另外 3 处一并修
+    # 同时给 PUT /{id} 加下行注释以便日后 grep 到。
+    invalidate_user_cache("worldbook_list", user.id)
 
     # V-1: 世界书保存后同步向量库（存在 vectorized 条目才触发，fire-and-forget）
     _schedule_worldbook_vector_sync(db, world_book_id)
@@ -450,7 +468,7 @@ async def delete_worldbook(
     db.query(SessionWorldBook).filter(SessionWorldBook.world_book_id == world_book_id).delete()
     db.delete(wb)
     db.commit()
-    invalidate_cache(f"worldbook_list:user={user.id}")
+    invalidate_user_cache("worldbook_list", user.id)
 
     # V-1: 删除世界书时清空其向量行（fire-and-forget；Postgres 侧 FK CASCADE 兜底）
     _fire_vector_delete(world_book_id)
@@ -681,7 +699,7 @@ async def import_worldbook(
 
     db.commit()
     db.refresh(wb)
-    invalidate_cache(f"worldbook_list:user={user.id}")
+    invalidate_user_cache("worldbook_list", user.id)
 
     # V-1: 导入含 vectorized 条目时同步向量库（ST 导入对齐，fire-and-forget）
     _schedule_worldbook_vector_sync(db, wb.id)
