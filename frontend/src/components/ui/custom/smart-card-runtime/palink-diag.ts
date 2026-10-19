@@ -710,6 +710,7 @@ export function installPalinkDiagHostRejectionTrack(): void {
  *   window.__palinkDiagExport()    → 下载 JSON
  *   window.__palinkDiagSetEnabled(bool|null) → 手动开关
  *   window.__palinkDiagRecord(...) → 宿主代码写一条
+ *   window.__palinkDiagRanking()   → 缺口排行数组（按事件数降序）
  */
 export function installPalinkDiagGlobals(): void {
   if (typeof window === 'undefined') return;
@@ -721,5 +722,7 @@ export function installPalinkDiagGlobals(): void {
   w.__palinkDiagSetEnabled = (value: boolean | null) => setPalinkDiagEnabled(value);
   w.__palinkDiagRecord = recordPalinkDiag;
   w.__palinkDiagEnabled = palinkDiagEnabled;
+  // [包Z Z-3] 缺口排行此前只能从 __palinkDiagDump() 的 JSON 里解出来，控制台手查要先 parse。
+  w.__palinkDiagRanking = palinkDiagStGapRanking;
   if (palinkDiagEnabled()) scheduleSummary();
 }

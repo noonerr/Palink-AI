@@ -25,6 +25,7 @@ import {
   palinkDiagDump,
   palinkDiagEnabled,
   palinkDiagRecords,
+  palinkDiagStGapRanking,
   palinkDiagSummaryLine,
   palinkDiagTotals,
   recordPalinkDiag,
@@ -191,6 +192,32 @@ describe('包W 记录器 · schema 与导出', () => {
     expect(typeof w.__palinkDiagDump).toBe('function');
     expect(typeof w.__palinkDiagDump()).toBe('string');
     expect(JSON.parse(w.__palinkDiagDump()).records[0].name).toBe('window.context');
+  });
+
+  // [包Z Z-3] 排行入口必须挂在 window 上，且语义与 palinkDiagStGapRanking() 一致
+  it('__palinkDiagRanking() 挂上全局，返回数组且按事件数降序', () => {
+    installPalinkDiagGlobals();
+    const w = window as unknown as Record<string, () => Array<{ id: string; records: number; events: number }>>;
+    expect(typeof w.__palinkDiagRanking).toBe('function');
+    const ranking = w.__palinkDiagRanking();
+    expect(Array.isArray(ranking)).toBe(true);
+
+    // 灌两个缺口：zeta 踩 2 次事件、alpha 踩 1 次 ⇒ zeta 必须排在 alpha 前
+    recordPalinkDiag({ owner: 'host_capability', kind: 'slash_command_unimplemented', name: 'listvar', missingStSubsystem: 'zeta_gap' });
+    recordPalinkDiag({ owner: 'host_capability', kind: 'slash_command_unimplemented', name: 'listvar', missingStSubsystem: 'zeta_gap' });
+    recordPalinkDiag({ owner: 'host_capability', kind: 'slash_command_unimplemented', name: 'alias', missingStSubsystem: 'alpha_gap' });
+    const byId = w.__palinkDiagRanking();
+    const zeta = byId.find((x) => x.id === 'zeta_gap');
+    const alpha = byId.find((x) => x.id === 'alpha_gap');
+    expect(zeta).toMatchObject({ records: 1, events: 2 });
+    expect(alpha).toMatchObject({ records: 1, events: 1 });
+    expect(byId.findIndex((x) => x.id === 'zeta_gap')).toBeLessThan(byId.findIndex((x) => x.id === 'alpha_gap'));
+    // 降序不变式：任意相邻两项 events 不减
+    for (let i = 1; i < byId.length; i += 1) {
+      expect(byId[i - 1].events).toBeGreaterThanOrEqual(byId[i].events);
+    }
+    // 全局入口与导出的直调结果逐字节一致（不是两份实现）
+    expect(JSON.stringify(w.__palinkDiagRanking())).toBe(JSON.stringify(palinkDiagStGapRanking()));
   });
 });
 
