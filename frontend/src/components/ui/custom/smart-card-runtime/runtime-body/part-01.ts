@@ -276,6 +276,177 @@ ${bootHeader}
     return normalized;
   };
   window.__palinkReportCompatDiagnostic = reportDiagnostic;
+  // ==== [包W 2026-10-19] 帧内静默失败记录器 ====
+  // 要解决的问题：兼容层里「什么都没发生」的路径（未实现的命令返回空串、catch 吞掉异常、
+  // 未授信全局读不到）对用户安静、对开发者也零痕迹，于是永远定不了责。
+  // 产品形状（用户已拍板）：对用户仍然安静，对记录必须啰嗦。每条记录带「该谁修」标签 owner，
+  // 同名去重但不丢弃（首次带细节，后续只累加 count 与 lastAt）。
+  // 通道：只复用既有的 st:diagnostic（severity 固定 info ⇒ 宿主 toast 闸门不弹，用户可见行为零变化）。
+  // 开关：真正的门在宿主侧（palink-diag.ts 的本机站点/手动开关判定）；帧内缓冲区有界（≤200 条），
+  //       所以外部站点也不会涨内存。帧内数据只能经 postMessage 上送（opaque origin，父侧读不到帧内 DOM）。
+  // 约束：本段是注入 iframe 的模板字符串 —— 只能 ES5、不许反引号、不许美元花括号、
+  //       字符串与注释里不许裸反斜杠（换行符用 String.fromCharCode(10) 取，彻底绕开转义）。
+  var PALINK_DIAG_OWNERS = { frame_compat: 1, host_capability: 1, card_authored: 1, display_pipeline: 1 };
+  var PALINK_DIAG_LF = String.fromCharCode(10);
+  var palinkDiagRecords = [];
+  var palinkDiagIndex = {};
+  var palinkDiagDropped = 0;
+  var palinkDiagDigits = new RegExp('^[0-9]+$');
+  function palinkDiagSafeText(value, max) {
+    var text = '';
+    try { text = String(value === undefined || value === null ? '' : value); } catch (e) { text = '[unstringifiable]'; }
+    var limit = typeof max === 'number' ? max : 400;
+    return text.length > limit ? text.slice(0, limit) : text;
+  }
+  function palinkDiagFirstStackLine(stack) {
+    var lines = palinkDiagSafeText(stack, 4000).split(PALINK_DIAG_LF);
+    for (var i = 0; i < lines.length; i += 1) {
+      var line = lines[i];
+      if (line && line.length > 0) return line.slice(0, 300);
+    }
+    return '';
+  }
+  function palinkDiagFilenameFromStack(stack) {
+    var line = palinkDiagFirstStackLine(stack);
+    var open = line.indexOf('(');
+    var head = open >= 0 ? line.slice(open + 1) : line;
+    var close = head.indexOf(')');
+    if (close >= 0) head = head.slice(0, close);
+    var parts = head.split(':');
+    if (parts.length < 3) return '';
+    var colno = parts[parts.length - 1];
+    var lineno = parts[parts.length - 2];
+    if (!palinkDiagDigits.test(palinkDiagSafeText(colno, 12)) || !palinkDiagDigits.test(palinkDiagSafeText(lineno, 12))) return '';
+    return parts.slice(0, parts.length - 2).join(':');
+  }
+  function palinkDiagLineFromStack(stack) {
+    var line = palinkDiagFirstStackLine(stack);
+    var parts = line.split(':');
+    if (parts.length < 3) return { lineno: -1, colno: -1 };
+    var colno = parseInt(parts[parts.length - 1], 10);
+    var lineno = parseInt(parts[parts.length - 2], 10);
+    return {
+      lineno: isNaN(lineno) ? -1 : lineno,
+      colno: isNaN(colno) ? -1 : colno,
+    };
+  }
+  function palinkDiagUpsend(record, delta) {
+    // 上送的是**增量**（delta），父侧按同 key 累加，绝不会出现「帧里 12 次、父里 24 次」。
+    // 首次必送；之后每满 10 次送一批，且总上送次数封顶 30 —— 防止热路径把 postMessage 打爆。
+    try {
+      if (record.upposts >= 30 && delta < 50) return;
+      record.upposts += 1;
+      post({
+        type: 'st:diagnostic',
+        diagnostic: {
+          severity: 'info',
+          code: 'palink_diag',
+          apiName: palinkDiagSafeText(record.kind, 80),
+          message: 'palink-diag ' + palinkDiagSafeText(record.kind, 80) + ' ' + palinkDiagSafeText(record.name, 120),
+          detail: 'palinkDiag:' + JSON.stringify({
+            owner: record.owner,
+            kind: record.kind,
+            name: record.name,
+            detail: record.detail,
+            stack: record.stack,
+            filename: record.filename,
+            lineno: record.lineno,
+            colno: record.colno,
+            textLength: record.textLength,
+            count: delta,
+            frameId: frameId,
+          }),
+          stack: record.stack,
+          runtimeVersion: runtimeVersion,
+          runtimeMode: runtimeMode,
+          timestamp: Date.now(),
+        },
+      });
+    } catch (e) { /* 父窗口不可达时静默：帧内缓冲仍然留痕 */ }
+  }
+  function palinkDiagRecord(input) {
+    try {
+      var src = input && typeof input === 'object' ? input : {};
+      var owner = PALINK_DIAG_OWNERS[src.owner] ? src.owner : 'frame_compat';
+      var kind = palinkDiagSafeText(src.kind || 'frame_record', 80);
+      var name = palinkDiagSafeText(src.name === undefined || src.name === null ? '' : src.name, 200);
+      var key = owner + '|' + kind + '|' + name;
+      var now = Date.now();
+      var stack = palinkDiagSafeText(src.stack || '', 1200);
+      var hit = palinkDiagIndex[key];
+      if (hit) {
+        hit.lastAt = now;
+        hit.count += 1;
+        if (!hit.stack && stack) {
+          hit.stack = stack;
+          hit.filename = palinkDiagSafeText(src.filename || '', 300) || palinkDiagFilenameFromStack(stack);
+          var pos = palinkDiagLineFromStack(stack);
+          if (src.filename) pos = { lineno: hit.lineno, colno: hit.colno };
+          if (hit.lineno < 0) hit.lineno = typeof src.lineno === 'number' ? src.lineno : pos.lineno;
+          if (hit.colno < 0) hit.colno = typeof src.colno === 'number' ? src.colno : pos.colno;
+        }
+        if (hit.count % 10 === 0) palinkDiagUpsend(hit, 10);
+        return hit;
+      }
+      if (palinkDiagRecords.length >= 200) {
+        var oldest = palinkDiagRecords.shift();
+        if (oldest) delete palinkDiagIndex[oldest.key];
+        palinkDiagDropped += 1;
+      }
+      var coords = palinkDiagLineFromStack(stack);
+      var record = {
+        key: key,
+        owner: owner,
+        kind: kind,
+        name: name,
+        detail: palinkDiagSafeText(src.detail || '', 600),
+        stack: stack,
+        filename: palinkDiagSafeText(src.filename || '', 300) || palinkDiagFilenameFromStack(stack),
+        lineno: typeof src.lineno === 'number' ? src.lineno : coords.lineno,
+        colno: typeof src.colno === 'number' ? src.colno : coords.colno,
+        textLength: typeof src.textLength === 'number' ? src.textLength : -1,
+        frameId: palinkDiagSafeText(frameId, 64),
+        cardId: palinkDiagSafeText(ctx && ctx.characterId ? ctx.characterId : '', 64),
+        count: 1,
+        firstAt: now,
+        lastAt: now,
+        upposts: 0,
+      };
+      palinkDiagRecords.push(record);
+      palinkDiagIndex[key] = record;
+      palinkDiagUpsend(record, 1);
+      return record;
+    } catch (e) {
+      return null;
+    }
+  }
+  function palinkDiagDumpText() {
+    try {
+      var byOwner = { frame_compat: 0, host_capability: 0, card_authored: 0, display_pipeline: 0 };
+      var events = 0;
+      var i = 0;
+      for (i = 0; i < palinkDiagRecords.length; i += 1) {
+        byOwner[palinkDiagRecords[i].owner] = (byOwner[palinkDiagRecords[i].owner] || 0) + 1;
+        events += palinkDiagRecords[i].count;
+      }
+      return JSON.stringify({
+        schema: 'palink-diag/v1',
+        side: 'frame',
+        frameId: palinkDiagSafeText(frameId, 64),
+        cardId: palinkDiagSafeText(ctx && ctx.characterId ? ctx.characterId : '', 64),
+        generatedAt: new Date().toISOString(),
+        limits: { perFrame: 200 },
+        totals: { records: palinkDiagRecords.length, events: events, dropped: palinkDiagDropped, byOwner: byOwner },
+        records: palinkDiagRecords,
+      }, null, 2);
+    } catch (e) {
+      return '{"schema":"palink-diag/v1","error":"frame dump failed"}';
+    }
+  }
+  window.__palinkDiagRecord = palinkDiagRecord;
+  window.__palinkDiagDump = palinkDiagDumpText;
+  window.__palinkDiagRecords = palinkDiagRecords;
+  window.__palinkDiagBuffered = palinkDiagRecords;
   const executeCompatInlineScriptCompat = (source, label = '') => {
     const script = document.createElement('script');
     if (runtimeScriptNonce) script.setAttribute('nonce', runtimeScriptNonce);
