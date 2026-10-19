@@ -382,6 +382,28 @@ export function extractHtmlBlocks(text: string): HtmlBlocks {
     blocks.push(match);
     return makeHtmlBlockPlaceholder(index);
   });
+  // [包T 2026-10-19] 同批保护 <script> / <noscript> 块：**区域保护**，不是一刀切。
+  //
+  // 为什么要补这一段：后面的 `wrapSillyTavernQuotedText` 会把成对英文引号包成 `<q>…</q>`
+  // （对齐 ST script.js 的正文着色），而它的保护分支只有 `<style>`、``` 围栏、`` 与 ` 包裹
+  // —— **没有 `<script>`**。于是一段没被 `<div>`/完整文档/围栏罩住的 `<script>`，
+  // 它的 JS 源码会被当成正文改写：`const a = "x"` → `const a = <q>"x"</q>`，
+  // 注进沙箱 iframe 后直接 SyntaxError（面板插上、面板自带脚本不跑）。
+  //
+  // 「罩住了」目前只是运气：`looksLikeRenderableCardHtml` 会把含 `<script>` 的消息
+  // 整体短路到 smart-card 分支（不跑 Showdown），所以现网那张状态栏卡
+  // （正则产出一整份 ``` 围栏包裹的 HTML 文档）过管线是逐字节不变的。
+  // 但短路条件本身在演进（流式分支、html-display 分支都会走到这里），
+  // 所以保护必须落在**区域**上，而不是依赖上游那个总闸。
+  //
+  // 口径对齐 ST：ST 的 message 格式化对 script/style 一律按 raw 区处理，不做正文级替换。
+  // 本改动只影响"这段文本交给 markdown 层"与否，不改正则与宏的执行范围
+  // —— 状态栏面板恰恰要先靠显示正则把 `<StatusPlaceHolderImpl/>` 换成 HTML 才存在。
+  result = result.replace(/<(script|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, (match) => {
+    const index = blocks.length;
+    blocks.push(match);
+    return makeHtmlBlockPlaceholder(index);
+  });
   // 保护其他 HTML 块（支持嵌套，循环处理直到无变化）
   const tagPattern = new RegExp(
     `<(${HTML_BLOCK_TAGS.join('|')})\\b[^>]*>[\\s\\S]*?<\\/\\1>`,
