@@ -612,6 +612,48 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     createLorebook: th134Bridge('createWorldbook'),
     createLorebookEntries: th134Bridge('createWorldbookEntries'),
     deleteLorebookEntries: th134Bridge('deleteWorldbookEntries'),
+    // [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 世界书删除 + 卡↔书绑定写侧四键。
+    //
+    // 契约（一手，逐个抄自 @types/function/）：
+    //   worldbook.d.ts:184-190  deleteWorldbook(worldbook_name) —— Promise<boolean>，
+    //                           注释写死「是否成功删除，可能因世界书不存在等原因而失败」
+    //                           ⇒ **失败返回 false，不是抛错**；
+    //   lorebook.d.ts:27-28     deleteLorebook —— 同物的 deprecated 名，形状同上；
+    //   worldbook.d.ts:21-39    rebindCharWorldbooks(character_name, {primary, additional})
+    //                           —— Promise<void>，无返回值可用；
+    //   lorebook.d.ts:51-52     setCurrentCharLorebooks —— 同物的 deprecated 名。
+    //
+    // 失败形状为什么两族不同（这里是刻意的，不是笔误）：
+    //   删除族按 d.ts 返回 false —— 它有返回值这条泄露通道；
+    //   绑定族返回 void，没有能承载失败的位置，静默吞掉就等于假成功（本包红线）
+    //   ⇒ 只能 throw，让卡自己用 try/catch 接（ST 插件普遍也是这么写的）。
+    //
+    // 两个 deprecated 名与两个现行名分别指向**同一份父侧实现**，不复制第二份逻辑。
+    //
+    // ⚠ 本区域位于模板字符串内：禁止反引号与美元花括号，反斜杠成对写。
+    deleteWorldbook: async (name) => {
+      const res = await requestParent('deleteWorldbook', { name });
+      return !!(res && res.success === true);
+    },
+    deleteLorebook: async (name) => {
+      const res = await requestParent('deleteWorldbook', { name });
+      return !!(res && res.success === true);
+    },
+    rebindCharWorldbooks: async (characterName, charWorldbooks) => {
+      const res = await requestParent('rebindCharWorldbooks', { characterName, charWorldbooks });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: rebindCharWorldbooks 失败: ' + String((res && res.error) || 'unknown'));
+      }
+    },
+    setCurrentCharLorebooks: async (lorebooks) => {
+      const res = await requestParent('rebindCharWorldbooks', {
+        characterName: 'current',
+        charWorldbooks: lorebooks,
+      });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: setCurrentCharLorebooks 失败: ' + String((res && res.error) || 'unknown'));
+      }
+    },
     setLorebookEntries: (target, entries, options) => th134WriteEntries(target, entries, options),
     replaceLorebookEntries: (target, entries, options) => th134WriteEntries(target, entries, options),
     updatelorebookEntriesWith: th134UpdateEntriesWith,

@@ -383,6 +383,201 @@ export async function renameSmartCardChatSession(
   return { success: true, name: newName };
 }
 
+/**
+ * [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 书名 → 世界书 id 的**唯一**解析。
+ *
+ * ST / 酒馆助手的删除与绑定整族都用**书名**寻址：
+ *   @types/function/worldbook.d.ts:190  deleteWorldbook(worldbook_name: string)
+ *   @types/function/worldbook.d.ts:39   rebindCharWorldbooks(character_name, char_worldbooks)
+ *   @types/function/lorebook.d.ts:28/52 deleteLorebook / setCurrentCharLorebooks（同族，标 deprecated）
+ * 而 Palink 后端一律按 **id** 寻址（`PUT|DELETE /api/worldbooks/{id}`）
+ * ⇒ 中间必须补一层名字→id 解析，且必须**唯一**：
+ *   Palink 允许多本书同名（ST 侧书名实质唯一），而**删除不可逆** ⇒
+ *   命中多本时拒绝并给出机器可读 error，不替调用方「猜一本」。
+ * 越权面：`worldbookApi.list()` 走当前登录态，后端按 `user_id` 过滤（worldbook.py:284）
+ *   ⇒ 解析出来的书必然属于本人，拿不到别人的书去删/绑。
+ *
+ * @returns { ok:true, book } | { ok:false, error }
+ *          error ∈ worldbook_name_required / worldbook_list_failed /
+ *                   worldbook_not_found / worldbook_name_ambiguous
+ */
+async function resolveWorldbookByName(
+  name: unknown,
+): Promise<{ ok: true; book: { id: string; name: string } } | { ok: false; error: string }> {
+  const wanted = String(name ?? '').trim();
+  if (!wanted) return { ok: false, error: 'worldbook_name_required' };
+
+  let books: unknown;
+  try {
+    books = await worldbookApi.list();
+  } catch {
+    return { ok: false, error: 'worldbook_list_failed' };
+  }
+  const list = Array.isArray(books) ? (books as Array<Record<string, unknown>>) : [];
+  const hits = list.filter((row) => String(row?.name ?? '') === wanted);
+  if (hits.length === 0) return { ok: false, error: 'worldbook_not_found' };
+  // [不可逆保护] 同名多本 ⇒ 不猜。删/绑错了都不可逆，选第一本就是「替用户掷骰子」。
+  if (hits.length > 1) return { ok: false, error: 'worldbook_name_ambiguous' };
+
+  const id = String(hits[0]?.id ?? '').trim();
+  if (!id) return { ok: false, error: 'worldbook_not_found' };
+  return { ok: true, book: { id, name: wanted } };
+}
+
+/**
+ * 把当前角色名下**除了 keepId 之外**的角色书全部降级回普通世界书。
+ *
+ * 为什么必须先降级：Palink 认 primary 的口径是
+ * `GET /api/worldbooks?character_id=<id>&type=character_book` 的**第一条**
+ * （见 resolveCharWorldbookExport 的 `books[0]`，排序为 updated_at desc）。
+ * 若留着多本 character_book，谁被读成 primary 取决于 updated_at ⇒ 绑定结果不确定，
+ * 违反 ST「一张卡只有一个 primary」的语义。
+ */
+async function demoteOtherCharBooks(characterId: string, keepId: string): Promise<void> {
+  let bound: unknown;
+  try {
+    bound = await worldbookApi.list({ character_id: characterId, type: 'character_book' });
+  } catch {
+    return; // 读不到就无从降级，交给调用方以自己的结果为准
+  }
+  const list = Array.isArray(bound) ? (bound as Array<Record<string, unknown>>) : [];
+  for (const row of list) {
+    const id = String(row?.id ?? '').trim();
+    if (!id || id === keepId) continue;
+    try {
+      await worldbookApi.update(id, { character_id: null, type: 'world_book' });
+    } catch {
+      // 单本降级失败不影响其余：调用方的 primary 绑定已经落库成功
+    }
+  }
+}
+
+/**
+ * [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 删除整本世界书（deleteWorldbook / deleteLorebook 共用）。
+ *
+ * 契约（一手：@types/function/worldbook.d.ts:184-190）：
+ *   deleteWorldbook(worldbook_name: string): Promise<boolean>
+ *   "@returns 是否成功删除, 可能因世界书不存在等原因而失败" ⇒ **失败返回 false，不是抛错**。
+ *   deleteLorebook 是它的 deprecated 同名形态（lorebook.d.ts:27-28），两者共用同一实现。
+ *
+ * 为什么核对 authorship 放在父侧：帧内只有卡自己传来的名字，无从判断这本书是不是
+ * 当前登录用户的；`worldbookApi.list()` 带登录态且后端按 user_id 过滤 ⇒ 帧外先确认归属，
+ * 再动手删。删除不可逆 ⇒ 任何不确定都返回 false，不重试、不猜。
+ *
+ * @returns { success: true } | { success: false, error }  —— error 为机器可读码
+ */
+export async function deleteSmartCardWorldbook(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string }> {
+  const name = payload?.name ?? payload?.worldbook_name ?? payload?.worldbookName ?? payload?.lorebook;
+  const parsed = await resolveWorldbookByName(name);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+
+  try {
+    await worldbookApi.delete(parsed.book.id);
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: String((error as { message?: unknown })?.message || 'worldbook_delete_failed'),
+    };
+  }
+}
+
+/**
+ * [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 重新绑定「当前角色卡」的世界书。
+ *
+ * 契约（一手：@types/function/worldbook.d.ts:21-39）：
+ *   type CharWorldbooks = { primary: string | null; additional: string[] }
+ *   rebindCharWorldbooks(character_name: 'current', char_worldbooks: CharWorldbooks): Promise<void>
+ *   setCurrentCharLorebooks(lorebooks: Partial<CharWorldbooks>): Promise<void>（deprecated，同义）
+ *
+ * 落点（本仓独有的存储形状，已一手核实）：
+ *   「这本是我的角色书」在 Palink 是**两列的合取** —— WorldBook.character_id（归属）
+ *   + WorldBook.type == 'character_book'（角色书标记）。后者同时决定
+ *   mvu_entry_filter.select_character_book_contents 是否从这本书抽 <initvar>/schema。
+ *   ⚠ 改前 type 列没有 API 写通道，只改 character_id 会导致「绑完读不回来」
+ *     ⇒ 本批次已在后端补 PUT 的 type 写通道（见 backend/app/api/worldbook.py:421）。
+ *
+ * 语义偏差（诚实记录，不许含糊）：ST 的 additional 是**参与注入的角色书数组**；
+ *   本仓只有一个 primary 注入位（取 books[0]），additional 若也标成 character_book 会
+ *   跟 primary 抢这个位（排序按 updated_at desc ⇒ 谁被读出来不确定）。
+ *   ⇒ additional 只绑 character_id、**不**标 character_book，保证 primary 唯一；
+ *     即 additional 在本仓落到「与该角色关联的书」，**尚不等于 ST 的那组注入语义**。
+ *
+ * @returns { success: true } | { success: false, error }  —— error 为机器可读码
+ */
+export async function rebindSmartCardCharWorldbooks(
+  context: SmartCardCompatRequestContext | null | undefined,
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string }> {
+  // character_name：ST 契约把 rebind 的首参钉成 'current' 字面量（worldbook.d.ts:39），
+  // 放宽成任意角色名的是**读侧** getCharWorldbookNames（:32 用 LiteralUnion）。
+  // 本仓父侧桥与既有 getCharLorebooksCompat 同口径：只服务当前卡 ⇒ 非 current 一律拒绝，
+  // 不替别的角色绑书（越权面）。
+  const rawName = payload?.characterName ?? payload?.character_name;
+  const characterName = rawName === undefined || rawName === null ? 'current' : String(rawName);
+  if (characterName !== 'current') return { success: false, error: 'character_name_unsupported' };
+
+  const characterId = String(context?.selectedCharacterId ?? '').trim();
+  if (!characterId) return { success: false, error: 'no_active_character' };
+
+  const raw = (
+    payload?.charWorldbooks
+    ?? payload?.char_worldbooks
+    ?? payload?.lorebooks
+    ?? {}
+  ) as Record<string, unknown>;
+  if (!raw || typeof raw !== 'object') return { success: false, error: 'char_worldbooks_required' };
+
+  // 先把当前角色已有的角色书全部降级 ⇒ 保证 primary 唯一（见 demoteOtherCharBooks 注释）。
+  // 解绑语义（primary 为 null / 空串 / 不传）= 全降级后不再绑任何 primary。
+  await demoteOtherCharBooks(characterId, '');
+
+  const primary = raw.primary;
+  const primaryName = primary === null || primary === undefined ? '' : String(primary).trim();
+  if (primaryName) {
+    const parsed = await resolveWorldbookByName(primaryName);
+    if (!parsed.ok) return { success: false, error: parsed.error };
+    try {
+      await worldbookApi.update(parsed.book.id, {
+        character_id: characterId,
+        type: 'character_book',
+      });
+    } catch (error) {
+      return {
+        success: false,
+        error: String((error as { message?: unknown })?.message || 'worldbook_bind_failed'),
+      };
+    }
+    // primary 已绑 ⇒ 把它之外的再清一遍（demoteOtherCharBooks 首轮 keepId 为空，
+    // 这一轮把 primary 自己保护起来）。
+    await demoteOtherCharBooks(characterId, parsed.book.id);
+  }
+
+  const addList = Array.isArray(raw.additional) ? (raw.additional as unknown[]) : [];
+  for (const item of addList) {
+    const additionalName = String(item ?? '').trim();
+    if (!additionalName || additionalName === primaryName) continue;
+    const parsed = await resolveWorldbookByName(additionalName);
+    if (!parsed.ok) return { success: false, error: parsed.error };
+    try {
+      await worldbookApi.update(parsed.book.id, {
+        character_id: characterId,
+        // 不标 character_book —— 否则会跟 primary 抢 books[0]，见上方语义偏差说明。
+        type: 'world_book',
+      });
+    } catch (error) {
+      return {
+        success: false,
+        error: String((error as { message?: unknown })?.message || 'worldbook_bind_failed'),
+      };
+    }
+  }
+
+  return { success: true };
+}
+
 function buildSmartCardWorldBookExport(state: SmartCardCompatControllerState) {
   if (!state.worldBook) {
     return {
@@ -857,6 +1052,19 @@ export async function handleSmartCardCompatRequest(
     } else if (action.action === 'getCharWorldbook') {
       // [S1-G11] 卡自建优先，缺失时回退到角色自带 character_book（原为纯 buildSmartCardWorldBookExport）。
       result = await resolveCharWorldbookExport(state, requestContext);
+    } else if (action.action === 'deleteWorldbook' || action.action === 'deleteLorebook') {
+      // [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 删整本世界书。
+      // 不进手势闸门：与 SMART_CARD_MUTATING_ACTIONS_REQUIRING_GESTURE 上方 §2 的论证同源 ——
+      // 「卡片在自己管理的世界书里增删」是 ST 插件最常见也最正当的一类用法，
+      // 且用户激活不向下传播到 opaque-origin iframe，纳入闸门会打断这条正当链路。
+      // 不可逆性由**父侧 authorship 核对 + 同名多本拒绝**兜住（见 deleteSmartCardWorldbook）。
+      // deleteLorebook 是 deprecated 同义名（lorebook.d.ts:27-28），共用同一份实现。
+      result = await deleteSmartCardWorldbook(payload);
+    } else if (action.action === 'rebindCharWorldbooks' || action.action === 'setCurrentCharLorebooks') {
+      // [ST-BRIDGE-BOOKBIND 2026-10-20 批次A] 卡↔书绑定写侧。
+      // 同上不进手势闸门；越权面由「只认 'current' + requestContext.selectedCharacterId」兜住。
+      // setCurrentCharLorebooks 是 deprecated 同义名（lorebook.d.ts:51-52），共用同一份实现。
+      result = await rebindSmartCardCharWorldbooks(requestContext, payload);
     } else if (action.action === 'getWorldbookEntries') {
       // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
       result = (await resolveCharWorldbookExport(state, requestContext)).entries;

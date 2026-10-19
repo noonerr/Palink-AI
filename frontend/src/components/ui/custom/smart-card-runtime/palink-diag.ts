@@ -176,10 +176,19 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   'extension-toggle': 'ext_install',
 
   // [ST-GAP:wb_delete] 删整本世界书：后端删除路由已核实存在，只差父侧动作（甲类·建议第一个做）。
+  //   **已实现（2026-10-20 批次A）**：帧内两个成员已桥到父侧 deleteSmartCardWorldbook。
+  //   名字**故意留在表里** —— 任务书 §5.2 明令不许为改判而删名（守门测试
+  //   st-gap-ledger-guard.test.ts 的 D 组要每个 D 类键都能归类）；实现了就不会再产生这条记录，
+  //   留着无害。计数订正（D 75→71、C 46→50）见 report/REPORT_包H_TavernHelper广度_2026-10-18.md
+  //   的 2026-10-20 订正段与 report/REPORT_包AB_写桥四键_2026-10-20.md。
   deleteLorebook: 'wb_delete',
   deleteWorldbook: 'wb_delete',
 
   // [ST-GAP:chat_binding] 卡↔书绑定写侧；绑定要写角色卡 extensions，父侧无通道。
+  //   **已实现（2026-10-20 批次A）**：帧内两个成员已桥到父侧 rebindSmartCardCharWorldbooks；
+  //   后端同时补齐了 type 列的写通道（缺它绑定就会"写进去读不回来"）。名字同上保留。
+  //   语义偏差（照实留痕）：ST 的 additional 是参与注入的第二挂载位，本仓读侧取 books[0]，
+  //   故 additional 只绑归属、不标 character_book —— 不等于已和 ST 的注入语义对齐。
   setCurrentCharLorebooks: 'chat_binding',
   rebindCharWorldbooks: 'chat_binding',
 

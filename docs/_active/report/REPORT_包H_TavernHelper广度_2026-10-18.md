@@ -76,6 +76,19 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 > 原文照留不改写；守卫同步改判见
 > `frontend/src/components/ui/custom/smart-card-runtime/__tests__/h-tavernhelper-134-contract.test.ts`
 > 的 D 名单注释，台账另见 `REPORT_包AA_别名进表与listvar照ST与宏成员键_2026-10-20.md`。
+>
+> **订正（2026-10-20，批次A 写桥四键）**：在包AA 那次改判的基础上再挪 **4 个键** ——
+> `deleteWorldbook`、`deleteLorebook`（原 `wb_delete` 族）、`setCurrentCharLorebooks`、
+> `rebindCharWorldbooks`（原 `chat_binding` 族）
+> ⇒ **C = 46 → 50、D = 75 → 71、本包上界 A + C = 59 → 63**（A = 13、B = 0 不变；13 + 50 + 71 = 134 仍闭合）。
+> 依据同样不是"为了让守卫变绿"，而是三层都落到实物：
+> ① 存储形状：绑定在本仓是 `character_id`（归属）与 `type=='character_book'`（角色书标记）**两列合取**
+>    （`backend/app/models/worldbook.py:16/:24`），后者还决定 MVU 是否抽 `<initvar>`；
+> ② 缺口实打实补齐：改前 `type` 列**没有任何 API 写通道**，只改 character_id 会"绑完读不回来"，
+>    现已开 `PUT /api/worldbooks/{id}` 的 type 写通道（含两个枚举的 validator），
+>    并连带修掉列表缓存失效恒不匹配的既有 bug（详见 `REPORT_包AB_写桥四键_2026-10-20.md` §2）；
+> ③ 行为有测试托底：帧内 G 组 7 条 + 父侧 13 条，且**反证过一次**（父侧动作短路 ⇒ 6 条转红，还原回绿）。
+> 三个口径分开报（别拿 `covered_in` 当成果）：权威名 134 / 表内键 / 真实现数，见包AB 报告 §6。
 
 | 类 | 族（判据） | 键数 | 键 | 依据 / 落点 |
 |---|---|---|---|---|
@@ -134,6 +147,14 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 > 下面"D 的 76 个键按族是……"一行的族计数与"58 + 30 = 88"那段算术**按订正前口径保留原文**，
 > 复算时请用 D = 75：正则对象模型族少 1 个键（`registerMacroLike` 已从 D 名单移出），
 > 上界算术变成 59 + 30 ≈ 89，仍 < 110 —— 本节结论（≥110 这条线本身错）不因这次改判而改变。
+>
+> **订正（2026-10-20，批次A 写桥四键）**：同日再更新一次 ——
+> **C 46 → 50**、**A + C 本包上界 59 → 63**、**D 75 → 71**。
+> 挪出去的两个族：**世界书删除 -2**（`deleteWorldbook` / `deleteLorebook`）、**聊天绑定写侧 -2**
+> （`setCurrentCharLorebooks` / `rebindCharWorldbooks`）⇒ 按族口径 D 现在是
+> 宏注册 0、世界书删除 0、聊天绑定写侧 0，其余族数不变。
+> 上界算术随之变成 63 + 30 ≈ 93，仍 < 110 —— 本节结论不变。
+> 数字以真机/测试实测为准；判据与反证原始输出见 `REPORT_包AB_写桥四键_2026-10-20.md`。
 
 D 的 76 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、正则对象模型 5、
 原始导入 4（`importRawWorldbook`/`importRawChat`/`importRawTavernRegex` + 角色 1 已计入写侧族）、

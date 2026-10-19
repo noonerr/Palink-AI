@@ -55,6 +55,17 @@ export const worldbookApi = {
      * 不传该键 = 不改（后端用 model_fields_set 区分二者）。
      */
     character_id?: string | null;
+    /**
+     * [ST-BRIDGE-BOOKBIND 2026-10-20] 世界书类型（此前全仓无 API 写通道）。
+     *
+     * Palink 认「这张卡的角色书是哪本」依赖两列的合取：
+     *   `character_id`（归属）+ `type == 'character_book'`（角色书标记）。
+     * 后者同时决定 MVU 是否从这本书里抽 <initvar>/schema
+     * （services/mvu_entry_filter.select_character_book_contents），
+     * 也是 api/worldbook.py list_worldbooks 判 primary 的条件。
+     * 不传 = 不改；只接受 'world_book' | 'character_book' 两档（其它值后端 422）。
+     */
+    type?: 'world_book' | 'character_book';
   }) => api.put<WorldBook>(`/api/worldbooks/${id}`, data).then((res) => {
     invalidateCache('/api/worldbooks');
     return res;

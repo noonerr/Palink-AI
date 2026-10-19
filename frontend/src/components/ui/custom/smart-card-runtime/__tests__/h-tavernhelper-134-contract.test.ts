@@ -199,21 +199,42 @@ describe('A fixture 与注册口径', () => {
     //      帧内成员键由 part-07.ts 的 th134Bridge('registerMacroLike') 桥到**同一个**窗口全局实现。
     //   台账同步：docs/_active/report/REPORT_包H_TavernHelper广度_2026-10-18.md（订正段）、
     //   docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2 macro_register 行。
+    //
+    // ⚠️ 2026-10-20 批次A 再改判四键：deleteWorldbook / deleteLorebook /
+    //   setCurrentCharLorebooks / rebindCharWorldbooks 一并移出（D 75→71、C 46→50）。
+    //   同样不是凑绿，是能力当天才落地，且每一层都有托底的证：
+    //   ① 存储形状一手：WorldBook 的绑定是 **两列合取** —— character_id（归属）
+    //      + type=='character_book'（backend/app/models/worldbook.py:16/:24），
+    //      后者同时决定 mvu_entry_filter.select_character_book_contents:42 是否抽 <initvar>；
+    //   ② 缺通道已补齐：改前 type 列没有 API 写通道（只有卡导入的 service 内部路径），
+    //      只改 character_id 会导致「绑完读不回来」⇒ 后端已开 PUT 写通道
+    //      （backend/app/api/worldbook.py:421 + schemas/worldbook.py 的 type validator），
+    //      有 5 条后端测试（tests/test_worldbook_type_write_channel.py，含端到端读回）；
+    //   ③ 帧内不是单体：四个成员各自桥到父侧 deleteSmartCardWorldbook /
+    //      rebindSmartCardCharWorldbooks（SmartCardCompatController.ts），父侧有
+    //      同名多本拒绝 + 只认 'current' 的越权面，行为断言见本文件 ST-BRIDGE-BOOKBIND 段。
+    //   裁决依据：用户 2026-10-20「与 ST 冲突时以 ST 为准」。
+    //   台账同步：docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2 四行。
     const forbidden = [
       'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
       'createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter',
       'getPersona', 'createPersona', 'getCurrentPersonaId',
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
-      'injectPrompts', 'uninjectPrompts', 'deleteWorldbook', 'deleteLorebook',
+      'injectPrompts', 'uninjectPrompts',
       'retrieveDisplayedMessage', 'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
-      'setCurrentCharLorebooks', 'rebindCharWorldbooks', 'getTavernRegexes', 'formatAsTavernRegexedString',
+      'getTavernRegexes', 'formatAsTavernRegexedString',
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
     // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
     expect(registered.has('registerMacroLike')).toBe(true);
     expect(SRC.indexOf("registerMacroLike: th134Bridge('registerMacroLike')")).toBeGreaterThan(-1);
+    // 正向锚点（批次A 四键）：移出 D 名单的依据是「真有桥」，故同时钉住它们确实走到了父侧。
+    // 反过来，这一组就是"把父侧动作短路 ⇒ 本用例必红"的落点。
+    (['deleteWorldbook', 'deleteLorebook', 'rebindCharWorldbooks', 'setCurrentCharLorebooks'] as const).forEach((n) => {
+      expect(registered.has(n)).toBe(true);
+    });
     // 而且 proxy 也不会为它们造假存在性：H 段没有往 tavernHelperCompat 里塞同名键
     ['getPreset', 'createCharacter', 'playAudio', 'getModelList'].forEach((n) => {
       expect(topLevelKeys(SRC, 'tavernHelperCompat')).not.toContain(n);
@@ -506,5 +527,93 @@ describe('F chat_message 写族', () => {
     // 写世界书同理：setter 不在就抛，不能让卡以为条目已经保存
     const noBook = buildFrame({ globals: { setWorldbookEntries: undefined } });
     await expect(noBook.th.setLorebookEntries('书', [])).rejects.toThrow(/setWorldbookEntries 未注册/);
+  });
+});
+
+// ============================================================
+// G 世界书删除与卡↔书绑定写侧
+//   [ST-BRIDGE-BOOKBIND 2026-10-20 批次A]
+//   契约一手：worldbook.d.ts:184-190（deleteWorldbook 失败返 false，注释写死）
+//             worldbook.d.ts:21-39   （rebindCharWorldbooks 返 Promise<void>）
+//             lorebook.d.ts:27-28 / :51-52（两个 deprecated 同义名）
+//   父侧实现：SmartCardCompatController.deleteSmartCardWorldbook /
+//             SmartCardCompatController.rebindSmartCardCharWorldbooks
+// ============================================================
+describe('G 世界书删除与卡↔书绑定写侧（批次A）', () => {
+  const FOUR = ['deleteWorldbook', 'deleteLorebook', 'setCurrentCharLorebooks', 'rebindCharWorldbooks'] as const;
+
+  it('四键都是函数，且每个都桥到父侧动作（不是返回 undefined 的空壳）', async () => {
+    const { th, requestParent } = buildFrame();
+    const calls = (requestParent as any).mock.calls as any[][];
+
+    FOUR.forEach((n) => expect(typeof th[n]).toBe('function'));
+
+    await th.deleteWorldbook('测试书');
+    await th.deleteLorebook('测试书');
+    await th.setCurrentCharLorebooks({ primary: 'A', additional: ['B'] });
+    await th.rebindCharWorldbooks('current', { primary: 'A', additional: [] });
+
+    // 四个成员全部真的发起了父侧请求（requestParent 调用数为 4 就是"没有空壳"的落点）
+    expect(calls).toHaveLength(4);
+    expect(calls.map((c) => c[0])).toEqual([
+      'deleteWorldbook',
+      'deleteWorldbook',
+      'rebindCharWorldbooks',
+      'rebindCharWorldbooks',
+    ]);
+  });
+
+  it('deleteWorldbook / deleteLorebook 成功返 true（worldbook.d.ts:190 的 boolean）', async () => {
+    const { th } = buildFrame({ parentResult: { ok: true, success: true } });
+    await expect(th.deleteWorldbook('书')).resolves.toBe(true);
+    await expect(th.deleteLorebook('书')).resolves.toBe(true);
+  });
+
+  it('删除失败返回 false 而不是抛错（d.ts 注释写死「是否成功删除，可能因不存在而失败」）', async () => {
+    const { th } = buildFrame({
+      parentResult: { ok: true, success: false, error: 'worldbook_name_ambiguous' },
+    });
+    await expect(th.deleteWorldbook('书')).resolves.toBe(false);
+    await expect(th.deleteLorebook('书')).resolves.toBe(false);
+  });
+
+  it('两个 deprecated 名与现行名共用同一份父侧动作，不复制第二份逻辑', () => {
+    // 形状证据：deleteLorebook 与 deleteWorldbook 都往同一个 action 名发请求，
+    // 而不是各自养一套实现（否则将来改一处漏一处）。
+    const delSurface = SRC.match(/requestParent\('deleteWorldbook'/g) || [];
+    expect(delSurface.length).toBeGreaterThanOrEqual(2);
+    const bindSurface = SRC.match(/requestParent\('rebindCharWorldbooks'/g) || [];
+    expect(bindSurface.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('绑定族失败抛错，不静默扮成功（Promise<void> 没有承载失败的位置）', async () => {
+    const { th } = buildFrame({
+      parentResult: { ok: true, success: false, error: 'no_active_character' },
+    });
+    await expect(
+      th.rebindCharWorldbooks('current', { primary: '书', additional: [] }),
+    ).rejects.toThrow(/no_active_character/);
+    await expect(
+      th.setCurrentCharLorebooks({ primary: '书', additional: [] }),
+    ).rejects.toThrow(/no_active_character/);
+  });
+
+  it('绑定族成功时不抛也不返回值（d.ts:39 的 Promise<void>）', async () => {
+    const { th } = buildFrame({ parentResult: { ok: true, success: true } });
+    await expect(
+      th.rebindCharWorldbooks('current', { primary: 'A', additional: [] }),
+    ).resolves.toBeUndefined();
+    await expect(th.setCurrentCharLorebooks({ primary: 'A' })).resolves.toBeUndefined();
+  });
+
+  it('setCurrentCharLorebooks 是单参形态，characterName 由帧内补成 current', async () => {
+    // 依据一手：lorebook.d.ts:52 只有 lorebooks 一个参；worldbook.d.ts:39 才带 character_name。
+    // 帧内必须把这个差异吸收掉，不能让卡去改调用写法。
+    const { th, requestParent } = buildFrame();
+    await th.setCurrentCharLorebooks({ primary: 'A', additional: ['B'] });
+    const call = ((requestParent as any).mock.calls as any[][]).at(-1) as any[];
+    expect(call[0]).toBe('rebindCharWorldbooks');
+    expect(call[1].characterName).toBe('current');
+    expect(call[1].charWorldbooks).toEqual({ primary: 'A', additional: ['B'] });
   });
 });
