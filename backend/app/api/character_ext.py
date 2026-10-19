@@ -50,11 +50,16 @@ from ..services.generation_service import _build_logit_bias
 from ..core.default_prompts import build_default_character_prompt
 from ..services.character_message_builder import (
     _ST_DEFAULT_NEW_CHAT_PROMPT,
-    apply_mvu_reply_to_session,
     build_character_chat_messages,
     clean_smart_card_trigger_context,
     is_smart_card_trigger_message,
 )
+# [包U 2026-10-19] 「解析 MVU → 剥离正文 → 剥标题」的唯一落库出口。
+# 本文件五个助手回复写入点（SSE 普通对话 / regenerate / swipe / continue）与
+# websocket.py 两个写入点一律取它的返回值落库，不再各自手抄
+# apply_mvu_reply_to_session + strip_update_variable_blocks —— 手抄正是
+# id=2852 脏落库的成因（收尾段从模型原文回写、绕过了剥离）。
+from ..services.assistant_reply_persist import finalize_assistant_reply
 from ..services.roleplay_prompt_assembly import (
     PromptAssemblyDeps,
     PromptAssemblyRequest,
@@ -66,7 +71,7 @@ from ..services.slash_command_service import (
     execute_slash_command,
     is_slash_command,
 )
-from ..services.compact_title_service import extract_response_title, generate_compact_title, rule_based_compact_title
+from ..services.compact_title_service import generate_compact_title, rule_based_compact_title
 from ..services.image_generation_service import (
     build_image_generated_event,
     build_image_generation_failed_event,
@@ -4718,6 +4723,9 @@ async def _character_chat_impl(
         # 解析一次，后续快照经 mvu_latest_variables 回填 msg_extra.variables
         mvu_variables_saved = False
         mvu_latest_variables: dict | None = None
+        # [包U 2026-10-19] 与 WS 主路径同构：[标题: xxx] 标记改在 persist_snapshot 内
+        # 由统一出口剥离并登记，收尾段只负责把标题写进 short_title（不再回写正文）。
+        sse_marker_title: str | None = None
         # Phase 3 extra 字段: gen_id 自动生成 + reasoning_duration 计时
         # ST 1.18.0 对齐: bookmarks.js:419 在生成时自动分配 gen_id 用于 swipe 分组
         # reasoning_duration 记录 LLM 思考链耗时（秒），供 ST 前端 reasoning 面板显示
@@ -4737,6 +4745,7 @@ async def _character_chat_impl(
             nonlocal last_saved_reasoning_len
             nonlocal last_flush_ts
             nonlocal mvu_variables_saved, mvu_latest_variables
+            nonlocal sse_marker_title
 
             # 【报错提示 1.6(a)】错误占位不落库：守卫必须用 is_error_only() 而不是
             # has_content —— 错误分支是「先 full_content = "Error: ..." 再 persist(force=True)」，
@@ -4837,33 +4846,45 @@ async def _character_chat_impl(
             if _ext_ev is not None:
                 msg_extra["ext_prompts"] = _ext_ev
 
-            # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
-            # （仅 force 时；与 WS 主路径 persist_snapshot 共用同一实现）。
-            # 顺序必须是"先解析落库、再剥正文"——stat_data 基于剥离前 final_raw，
-            # 剥离仅作用于落库正文。此前 SSE 四入口均未接 MVU 解析（F4），且
-            # 不剥离导致模型输出 <UpdateVariable> 时整段泄漏进正文。
-            if force and not mvu_variables_saved:
-                try:
-                    new_vars, mvu_logs, mvu_patches = apply_mvu_reply_to_session(
-                        save_db, char.id, session_id, final_raw
-                    )
-                    if new_vars is not None:
-                        msg_extra["variables"] = new_vars
-                        mvu_latest_variables = new_vars
-                        mvu_variables_saved = True
-                        # [MVU-CLEANUP 2026-10-05] 留存本轮补丁，供清理后重演恢复用
-                        # （正文里的 <UpdateVariable> 已剥离且不留原文）。
-                        if mvu_patches:
-                            msg_extra["mvu_patch"] = mvu_patches
-                except Exception as mvu_err:
-                    logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
+            # [包U 2026-10-19] 「解析 MVU → 剥离正文 → 剥标题」收敛到唯一出口
+            # assistant_reply_persist.finalize_assistant_reply（与 WS 主路径同调）。
+            # 顺序契约由出口保证：解析吃**剥离前**的 final_raw，剥离作用于已过
+            # AI_OUTPUT 正则的显示文本 final。此前 SSE 四入口均未接 MVU 解析（F4）；
+            # F4 修好后仍漏了一处——收尾取标题那段从 result.full_content（模型原文）
+            # 重新派生正文并回写，把这里剥干净的落库正文又覆盖回脏原文
+            # （线上样本 character_chat_messages.id=2852：解析做了、mvu_patch 17 条留了、
+            # 正文仍留整块 <UpdateVariable>）。现标题剥离也挪进 persist，收尾段不再回写正文。
+            _do_mvu_parse = bool(force) and not mvu_variables_saved
+            persisted = finalize_assistant_reply(
+                save_db,
+                character_id=char.id,
+                session_id=session_id,
+                raw_text=final_raw,
+                display_text=final,
+                parse_variables=_do_mvu_parse,
+                extract_title=True,
+            )
+            final = persisted.content
+
+            if _do_mvu_parse:
+                if persisted.variables is not None:
+                    msg_extra["variables"] = persisted.variables
+                    mvu_latest_variables = persisted.variables
+                    mvu_variables_saved = True
+                    # [MVU-CLEANUP 2026-10-05] 留存本轮补丁，供清理后重演恢复用
+                    # （正文里的 <UpdateVariable> 已剥离且不留原文）。
+                    if persisted.patches:
+                        msg_extra["mvu_patch"] = persisted.patches
             elif mvu_latest_variables is not None:
                 msg_extra["variables"] = mvu_latest_variables
 
-            # 解析后剥离 <UpdateVariable> 指令块，避免正文泄漏 stat_data 更新指令
-            # （Time passed / Variable updates / JSON patch 数组等；对齐 WS 主路径）
-            from app.services.mvu_engine import strip_update_variable_blocks
-            final = strip_update_variable_blocks(final)
+            # ⚠️ 覆写 result.full_content 只能在 force 那一次做（理由同 WS 轨，包U 实测）：
+            # 中间快照把 result.full_content 换成剥净正文后，随后 force 的 MVU 解析
+            # 就只剩无块正文可读 ⇒ stat_data 不更新、extra.mvu_patch 不落库。
+            if persisted.marker_title:
+                sse_marker_title = persisted.marker_title
+                if force:
+                    result.full_content = final
 
             try:
                 if assistant_message_id is None:
@@ -5113,14 +5134,16 @@ async def _character_chat_impl(
                     try:
                         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == assistant_message_id).first()
                         if msg and msg.short_title is None:
-                            # [TITLE-MARKER-FIX] 正则收口到 compact_title_service.
-                            # extract_response_title（与 WS 主路径共用同一实现）。
-                            extracted_title, clean_content = extract_response_title(result.full_content)
-                            if extracted_title:
-                                msg.short_title = extracted_title
-                                _sync_message_content_to_active_swipe(msg, clean_content)
-                                result.full_content = clean_content
-                                logger.info(f"[TitleGen] Extracted title from response: '{extracted_title}'")
+                            # [包U 2026-10-19] [标题: xxx] 的剥离已挪进 persist_snapshot 内的
+                            # 统一出口（与 WS 主路径同构），这里**只登记标题、绝不回写正文**。
+                            # 改前这段从 result.full_content（模型原文）重新
+                            # extract_response_title，再用 clean_content 调
+                            # _sync_message_content_to_active_swipe 覆写落库正文 —— 那次覆写
+                            # 绕过了 persist 的 MVU 剥离与 AI_OUTPUT 正则，把已经剥干净的
+                            # 正文覆盖回脏原文（线上样本 character_chat_messages.id=2852）。
+                            if sse_marker_title:
+                                msg.short_title = sse_marker_title
+                                logger.info(f"[TitleGen] Extracted title from response: '{sse_marker_title}'")
                             else:
                                 logger.info(f"[TitleGen] No title found in response, using fallback")
                                 msg.short_title = rule_based_compact_title(result.full_content, max_len=10)
@@ -6090,28 +6113,32 @@ async def continue_session(
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == last_assistant_id).first()
         if msg is None:
             return None, None
-        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
-        # （SSE 动作流与 WS 主路径共用同一实现；先解析，追加正文前剥离标签）
-        _mvu_new_vars: Optional[dict] = None
-        _mvu_patches: Optional[list] = None
-        try:
-            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
-                save_db, char.id, session_id, result.full_content
-            )
-        except Exception as mvu_err:
-            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
-        # 续写：将新生成的正文追加到原消息内容末尾
-        new_part = _apply_persist_regex_to_display_text(
-            result.full_content,
+        # [包U 2026-10-19] 续写增量走统一出口（解析吃模型原文 result.full_content，
+        # 剥离作用于已过 AI_OUTPUT 正则的增量）。旧楼层正文本身就是同一出口的产物，
+        # 故 combined = 干净旧正文 + 干净增量，仍满足「落库正文无变量块残块」。
+        # 标题不在此剥（extract_title=False）：续写装配 include_title_instruction=False，
+        # 保持改前语义，不顺手扩大范围。
+        new_part = finalize_assistant_reply(
             save_db,
-            char,
-            user_name=user_nickname,
-            placement=REGEX_PLACEMENT_AI_OUTPUT,
-            depth=0,
+            character_id=char.id,
+            session_id=session_id,
+            raw_text=result.full_content,
+            display_text=_apply_persist_regex_to_display_text(
+                result.full_content,
+                save_db,
+                char,
+                user_name=user_nickname,
+                placement=REGEX_PLACEMENT_AI_OUTPUT,
+                depth=0,
+            ),
+            parse_variables=True,
+            extract_title=False,
         )
-        from app.services.mvu_engine import strip_update_variable_blocks
-        new_part = strip_update_variable_blocks(new_part)
-        combined = (msg.content or "") + new_part
+        _mvu_new_vars = new_part.variables
+        _mvu_patches = new_part.patches
+        clean_new_part = new_part.content
+        # 续写：将新生成的正文追加到原消息内容末尾
+        combined = (msg.content or "") + clean_new_part
         _sync_message_content_to_active_swipe(msg, combined)
         patched_extra = _message_extra(msg)
         if regexed_reasoning:
@@ -6239,19 +6266,22 @@ async def regenerate_message(
 
     def persist_fn(save_db, result):
         # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
-        final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
-        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
-        # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
-        _mvu_new_vars: Optional[dict] = None
-        _mvu_patches: Optional[list] = None
-        try:
-            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
-                save_db, char.id, session_id, result.full_content
-            )
-        except Exception as mvu_err:
-            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
-        from app.services.mvu_engine import strip_update_variable_blocks
-        final = strip_update_variable_blocks(final)
+        regexed_body, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
+        # [包U 2026-10-19] regenerate / swipe 落库正文走统一出口（解析→剥离→落库一体）；
+        # 改前这两个入口各手抄一遍 apply_mvu_reply_to_session +
+        # strip_update_variable_blocks（标题标记不在此剥，保持改前语义）。
+        persisted = finalize_assistant_reply(
+            save_db,
+            character_id=char.id,
+            session_id=session_id,
+            raw_text=result.full_content,
+            display_text=regexed_body,
+            parse_variables=True,
+            extract_title=False,
+        )
+        final = persisted.content
+        _mvu_new_vars = persisted.variables
+        _mvu_patches = persisted.patches
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None
@@ -6596,19 +6626,22 @@ async def swipe_message(
 
     def persist_fn(save_db, result):
         # [REASONING-SEPARATE] 纯正文入 content/swipe，本轮思考写入 extra.reasoning（不再内联包裹）
-        final, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
-        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data
-        # （SSE 动作流与 WS 主路径共用同一实现；先解析，落库前剥离标签）
-        _mvu_new_vars: Optional[dict] = None
-        _mvu_patches: Optional[list] = None
-        try:
-            _mvu_new_vars, _mvu_logs, _mvu_patches = apply_mvu_reply_to_session(
-                save_db, char.id, session_id, result.full_content
-            )
-        except Exception as mvu_err:
-            logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
-        from app.services.mvu_engine import strip_update_variable_blocks
-        final = strip_update_variable_blocks(final)
+        regexed_body, regexed_reasoning = _apply_reasoning_regex(result.full_content, result, save_db, char, user_nickname)
+        # [包U 2026-10-19] regenerate / swipe 落库正文走统一出口（解析→剥离→落库一体）；
+        # 改前这两个入口各手抄一遍 apply_mvu_reply_to_session +
+        # strip_update_variable_blocks（标题标记不在此剥，保持改前语义）。
+        persisted = finalize_assistant_reply(
+            save_db,
+            character_id=char.id,
+            session_id=session_id,
+            raw_text=result.full_content,
+            display_text=regexed_body,
+            parse_variables=True,
+            extract_title=False,
+        )
+        final = persisted.content
+        _mvu_new_vars = persisted.variables
+        _mvu_patches = persisted.patches
         msg = save_db.query(CharacterChatMessage).filter(CharacterChatMessage.id == target_msg_id).first()
         if msg is None:
             return None, None

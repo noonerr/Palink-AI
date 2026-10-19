@@ -145,8 +145,16 @@ def _make_world(db_session, *, with_assistant_msg=True):
 
 
 def _install_mvu_stub(monkeypatch, return_stat=None):
-    """在 character_ext 命名空间替换共用函数为计数桩（入口调用点均为模块级
-    名字引用，运行时查 module globals → monkeypatch 生效）。"""
+    """在**统一落库出口**命名空间替换共用函数为计数桩。
+
+    [包U 2026-10-19] 改前四个 SSE 入口各自 `apply_mvu_reply_to_session(...)`，
+    故桩打在 ``character_ext`` 上即可命中。现在解析/剥离/剥标题收敛到
+    ``services.assistant_reply_persist.finalize_assistant_reply``，MVU 解析只在该
+    模块内被调用一次 —— 桩必须跟着挪；本断言同时仍是「该入口确实经过出口」的证据
+    （摘掉入口对出口的调用，``recorder["calls"]`` 即为 0）。
+    """
+    from app.services import assistant_reply_persist
+
     recorder = {"calls": []}
 
     def _stub(db, character_id, session_id, reply_text):
@@ -163,7 +171,7 @@ def _install_mvu_stub(monkeypatch, return_stat=None):
         vars_payload = {"stat_data": copy.deepcopy(return_stat or _POST_MVU_STAT)}
         return vars_payload, ["[block0] replace /好感度 → ok"], []
 
-    monkeypatch.setattr(character_ext, "apply_mvu_reply_to_session", _stub)
+    monkeypatch.setattr(assistant_reply_persist, "apply_mvu_reply_to_session", _stub)
     return recorder
 
 

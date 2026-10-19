@@ -34,12 +34,16 @@ from ..services.inference_queue import inference_queue
 from ..services.stream_builder import StreamResult, extract_cache_tokens
 from ..services.web_search import search_web, format_search_results, get_web_search_config
 from ..services.mcp_service import get_all_tools_openai_format
-from ..services.compact_title_service import extract_response_title, generate_compact_title
+from ..services.compact_title_service import generate_compact_title
 from ..services.character_message_builder import (
-    apply_mvu_reply_to_session,
     build_character_chat_messages,
     clean_smart_card_trigger_context,
 )
+# [包U 2026-10-19] MVU「解析→剥离→剥标题」三步的唯一落库出口。
+# 原先本文件自己 import apply_mvu_reply_to_session / extract_response_title 再手抄
+# 一遍编排 —— 与 character_ext 的四个入口各抄一份，抄漏即脏落库。现由出口内部
+# 调用，本文件不再直接引用这两个符号。
+from ..services.assistant_reply_persist import finalize_assistant_reply
 from ..services.status_bar_detector import (
     StreamingStatusStripper,
     strip_and_parse_status_marker,
@@ -225,7 +229,16 @@ async def run_chat_generation(
                 return
 
         # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
-        final = result.full_content
+        # [包U 2026-10-19] 落库正文改走「解析→剥离→落库」统一出口。本表（messages，
+        # 普通聊天）没有角色会话，故 parse_variables=False 不碰 MVU，但**变量块仍必须
+        # 剥** —— 改前这里是 `final = result.full_content` 直存模型原文，正是
+        # 「同一条回复走哪条路决定正文脏不脏」的其中一条路（另见 run_character_chat_generation）。
+        final = finalize_assistant_reply(
+            None,
+            raw_text=result.full_content,
+            parse_variables=False,
+            extract_title=False,
+        ).content
         token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
         extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
 
@@ -753,53 +766,54 @@ async def run_character_chat_generation(
         if getattr(result, "ext_prompts_evidence", None) is not None:
             msg_extra["ext_prompts"] = result.ext_prompts_evidence
 
-        # MVU 变量引擎：解析 <UpdateVariable> JSON Patch → 更新会话 stat_data（仅 force 时）
-        if force and not mvu_variables_saved:
-            try:
-                # [MVU-DETACHED-FIX] 角色卡 extensions 重查/eager load 与会话变量
-                # 读写已抽到共用函数 apply_mvu_reply_to_session
-                # （character_message_builder.py），SSE 四入口与 WS 同调，勿在此
-                # 处再展开一份实现。
-                new_vars, mvu_logs, mvu_patches = apply_mvu_reply_to_session(
-                    save_db,
-                    char.id if char is not None else None,
-                    session_id,
-                    final_raw,
-                )
-                # [MVU-SECONDARY-MANUAL] 副 AI 已改为全手动模式：
-                # 不再在 persist 阶段自动调用副模型解析剧情（此前 90s 同步阻塞
-                # 会导致主流程收尾停滞、界面"生成完但一直转圈"）。
-                # 需要变量更新时由用户在前端消息按钮手动触发
-                # POST /api/character-sessions/{session_id}/mvu-secondary。
-                if new_vars is not None:
-                    msg_extra["variables"] = new_vars
-                    mvu_latest_variables = new_vars
-                    mvu_variables_saved = True
-                    # [MVU-CLEANUP 2026-10-05] 留存本轮补丁：变量清理会摘掉老楼层的
-                    # stat_data，而正文里的 <UpdateVariable> 已剥离且不留原文 ——
-                    # 恢复（重演）只能靠这份补丁。清理只动 extra["variables"]，
-                    # 天然不会碰到它。详见 app/services/mvu_cleanup.py。
-                    if mvu_patches:
-                        msg_extra["mvu_patch"] = mvu_patches
-            except Exception as mvu_err:
-                logger.warning("MVU variable update failed: %s", mvu_err, exc_info=True)
+        # [包U 2026-10-19] 「解析 MVU → 剥离正文 → 剥标题」三步收敛到唯一出口
+        # assistant_reply_persist.finalize_assistant_reply：此前这一步在 WS 主路径、
+        # SSE 普通对话、regenerate/swipe/continue 三动作流、以及普通聊天 messages 表
+        # 上各手抄一遍，抄漏/抄歪即产生脏落库（F4 与 id=2852 两次同型事故）。
+        # 顺序契约仍在出口内部保证：解析吃**剥离前**的 final_raw，剥离作用于
+        # 已过 AI_OUTPUT 正则的显示文本 final。
+        # [MVU-SECONDARY-MANUAL] 副 AI 已改为全手动模式：不在 persist 阶段自动调用
+        # 副模型解析剧情（此前 90s 同步阻塞会让主流程收尾停滞、界面"生成完但一直转圈"）。
+        # 需要变量更新时由用户在前端消息按钮手动触发
+        # POST /api/character-sessions/{session_id}/mvu-secondary。
+        _do_mvu_parse = bool(force) and not mvu_variables_saved
+        persisted = finalize_assistant_reply(
+            save_db,
+            character_id=(char.id if char is not None else None),
+            session_id=session_id,
+            raw_text=final_raw,
+            display_text=final,
+            parse_variables=_do_mvu_parse,
+            extract_title=True,
+        )
+        final = persisted.content
+
+        if _do_mvu_parse:
+            if persisted.variables is not None:
+                msg_extra["variables"] = persisted.variables
+                mvu_latest_variables = persisted.variables
+                mvu_variables_saved = True
+                # [MVU-CLEANUP 2026-10-05] 留存本轮补丁：变量清理会摘掉老楼层的
+                # stat_data，而正文里的 <UpdateVariable> 已剥离且不留原文 ——
+                # 恢复（重演）只能靠这份补丁。清理只动 extra["variables"]，
+                # 天然不会碰到它。详见 app/services/mvu_cleanup.py。
+                if persisted.patches:
+                    msg_extra["mvu_patch"] = persisted.patches
         elif mvu_latest_variables is not None:
             msg_extra["variables"] = mvu_latest_variables
 
-        # MVU 解析后剥离 <UpdateVariable> 指令块，避免正文泄漏 stat_data 更新指令
-        # （Time passed / Variable updates / JSON patch 数组等）。stat_data 更新基于
-        # 剥离前的 final_raw 已在上面完成，此处剥离仅作用于落库正文（含 swipe），
-        # 流式结束后的 final_content 推送亦取自剥离后的 msg.content，前端显示干净。
-        from app.services.mvu_engine import strip_update_variable_blocks
-        final = strip_update_variable_blocks(final)
-
-        # [TITLE-MARKER-FIX] 剥离回复末尾的 [标题: xxx] 标记。标题指令由
-        # character_message_builder 注入、模型必然输出；此前 WS 主路径只起标题、
-        # 不剥正文 → 标记原样显示在消息末尾（SSE 路径有剥离，两路不一致）。
-        # 与上面 MVU 剥离同理：只作用于落库正文（含 swipe），final_content
-        # 推送取自剥离后的 msg.content，前端即时收敛干净正文。
-        marker_title, final = extract_response_title(final)
-        if marker_title:
+        # [TITLE-MARKER-FIX] [标题: xxx] 标记由出口一并剥离（标题指令由
+        # character_message_builder 注入、模型必然输出）。只作用于落库正文（含 swipe），
+        # final_content 推送取自剥离后的 msg.content，前端即时收敛干净正文。
+        #
+        # ⚠️ 覆写 result.full_content **只能在 force 收尾那一次**做（包U 实测新发现）：
+        # 中间快照每次都会重算 final_raw = result.full_content 并把它当 MVU 解析源，
+        # 一旦非 force 快照先剥掉标记+变量块，随后那次 force 解析就只能看到已剥净的
+        # 正文 ⇒ 「解析跑了但一个补丁都没有」→ stat_data 不更新、extra.mvu_patch 不落库
+        # （正是本包测试 test_ws_character_chat_persist_is_clean 的红线）。
+        # 改前同款写法在 WS 轨一直如此，只是 WS 角色扮演在生产上被 SSE 取代而无人触发。
+        marker_title = persisted.marker_title or marker_title
+        if persisted.marker_title and force:
             result.full_content = final
 
         try:

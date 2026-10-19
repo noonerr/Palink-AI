@@ -23,6 +23,8 @@ from ..services.inference_dispatcher import ensure_model_available, stream_text_
 from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.inference_queue import inference_queue
 from ..services.compact_title_service import generate_compact_title
+# [包U 2026-10-19] 助手回复落库唯一出口（解析→剥离→落库一体），见模块 docstring 的入口清单。
+from ..services.assistant_reply_persist import finalize_assistant_reply
 from ..services.web_search import search_web, format_search_results, get_web_search_config
 from ..services.mcp_service import get_all_tools_openai_format
 from ..services.image_generation_service import (
@@ -247,7 +249,16 @@ async def chat_stream(
                     return
 
             # [REASONING-SEPARATE] 纯正文入库；思考经 extra.reasoning 单独持久化
-            final = result.full_content
+            # [包U 2026-10-19] 落库正文改走「解析→剥离→落库」统一出口。messages 表
+            # 没有角色会话，故 parse_variables=False 不碰 MVU，但变量块仍必须剥
+            # —— 改前此处 `final = result.full_content` 直存模型原文（与
+            # websocket.run_chat_generation 同型漏项）。
+            final = finalize_assistant_reply(
+                None,
+                raw_text=result.full_content,
+                parse_variables=False,
+                extract_title=False,
+            ).content
             token_count = result.display_token_count()  # 错误占位文本不计（对齐 ST isFinal 语义）
             ws_json = json.dumps({"query": req.message, "results": web_search_results}, ensure_ascii=False) if web_search_results else None
             extra_payload = json.dumps({"reasoning": result.full_reasoning}, ensure_ascii=False) if result.full_reasoning else None
