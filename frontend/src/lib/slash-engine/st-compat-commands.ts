@@ -489,21 +489,26 @@ export function registerStCompatCommands(): string[] {
       return '';
     },
   });
-  // [包Z Z-1] `scope` 命名参数对齐 ST 一手源码（本机 /d/SillyTavern-release）：
-  //   注册处 public/scripts/variables.js:902-932 —— :904 name、:906 aliases:['listchatvar']、
+  // [包Z Z-1 2026-10-19 / 包AA B 2026-10-20 改判] `scope` 命名参数对齐 ST 一手源码。
+  // 注册处 public/scripts/variables.js:902-932 —— :904 name、:906 aliases:['listchatvar']、
   //   :910-922 `scope`（:914 defaultValue 'all'、:916 forceEnum、:918-920 enumList all|local|global）。
-  //   实现处 public/scripts/variables.js:263-302 —— :268 归一（lowercase+trim，空值→'all'）、
-  //   :273-274 include 判定、:291-294 JSON 形状 [{key,value,scope}]、:301 doReturn 默认 popup-html。
+  // 实现处 public/scripts/variables.js:263-302 —— :268 归一（lowercase+trim，**空值→'all'**）、
+  //   :273-274 include 判定、:291-294 JSON 形状 [{key,value,scope}]（先 local 后 global）、
+  //   :301 doReturn 默认 popup-html。
   // 非法值：ST 的 forceEnum 只喂自动补全（SlashCommandArgument.js:55 定义、
   //   SlashCommandAutoCompleteNameResult.js:119/188 转 forceMatch），执行期**不抛错**；
-  //   未知 scope 使 :273-274 两个 include 恒假 ⇒ 文本分支为空串。这里照抄"不抛错 + 空串"。
+  //   未知 scope 使 :273-274 两个 include 恒假 ⇒ 文本分支空串。这里照抄"不抛错 + 空串"。
   // global 分支是**真通道**：frontend/src/lib/variables/global.ts:15 GlobalVariableStorage
   //   （落后端 /api/variables/global，与上面 :446 addglobalvar / :464 incglobalvar /
   //   :473 decglobalvar / :479 flushglobalvar 读写同一张表）⇒ 不是把局部表换个名字再列一遍。
-  // 两处有据可查的**偏离**（详见 docs/_active/report/REPORT_包Z_紧要批次一小收尾_2026-10-19.md）：
-  //   ① 缺省值：ST 为 'all'，但改前本仓 `/listvar` 就是"只列局部表"，HANDOFF §1 Z-1 验收标准
-  //      要求"不给 scope 与改前逐字节一致" ⇒ 缺省仍走 local，`scope=all` 才出 ST 的两组形状。
-  //   ② `chat` 不在 ST 枚举里（ST 会当非法值出空串），此处按同一验收标准当作 local 的同义词。
+  //
+  // ⚠️ 包Z 曾按当时任务书验收标准「不给 scope 与改前逐字节一致」做过**两处偏离**
+  //    （缺省走 local、chat 当 local 的同义词）。该验收条件由主脑自己写错，2026-10-20 **已撤销**：
+  //    兼容目标是 ST，不是本仓改前行为。两处偏离同日撤销 ⇒
+  //    ① 缺省 = ST 的 'all'（variables.js:914 defaultValue + :268 的 `|| 'all'`）；
+  //    ② `chat` 不在 ST 枚举（:918-920 只有 all|local|global）⇒ 按未知枚举处理 = 空串（:273-274 双假）。
+  //    连带：**不给 scope 的输出形状与改前不再逐字节一致**（改前是局部表 JSON，现在是两组载荷），
+  //    依赖旧形状的用例已在 st-compat-commands-listvar-scope.test.ts 里按 ST 行号改判并写明理由。
   // 不做：`return` 参数（ST :923-930）——Palink 引擎没有 popup/object 返回通道，照抄就是空壳。
   register('listvar', {
     description: 'List variables; scope=local|global|all (ST variables.js:910-922)',
@@ -513,16 +518,18 @@ export function registerStCompatCommands(): string[] {
         description: 'filter variables by scope',
         type: [ARGUMENT_TYPE.STRING],
         isRequired: false,
-        enumList: ['all', 'local', 'global', 'chat'],
+        // 照 ST variables.js:918-920 的三个枚举值；'chat' 从来不在 ST 里（包Z 的偏离②已撤销）。
+        enumList: ['all', 'local', 'global'],
       },
     ],
     callback: (named) => {
-      const scope = String(named?.scope ?? '').toLowerCase().trim(); // ST :268
+      const rawScope = String(named?.scope ?? '').toLowerCase().trim();
+      const scope = rawScope || 'all'; // ST variables.js:268（空值缺省 all，不是 local）
       const localVars = variableManager.local.list();
       const globalVars = variableManager.global.list();
-      const includeLocal = scope === '' || scope === 'all' || scope === 'local' || scope === 'chat';
-      const includeGlobal = scope === 'global' || scope === 'all';
-      if (!includeLocal && !includeGlobal) return ''; // ST :273-274 双假 ⇒ 空串，不抛错
+      const includeLocal = scope === 'all' || scope === 'local'; // ST :273
+      const includeGlobal = scope === 'all' || scope === 'global'; // ST :274
+      if (!includeLocal && !includeGlobal) return ''; // 未知值（含 chat）双假 ⇒ 空串，不抛错
       if (scope === 'all') {
         return JSON.stringify([
           ...Object.entries(localVars).map(([key, value]) => ({ key, value, scope: 'local' })),

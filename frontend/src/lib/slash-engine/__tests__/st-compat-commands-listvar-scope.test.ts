@@ -17,11 +17,15 @@
  *     :291-294 jsonVariables = [{key,value,scope:'local'|'global'}]（先 local 后 global）
  *     :301  doReturn(returnType ?? 'popup-html', jsonVariables, {objectToStringFunc: buildTextValue})
  *
- * 本仓按任务书（HANDOFF §1 Z-1）验收标准做的**两处有据可查的偏离**：
- *   ① 不给 scope ⇒ 必须与改前逐字节一致 ⇒ 缺省走 local（ST 缺省是 all）。
- *      改前实现是 `JSON.stringify(variableManager.local.list())`，所以这里断的就是这个字面量。
- *   ② `chat` 不在 ST 枚举里（ST 会把它当非法值出空串），任务书要求 `scope=chat` 与改前一致
- *      ⇒ 当作 local 的同义词。
+ * ⚠️ 2026-10-20 包AA-B **改判**（主脑撤销包Z 依据 HANDOFF §1 Z-1 写的两处偏离验收条件）：
+ *   兼容目标是 ST 而非"本仓改前行为"，所以下面这一组用例（原"回归面/与改前逐字节一致"）
+ *   已按 ST 一手源码重写。逐条依据：
+ *     ① 缺省 = all：variables.js:914 `defaultValue: 'all'` + :268 `|| 'all'`
+ *        ⇒ 不给 scope 的输出是 :291-294 的两组载荷，**不再**等于改前的局部表 JSON。
+ *     ② `chat` 不在 ST 枚举：:918-920 enumList 只有 all|local|global
+ *        ⇒ 走 :273-274 双假分支 = 空串（与 scope=bogus 同一口径）。
+ *   撤销的偏离原文见同文件 git 历史与
+ *   docs/_active/report/REPORT_包Z_紧要批次一小收尾_2026-10-19.md。
  *
  * 非法值行为照抄 ST：`forceEnum` 只喂自动补全（SlashCommandArgument.js:55 定义、
  * SlashCommandAutoCompleteNameResult.js:119/188 转 forceMatch），**执行期不抛错**；
@@ -48,34 +52,58 @@ ensureSlashCommandsBootstrapped();
 
 const run = async (input: string) => (await SlashCommandEngine.execute(input)).output;
 
-/** 改前实现的输出（回归基线）：`JSON.stringify(variableManager.local.list())` */
+/** 改前实现的输出（仅作"旧形状已不再出现"的反证基线，2026-10-20 包AA-B 后不再是验收线） */
 const legacyOutput = () => JSON.stringify(variableManager.local.list());
 
-describe('Z-1 listvar · 回归面（与改前逐字节一致）', () => {
+describe('Z-1 listvar · 缺省与非法值按 ST 改判（2026-10-20 包AA-B，依据 variables.js:914/:268/:918-920/:273-274）', () => {
   beforeEach(async () => {
     localVariables.load({});
     await run('/flushglobalvar');
   });
 
-  it('不给 scope 时输出与改前实现逐字节相同', async () => {
+  // 原用例「不给 scope 时输出与改前实现逐字节相同」断的是 `{"hp":"10","mp":"5"}`。
+  // 改判理由：ST 的缺省值就是 all（:914 defaultValue 'all'，:268 `|| 'all'`），
+  // all 分支走 :291-294 的 [{key,value,scope}] 载荷 ⇒ 缺省输出必须是两组形状。
+  it('不给 scope 等价于 scope=all（ST :914 defaultValue + :268 的 || "all"）', async () => {
     localVariables.load({ hp: '10', mp: '5' });
-    expect(await run('/listvar')).toBe(legacyOutput());
-    expect(await run('/listvar')).toBe('{"hp":"10","mp":"5"}');
+    await run('/addglobalvar gold 100');
+    expect(await run('/listvar')).toBe(await run('/listvar scope=all'));
+    expect(JSON.parse(await run('/listvar'))).toEqual([
+      { key: 'hp', value: '10', scope: 'local' },
+      { key: 'mp', value: '5', scope: 'local' },
+      { key: 'gold', value: '100', scope: 'global' },
+    ]);
+    // 反证：改前的"只列局部表"形状已不再出现（旧用例断的就是它）。
+    expect(await run('/listvar')).not.toBe(legacyOutput());
   });
 
-  it('scope=chat（任务书要求的同义词）与不给 scope 逐字节相同', async () => {
+  // 原用例「scope=chat 与不给 scope 逐字节相同」（任务书要求的同义词）。
+  // 改判理由：chat 从来不在 ST 枚举里（:918-920 只有 all|local|global），
+  // 未知值使 :273-274 两个 include 恒假 ⇒ 空串；与 scope=bogus 同口径。
+  it('scope=chat 按未知枚举处理 = 空串（ST :918-920 无 chat ⇒ :273-274 双假）', async () => {
     localVariables.load({ hp: '10' });
-    expect(await run('/listvar scope=chat')).toBe(await run('/listvar'));
+    expect(await run('/listvar scope=chat')).toBe('');
+    expect(await run('/listvar scope=chat')).toBe(await run('/listvar scope=bogus'));
   });
 
-  it('scope=local 与不给 scope 逐字节相同（ST :273 includeLocal 含 local）', async () => {
+  // 原用例「scope=local 与不给 scope 逐字节相同」。
+  // 改判理由：不给 scope 现在是 all（:268），local 只出局部表的 JSON 对象，两者形状不同。
+  it('scope=local 只出局部表对象，且不等于缺省（缺省已是 all，两组载荷）', async () => {
     localVariables.load({ hp: '10' });
-    expect(await run('/listvar scope=local')).toBe(await run('/listvar'));
+    await run('/addglobalvar gold 100');
+    expect(await run('/listvar scope=local')).toBe('{"hp":"10"}');
+    expect(await run('/listvar scope=local')).not.toBe(await run('/listvar'));
+    expect(await run('/listvar scope=local')).not.toContain('gold');
   });
 
-  it('空表也保持改前形状（{}，不是 []）', async () => {
-    expect(await run('/listvar')).toBe('{}');
-    expect(await run('/listvar scope=chat')).toBe('{}');
+  // 原用例「空表也保持改前形状（{}，不是 []）」。
+  // 改判理由：空表 + 缺省 all ⇒ :291-294 两次展开都是空 ⇒ 载荷是空数组 `[]`。
+  it('空表走缺省（all）时形状是 []（ST :291-294 两组都为空）', async () => {
+    expect(await run('/listvar')).toBe('[]');
+    expect(await run('/listvar scope=chat')).toBe('');
+    // local/global 单边分支仍保持各自的对象形状（:301 之外的 return 分支）。
+    expect(await run('/listvar scope=local')).toBe('{}');
+    expect(await run('/listvar scope=global')).toBe('{}');
   });
 });
 
@@ -154,6 +182,8 @@ describe('Z-1 listvar · 声明面（补全用的枚举）', () => {
     const scopeArg = cmd?.namedArgs?.find(a => a.name === 'scope');
     expect(scopeArg).toBeTruthy();
     expect(scopeArg?.type).toEqual(['string']);
-    expect(scopeArg?.enumList).toEqual(expect.arrayContaining(['all', 'local', 'global']));
+    // 2026-10-20 包AA-B：枚举闭合到 ST 的三个值（:918-920），包Z 加的 'chat' 已随偏离②撤销。
+    expect(scopeArg?.enumList).toEqual(['all', 'local', 'global']);
+    expect(scopeArg?.enumList).not.toContain('chat');
   });
 });
