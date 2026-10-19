@@ -35,14 +35,44 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# 1. <UpdateVariable> 提取
+# 1. 变量更新块提取
 # ---------------------------------------------------------------------------
+# [包Q 2026-10-19] 标签别名与闭合语义对齐上游 MVU。一手取证文件
+# .tmp_probe/mvu_bundle.js（卡侧引用的 MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js，
+# jsdelivr 公开代码，611598 字节；该文件是压缩产物、全文仅 3 行，故引用给
+# 「行:列」并附可 grep 的字面 needle）：
+#   · 展示层剥离正则（函数 Dr，2:462098，needle '/\n<(update(?:variable)?'）逐字为
+#       /\n<(update(?:variable)?|variableupdate)>(?:(?!<\1>).)*<\/\1?>/gis
+#   · 解析层标签记号正则（函数 Ut，2:360326，needle 'updatevariable|variableupdate|update|json_?patch'）
+#       /^<(\/?)\s*(updatevariable|variableupdate|update|json_?patch|think|…)\b[^>]*>/i
+#     并按桶分派（2:360600，needle "/^json/.test(e)?'patch':'update'"）、
+#     再由 Rt（2:361540，needle 'function Rt('）把开/闭标签配对成块。
+# ⇒ 上游认三种别名 <update> / <updatevariable> / <variableupdate>（大小写不敏感），
+#   闭合标签用反引用 \1? —— 必须与开标签同名（或上游允许的裸 </>），
+#   且块内不得再出现同名开标签（(?!<\1>)）。**不是**属性式 / 自闭合式写法。
+#
+# Palink 相对上游的两点**有意**差异（勿"顺手对齐"造成回归）：
+#   1. 不要求块前必有换行。上游 \n< 是它展示层的限制；Palink 要支持内联块
+#      （既有测试 test_multiple_blocks 即两个内联块紧邻，补 \n 会红）。
+#   2. 块体用 group(2) 捕获，供 extract 解析其中的 JSON Patch；上游剥离正则
+#      只看形状、group(1) 是标签名，不需要内容。
+#   ⚠️ 上游自身两处不一致：解析层 Ut/Rt 按**桶**（update|patch）配对，跨别名
+#      <update>…</UpdateVariable> 也能配上；展示层 Dr 按**反引用**要求同名。
+#      Palink 的 extract 与 strip 共用同一条正则（不一致就会出现「剥了但没解析」
+#      或「解析了但留在正文」），故按主控规格取**严格的反引用语义**。
+_MVU_UPDATE_TAG_ALIAS = r"update(?:variable)?|variableupdate"
+_MVU_JSONPATCH_TAG_ALIAS = r"json_?patch"
+# group(1)=标签名、group(2)=块体；(?:(?!<\1>)[\s\S])*? 复刻上游 (?!<\1>) 的禁嵌套语义
+_MVU_BLOCK_BODY = r"((?:(?!<\1>)[\s\S])*?)"
+_MVU_BLOCK_PATTERN = r"<(%s)>%s</\1?>"
+_UPDATE_BLOCK_SRC = _MVU_BLOCK_PATTERN % (_MVU_UPDATE_TAG_ALIAS, _MVU_BLOCK_BODY)
+_JSONPATCH_BLOCK_SRC = _MVU_BLOCK_PATTERN % (_MVU_JSONPATCH_TAG_ALIAS, _MVU_BLOCK_BODY)
 
-_UPDATE_VAR_RE = re.compile(
-    r"<UpdateVariable>([\s\S]*?)</UpdateVariable>", re.IGNORECASE
-)
-_JSONPATCH_RE = re.compile(
-    r"<JSONPatch>([\s\S]*?)</JSONPatch>", re.IGNORECASE
+_UPDATE_VAR_RE = re.compile(_UPDATE_BLOCK_SRC, re.IGNORECASE)
+_JSONPATCH_RE = re.compile(_JSONPATCH_BLOCK_SRC, re.IGNORECASE)
+# 块独占整行时连同块后换行一并移除（strip 第一遍用），避免正文留下孤立空行。
+_UPDATE_VAR_LINE_RE = re.compile(
+    r"(?m)^[ \t]*" + _UPDATE_BLOCK_SRC + r"[ \t]*$\n?", re.IGNORECASE
 )
 
 
@@ -194,26 +224,28 @@ def _safe_json_loads_list(raw: str) -> list | None:
 
 
 def extract_update_variable_blocks(text: str) -> list[list[dict]]:
-    """从 AI 回复正文提取所有 <UpdateVariable> 块内的 JSON Patch 数组。
+    """从 AI 回复正文提取所有变量更新块内的 JSON Patch 数组。
 
-    返回 patch 数组的列表（每个 <UpdateVariable> 一个），保持出现顺序。
+    块标签认三种别名 ``<update>`` / ``<updatevariable>`` / ``<variableupdate>``
+    （大小写不敏感，开闭必须同名，见本节头部取证）。
+    返回 patch 数组的列表（每个更新块一个），保持出现顺序。
     无法解析的块会被跳过并记 warning。
     """
     if not text or not isinstance(text, str):
         return []
     blocks: list[list[dict]] = []
     for m in _UPDATE_VAR_RE.finditer(text):
-        inner = m.group(1)
-        # 优先取 <JSONPatch>...</JSONPatch>
+        inner = m.group(2)
+        # 优先取 <JSONPatch> / <json_patch>...</...>
         jp = _JSONPATCH_RE.search(inner)
         if jp:
-            patches = _safe_json_loads_list(jp.group(1))
+            patches = _safe_json_loads_list(jp.group(2))
         else:
             patches = _find_first_json_array(inner)
         if patches is not None:
             blocks.append(patches)
         else:
-            logger.warning("MVU: skipped unparseable <UpdateVariable> block")
+            logger.warning("MVU: skipped unparseable variable-update block")
     # [BARE-JSONPATCH] 模型偶发不包 <UpdateVariable> 直接输出裸 JSON Patch 数组
     # （2026-08-18 实测：world book 指令要求包裹但 AI 输出裸数组，后端提取不到
     # → stat_data 永不更新）。无包裹块时，扫描全文采纳第一个结构校验通过的裸数组。
@@ -229,23 +261,22 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
 
 
 def strip_update_variable_blocks(text: str) -> str:
-    """从消息正文剥离 <UpdateVariable>…</UpdateVariable> 块（含内部 Analysis/JSONPatch）。
+    """从消息正文剥离变量更新块（``<update>`` / ``<updatevariable>`` /
+    ``<variableupdate>`` 三种别名，大小写不敏感；含内部 Analysis/JSONPatch）。
 
     这些块是 stat_data 更新的**指令**而非对话内容：ST 中由前端 MVU 扩展解析后
     从消息显示中隐藏，Palink 后端已在 update_from_reply 解析并落库 stat_data，
     正文中不应再残留指令块（否则显示为泄漏的 JSON patch 文本）。剥离仅作用于
     消息正文，不影响 stat_data 更新（后者基于剥离前的原文解析）。
+
+    ⚠️ 与 extract_update_variable_blocks 共用 _UPDATE_VAR_RE / _JSONPATCH_RE：
+    两者必须同一套标签别名，否则会出现「剥了但没解析」或「解析了但留在正文」。
     """
     if not text or not isinstance(text, str):
         return text
     # 第一遍：块独占整行时连同单侧换行一并移除（`\n<block>\n` → 无残留），
-    # 避免在正文中留下孤立空行；`[\s\S]*?` 允许块内部跨多行（含 Analysis/JSONPatch）。
-    cleaned = re.sub(
-        r"(?m)^[ \t]*<UpdateVariable>[\s\S]*?</UpdateVariable>[ \t]*$\n?",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+    # 避免在正文中留下孤立空行；块体允许跨多行（含 Analysis/JSONPatch）。
+    cleaned = _UPDATE_VAR_LINE_RE.sub("", text)
     # 第二遍：处理内联在正文中的块（不独占行，两侧保留原有换行）。
     cleaned = _UPDATE_VAR_RE.sub("", cleaned)
     # 模型常把 <UpdateVariable> 块包在 markdown 代码围栏内输出（```html … ```），
