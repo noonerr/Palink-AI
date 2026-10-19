@@ -17,6 +17,7 @@ import {
 
 import { REMAINING_MARKDOWN_PLUGINS, REMAINING_REHYPE_PLUGINS, INLINE_MIN_HEIGHT, IFRAME_DEFAULT_HEIGHT, IFRAME_INLINE_MAX_HEIGHT, IFRAME_VIEWPORT_MIN_HEIGHT, IFRAME_AVAILABLE_MIN_HEIGHT, SMART_CARD_CSP_NONCE, SMART_CARD_CONTEXT_UPDATE_DELAY_MS, SMART_CARD_VIEWPORT_SETTLE_DELAYS_MS, SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
 import { resolveAvailableHeightCardResize } from './smart-card-runtime/avail-height-unlock';
+import { absorbFrameDiagnostic } from './smart-card-runtime/palink-diag';
 import { smartCardRuntimeConfigFallback } from './smart-card-runtime/helpers';
 import { SMART_CARD_ASSET_MODE_CHANGED_EVENT } from './smart-card-runtime/asset-mode';
 import {
@@ -994,6 +995,13 @@ const IframeRenderer = React.memo(function IframeRenderer({
         return;
       }
       if ((data.type === 'diagnostic' || data.type === 'st:diagnostic') && data.diagnostic) {
+        // [包W 2026-10-19] 帧内统一记录器经既有 st:diagnostic 通道上送的部分在这里落账
+        // （severity=info ⇒ 下面 onAction 走到的宿主 toast 闸门不弹，用户可见行为零变化）。
+        // 顺带补齐帧侧拿不到的身份：frameId 用本组件的、cardId 用 context.characterId。
+        absorbFrameDiagnostic(data.diagnostic, {
+          frameId: frameIdRef.current || '',
+          cardId: String(context.characterId || ''),
+        });
         onAction?.({ type: 'diagnostic', diagnostic: data.diagnostic });
         return;
       }

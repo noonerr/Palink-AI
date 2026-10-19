@@ -42,11 +42,44 @@ import {
 } from './smart-card-runtime/contrast-enhancer';
 import { SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
 import { getCurrentInterfaceLanguage, htmlNeedsIframe } from './smart-card-runtime/helpers';
+import { recordPalinkDiag } from './smart-card-runtime/palink-diag';
 
 type RegexScript = any;
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
-const REHYPE_PLUGINS = [rehypeKatex];
+/**
+ * [包W 2026-10-19] 变量块漏网取证（owner=display_pipeline）。
+ * 后端 mvu_engine 负责把 `<UpdateVariable>` 族标签解析并剥离，本文件这两步 replace 是双保险。
+ * 双保险走完正文里**仍有**该族标签 ⇒ 后端识别面没覆盖这种写法，用户会看到裸标签，
+ * 而这条路径今天完全静默。只记录、不改渲染结果、不弹框；同名合并计数 ⇒ 重渲染不刷屏。
+ * 范围刻意只收 UpdateVariable 族：StatusPlaceHolderImpl / sakura_status 那几族由
+ * extractCharacterStatusBars 与 applySillyTavernDisplayPipeline 在后续步骤处理，
+ * 在当前位置出现属正常中间态，记了是假阳性。
+ */
+const PALINK_RESIDUAL_VARIABLE_MARKERS: Array<{ match: string; label: string }> = [
+  { match: '<updatevariable', label: 'UpdateVariable' },
+];
+function recordResidualVariableBlock(text: string, messageId: unknown): void {
+  try {
+    if (!text) return;
+    const lower = text.toLowerCase();
+    for (const marker of PALINK_RESIDUAL_VARIABLE_MARKERS) {
+      if (!lower.includes(marker.match)) continue;
+      recordPalinkDiag({
+        owner: 'display_pipeline',
+        kind: 'variable_block_residual',
+        name: marker.label,
+        detail: `前端双保险剥离后正文里仍有 <${marker.label}> 族标签 ⇒ 后端 mvu_engine 识别面未覆盖该写法`
+          + `（消息 id=${String(messageId ?? '<无 id>')}），用户当前会看到裸标签泄漏`,
+        textLength: text.length,
+      });
+      return;
+    }
+  } catch {
+    /* 取证失败不得影响渲染 */
+  }
+}
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath];const REHYPE_PLUGINS = [rehypeKatex];
 
 function MarkdownImg({ onClick, ...props }: any) {
   return (
@@ -914,6 +947,11 @@ function MessageInner({
           .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '')
           .replace(/\n{3,}/g, '\n\n'),
       );
+      // [包W 2026-10-19] 变量块漏网写法取证：后端 mvu_engine 负责剥离（包Q/包U 已扩识别面），
+      // 前端这两步只是双保险。若剥完**正文里仍有**变量族标签 ⇒ 说明出现了后端没覆盖的写法，
+      // 用户看到的是裸标签泄漏。这里只记一条 display_pipeline（不弹框、不改渲染结果），
+      // 名字取漏网标签，便于反推后端还要不要扩面。
+      recordResidualVariableBlock(mainContent, message?.id);
     }
     mainContent = mainContent.trim();
     const { textContent, images } = extractImagesFromContent(mainContent);

@@ -40,6 +40,9 @@ export const PALINK_DIAG_KINDS = [
   'variable_block_residual',
   'frame_record',
   'context_stub_hit',
+  'missing_api',
+  'host_script_error',
+  'script_error',
 ] as const;
 
 export type PalinkDiagKind = (typeof PALINK_DIAG_KINDS)[number] | string;
@@ -407,6 +410,72 @@ export function resetPalinkDiagForTest(): void {
   state.dropped = 0;
   state.enabledOverride = null;
   flushPalinkDiagSummary();
+}
+
+/**
+ * 宿主主文档侧的 rejection / script error 取证（包W · K-3 同一条病灶的另一半）。
+ *
+ * 只装**一对**监听器（不是每卡一个，且幂等），且不拦事件、不 preventDefault、
+ * 不调 toast ⇒ 用户可见行为与改前完全一致；只是原来"除了 toast 什么都不留"的
+ * 这条轨，现在同时进记录器（带 filename / lineno / colno / stack / reason）。
+ *
+ * 归属口径：网络型失败（Failed to fetch / NetworkError / Load failed）⇒ host_capability
+ * （能不能连通由宿主网络面决定），其余 ⇒ frame_compat（兼容层/主文档自己的问题）。
+ * 语法类错误另记 kind=card_script_injection_failed? 不 —— 主文档的脚本错误一律记
+ * host_script_error，卡脚本的语法错由 card-script-runner 带身份记录，避免同一失败两条同名。
+ */
+const PALINK_NETWORK_REJECTION_MARKERS = ['failed to fetch', 'networkerror', 'load failed', 'network request failed', 'network error'];
+
+export function installPalinkDiagHostRejectionTrack(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as unknown as Record<string, unknown>;
+  if (w.__palinkDiagHostTrackInstalled === true) return;
+  w.__palinkDiagHostTrackInstalled = true;
+  window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+    try {
+      const reason = event?.reason as Record<string, unknown> | string | undefined;
+      let message = '';
+      let stack = '';
+      if (reason && typeof reason === 'object') {
+        message = typeof reason.message === 'string' ? reason.message : String(reason.name || reason.type || 'rejection');
+        stack = typeof reason.stack === 'string' ? reason.stack : '';
+      } else if (reason !== undefined) {
+        message = String(reason);
+      } else {
+        message = 'rejection-with-empty-reason';
+      }
+      const low = message.toLowerCase();
+      recordPalinkDiag({
+        owner: PALINK_NETWORK_REJECTION_MARKERS.some((needle) => low.includes(needle)) ? 'host_capability' : 'frame_compat',
+        kind: 'unhandled_rejection',
+        name: message.slice(0, 120),
+        detail: `主文档 rejection 轨取证（origin=host；reason 形态 ${reason && typeof reason === 'object' ? 'object' : typeof reason}）`,
+        stack,
+        origin: 'host',
+      });
+    } catch {
+      /* 取证失败不得影响页面 */
+    }
+  });
+  window.addEventListener('error', (event: ErrorEvent) => {
+    try {
+      const message = typeof event?.message === 'string' ? event.message : '';
+      if (!message) return;
+      recordPalinkDiag({
+        owner: 'frame_compat',
+        kind: 'host_script_error',
+        name: message.slice(0, 120),
+        detail: '主文档未捕获脚本错误（toast 判定未受影响，本条只进记录器）',
+        stack: typeof event.error?.stack === 'string' ? event.error.stack : '',
+        filename: typeof event.filename === 'string' ? event.filename : '',
+        lineno: typeof event.lineno === 'number' ? event.lineno : -1,
+        colno: typeof event.colno === 'number' ? event.colno : -1,
+        origin: 'host',
+      });
+    } catch {
+      /* 同上 */
+    }
+  });
 }
 
 /**

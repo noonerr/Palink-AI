@@ -857,12 +857,12 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
     };
     collection.text = function(value) {
       if (value === undefined) return this.map((node) => node.textContent || '').join('');
-      this.forEach((node) => { try { node.textContent = String(value ?? ''); } catch {} });
+      this.forEach((node) => { try { node.textContent = String(value ?? ''); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-text-set', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.html = function(value) {
       if (value === undefined) return this[0]?.innerHTML ?? '';
-      this.forEach((node) => { try { node.innerHTML = String(value ?? ''); } catch {} });
+      this.forEach((node) => { try { node.innerHTML = String(value ?? ''); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-html-set', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.append = function(value) {
@@ -874,7 +874,7 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
           try {
             if (isDomNodeLikeCompat(item)) node.appendChild?.(item);
             else node.insertAdjacentHTML?.('beforeend', dollarMovedItemMarkupCompat(item));
-          } catch {}
+          } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-append-move', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
         });
       });
       return this;
@@ -888,7 +888,7 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
           try {
             if (isDomNodeLikeCompat(item)) node.insertBefore?.(item, head);
             else node.insertAdjacentHTML?.('afterbegin', dollarMovedItemMarkupCompat(item));
-          } catch {}
+          } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-prepend-move', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
         });
       });
       return this;
@@ -908,15 +908,15 @@ export const RUNTIME_BODY_PART_04 = `      Number.isFinite(Number(message?.swipe
       return this;
     };
     collection.remove = function() {
-      this.forEach((node) => { try { node.remove?.(); } catch {} });
+      this.forEach((node) => { try { node.remove?.(); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-remove', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.show = function() {
-      this.forEach((node) => { try { node.style.display = ''; } catch {} });
+      this.forEach((node) => { try { node.style.display = ''; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-show', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.hide = function() {
-      this.forEach((node) => { try { node.style.display = 'none'; } catch {} });
+      this.forEach((node) => { try { node.style.display = 'none'; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-04:dollar-hide', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
 `;

@@ -195,6 +195,23 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
       args: args.map(summarizeArg),
       stack: new Error().stack || '',
     });
+    // [包W 2026-10-19] 未实现的能力被"装作会"：TavernHelper 的 D 类键（包H 有意不注册）
+    // 与所有未登记的 window 级 ST API 都会落到这里。既有行为一字不改 —— 仍然走
+    // reportDiagnostic（severity=warning ⇒ 宿主照旧弹 toast，包I 的判定不碰）、
+    // 仍然 requestParent('unknownApiCall')、返回值不变。
+    // 只加一条归属明确的记录：host_capability = 缺的是宿主/后端能力，不是卡的问题。
+    // 存在性守卫：本段可能被测试按 marker 切出来单独求值（切片夹具里没有记录器），
+    // 直接调用会变成 ReferenceError ⇒ 改动既有行为。typeof 对未声明标识符不抛。
+    if (typeof palinkDiagRecord === 'function') palinkDiagRecord({
+      owner: 'host_capability',
+      kind: String(apiName || '').indexOf('TavernHelper.') === 0
+        ? 'tavernhelper_key_unimplemented'
+        : 'missing_api',
+      name: String(apiName || ''),
+      detail: '未实现的键被真调用（返回形状未改）；severity=' + String(options.severity || 'warning')
+        + '，实参 ' + args.length + ' 个',
+      stack: String((new Error().stack) || ''),
+    });
     const response = await requestParent('unknownApiCall', {
       apiName,
       args: args.map((arg) => sanitizeUnknownApiArg(arg)),

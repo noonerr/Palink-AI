@@ -446,7 +446,23 @@ ${bootHeader}
   window.__palinkDiagRecord = palinkDiagRecord;
   window.__palinkDiagDump = palinkDiagDumpText;
   window.__palinkDiagRecords = palinkDiagRecords;
-  window.__palinkDiagBuffered = palinkDiagRecords;
+  // [包W 2026-10-19] 全局形状缺口留痕（本包**不补** window.context，那是待用户拍板的产品决定，
+  // 见 docs/OPEN_ISSUES.md P2-12 第 9 条）。
+  // 口径说清楚：boot 头里的 ctx 是 const，只在 IIFE 闭包内可见，从未挂到 window ⇒
+  // 按 ST 习惯读 window.context 的卡拿到的是 undefined，而且这条路径**今天完全静默**。
+  // 帧内没有不改卡行为又能观测「某张卡真的读了它」的办法（defineProperty 一个 getter 会让
+  // 'context' in window 由假变真，等于伪造卡看到的形状 ⇒ 本包不做）。
+  // 因此退一步：启动时如实记一条「我们未提供这个全局」，owner=frame_compat，
+  // 由主控按卡的实测情况决定是否补对象。同名合并 ⇒ 七帧也只累计计数，不产生七条。
+  if (!Object.getOwnPropertyDescriptor(window, 'context')) {
+    palinkDiagRecord({
+      owner: 'frame_compat',
+      kind: 'global_shape_absent',
+      name: 'window.context',
+      detail: '形状缺口：boot 的 ctx 是 IIFE 内的 const，未挂到 window ⇒ 卡读 window.context 得 undefined。'
+        + '本包只留痕不补对象（待用户拍板）。若本条 count 增长说明确有卡在读，派单给前端兼容层。',
+    });
+  }
   const executeCompatInlineScriptCompat = (source, label = '') => {
     const script = document.createElement('script');
     if (runtimeScriptNonce) script.setAttribute('nonce', runtimeScriptNonce);

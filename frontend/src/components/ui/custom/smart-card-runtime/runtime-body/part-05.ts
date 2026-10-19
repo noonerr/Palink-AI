@@ -12,7 +12,7 @@
  */
 
 export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
-      this.forEach((node) => { try { node.innerHTML = ''; } catch {} });
+      this.forEach((node) => { try { node.innerHTML = ''; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-html-empty', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.find = function(selector) {
@@ -82,9 +82,9 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
       if (typeof name === 'string' && value === undefined) return this[0]?.[name];
       this.forEach((node) => {
         if (typeof name === 'object') {
-          Object.entries(name).forEach(([key, val]) => { try { node[key] = val; } catch {} });
+          Object.entries(name).forEach(([key, val]) => { try { node[key] = val; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-attr-object-set', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
         } else {
-          try { node[name] = value; } catch {}
+          try { node[name] = value; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-attr-single-set', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
         }
       });
       return this;
@@ -98,12 +98,12 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
     // "xxx is not a function"，如 $("selector").blur()）。方法与 jQuery 语义对齐。
     collection.blur = function(cb) {
       if (typeof cb === 'function') return this.on('blur', cb);
-      this.forEach((node) => { try { node.blur?.(); } catch {} });
+      this.forEach((node) => { try { node.blur?.(); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-blur', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.focus = function(cb) {
       if (typeof cb === 'function') return this.on('focus', cb);
-      this.forEach((node) => { try { node.focus?.(); } catch {} });
+      this.forEach((node) => { try { node.focus?.(); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-focus', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } });
       return this;
     };
     collection.toggle = function(force) {
@@ -201,7 +201,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
         try {
           if (value?.nodeType) node.parentNode?.insertBefore?.(value.cloneNode?.(true) ?? value, node);
           else node.insertAdjacentHTML?.('beforebegin', String(value ?? ''));
-        } catch {}
+        } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-before-insert', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
       });
       return this;
     };
@@ -210,7 +210,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
         try {
           if (value?.nodeType) node.parentNode?.insertBefore?.(value.cloneNode?.(true) ?? value, node.nextSibling);
           else node.insertAdjacentHTML?.('afterend', String(value ?? ''));
-        } catch {}
+        } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-after-insert', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
       });
       return this;
     };
@@ -221,7 +221,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
           if (!wrapEl) return;
           node.parentNode?.insertBefore?.(wrapEl, node);
           wrapEl.appendChild?.(node);
-        } catch {}
+        } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-wrap', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
       });
       return this;
     };
@@ -233,7 +233,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
             while (parent.firstChild) parent.parentNode.insertBefore(parent.firstChild, parent);
             parent.remove();
           }
-        } catch {}
+        } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-unwrap', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
       });
       return this;
     };
@@ -299,7 +299,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
         }
         return function(...args) {
           target.forEach((node) => {
-            try { if (typeof node[prop] === 'function') node[prop].apply(node, args); } catch {}
+            try { if (typeof node[prop] === 'function') node[prop].apply(node, args); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-method-apply', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
           });
           return target;
         };
@@ -332,7 +332,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
     if (typeof arg === 'string') {
       if (/^\\s*</.test(arg)) return createParentDollarCollectionCompat(createElementsFromHtmlCompat(arg));
       ensureStExtensionSettingsSelectorCompat(arg);
-      try { return createParentDollarCollectionCompat(Array.from(document.querySelectorAll(arg))); } catch {}
+      try { return createParentDollarCollectionCompat(Array.from(document.querySelectorAll(arg))); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-query-creation', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
     }
     if (arg?.nodeType) return createParentDollarCollectionCompat([arg]);
     if (Array.isArray(arg)) return createParentDollarCollectionCompat(arg);
@@ -369,7 +369,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
     },
     set(target, prop, value) {
       if (realDollarCompat && realDollarCompat !== target) {
-        try { realDollarCompat[prop] = value; return true; } catch {}
+        try { realDollarCompat[prop] = value; return true; } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:dollar-proxy-set', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
       }
       target[prop] = value;
       return true;
@@ -879,7 +879,7 @@ export const RUNTIME_BODY_PART_05 = `    collection.empty = function() {
   const emitCompatEvent = (type, ...args) => {
     try {
       window.eventSource?.emit?.(type, ...args);
-    } catch {}
+    } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-05:emit-compat-event', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
   };
   const refreshDerivedContextStoresCompat = () => {
     scopedRegexScripts = normalizeRegexListCompat(ctx.characterExtensions);

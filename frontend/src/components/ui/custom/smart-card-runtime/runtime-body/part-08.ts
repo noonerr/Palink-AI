@@ -1870,6 +1870,25 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       message,
       stack,
     });
+    // [包W 2026-10-19] 这一行是「卡伸手拿我们没摆出来的全局」**唯一真正可观测的路径**：
+    // 卡按 ST 习惯读一个我们没注册的全局 ⇒ ReferenceError ⇒ refMatch 命中。
+    // 之前它只出 toast + __palinkFrameErrors，不进统一记录器 ⇒ 派不到单。
+    // 现在：命中 ReferenceError 记 global_shape_absent（该谁修 = 前端兼容层），
+    // 其余脚本错误记 script_error（同归 frame_compat，由主控按 detail 再分）。
+    // 上面 reportDiagnostic / logCardError 一字未动 ⇒ 弹框与分类口径不变。
+    if (typeof palinkDiagRecord === 'function') palinkDiagRecord({
+      owner: 'frame_compat',
+      kind: refMatch ? 'global_shape_absent' : 'script_error',
+      name: refMatch ? String(refMatch[1]) : message.slice(0, 120),
+      detail: refMatch
+        ? '卡读取未注册的 ST 全局（形状缺口，不是卡写错）：' + message.slice(0, 160)
+        : '帧内未捕获脚本错误：' + message.slice(0, 160),
+      stack,
+      filename: String((event && event.filename) || ''),
+      lineno: typeof (event && event.lineno) === 'number' ? Number(event.lineno) : -1,
+      colno: typeof (event && event.colno) === 'number' ? Number(event.colno) : -1,
+      textLength: stack.length,
+    });
   });
 
   window.addEventListener('unhandledrejection', (event) => {
@@ -1888,6 +1907,29 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
       code: 'unhandled_rejection',
       message,
       stack,
+    });
+    // [包W 2026-10-19] K-3 定不了责的根因：rejection 轨只走 unhandledrejection → toast，
+    // **不进** __palinkFrameErrors 取证面。现在把它同时写进统一记录器（带 filename / stack /
+    // reason），toast 行为原样保留（上面那行 reportDiagnostic 一字未动）。
+    // 归属口径：网络型失败（Failed to fetch / NetworkError / Load failed）记 host_capability
+    // —— 帧是 opaque origin、外部地址能不能通由宿主网络面决定；其余记 frame_compat。
+    // 名字只取消息前 120 字，同名合并计数，热路径不会把缓冲打爆。
+    var palinkRejectionText = (typeof palinkDiagSafeText === 'function')
+      ? palinkDiagSafeText(message, 400)
+      : String(message || '').slice(0, 400);
+    if (typeof palinkDiagRecord === 'function') palinkDiagRecord({
+      owner: palinkRejectionText.indexOf('Failed to fetch') >= 0
+        || palinkRejectionText.indexOf('NetworkError') >= 0
+        || palinkRejectionText.indexOf('Load failed') >= 0
+        || palinkRejectionText.indexOf('network error') >= 0
+        ? 'host_capability'
+        : 'frame_compat',
+      kind: 'unhandled_rejection',
+      name: palinkRejectionText.slice(0, 120),
+      detail: 'rejection 轨取证（reason 形态 ' + String(reason && typeof reason === 'object' ? (reason.name || reason.type || 'object') : typeof reason) + '）',
+      stack: stack,
+      filename: '',
+      textLength: stack.length,
     });
   });
 

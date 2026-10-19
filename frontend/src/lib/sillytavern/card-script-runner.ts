@@ -21,6 +21,7 @@
  */
 
 import { recordStubHit } from '@/lib/plugin-system/compat-stub-registry';
+import { recordPalinkDiag } from '@/components/ui/custom/smart-card-runtime/palink-diag';
 import {
   getCardScriptStorage,
   setCardScriptStorageSyncer,
@@ -104,6 +105,68 @@ export interface CardScriptFrameEntry {
   name: string;
   content: string;
   module: boolean;
+}
+
+/**
+ * [包W 2026-10-19] 主文档轨的卡脚本注入失败取证（与帧内 bootstrap 里的同名逻辑同一口径）。
+ * 归属：语法类报错 ⇒ card_authored（卡自带正文在任何标准浏览器都编译不过）；
+ * 拿不到 message 的裸失败 ⇒ frame_compat 并在 detail 注明「归属待人工判定」。
+ */
+function cardScriptSyntaxish(text: string): boolean {
+  const low = String(text || '').toLowerCase();
+  return ['syntaxerror', 'unexpected token', 'invalid or unexpected', 'import statement', 'import map', 'failed to resolve module']
+    .some((needle) => low.includes(needle));
+}
+
+export function recordCardScriptInjectionFailure(input: {
+  id: string;
+  name: string;
+  content: string;
+  failure: unknown;
+  via: string;
+  characterId?: string | null;
+}): void {
+  try {
+    const failure = input.failure as Record<string, unknown> | Error | undefined;
+    let message = '';
+    let filename = '';
+    let lineno = -1;
+    let colno = -1;
+    let stack = '';
+    if (failure && typeof failure === 'object') {
+      const shape = failure as Record<string, unknown>;
+      if (typeof shape.message === 'string') message = shape.message;
+      const nested = shape.error as Record<string, unknown> | undefined;
+      if (!message && nested && typeof nested.message === 'string') message = nested.message;
+      if (nested && typeof nested.stack === 'string') stack = nested.stack;
+      else if (typeof shape.stack === 'string') stack = shape.stack;
+      if (typeof shape.filename === 'string') filename = shape.filename;
+      if (typeof shape.lineno === 'number') lineno = shape.lineno;
+      if (typeof shape.colno === 'number') colno = shape.colno;
+    } else if (failure !== undefined) {
+      message = String(failure);
+    }
+    const bytes = String(input.content || '').length;
+    const lines = String(input.content || '').split('\n').length;
+    const location = filename ? `；位置=${filename}:${lineno}:${colno}` : '';
+    recordPalinkDiag({
+      owner: cardScriptSyntaxish(`${message} ${stack}`) ? 'card_authored' : 'frame_compat',
+      kind: 'card_script_injection_failed',
+      name: String(input.name || input.id || ''),
+      detail: `卡自带脚本注入失败 via=${input.via} id=${input.id} 脚本名=${input.name || '<无名>'}`
+        + ` 正文 ${bytes} 字节 / ${lines} 行`
+        + (message ? `；报错=${message.slice(0, 200)}` : '；报错=（浏览器未给出 message，归属待人工判定）')
+        + location,
+      stack: stack.slice(0, 1200),
+      filename,
+      lineno,
+      colno,
+      textLength: bytes,
+      cardId: input.characterId ? String(input.characterId) : undefined,
+    });
+  } catch {
+    /* 取证失败不得影响注入 */
+  }
 }
 
 /** 顶层 ESM 语法判定：只认正文开头的 import/export，避免把注释里的词误判 */
@@ -297,6 +360,108 @@ export function buildCardScriptFrameBootstrap(frameId: string, nonce = ''): stri
   const dispatchInit = () => {
     try { document.dispatchEvent(new Event('palink-card-init')); } catch {}
   };
+  // ==== [包W 2026-10-19] 卡脚本注入失败取证 ====
+  // 病灶（包V §3 的现成案例）：卡自带脚本编译不过时，诊断里只知道「某条脚本失败了」，
+  // **不带脚本 id 与脚本名**，也没带浏览器给出的行:列 ⇒ 定责只能重开探针。
+  // 这里把身份（id / 名 / 正文长度与行数）与位置（filename:lineno:colno）一起写进统一记录器；
+  // 上报通道、postMessage 形状、注入时序一字未改（report 仍照旧发 frame-error）。
+  // 归属口径：报错文本是语法类（SyntaxError / Unexpected token / import 解析不了）⇒ card_authored
+  // （卡自带正文在任何标准浏览器的模块语法下都编译不过）；拿不到 message 的裸失败 ⇒ frame_compat
+  // 并在 detail 写明「归属待人工判定」，不伪造结论。
+  const palinkCardScriptLf = String.fromCharCode(10);
+  const palinkCardScriptPending = {};
+  const palinkCardScriptLineCount = (text) => String(text || '').split(palinkCardScriptLf).length;
+  const palinkCardScriptPendingAdd = (entry) => { palinkCardScriptPending[String(entry.id)] = entry; };
+  const palinkCardScriptPendingRemove = (id) => { delete palinkCardScriptPending[String(id)]; };
+  const palinkCardScriptSyntaxish = (text) => {
+    const low = String(text || '').toLowerCase();
+    return low.indexOf('syntaxerror') >= 0
+      || low.indexOf('unexpected token') >= 0
+      || low.indexOf('invalid or unexpected') >= 0
+      || low.indexOf('import statement') >= 0
+      || low.indexOf('import map') >= 0
+      || low.indexOf('failed to resolve module') >= 0;
+  };
+  const palinkCardScriptFailureText = (failure) => {
+    try {
+      if (failure && typeof failure === 'object') {
+        const nested = failure.error && typeof failure.error.message === 'string' ? failure.error.message : '';
+        const message = typeof failure.message === 'string' && failure.message ? failure.message : nested;
+        const filename = typeof failure.filename === 'string' ? failure.filename : '';
+        const lineno = typeof failure.lineno === 'number' ? failure.lineno : -1;
+        const colno = typeof failure.colno === 'number' ? failure.colno : -1;
+        if (message || filename) return message + ' @ ' + filename + ':' + lineno + ':' + colno;
+        return String((failure.error && failure.error.stack) || failure.stack || failure.type || 'script error');
+      }
+      return String(failure || '');
+    } catch (e) {
+      return 'failure_text_unavailable';
+    }
+  };
+  const palinkCardScriptDiagRecord = (opts) => {
+    try {
+      const recorder = typeof window.__palinkDiagRecord === 'function' ? window.__palinkDiagRecord : null;
+      if (!recorder) return;
+      const entry = opts && typeof opts === 'object' ? opts : {};
+      const failure = entry.failure;
+      let message = '';
+      let filename = '';
+      let lineno = -1;
+      let colno = -1;
+      let stack = '';
+      if (failure && typeof failure === 'object') {
+        if (typeof failure.message === 'string') message = failure.message;
+        if (!message && failure.error && typeof failure.error.message === 'string') message = failure.error.message;
+        if (typeof failure.filename === 'string') filename = failure.filename;
+        if (typeof failure.lineno === 'number') lineno = failure.lineno;
+        if (typeof failure.colno === 'number') colno = failure.colno;
+        if (failure.error && typeof failure.error.stack === 'string') stack = failure.error.stack;
+        else if (typeof failure.stack === 'string') stack = failure.stack;
+      } else if (failure !== undefined) {
+        message = String(failure);
+        stack = message;
+      }
+      const bytes = typeof entry.bytes === 'number' ? entry.bytes : String(entry.content || '').length;
+      const lines = entry.lines || palinkCardScriptLineCount(entry.content);
+      const location = filename ? '；位置=' + filename + ':' + lineno + ':' + colno : '';
+      recorder({
+        owner: palinkCardScriptSyntaxish(message + ' ' + stack) ? 'card_authored' : 'frame_compat',
+        kind: 'card_script_injection_failed',
+        name: String(entry.name || entry.id || ''),
+        detail: '卡自带脚本注入失败 via=' + String(entry.via || '') + ' id=' + String(entry.id || '')
+          + ' 脚本名=' + (String(entry.name || '') || '<无名>')
+          + ' 正文 ' + bytes + ' 字节 / ' + lines + ' 行'
+          + (message ? '；报错=' + message.slice(0, 200) : '；报错=（浏览器未给出 message，归属待人工判定）')
+          + location,
+        stack: stack.slice(0, 1200),
+        filename: filename,
+        lineno: lineno,
+        colno: colno,
+        textLength: bytes,
+      });
+    } catch (e) { /* 取证失败不得影响注入 */ }
+  };
+  // 模块脚本的编译错误只在 window 层给 message 与行列（包V 实拍 about:srcdoc:81:1），
+  // 元素级 onerror 拿到的是裸 error 事件 ⇒ 这里做一次性关联：
+  // 只有「恰好还挂着一条未 load 的脚本」且报错是语法类时才认领，多义时不猜。
+  window.addEventListener('error', (event) => {
+    try {
+      const ids = Object.keys(palinkCardScriptPending);
+      if (ids.length !== 1) return;
+      const entry = palinkCardScriptPending[ids[0]];
+      const message = event && typeof event.message === 'string' ? event.message : '';
+      if (!palinkCardScriptSyntaxish(message)) return;
+      palinkCardScriptDiagRecord({
+        id: entry.id,
+        name: entry.name,
+        bytes: entry.bytes,
+        lines: entry.lines,
+        failure: event,
+        via: 'window_error_correlated',
+      });
+      palinkCardScriptPendingRemove(entry.id);
+    } catch (e) { /* 同上 */ }
+  });
   const patchInitEvent = (source) => String(source || '').replace(
     /document\\s*\\.\\s*addEventListener\\s*\\(\\s*(['"])DOMContentLoaded\\1/g,
     'document.addEventListener($1palink-card-init$1',
@@ -311,17 +476,24 @@ export function buildCardScriptFrameBootstrap(frameId: string, nonce = ''): stri
       const content = String(item.content || '');
       if (!id || !content.trim() || seen.has(id)) return;
       seen.add(id);
+      const name = String(item.name || '');
       const script = document.createElement('script');
       script.type = item.module ? 'module' : 'text/javascript';
       script.setAttribute('data-palink-card-script-id', id);
       script.setAttribute('nonce', ${JSON.stringify(String(nonce))});
-      script.onerror = () => report('card script resource failed: ' + id);
+      script.onerror = (event) => {
+        report('card script resource failed: ' + id, palinkCardScriptFailureText(event));
+        palinkCardScriptDiagRecord({ id, name, content, failure: event, via: 'element_onerror' });
+      };
+      script.addEventListener('load', () => { palinkCardScriptPendingRemove(id); });
+      palinkCardScriptPendingAdd({ id, name, bytes: content.length, lines: palinkCardScriptLineCount(content), module: Boolean(item.module) });
       script.textContent = patchInitEvent(content);
       try {
         host.appendChild(script);
         dispatchInit();
       } catch (error) {
         report('card script execution failed: ' + id, String(error && (error.stack || error.message || error)));
+        palinkCardScriptDiagRecord({ id, name, content, failure: error, via: 'append_throw' });
       }
     });
     dispatchInit();
@@ -758,6 +930,14 @@ export function runCardTavernHelperScripts(
           error: typeof event === 'string' ? event : 'module script error',
         });
         console.warn(`[card-script] 模块脚本执行失败 ${name || id}:`, event);
+        // [包W] 主文档轨同帧内轨口径：身份（id + 名 + 正文长度/行数）必须进诊断记录。
+        recordCardScriptInjectionFailure({
+          id,
+          name,
+          content,
+          failure: event,
+          via: 'host_element_onerror',
+        });
       };
     }
     const bodyBefore = Array.from(document.body.children) as Element[];
@@ -780,6 +960,14 @@ export function runCardTavernHelperScripts(
         id,
         name,
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      });
+      // [包W] 注入这条脚本时同步抛错（顶层 const 重复声明 / 语法错等）⇒ 带身份落记录。
+      recordCardScriptInjectionFailure({
+        id,
+        name,
+        content,
+        failure: error,
+        via: 'host_append_throw',
       });
       console.error(
         `[card-script] 注入失败（已隔离，不影响其余脚本）${name || id}:`,

@@ -788,7 +788,7 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
         return prop in target || prop in tavernHelperCompat;
       },
     });
-    try { Object.defineProperty(proxy, '__palinkTavernHelperProxy', { value: true, configurable: true }); } catch {}
+    try { Object.defineProperty(proxy, '__palinkTavernHelperProxy', { value: true, configurable: true }); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-07:tavernhelper-proxy-marker', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) }
     window.TavernHelper = proxy;
   };
   installTavernHelperCompatProxy();
@@ -970,7 +970,20 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       const bridgedResult = typeof bridged.result === 'string' ? bridged.result : '';
       // 引擎对未知命令返回 "Error: Unknown command: /x"（execute 的 catch 分支把它当 output）。
       // 对卡脚本来说"没这条命令"应当等价于空串，否则卡里的 if(!result) 判定会被带偏。
-      if (bridgedResult.indexOf('Error: Unknown command') === 0) return '';
+      // [包W 2026-10-19] 返回值一字未改（仍是空串），但这条「装作会」的路径现在必须留痕：
+      // 命令被真调用过、宿主引擎没有它 ⇒ host_capability（该谁修：宿主命令表 / 后端能力面）。
+      if (bridgedResult.indexOf('Error: Unknown command') === 0) {
+        // 存在性守卫见 part-06 同注释（切片夹具里没有记录器）。
+        if (typeof palinkDiagRecord === 'function') palinkDiagRecord({
+          owner: 'host_capability',
+          kind: 'slash_command_unimplemented',
+          name: lowerName,
+          detail: '帧内 slash 桥接到宿主引擎后得到 ' + bridgedResult.slice(0, 160) + '；返回值按既有约定折成空串，卡侧无感',
+          stack: String((bridged && bridged.stack) || ''),
+          textLength: String(text || '').length,
+        });
+        return '';
+      }
       return bridgedResult;
     } catch (e) {
       post({ type: 'log', level: 'warn', message: 'slash 桥接失败：' + String(e && e.message || e) });
@@ -1459,8 +1472,8 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   };
   window.ModuleWorkerWrapper = window.ModuleWorkerWrapper || class ModuleWorkerWrapperCompat {
     constructor(worker = null) { this.worker = worker; }
-    terminate() { try { this.worker?.terminate?.(); } catch {} }
-    postMessage(message) { try { this.worker?.postMessage?.(message); } catch {} }
+    terminate() { try { this.worker?.terminate?.(); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-07:worker-terminate', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } }
+    postMessage(message) { try { this.worker?.postMessage?.(message); } catch (palinkDiagErr) { palinkDiagRecord({ owner: 'frame_compat', kind: 'compat_catch_swallowed', name: 'part-07:worker-postmessage', detail: '兼容层 try 内异常被吞掉，处置未改（继续往下走，返回值不变）', stack: String((palinkDiagErr && palinkDiagErr.stack) || '') }) } }
   };
   const makeVariableApiCompat = (store, getFn, setFn, delFn, addFn, hasFn) => ({
     get: getFn,
