@@ -2,7 +2,9 @@
 MVU (MagVarUpdate) 变量引擎 —— 酒馆助手智能卡通用兼容核心。
 
 职责：
-  - 解析 AI 回复中的 <UpdateVariable> JSON Patch（RFC 6902 超集 + delta）
+  - 解析 AI 回复中的变量更新块（标签别名 <update> / <updatevariable> /
+    <variableupdate>，含不被包裹的裸 <JSONPatch> 块）里的 JSON Patch
+    （RFC 6902 超集 + delta）
   - 在会话 stat_data 上应用 patch
   - 从角色卡 tavern_helper zod schema 提取初始默认变量
 
@@ -73,6 +75,9 @@ _JSONPATCH_RE = re.compile(_JSONPATCH_BLOCK_SRC, re.IGNORECASE)
 # 块独占整行时连同块后换行一并移除（strip 第一遍用），避免正文留下孤立空行。
 _UPDATE_VAR_LINE_RE = re.compile(
     r"(?m)^[ \t]*" + _UPDATE_BLOCK_SRC + r"[ \t]*$\n?", re.IGNORECASE
+)
+_JSONPATCH_LINE_RE = re.compile(
+    r"(?m)^[ \t]*" + _JSONPATCH_BLOCK_SRC + r"[ \t]*$\n?", re.IGNORECASE
 )
 
 
@@ -228,13 +233,16 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
 
     块标签认三种别名 ``<update>`` / ``<updatevariable>`` / ``<variableupdate>``
     （大小写不敏感，开闭必须同名，见本节头部取证）。
-    返回 patch 数组的列表（每个更新块一个），保持出现顺序。
+    另认**不被包裹的裸 ``<JSONPatch>`` 块**（上游 ``tn()`` 对全文取 patch 块，
+    bundle:2:365913），多个块按正文出现顺序返回（上游同口径 sortBy('$index')）。
     无法解析的块会被跳过并记 warning。
     """
     if not text or not isinstance(text, str):
         return []
-    blocks: list[list[dict]] = []
+    items: list[tuple[int, list[dict]]] = []   # (块起点, 解析出的 patch 数组)
+    wrapped_spans: list[tuple[int, int]] = []
     for m in _UPDATE_VAR_RE.finditer(text):
+        wrapped_spans.append(m.span())
         inner = m.group(2)
         # 优先取 <JSONPatch> / <json_patch>...</...>
         jp = _JSONPATCH_RE.search(inner)
@@ -243,12 +251,28 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
         else:
             patches = _find_first_json_array(inner)
         if patches is not None:
-            blocks.append(patches)
+            items.append((m.start(), patches))
         else:
             logger.warning("MVU: skipped unparseable variable-update block")
+    # [包Q② 2026-10-19] 裸 <JSONPatch> 块（无 <UpdateVariable> 包裹）。此前只靠
+    # [BARE-JSONPATCH] 兜底捞**第一个**数组，且 op="add" 会被
+    # _looks_like_stat_data_patch 的 op 白名单挡掉 ⇒ 这类块解析不全、却要被
+    # strip 剥掉（剥了但没解析）。改走与包裹块同一条解析路径，块体形状仍限 JSON 数组。
+    for m in _JSONPATCH_RE.finditer(text):
+        s, e = m.span()
+        if any(ws <= s and e <= we for ws, we in wrapped_spans):
+            continue  # 已被外层包裹块处理，避免同一块体重复计数
+        patches = _safe_json_loads_list(m.group(2))
+        if patches is not None:
+            items.append((s, patches))
+        else:
+            logger.warning("MVU: skipped unparseable bare <JSONPatch> block")
+    blocks = [p for _s, p in sorted(items, key=lambda it: it[0])]
     # [BARE-JSONPATCH] 模型偶发不包 <UpdateVariable> 直接输出裸 JSON Patch 数组
     # （2026-08-18 实测：world book 指令要求包裹但 AI 输出裸数组，后端提取不到
-    # → stat_data 永不更新）。无包裹块时，扫描全文采纳第一个结构校验通过的裸数组。
+    # → stat_data 永不更新）。一个块都没解析到时，扫描全文采纳第一个结构校验
+    # 通过的裸数组。（触发条件与改动前逐字一致：仍是 `not blocks`，不收紧成
+    # "无标签级命中"，以免"包裹块解析失败"这一既有路径的行为被顺手改掉。）
     if not blocks:
         try:
             for _s, _e, parsed in _find_stat_data_patch_spans(text):
@@ -270,7 +294,8 @@ def strip_update_variable_blocks(text: str) -> str:
     消息正文，不影响 stat_data 更新（后者基于剥离前的原文解析）。
 
     ⚠️ 与 extract_update_variable_blocks 共用 _UPDATE_VAR_RE / _JSONPATCH_RE：
-    两者必须同一套标签别名，否则会出现「剥了但没解析」或「解析了但留在正文」。
+    两者必须同一套标签别名与同一套块形状，否则会出现「剥了但没解析」或
+    「解析了但留在正文」。故这里除包裹块外也剥裸 ``<JSONPatch>`` 块。
     """
     if not text or not isinstance(text, str):
         return text
@@ -279,6 +304,12 @@ def strip_update_variable_blocks(text: str) -> str:
     cleaned = _UPDATE_VAR_LINE_RE.sub("", text)
     # 第二遍：处理内联在正文中的块（不独占行，两侧保留原有换行）。
     cleaned = _UPDATE_VAR_RE.sub("", cleaned)
+    # [包Q② 2026-10-19] 不被更新块包裹的裸 <JSONPatch> 块：上游 tn() 同样把它当
+    # 指令采纳（bundle:2:365913），渲染时又把 patch 标签从正文里抹掉
+    # （bundle:2:366950，for(const t of Rt(e,'patch')) n.fill(' ', t.start, t.end)）。
+    # extract 既然认它，strip 就必须同批剥掉，否则正是「解析了但标签留在正文」。
+    cleaned = _JSONPATCH_LINE_RE.sub("", cleaned)
+    cleaned = _JSONPATCH_RE.sub("", cleaned)
     # 模型常把 <UpdateVariable> 块包在 markdown 代码围栏内输出（```html … ```），
     # 剥离块后围栏行残留（表现为正文泄漏 ``` / ```html）；一并清理，语义同前端
     # stripHtmlFenceLeftovers。

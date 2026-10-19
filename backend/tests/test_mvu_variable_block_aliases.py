@@ -181,7 +181,94 @@ class TestBackreferenceStrictness:
 
 
 # ===========================================================================
-# 3. 零回归：既有包 JSON 形式与落库形状
+# 3. 块体形式（包Q②）：裸 <JSONPatch> 块 —— 上游 tn() 对**全文**取 patch 块
+#    bundle:2:365913（needle "Rt(e,'patch').filter(e=>e.closed&&!e.discarded)"）
+#    采纳；bundle:2:366950 渲染时把 patch 标签从 visible 里抹掉。
+#    ⇒ Palink 既有缺陷：这类块只靠 [BARE-JSONPATCH] 兜底捞第一个数组，
+#      op="add" 还会被 op 白名单挡掉，而标签始终留在正文（解析了却不剥 / 剥了却没解析）。
+# ===========================================================================
+
+
+class TestBareJsonPatchBlock:
+    def test_bare_patch_block_parsed_and_stripped(self):
+        """op=add 走不通裸数组兜底 —— 只有 patch 块路径能解析到。"""
+        text = f"剧情正文。\n<JSONPatch>\n{_ADD_PATCH}\n</JSONPatch>\n后续正文。"
+        blocks = extract_update_variable_blocks(text)
+        assert blocks == [[{"op": "add", "path": "/桃汐/好感度", "value": 60}]]
+        cleaned = strip_update_variable_blocks(text)
+        assert "JSONPatch" not in cleaned and "[" not in cleaned
+        assert "剧情正文。" in cleaned and "后续正文。" in cleaned
+
+    def test_bare_patch_block_alias_underscore(self):
+        """上游记号正则含 json_?patch（bundle:2:360326）。"""
+        text = f"前\n<json_patch>\n{_ADD_PATCH}\n</json_patch>\n后"
+        assert len(extract_update_variable_blocks(text)) == 1
+        assert "<json_patch>" not in strip_update_variable_blocks(text)
+
+    def test_two_bare_patch_blocks_both_parsed(self):
+        """裸数组兜底最多采纳 1 个；两个裸块都要解析（上游 sortBy $index 同口径）。"""
+        text = (
+            "<JSONPatch>"
+            '[{"op":"add","path":"/a","value":1}]'
+            "</JSONPatch>中间<json_patch>"
+            '[{"op":"add","path":"/b","value":2}]'
+            "</json_patch>"
+        )
+        blocks = extract_update_variable_blocks(text)
+        assert len(blocks) == 2
+        assert blocks[0][0]["path"] == "/a"
+        assert blocks[1][0]["path"] == "/b"
+        assert "中间" in strip_update_variable_blocks(text)
+
+    def test_bare_patch_inside_wrapper_not_double_counted(self):
+        """包裹块已消化其内层 patch 块，不得重复计数（否则同一补丁应用两次）。"""
+        text = (
+            "正文<UpdateVariable><JSONPatch>"
+            '[{"op":"delta","path":"/桃汐/好感度","value":5}]'
+            "</JSONPatch></UpdateVariable>后续"
+        )
+        blocks = extract_update_variable_blocks(text)
+        assert len(blocks) == 1
+        cur = {"stat_data": {"桃汐": {"好感度": 50}}}
+        new_vars, _logs, applied = MvuEngine.update_from_reply(cur, text, {})
+        assert new_vars["stat_data"]["桃汐"]["好感度"] == 55
+        assert len(applied) == 1
+
+    def test_bare_patch_block_document_order(self):
+        """更新块与裸 patch 块混排时按正文顺序返回（对齐上游 sortBy('$index')）。"""
+        text = (
+            "开头<update>"
+            '[{"op":"add","path":"/第一","value":1}]'
+            "</update>中段<JSONPatch>"
+            '[{"op":"add","path":"/第二","value":2}]'
+            "</JSONPatch>结尾"
+        )
+        blocks = extract_update_variable_blocks(text)
+        assert [b[0]["path"] for b in blocks] == ["/第一", "/第二"]
+
+    def test_bare_patch_block_stat_data_changes(self):
+        text = f"正文\n<JSONPatch>\n{_DELTA_PATCH}\n</JSONPatch>\n后续"
+        cur = {"stat_data": {"桃汐": {"好感度": 50}}}
+        new_vars, logs, applied = MvuEngine.update_from_reply(cur, text, {})
+        assert new_vars["stat_data"]["桃汐"]["好感度"] == 55
+        assert len(applied) == 1 and logs
+
+    def test_unclosed_bare_patch_block_not_stripped(self):
+        """未闭合的 patch 块不匹配、也不剥（宁留原文也不误删正文）。"""
+        text = f"正文\n<JSONPatch>\n{_ADD_PATCH}\n后续"
+        assert extract_update_variable_blocks(text) == []
+        assert "<JSONPatch>" in strip_update_variable_blocks(text)
+
+    def test_markdown_fenced_bare_patch_block(self):
+        """围栏包住裸 patch 块时，标签与空围栏一并清掉（既有围栏清理链路）。"""
+        text = "正文\n```html\n<JSONPatch>\n" + _ADD_PATCH + "\n</JSONPatch>\n```\n后续"
+        cleaned = strip_update_variable_blocks(text)
+        assert "JSONPatch" not in cleaned and "```" not in cleaned
+        assert "正文" in cleaned and "后续" in cleaned
+
+
+# ===========================================================================
+# 4. 零回归：既有包 JSON 形式与落库形状
 # ===========================================================================
 
 
