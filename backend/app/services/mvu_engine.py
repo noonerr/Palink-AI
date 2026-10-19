@@ -245,9 +245,22 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
         wrapped_spans.append(m.span())
         inner = m.group(2)
         # 优先取 <JSONPatch> / <json_patch>...</...>
-        jp = _JSONPATCH_RE.search(inner)
-        if jp:
-            patches = _safe_json_loads_list(jp.group(2))
+        # [包Q③ 2026-10-19] 包裹块内可并列多个 patch 块 —— 上游对**每一个**都采纳
+        # （tn() 用 Rt(e,'patch') 取全部，bundle:2:365913；Do() 里 for(const e of a)
+        # 逐个校验后合并，bundle:2:409170）。改前 search() 只取第一个，第二个 patch 块
+        # 会随外层包裹一起被 strip 剥掉 ⇒ 补丁静默丢失，正是「剥了但没解析」。
+        # 现按正文顺序合并块内全部 patch 块；仍有一块解析不了就整块判失败（原语义）。
+        jp_matches = list(_JSONPATCH_RE.finditer(inner))
+        if jp_matches:
+            merged: list[dict] = []
+            usable = True
+            for jm in jp_matches:
+                parsed = _safe_json_loads_list(jm.group(2))
+                if parsed is None:
+                    usable = False
+                    break
+                merged.extend(parsed)
+            patches = merged if usable else None
         else:
             patches = _find_first_json_array(inner)
         if patches is not None:

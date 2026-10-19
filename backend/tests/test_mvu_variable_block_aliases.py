@@ -253,6 +253,34 @@ class TestBareJsonPatchBlock:
         assert new_vars["stat_data"]["桃汐"]["好感度"] == 55
         assert len(applied) == 1 and logs
 
+    def test_multiple_jsonpatch_blocks_inside_one_wrapper_all_applied(self):
+        """包Q③：一个包裹块内并列两个 <JSONPatch> —— 上游对每个都采纳
+        （bundle:2:365913 取全部 patch 块 / bundle:2:409170 逐个合并）。
+        改前只取第一个，第二个随外层块被 strip 一起剥掉 ⇒ 补丁静默丢失。
+        """
+        text = (
+            "正文<UpdateVariable>"
+            '<JSONPatch>[{"op":"add","path":"/a","value":1}]</JSONPatch>'
+            '<JSONPatch>[{"op":"add","path":"/b","value":2}]</JSONPatch>'
+            "</UpdateVariable>后续"
+        )
+        blocks = extract_update_variable_blocks(text)
+        assert len(blocks) == 1
+        assert [p["path"] for p in blocks[0]] == ["/a", "/b"]
+        cur = {"stat_data": {"a": 0}}
+        new_vars, _logs, applied = MvuEngine.update_from_reply(cur, text, {})
+        assert new_vars["stat_data"]["a"] == 1 and new_vars["stat_data"]["b"] == 2
+        assert len(applied) == 2
+        assert "JSONPatch" not in strip_update_variable_blocks(text)
+
+    def test_one_bad_jsonpatch_block_fails_whole_wrapper(self):
+        """保持原语义：块内有一片 patch 解析不了 ⇒ 整个包裹块判失败（不半吞）。"""
+        text = (
+            '<UpdateVariable><JSONPatch>[{"op":"add","path":"/a","value":1}]</JSONPatch>'
+            "<JSONPatch>[这不是json]</JSONPatch></UpdateVariable>"
+        )
+        assert extract_update_variable_blocks(text) == []
+
     def test_unclosed_bare_patch_block_not_stripped(self):
         """未闭合的 patch 块不匹配、也不剥（宁留原文也不误删正文）。"""
         text = f"正文\n<JSONPatch>\n{_ADD_PATCH}\n后续"
