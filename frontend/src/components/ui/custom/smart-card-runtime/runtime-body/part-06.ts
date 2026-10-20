@@ -606,11 +606,28 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
     error: (...args) => post({ type: 'error', message: String(args[0] ?? '') }),
   });
 
-  // [S5-COMPAT-AUDIT T1] 恒 {} 是「假实现」：Palink 的认证头由 api 服务统一注入，
-  // 但插件读不到真实请求头 ⇒ 签名/鉴权类插件会静默失效。留痕（同 part-08 的 st_api_stub）。
-  ensureFunction('getRequestHeaders', () => {
-    reportStubApi('getRequestHeaders');
-    return {};
+  // [批次C C-1 2026-10-20] getRequestHeaders 从「恒 {} 的桩」改为**按 ST 契约真实现**。
+  // 一手锚点：_reference/sillytavern-1.18.0/public/script.js:645
+  //   export function getRequestHeaders({ omitContentType = false } = {}) {
+  //       const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+  //       if (omitContentType) delete headers['Content-Type'];
+  //       return headers;
+  //   }
+  // 入参 { omitContentType }、返回普通对象、无副作用 —— 这三条全按 ST 抄。
+  //
+  // 为什么**不给** X-CSRF-Token（这一条是与 ST 的唯一差异，必须写清）：
+  //   ① 帧是 opaque origin，palink_session / palink_csrf 从没进过帧（P1-1 沙箱红线），
+  //      帧内没有这个值的**数据源**；硬塞一个空串才是「形状对语义错」。
+  //   ② 帧内 /api/* 的 ST 兼容面由本文件的 handleStApiFetchCompat 在**本地**应答
+  //      （见 :660-695，不发网络请求、服务端不校验 CSRF）；真正写后端的动作走
+  //      requestParent 桥，认证头由父侧注入 ⇒ 帧内这份 headers 不需要 token 也能用。
+  //   ③ 因此返回值对「卡把它塞给 fetch」这一唯一用途是**语义正确**的，不是空壳。
+  // 卡若拿它去打真后端端点，会拿到 403（诚实失败），不会被伪装成成功。
+  ensureFunction('getRequestHeaders', (options) => {
+    const omitContentType = Boolean(options && options.omitContentType);
+    const headers = { 'Content-Type': 'application/json' };
+    if (omitContentType) delete headers['Content-Type'];
+    return headers;
   });
   const makeStApiJsonResponseCompat = (data, init = {}) => new Response(JSON.stringify(data ?? {}), {
     status: init.status || 200,

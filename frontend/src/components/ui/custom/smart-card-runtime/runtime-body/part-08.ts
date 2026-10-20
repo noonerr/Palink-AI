@@ -113,14 +113,14 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     //   #4 convertCharacterBook  #5 getWorldInfoPrompt  #6 updateWorldInfoList
     //   #7 reloadWorldInfoEditor  #8 appendMediaToMessage  #9 getMediaDisplay
     //   #10 getMediaIndex  #11 scrollOnMediaLoad  #12 renameChat  #13 createCharacterData
-    // 留在表里的只剩两类，都是**故意不补**：
-    //   · getRequestHeaders —— 安全决策待用户拍板（给真实头 = 把 palink_session/palink_csrf
-    //     送进 opaque origin 帧，与 P1-1 沙箱红线冲突，见路线图 §4）。
-    //   · getSelectedPresetName / writePresetExtensionField —— ST 预设体系，Palink 结构
-    //     不同，硬补=形状对语义错（getPresetManager 同理由，故它连本表都不进）。
-    getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
-    writePresetExtensionField: '写入为假成功（返回 true 但不落库）',
-    getRequestHeaders: 'Palink 由 api 服务统一注入认证头，此处恒空对象',
+  // 留在表里的只剩两类，都是**故意不补**：
+  //   · getSelectedPresetName / writePresetExtensionField —— ST 预设体系，Palink 结构
+  //     不同，硬补=形状对语义错（getPresetManager 同理由，故它连本表都不进）。
+  //   · [批次C C-1 2026-10-20] getRequestHeaders **已移出本表**：已按 ST 契约
+  //     （script.js:645）真实现，见 part-06 的 ensureFunction('getRequestHeaders')。
+  //     实现了就不该再产 st_api_stub 记录，否则卡每调一次就多一条噪音。
+  getSelectedPresetName: 'Palink 无独立 preset 概念，硬编码占位名',
+  writePresetExtensionField: '写入为假成功（返回 true 但不落库）',
     'fetch:/api/worldinfo': 'iframe 侧 fetch 白名单对 /api/worldinfo 恒返回空 entries/data（真实内容走 getLorebookEntries 桥，见 SPEC T3）',
   };
   const stubApiReported = {};
@@ -183,8 +183,29 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
   // 红线：**不许假成功** —— 能接真通道就接真值，接不到的诚实返回 false / '' 并留痕；
   // 修完的项一律拆掉 stubApi 包装（stubApi 每次调用产一条 st_api_stub 诊断，
   // 是卡脚本调几次就弹几个 toast 的噪音源，见 :127 reportStubApi）。
-  // 14 号 getRequestHeaders（安全决策待用户拍板）与 15 号 getPresetManager
-  //（架构红线：Palink 预设体系与 ST 结构不同）**按拍板保持原样，本批未动**。
+  // 14 号 getRequestHeaders 与 15 号 getPresetManager 本批（包G）未动，见下方批次C 结论。
+  //
+  // [批次C C-1 2026-10-20] getContext 六个「有名字没实物」键的定性（主脑真机 7 帧实测清单）。
+  // 逐键一手锚点 + 处置，台账行见 SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2：
+  //   · tokenizers —— ST 是**静态枚举**（scripts/tokenizers.js:16-38），非子系统 ⇒ 已照抄真做
+  //     （见 part-07 的 window.tokenizers 段）。
+  //   · getRequestHeaders —— ST 契约 script.js:645（{omitContentType} → 头对象）⇒ 已真做
+  //     （见 part-06 的 ensureFunction('getRequestHeaders')；不给 CSRF 的理由写在那里）。
+  //   · chatMetadata —— ST script.js:453 的 chat_metadata 是**活对象**。本帧同形：part-06:408
+  //     由持久化恢复、:707 落盘、下方 updateChatMetadata 写回 ⇒ 对象本身是真的。
+  //     缺的是 ST 的 note_*/tainted/integrity/scenario 等**聊天文件语义字段**：本仓聊天记录
+  //     不存这些（无数据源）⇒ 保持空对象起步，**不造默认值**（造了就是形状对语义错）。
+  //   · tagMap —— ST tags.js:351 的 tag_map 是 tagId → {id,name,color,color2,folder} 映射，
+  //     由 settings.tag_map 灌入（:616）。本仓角色标签只是一个 Text 列里的字符串列表
+  //     （backend/app/models/character.py:28），**没有 tag 实体表** ⇒ 无 id/颜色/分组可映射，
+  //     造 map 只能是假数据。保持 {}。
+  //   · CONNECT_API_MAP —— ST scripts/slash-commands.js:141 声明、:146 setupConnectAPIMap 填充，
+  //     每条是 {selected, button:'#api_button_openai', type, source} —— button 是 ST 连接面板的
+  //     **DOM 选择器**，整套依附 ST 的连接配置 UI。Palink 无该 UI（单后端）⇒ 依附子系统，不补。
+  //   · getPresetManager —— ST scripts/preset-manager.js:83，返回 PresetManager 或 null，
+  //     注册表由 select[data-preset-manager-for] 的 DOM 建成。依附 ST 预设对象模型
+  //     （台账 preset_prompt 乙类）⇒ 不动产品码；现有手搭 manager 的 getSelectedPreset 读的是
+  //     真 ctx.presetData，getSelectedPresetName 仍走 stubApi 留痕（诚实标注）。
   // ══════════════════════════════════════════════════════════════════════════
 
   // #1 powerUserSettings / power_user ——

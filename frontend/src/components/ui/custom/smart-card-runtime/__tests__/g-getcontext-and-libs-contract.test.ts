@@ -736,15 +736,20 @@ describe('C 包G 红线 —— 不许假成功，两项按拍板保持原样', (
     expect(results.every((value) => value === false)).toBe(true);
   });
 
-  it('#14 getRequestHeaders 保持恒空对象决策（安全红线，本批未动）', () => {
+  it('#14 getRequestHeaders 已按 ST 契约真实现（批次C C-1 改判，原「恒空对象」决策作废）', () => {
+    // ST 一手锚点 script.js:645：返回 { 'Content-Type': 'application/json' } 且支持 omitContentType。
+    // 2026-10-20 定性：帧是 opaque origin 且 /api 由 shim 本地应答 ⇒ 帧内没有 CSRF 值的数据源，
+    // 也就不存在「把凭据送进帧」的泄漏面；按 ST 形状真实现、**不给** X-CSRF-Token（见 part-06 注释）。
     expect(SRC).toContain('getRequestHeaders: window.getRequestHeaders,');
     const notes = sliceDeclaration(SRC, 'const PALINK_STUB_API_NOTES = {');
-    expect(notes).toContain('getRequestHeaders:');
+    // 已实现 ⇒ 必须移出桩表，否则卡每调一次就产一条 st_api_stub 噪音
+    expect(notes).not.toContain('getRequestHeaders:');
     const deps = buildFrame();
-    (window as any).getRequestHeaders = () => ({});
+    const realHeaders = () => ({ 'Content-Type': 'application/json' });
+    (window as any).getRequestHeaders = realHeaders;
     const ctx = evalGetContext(deps);
-    expect(ctx.getRequestHeaders()).toEqual({});
-    expect(ctx.getRequestHeaders).toBe((window as any).getRequestHeaders);
+    expect(ctx.getRequestHeaders()).toEqual({ 'Content-Type': 'application/json' });
+    expect(ctx.getRequestHeaders).toBe(realHeaders);
   });
 
   it('#15 getPresetManager 不补：仍是 {getSelectedPresetName…} 的既有形状（含 stubApi 留痕）', () => {
@@ -762,11 +767,12 @@ describe('C 包G 红线 —— 不许假成功，两项按拍板保持原样', (
     expect(stubDiags[0].apiName).toBe('getSelectedPresetName');
   });
 
-  it('桩表只剩「故意不补」的 4 项（其余全已换成真实现或诚实失败）', () => {
+  it('桩表只剩「故意不补」的 3 项（其余全已换成真实现或诚实失败）', () => {
     const notes = sliceDeclaration(SRC, 'const PALINK_STUB_API_NOTES = {');
+    // [批次C C-1 2026-10-20] getRequestHeaders 已真实现 ⇒ 从 4 项减为 3 项。
     const remaining = [
       'getSelectedPresetName', 'writePresetExtensionField',
-      'getRequestHeaders', 'fetch:/api/worldinfo',
+      'fetch:/api/worldinfo',
     ];
     remaining.forEach((name) => expect(notes).toContain(name));
     // 13 个修复项不得回到桩表

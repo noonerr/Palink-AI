@@ -1738,7 +1738,25 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     CUSTOM_WI_OUTLET: (key) => 'custom_wi_' + String(key),
     CUSTOM_WI_DEPTH_ROLE: (depth, role) => 'custom_wi_depth_' + String(depth) + '_' + String(role),
   };
-  window.tokenizers = window.tokenizers || {};
+  // [批次C C-1 2026-10-20] tokenizers 从空壳改为**照抄 ST 的静态枚举**。
+  // 一手锚点：_reference/sillytavern-1.18.0/public/scripts/tokenizers.js:16-38
+  //   export const tokenizers = { NONE:0, GPT2:1, OPENAI:2, LLAMA:3, NERD:4, NERD2:5,
+  //   API_CURRENT:6, MISTRAL:7, YI:8, API_TEXTGENERATIONWEBUI:9, API_KOBOLD:10, CLAUDE:11,
+  //   LLAMA3:12, GEMMA:13, JAMBA:14, QWEN2:15, COMMAND_R:16, NEMO:17, DEEPSEEK:18,
+  //   COMMAND_A:19, BEST_MATCH:99 }
+  // ST 侧它就不是子系统，而是一张常量表（唯一消费者是按枚举值选分词器）。
+  // 此前给 {} ⇒ 卡写 getTokenCountAsync(text, tokenizers.OPENAI) 传的是 undefined，
+  // 静默退化成默认分词器。这里逐值照抄，不增不减字段（造字段=假实现）。
+  // 已有同名全局时以既有值为准（不覆盖别人写入的键）。
+  window.tokenizers = Object.assign(
+    {
+      NONE: 0, GPT2: 1, OPENAI: 2, LLAMA: 3, NERD: 4, NERD2: 5,
+      API_CURRENT: 6, MISTRAL: 7, YI: 8, API_TEXTGENERATIONWEBUI: 9, API_KOBOLD: 10,
+      CLAUDE: 11, LLAMA3: 12, GEMMA: 13, JAMBA: 14, QWEN2: 15, COMMAND_R: 16,
+      NEMO: 17, DEEPSEEK: 18, COMMAND_A: 19, BEST_MATCH: 99,
+    },
+    window.tokenizers && typeof window.tokenizers === 'object' ? window.tokenizers : {},
+  );
   setCompatFunction('getTextTokens', (text) => String(text ?? '').split(/\\s+/).filter(Boolean));
   setCompatFunction('getTokenCount', (text) => Math.ceil(String(text ?? '').length / 4));
   setCompatFunction('getTokenCountAsync', async (text) => window.getTokenCount(text));

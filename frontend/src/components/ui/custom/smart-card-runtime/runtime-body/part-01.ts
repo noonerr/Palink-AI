@@ -471,21 +471,22 @@ ${bootHeader}
   window.__palinkDiagRecord = palinkDiagRecord;
   window.__palinkDiagDump = palinkDiagDumpText;
   window.__palinkDiagRecords = palinkDiagRecords;
-  // [包W 2026-10-19] 全局形状缺口留痕（本包**不补** window.context，那是待用户拍板的产品决定，
-  // 见 docs/OPEN_ISSUES.md P2-12 第 9 条）。
-  // 口径说清楚：boot 头里的 ctx 是 const，只在 IIFE 闭包内可见，从未挂到 window ⇒
-  // 按 ST 习惯读 window.context 的卡拿到的是 undefined，而且这条路径**今天完全静默**。
-  // 帧内没有不改卡行为又能观测「某张卡真的读了它」的办法（defineProperty 一个 getter 会让
-  // 'context' in window 由假变真，等于伪造卡看到的形状 ⇒ 本包不做）。
-  // 因此退一步：启动时如实记一条「我们未提供这个全局」，owner=frame_compat，
-  // 由主控按卡的实测情况决定是否补对象。同名合并 ⇒ 七帧也只累计计数，不产生七条。
+  // [包W 2026-10-19 / 批次C C-2 2026-10-20 改文案] 全局形状留痕。
+  // 一手事实（两棵 ST 1.18 树 + 酒馆助手插件全仓）：**ST 里也没有 window.context 这个全局**。
+  //   ST 的 context 恒为局部变量 —— authors-note.js:325/444、extensions.js:90/2062/2144、
+  //   slash-commands.js:3892、utils.js:1344、world-info.js:1116 全是 const context = getContext()；
+  //   window.context / window.getContext / globalThis.getContext 在 ST 全树与插件里 0 命中。
+  // 用户裁定「与 ST 冲突以 ST 为准」⇒ 这**不是我们的缺陷**，而是卡的写法不合规。
+  // 因此措辞改成如实描述，**记录本身保留**（它是「哪张卡在这么写」的唯一证据）。
+  // 判定逻辑一律不动：owner / kind / name / 同名合并去重 / 上送口径全部原样。
   if (!Object.getOwnPropertyDescriptor(window, 'context')) {
     palinkDiagRecord({
       owner: 'frame_compat',
       kind: 'global_shape_absent',
       name: 'window.context',
-      detail: '形状缺口：boot 的 ctx 是 IIFE 内的 const，未挂到 window ⇒ 卡读 window.context 得 undefined。'
-        + '本包只留痕不补对象（待用户拍板）。若本条 count 增长说明确有卡在读，派单给前端兼容层。',
+      detail: 'ST 亦无此全局：ST 1.18 的 context 恒为局部变量（const context = getContext()），'
+        + 'window.context 在两棵 ST 树与酒馆助手插件里全树 0 命中 ⇒ 卡这么写本身不合规，不是 Palink 的缺陷项。'
+        + '本条只用于统计「哪张卡按不合规写法读了它」；count 增长说明该卡需要作者改写法。',
     });
   }
   const executeCompatInlineScriptCompat = (source, label = '') => {

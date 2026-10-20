@@ -226,11 +226,11 @@ describe('A T1 假实现留痕 —— 桩被调用必须产出可诊断记录', 
     // [包B B-3 2026-10-18] 删 saveWorldInfo：改为真写入（桥 createOrReplaceWorldbook）。
     // [包G G-1 2026-10-18] 表里只剩「故意不补」的四项：13 个真问题项已换真实现或诚实失败，
     // 连同它们的 stubApi 包裹一起移除（逐项理由见 part-08.ts 内 #1-#13 注释与包G 报告）。
-    // getRequestHeaders（安全决策）与 getSelectedPresetName / writePresetExtensionField
-    //（ST 预设体系，Palink 结构不同）必须**继续留在表里** —— 它们仍是桩。
+    // [批次C C-1 2026-10-20] getRequestHeaders 已按 ST 契约（script.js:645）真实现 ⇒ 移出桩表；
+    // getSelectedPresetName / writePresetExtensionField 仍属 ST 预设体系（Palink 结构不同），留在表里。
     const flagged = [
       'getSelectedPresetName',
-      'writePresetExtensionField', 'getRequestHeaders', 'fetch:/api/worldinfo',
+      'writePresetExtensionField', 'fetch:/api/worldinfo',
     ];
     flagged.forEach((name) => {
       expect(notes, `missing note for ${name}`).toContain(name);
