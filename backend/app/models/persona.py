@@ -36,5 +36,13 @@ class Persona(Base):
     # ST 1.18.0 persona_description_depth（personas.js:632）：仅 AT_DEPTH(4) 时生效，
     # 表示人设注入到「从消息末尾往回数第 N 条」之前。默认 4 与 ST DEFAULT_DEPTH 一致。
     persona_description_depth = Column(Integer, default=4)
+    # [ST-BRIDGE-PERSONA 2026-10-20 批次B] ST persona.d.ts:6-18 的另三个字段。
+    # 用户 2026-10-20 拍板「与 ST 冲突时以 ST 为准」⇒ 补列而非裁剪：
+    # 不补列这三个字段就「写进去读不回来」，正是本仓最重的假实现红线。
+    # title=消息上方 persona 标题；role=注入 role（ST 0=system/1=user/2=assistant）；
+    # lorebook=persona 绑定的世界书名。均可空、不回填存量行（只加列）。
+    title = Column(String, nullable=True)
+    role = Column(Integer, nullable=True)
+    lorebook = Column(String, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

@@ -71,6 +71,11 @@ _RUNTIME_COMPAT_COLUMNS = (
     ("personas", "persona_description_position", sa.Integer()),
     # ST 1.18.0 persona_description_depth（AT_DEPTH 位置时的注入深度，默认 4）
     ("personas", "persona_description_depth", sa.Integer()),
+    # [ST-BRIDGE-PERSONA 2026-10-20 批次B] ST persona.d.ts:6-18 的 title/role/lorebook。
+    # 用户拍板补列（与 ST 冲突以 ST 为准）；只加列不回填，与上面 persona_show 族同路径。
+    ("personas", "title", sa.String()),
+    ("personas", "role", sa.Integer()),
+    ("personas", "lorebook", sa.String()),
     # Active persona binding on user settings (references Persona.id)
     ("user_settings", "active_persona_id", sa.String()),
     # ST 1.18.0 power_user persistence (JSON string, full power_user object)

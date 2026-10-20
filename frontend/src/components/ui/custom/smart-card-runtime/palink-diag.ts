@@ -113,6 +113,10 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   // 保留 token 的唯一理由：让"台账有槽位、代码没标"这种漂移可被 grep 到。
 
   // [ST-GAP:persona_crud] 人设写通道（宿主 requestParent 无 persona 族动作）。
+  // [ST-BRIDGE-PERSONA 2026-10-20 批次B] 11 键已全部落地：帧内成员 → 父侧
+  // dispatchSmartCardPersonaAction → personas.py 六路由。键名按 st-gap-ledger-guard
+  // 纪律**保留不删**（删了会让 D 组断言红）—— 实现了就不再产生这条记录，留名只是痕迹。
+  // 段②（角色库写侧 7 键）落地后同批再核一次。
   createOrReplacePersona: 'persona_crud',
   createPersona: 'persona_crud',
   deletePersona: 'persona_crud',

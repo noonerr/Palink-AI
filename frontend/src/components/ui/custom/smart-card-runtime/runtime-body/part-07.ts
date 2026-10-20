@@ -684,6 +684,81 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       if (!found) throw new Error("TavernHelper: 未找到角色卡 '" + String(name) + "'");
       return found;
     },
+    // [ST-BRIDGE-PERSONA 2026-10-20 批次B] 人设 11 键（契约逐条抄 persona.d.ts）。
+    // 失败语义分族（刻意，不是笔误）：
+    //   getPersonaNames():30 / getPersonaIds():37 —— 后端访问失败抛，不返空数组装成功；
+    //   getCurrentPersonaName():44 / getCurrentPersonaId():51 —— 无当前人设返 null；
+    //   getPersonaAvatarPath():60 —— 不存在或名称不唯一返 null（不抛），仅后端失败抛；
+    //   getPersona():71 —— 不存在或名称不唯一抛错；
+    //   createPersona():85-89 —— 同名/同头像 id/名为 current 返 false，后端失败抛；
+    //   createOrReplacePersona():104-108 —— 创建返 true、替换返 false，名称不唯一抛；
+    //   deletePersona():119 —— 不存在/不唯一返 false，后端失败抛；
+    //   replacePersona():137-141 —— Promise<void>，不存在/不唯一抛；
+    //   updatePersonaWith():164-168 —— updater 是帧内函数 ⇒ getPersona + replacePersona
+    //     两个父侧动作组合，不另造父侧第三份逻辑。
+    // personaRef 语义 = 名称 / 头像 id / 'current'（d.ts LiteralUnion），解析在父侧
+    // resolvePersonaRef；返回一律对象包裹（requestParent v2 会把顶层数组/字符串展开成索引键）。
+    getPersonaNames: async () => {
+      const res = await requestParent('getPersonaNames', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPersonaNames 失败: ' + String((res && res.error) || 'unknown'));
+      return Array.isArray(res.names) ? res.names : [];
+    },
+    getPersonaIds: async () => {
+      const res = await requestParent('getPersonaIds', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPersonaIds 失败: ' + String((res && res.error) || 'unknown'));
+      return Array.isArray(res.ids) ? res.ids : [];
+    },
+    getCurrentPersonaName: async () => {
+      const res = await requestParent('getCurrentPersonaName', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getCurrentPersonaName 失败: ' + String((res && res.error) || 'unknown'));
+      return res.name === undefined || res.name === null ? null : String(res.name);
+    },
+    getCurrentPersonaId: async () => {
+      const res = await requestParent('getCurrentPersonaId', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getCurrentPersonaId 失败: ' + String((res && res.error) || 'unknown'));
+      return res.id === undefined || res.id === null ? null : String(res.id);
+    },
+    getPersonaAvatarPath: async (personaRef) => {
+      const res = await requestParent('getPersonaAvatarPath', { personaRef });
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPersonaAvatarPath 失败: ' + String((res && res.error) || 'unknown'));
+      return res.path === undefined || res.path === null ? null : String(res.path);
+    },
+    getPersona: async (personaRef) => {
+      const res = await requestParent('getPersona', { personaRef });
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPersona 失败: ' + String((res && res.error) || 'unknown'));
+      return res.persona;
+    },
+    createPersona: async (personaName, persona) => {
+      const res = await requestParent('createPersona', { personaName, persona });
+      if (!res || res.success !== true) throw new Error('TavernHelper: createPersona 失败: ' + String((res && res.error) || 'unknown'));
+      return res.created === true;
+    },
+    createOrReplacePersona: async (personaName, persona) => {
+      const res = await requestParent('createOrReplacePersona', { personaName, persona });
+      if (!res || res.success !== true) throw new Error('TavernHelper: createOrReplacePersona 失败: ' + String((res && res.error) || 'unknown'));
+      return res.created === true;
+    },
+    deletePersona: async (personaRef) => {
+      const res = await requestParent('deletePersona', { personaRef });
+      if (!res || res.success !== true) throw new Error('TavernHelper: deletePersona 失败: ' + String((res && res.error) || 'unknown'));
+      return res.deleted === true;
+    },
+    replacePersona: async (personaRef, persona) => {
+      const res = await requestParent('replacePersona', { personaRef, persona });
+      if (!res || res.success !== true) throw new Error('TavernHelper: replacePersona 失败: ' + String((res && res.error) || 'unknown'));
+    },
+    updatePersonaWith: async (personaRef, updater) => {
+      const current = await requestParent('getPersona', { personaRef });
+      if (!current || current.success !== true) {
+        throw new Error('TavernHelper: updatePersonaWith 读取失败: ' + String((current && current.error) || 'unknown'));
+      }
+      const updated = typeof updater === 'function' ? await updater(current.persona) : current.persona;
+      const res = await requestParent('replacePersona', { personaRef, persona: updated });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: updatePersonaWith 写回失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return updated;
+    },
     // displayed_message / util / global
     formatAsDisplayedMessage: th134FormatAsDisplayedMessage,
     refreshOneMessage: async () => {

@@ -215,10 +215,19 @@ describe('A fixture 与注册口径', () => {
     //      同名多本拒绝 + 只认 'current' 的越权面，行为断言见本文件 ST-BRIDGE-BOOKBIND 段。
     //   裁决依据：用户 2026-10-20「与 ST 冲突时以 ST 为准」。
     //   台账同步：docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2 四行。
+    // ⚠️ 2026-10-20 批次B 段①再改判三键：getPersona / createPersona / getCurrentPersonaId
+    //   移出（D 71→68、C 50→53、A+C 上界 63→66）。同样不是凑绿，是能力当天才落地：
+    //   ① 契约一手：persona.d.ts 全 11 键（:30/37/44/51/60/71/85/104/119/137/164）；
+    //   ② 后端六路由全有（personas.py:73/87/131/150/175/229，PUT/DELETE 带 user_id
+    //      归属过滤 ⇒ 他人 id 返 404），并按用户 2026-10-20 拍板补了 title/role/lorebook
+    //      三列（models/persona.py + core/migrations.py 兼容清单，只加列不回填）；
+    //   ③ 帧内 11 成员 → 父侧 dispatchSmartCardPersonaAction（SmartCardCompatController.ts），
+    //      同名判重/同名多值拒绝/越权用例与数据闭环见 REPORT_包AC_人设与角色库写通道_2026-10-20.md。
+    //   说明：移出的是"帧内无注册"类 D 键；其余 8 个 persona 键改前走探测面合成函数
+    //   （调用记 missing_api），本批换成真桥后不再产生该记录 —— C 族内部诚实度升级，不动三数。
     const forbidden = [
       'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
       'createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter',
-      'getPersona', 'createPersona', 'getCurrentPersonaId',
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
       'injectPrompts', 'uninjectPrompts',
@@ -234,6 +243,15 @@ describe('A fixture 与注册口径', () => {
     // 反过来，这一组就是"把父侧动作短路 ⇒ 本用例必红"的落点。
     (['deleteWorldbook', 'deleteLorebook', 'rebindCharWorldbooks', 'setCurrentCharLorebooks'] as const).forEach((n) => {
       expect(registered.has(n)).toBe(true);
+    });
+    // 正向锚点（批次B 段①人设三键）：移出 D 名单的依据同上 ⇒ 钉住已注册。
+    (['getPersona', 'createPersona', 'getCurrentPersonaId'] as const).forEach((n) => {
+      expect(registered.has(n)).toBe(true);
+    });
+    // 帧内不是空壳：人设族都走到同一个父侧动作族（requestParent 逐键有名有姓），
+    // current 的落点是 /api/personas/active（不是列表里猜一只）。
+    (['getPersonaNames', 'getPersonaIds', 'getPersona', 'createPersona', 'getCurrentPersonaId', 'deletePersona', 'replacePersona'] as const).forEach((n) => {
+      expect(SRC.indexOf("requestParent('" + n + "'")).toBeGreaterThan(-1);
     });
     // 而且 proxy 也不会为它们造假存在性：H 段没有往 tavernHelperCompat 里塞同名键
     ['getPreset', 'createCharacter', 'playAudio', 'getModelList'].forEach((n) => {

@@ -31,6 +31,10 @@ class PersonaCreateRequest(BaseModel):
     persona_description_position: int = 4
     # AT_DEPTH 时的注入深度（personas.js:632），默认 4
     persona_description_depth: int = 4
+    # [ST-BRIDGE-PERSONA 2026-10-20 批次B] persona.d.ts:6-18 的 title/role/lorebook
+    title: Optional[str] = None
+    role: Optional[int] = None
+    lorebook: Optional[str] = None
 
 
 class PersonaUpdateRequest(BaseModel):
@@ -42,6 +46,10 @@ class PersonaUpdateRequest(BaseModel):
     persona_show: Optional[bool] = None
     persona_description_position: Optional[int] = None
     persona_description_depth: Optional[int] = None
+    # [ST-BRIDGE-PERSONA 2026-10-20 批次B] persona.d.ts:6-18 的 title/role/lorebook
+    title: Optional[str] = None
+    role: Optional[int] = None
+    lorebook: Optional[str] = None
 
 
 class ActivePersonaRequest(BaseModel):
@@ -65,6 +73,11 @@ def _persona_to_dict(p: Persona) -> dict:
         "personaShow": bool(p.persona_show) if p.persona_show is not None else False,
         "personaDescriptionPosition": int(p.persona_description_position) if p.persona_description_position is not None else 4,
         "personaDescriptionDepth": int(p.persona_description_depth) if getattr(p, "persona_description_depth", None) is not None else 4,
+        # [ST-BRIDGE-PERSONA 2026-10-20 批次B] title/role/lorebook（persona.d.ts:6-18）；
+        # 均可空 ⇒ 缺省返 null，卡侧按 PartialDeep 处理。
+        "title": p.title if p.title is not None else None,
+        "role": int(p.role) if p.role is not None else None,
+        "lorebook": p.lorebook if p.lorebook is not None else None,
         "createdAt": p.created_at.isoformat() if p.created_at else None,
         "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -107,6 +120,9 @@ async def create_persona(
         persona_show=req.persona_show,
         persona_description_position=req.persona_description_position,
         persona_description_depth=req.persona_description_depth,
+        title=req.title,
+        role=req.role,
+        lorebook=req.lorebook,
         created_at=_utc_now(),
         updated_at=_utc_now(),
     )
@@ -208,6 +224,12 @@ async def update_persona(
         p.persona_description_position = req.persona_description_position
     if req.persona_description_depth is not None:
         p.persona_description_depth = req.persona_description_depth
+    if req.title is not None:
+        p.title = req.title
+    if req.role is not None:
+        p.role = req.role
+    if req.lorebook is not None:
+        p.lorebook = req.lorebook
     p.updated_at = _utc_now()
     db.commit()
     db.refresh(p)

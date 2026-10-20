@@ -578,6 +578,356 @@ export async function rebindSmartCardCharWorldbooks(
   return { success: true };
 }
 
+// ============================================================
+// [ST-BRIDGE-PERSONA 2026-10-20 批次B] 人设 11 键的父侧实现。
+// 契约逐条抄自 st-plugins/third-party/JS-Slash-Runner-main/@types/function/persona.d.ts
+// （用户 2026-10-20 裁决：与 ST 冲突时以 ST 为准，不以本仓既有行为为准）。
+//
+// 存储形状（一手：backend/app/models/persona.py）：
+//   personas.id（user 维度 uuid）/ user_id / name / description / avatar /
+//   character_bindings（JSON dict）/ is_default / persona_show /
+//   persona_description_position / persona_description_depth /
+//   title / role / lorebook（本批按用户拍板补列，见 models+ migrations 清单）
+// 归属：GET/PUT/DELETE 全部带登录态，后端按 user_id 过滤 ⇒ 他人 id 返 404
+//   （personas.py:182-187 / :235-240 一手核实）⇒ 帧内传任意他人 id 也改不到别人数据。
+// ============================================================
+
+type PalinkPersonaRow = {
+  id: string;
+  name: string;
+  description: string;
+  avatar: string | null;
+  characterBindings: Record<string, string>;
+  isDefault: boolean;
+  personaShow: boolean;
+  personaDescriptionPosition: number;
+  personaDescriptionDepth: number;
+  title?: string | null;
+  role?: number | null;
+  lorebook?: string | null;
+};
+
+async function listPalinkPersonas(): Promise<PalinkPersonaRow[]> {
+  const rows = await api.get<PalinkPersonaRow[]>('/api/personas');
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * persona 引用解析：ST 的 persona 实参语义是「名称、头像 id 或 'current'」
+ * （persona.d.ts:60/71/119 等处的 TypeFest.LiteralUnion<'current', string>），
+ * 而 Palink 按 uuid 寻址 ⇒ 父侧做一次 ref → row 的唯一解析。
+ * 安全口径与 resolveWorldbookByName 同源：同名多只一律拒，不替调用方猜一只。
+ * 错误一律机器可读码（帧内与测试都按码判定，不透传底层消息文本）。
+ */
+async function resolvePersonaRef(
+  ref: unknown,
+): Promise<{ ok: true; persona: PalinkPersonaRow } | { ok: false; error: string }> {
+  const raw = ref === undefined || ref === null ? 'current' : String(ref).trim();
+  if (!raw) return { ok: false, error: 'persona_ref_required' };
+  let rows: PalinkPersonaRow[];
+  try {
+    rows = await listPalinkPersonas();
+  } catch (error) {
+    return { ok: false, error: 'persona_list_failed' };
+  }
+  if (raw === 'current') {
+    // 当前人设是用户级单选（/active），不是列表里挑一只
+    try {
+      const active = await api.get<{ activePersonaId: string | null }>('/api/personas/active');
+      const activeId = active?.activePersonaId;
+      if (!activeId) return { ok: false, error: 'persona_not_found' };
+      const found = rows.find((p) => p.id === activeId);
+      if (!found) return { ok: false, error: 'persona_not_found' };
+      return { ok: true, persona: found };
+    } catch (error) {
+      return { ok: false, error: 'persona_active_failed' };
+    }
+  }
+  const byId = rows.filter((p) => p.id === raw);
+  if (byId.length === 1) return { ok: true, persona: byId[0] };
+  if (byId.length > 1) return { ok: false, error: 'persona_id_ambiguous' };
+  const byName = rows.filter((p) => p.name === raw);
+  if (byName.length === 1) return { ok: true, persona: byName[0] };
+  if (byName.length > 1) return { ok: false, error: 'persona_name_ambiguous' };
+  return { ok: false, error: 'persona_not_found' };
+}
+
+/**
+ * Palink row → ST Persona 形状（persona.d.ts:6-18）。
+ * connections：ST 是 [{type:'character'|'group', id}] 数组，Palink 存 dict
+ * ⇒ 按用户 2026-10-20 拍板**只映射 character 类连接**（读回时反向合成）；
+ *   group 类连接 Palink 无绑定模型，写入时已丢弃（见 mapStPersonaToPatch）。
+ * avatar_id：Palink 的 id 是 uuid 而非 ST 的头像文件名 —— 语义偏差，
+ *   但它是本仓 persona 的稳定主键，卡侧按 opaque 字符串用即可。
+ */
+function mapPersonaRowToSt(p: PalinkPersonaRow): Record<string, unknown> {
+  const connections: Array<{ type: 'character'; id: string }> = [];
+  const bindings = p.characterBindings || {};
+  for (const key of Object.keys(bindings)) {
+    if (key) connections.push({ type: 'character', id: key });
+  }
+  return {
+    avatar_id: p.id,
+    avatar: p.avatar || '',
+    name: p.name,
+    title: p.title ?? '',
+    description: p.description || '',
+    position: Number(p.personaDescriptionPosition ?? 4),
+    depth: Number(p.personaDescriptionDepth ?? 4),
+    role: p.role ?? 0,
+    lorebook: p.lorebook ?? '',
+    connections,
+    is_default: Boolean(p.isDefault),
+  };
+}
+
+/** ST PartialDeep<Persona> → Palink 写侧字段（只取 Palink 有列的；未知字段丢弃） */
+function mapStPersonaToPatch(st: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (st.name !== undefined) patch.name = st.name;
+  if (st.description !== undefined) patch.description = st.description;
+  if (st.avatar !== undefined && typeof st.avatar === 'string') patch.avatar = st.avatar;
+  if (st.title !== undefined) patch.title = st.title;
+  if (st.position !== undefined) patch.persona_description_position = Number(st.position);
+  if (st.depth !== undefined) patch.persona_description_depth = Number(st.depth);
+  if (st.role !== undefined) patch.role = Number(st.role);
+  if (st.lorebook !== undefined) patch.lorebook = st.lorebook;
+  if (st.is_default !== undefined) patch.is_default = Boolean(st.is_default);
+  if (Array.isArray(st.connections)) {
+    const bindings: Record<string, string> = {};
+    for (const conn of st.connections) {
+      const type = String((conn as { type?: unknown })?.type ?? '');
+      const id = String((conn as { id?: unknown })?.id ?? '');
+      // group 类连接丢弃并留痕：Palink 无群↔人设绑定模型（用户拍板只映射 character 类）
+      if (type === 'character' && id) bindings[id] = id;
+    }
+    patch.character_bindings = bindings;
+  }
+  return patch;
+}
+
+/** persona.d.ts:30 getPersonaNames(): string[] */
+export async function getSmartCardPersonaNames(): Promise<{ success: boolean; names?: string[]; error?: string }> {
+  try {
+    const rows = await listPalinkPersonas();
+    return { success: true, names: rows.map((p) => String(p.name || '')) };
+  } catch (error) {
+    return { success: false, error: 'persona_list_failed' };
+  }
+}
+
+/** persona.d.ts:37 getPersonaIds(): string[] */
+export async function getSmartCardPersonaIds(): Promise<{ success: boolean; ids?: string[]; error?: string }> {
+  try {
+    const rows = await listPalinkPersonas();
+    return { success: true, ids: rows.map((p) => String(p.id || '')) };
+  } catch (error) {
+    return { success: false, error: 'persona_list_failed' };
+  }
+}
+
+/** persona.d.ts:44 getCurrentPersonaName(): string | null */
+export async function getSmartCardCurrentPersonaName(): Promise<{ success: boolean; name?: string | null; error?: string }> {
+  try {
+    const active = await api.get<{ activePersonaId: string | null; persona?: { name?: string } | null }>('/api/personas/active');
+    const name = active?.persona?.name;
+    return { success: true, name: name === undefined || name === null ? null : String(name) };
+  } catch (error) {
+    return { success: false, error: 'persona_active_failed' };
+  }
+}
+
+/** persona.d.ts:51 getCurrentPersonaId(): string | null */
+export async function getSmartCardCurrentPersonaId(): Promise<{ success: boolean; id?: string | null; error?: string }> {
+  try {
+    const active = await api.get<{ activePersonaId: string | null }>('/api/personas/active');
+    const id = active?.activePersonaId;
+    return { success: true, id: id === undefined || id === null ? null : String(id) };
+  } catch (error) {
+    return { success: false, error: 'persona_active_failed' };
+  }
+}
+
+/**
+ * persona.d.ts:60 getPersonaAvatarPath(persona_id?): string | null
+ * 契约：persona 不存在或名称不唯一 ⇒ 返 null（**不抛**）；仅后端访问失败抛。
+ * Palink 的 avatar 列就是头像路径字符串（无 ST 的头像文件机制）。
+ */
+export async function getSmartCardPersonaAvatarPath(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; path?: string | null; error?: string }> {
+  const parsed = await resolvePersonaRef(payload?.personaRef ?? payload?.persona_id);
+  if (!parsed.ok) {
+    // 区分两类失败：不存在/不唯一/无当前人设 = 契约内的 null（persona.d.ts:58）；
+    // 列表或 active 访问失败 = 后端访问失败 ⇒ 抛给帧内（与 getPersona 同口径）。
+    if (parsed.error === 'persona_list_failed' || parsed.error === 'persona_active_failed') {
+      return { success: false, error: parsed.error };
+    }
+    return { success: true, path: null };
+  }
+  const avatar = parsed.persona.avatar;
+  return { success: true, path: avatar ? String(avatar) : null };
+}
+
+/**
+ * persona.d.ts:71 getPersona(persona_id): Persona
+ * 契约：不存在或名称不唯一 ⇒ **抛错**（帧内转成 throw）。
+ */
+export async function getSmartCardPersona(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; persona?: Record<string, unknown>; error?: string }> {
+  const parsed = await resolvePersonaRef(payload?.personaRef ?? payload?.persona_id);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  return { success: true, persona: mapPersonaRowToSt(parsed.persona) };
+}
+
+/**
+ * persona.d.ts:85-89 createPersona(name, persona?): Promise<boolean>
+ * 契约：同名 / 同头像 id / 名为 'current' ⇒ 失败返 false；后端访问失败 ⇒ 抛。
+ * ⚠ 后端 POST 无查重（personas.py:87-128 一手核实）⇒ 父侧先 list 判重，
+ *   否则 ST 的「同名失败」语义在本仓会丢失（变成静默建出两只同名）。
+ */
+export async function createSmartCardPersona(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; created?: boolean; error?: string }> {
+  const rawName = payload?.personaName ?? payload?.persona_name;
+  const name = rawName === undefined || rawName === null ? '' : String(rawName);
+  if (!name || name === 'current') return { success: true, created: false };
+  let rows: PalinkPersonaRow[];
+  try {
+    rows = await listPalinkPersonas();
+  } catch (error) {
+    return { success: false, error: 'persona_list_failed' };
+  }
+  if (rows.some((p) => p.name === name)) return { success: true, created: false };
+  const st = (payload?.persona && typeof payload.persona === 'object' ? payload.persona : {}) as Record<string, unknown>;
+  const patch = mapStPersonaToPatch(st);
+  try {
+    await api.post('/api/personas', { ...patch, name });
+    return { success: true, created: true };
+  } catch (error) {
+    return { success: false, error: 'persona_create_failed' };
+  }
+}
+
+/**
+ * persona.d.ts:104-108 createOrReplacePersona(name, persona?): Promise<boolean>
+ * 契约：发生创建返 true、发生替换返 false；名称不唯一 ⇒ 抛。
+ * 解析按「名称或头像 id」（d.ts:94 原文）⇒ 先按 id 命中走替换，再按名称。
+ */
+export async function createOrReplaceSmartCardPersona(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; created?: boolean; error?: string }> {
+  const rawName = payload?.personaName ?? payload?.persona_name;
+  const name = rawName === undefined || rawName === null ? '' : String(rawName);
+  if (!name || name === 'current') return { success: false, error: 'persona_name_unsupported' };
+  const st = (payload?.persona && typeof payload.persona === 'object' ? payload.persona : {}) as Record<string, unknown>;
+  const patch = mapStPersonaToPatch(st);
+  let rows: PalinkPersonaRow[];
+  try {
+    rows = await listPalinkPersonas();
+  } catch (error) {
+    return { success: false, error: 'persona_list_failed' };
+  }
+  const byId = rows.filter((p) => p.id === name);
+  const byName = rows.filter((p) => p.name === name);
+  if (byName.length > 1) return { success: false, error: 'persona_name_ambiguous' };
+  const existing = byId.length === 1 ? byId[0] : byName[0];
+  try {
+    if (existing) {
+      await api.put(`/api/personas/${existing.id}`, patch);
+      return { success: true, created: false };
+    }
+    await api.post('/api/personas', { ...patch, name });
+    return { success: true, created: true };
+  } catch (error) {
+    return { success: false, error: 'persona_create_failed' };
+  }
+}
+
+/**
+ * persona.d.ts:119 deletePersona(persona_id): Promise<boolean>
+ * 契约：不存在 / 名称不唯一等 ⇒ 失败返 false（**不抛**）；后端访问失败 ⇒ 抛。
+ * ⚠ 后端 DELETE 返 {ok:true} 无删除计数（personas.py:229-243）⇒ 先解析拿 row，
+ *   不存在直接 false；解析到才删，删除异常按后端访问失败抛给帧内。
+ */
+export async function deleteSmartCardPersona(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; deleted?: boolean; error?: string }> {
+  const parsed = await resolvePersonaRef(payload?.personaRef ?? payload?.persona_id);
+  if (!parsed.ok) {
+    if (parsed.error === 'persona_not_found' || parsed.error === 'persona_name_ambiguous' || parsed.error === 'persona_id_ambiguous') {
+      return { success: true, deleted: false };
+    }
+    return { success: false, error: parsed.error };
+  }
+  try {
+    await api.delete(`/api/personas/${parsed.persona.id}`);
+    return { success: true, deleted: true };
+  } catch (error) {
+    return { success: false, error: 'persona_delete_failed' };
+  }
+}
+
+/**
+ * persona.d.ts:137-141 replacePersona(persona_id, persona): Promise<void>
+ * 契约：不存在 / 名称不唯一 ⇒ 抛。
+ * 语义说明：d.ts 示例传的是 getPersona 拿到的**完整**对象，本仓 PUT 是
+ * 「传了才改」的部分更新语义 ⇒ 调用方传完整对象时与 ST 完全替换等价；
+ * 传部分对象时未传字段保持原值（比 ST 更宽容，偏差在此留痕）。
+ */
+export async function replaceSmartCardPersona(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string }> {
+  const parsed = await resolvePersonaRef(payload?.personaRef ?? payload?.persona_id);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  const st = (payload?.persona && typeof payload.persona === 'object' ? payload.persona : {}) as Record<string, unknown>;
+  try {
+    await api.put(`/api/personas/${parsed.persona.id}`, mapStPersonaToPatch(st));
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: 'persona_replace_failed' };
+  }
+}
+
+/**
+ * updatePersonaWith（persona.d.ts:164-168）的父侧半个周期 + 帧内组合说明：
+ * d.ts 的 updater 是**调用侧（帧内）函数** ⇒ 父侧不实现 updater，
+ * 帧内成员用 getPersona → updater(current) → replacePersona 两个父侧动作组合，
+ * 不另造第三份逻辑（与批次A 两个 deprecated 名共用同一实现同风格）。
+ */
+
+/** 人设 11 键的帧内 action 名 → 父侧动作分发（供 dispatcher 单点调用） */
+export async function dispatchSmartCardPersonaAction(
+  action: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  switch (action) {
+    case 'getPersonaNames':
+      return getSmartCardPersonaNames();
+    case 'getPersonaIds':
+      return getSmartCardPersonaIds();
+    case 'getCurrentPersonaName':
+      return getSmartCardCurrentPersonaName();
+    case 'getCurrentPersonaId':
+      return getSmartCardCurrentPersonaId();
+    case 'getPersonaAvatarPath':
+      return getSmartCardPersonaAvatarPath(payload);
+    case 'getPersona':
+      return getSmartCardPersona(payload);
+    case 'createPersona':
+      return createSmartCardPersona(payload);
+    case 'createOrReplacePersona':
+      return createOrReplaceSmartCardPersona(payload);
+    case 'deletePersona':
+      return deleteSmartCardPersona(payload);
+    case 'replacePersona':
+      return replaceSmartCardPersona(payload);
+    default:
+      return { success: false, error: 'persona_action_unknown' };
+  }
+}
+
 function buildSmartCardWorldBookExport(state: SmartCardCompatControllerState) {
   if (!state.worldBook) {
     return {
@@ -1065,6 +1415,24 @@ export async function handleSmartCardCompatRequest(
       // 同上不进手势闸门；越权面由「只认 'current' + requestContext.selectedCharacterId」兜住。
       // setCurrentCharLorebooks 是 deprecated 同义名（lorebook.d.ts:51-52），共用同一份实现。
       result = await rebindSmartCardCharWorldbooks(requestContext, payload);
+    } else if (
+      // [ST-BRIDGE-PERSONA 2026-10-20 批次B] 人设 11 键（persona.d.ts）。
+      // 不进手势闸门：与批次A 同源的兼容性论证 —— 用户激活不传播到 opaque-origin
+      // iframe，而「卡片管理自己的人设」是最正当的无手势用法；越权面由父侧
+      // resolvePersonaRef（list 带登录态 + 后端 user_id 过滤）兜住。
+      // updatePersonaWith 由帧内用 getPersona + replacePersona 两个动作组合，不单列分支。
+      action.action === 'getPersonaNames'
+      || action.action === 'getPersonaIds'
+      || action.action === 'getCurrentPersonaName'
+      || action.action === 'getCurrentPersonaId'
+      || action.action === 'getPersonaAvatarPath'
+      || action.action === 'getPersona'
+      || action.action === 'createPersona'
+      || action.action === 'createOrReplacePersona'
+      || action.action === 'deletePersona'
+      || action.action === 'replacePersona'
+    ) {
+      result = await dispatchSmartCardPersonaAction(action.action, payload);
     } else if (action.action === 'getWorldbookEntries') {
       // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
       result = (await resolveCharWorldbookExport(state, requestContext)).entries;
