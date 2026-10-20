@@ -156,6 +156,16 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 > 上界算术随之变成 63 + 30 ≈ 93，仍 < 110 —— 本节结论不变。
 > 数字以真机/测试实测为准；判据与反证原始输出见 `REPORT_包AB_写桥四键_2026-10-20.md`。
 
+> **订正（2026-10-20，批次B 段① 人设 11 键）**：再挪 **3 个键** ——
+> **C 50 → 53**、**D 71 → 68**、**A + C 本包上界 63 → 66**。
+> 挪出去的是 persona 族里帧内无注册的 D 类键 `getPersona` / `createPersona` /
+> `getCurrentPersonaId`；persona 族按族口径 D 11 → 8（其余 8 键改前走探测面合成函数，
+> 本批换成真桥，属 C 族内部诚实度升级，三数不变）。上界算术随之变成 66 + 30 ≈ 96，
+> 仍 < 110 —— 本节结论不变。
+> 依据：persona.d.ts 全 11 键契约 + `personas.py` 六路由 + title/role/lorebook 补列
+> （用户 2026-10-20 拍板）。判据与反证原始输出见
+> `REPORT_包AC_人设与角色库写通道_2026-10-20.md`。
+
 D 的 76 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、正则对象模型 5、
 原始导入 4（`importRawWorldbook`/`importRawChat`/`importRawTavernRegex` + 角色 1 已计入写侧族）、
 世界书删除 2、inject 2、聊天绑定写侧 2（`setCurrentCharLorebooks`/`rebindCharWorldbooks`）、
