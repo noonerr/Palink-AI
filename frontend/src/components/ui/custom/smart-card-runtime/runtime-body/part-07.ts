@@ -1264,6 +1264,12 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     // 顺序照 ST 的表语义：真注册过的（Map 本体）优先 ⇒ 主名次之 ⇒ 别名最后折到主名。
     // 对账实测权威主名与别名**交集为 0**（.tmp_probe/AA/reconcile_out.txt），
     // 所以第三条分支不会把某个真命令名盖掉；宿主名单之外也不会凭空造键。
+    // [批次E 2026-10-20 · 别名面形状差异 ②] 重名裁决 = 有意偏离（我们比 ST 保守）。
+    // 一手核实：ST 的别名 'help' → '?' 注册于 slash-commands.js:658-661；
+    // SlashCommandParser.js:79-82 对重名只 console.trace 告警，:95/:99 照常赋值
+    // ⇒ 后注册者覆盖，ST 没有"主名优先"这个概念。我们让 Palink 自有 help（宿主真命令，
+    // 经 /help 解析进主名名单）优先占位：折到 '?' 会让 /help 行为漂移到 ST 侧。
+    // 这是有意偏离，e-package 测试钉住优先级，⛔ 不许改成别名优先。
     if (slashKnownNamesCompat.has(name)) {
       const cachedByName = slashSynthEntryCacheCompat.get(name);
       if (cachedByName) return cachedByName;
@@ -1354,15 +1360,35 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       if (prop === Symbol.iterator) return target[Symbol.iterator].bind(target);
       // [包F F-1 2026-10-18] has() 与 in 判定口径对齐：两者都算上权威名单种子里
       // "宿主还没实现"的名字（in 走下面的 has 陷阱，这里别再退回裸 Map）。
-      // get/keys/values 等仍走 Map 本体 —— keys() 返回的是 Map 原型语义，
+      // keys/values 等仍走 Map 本体 —— keys() 返回的是 Map 原型语义，
       // 三方与探针的取键口径一律是 Object.keys(commands)（见 fixtures/README.md）。
+      // （get 自批次E起不再直通 Map，改走与 [] 相同的解析路径，见下一段注释。）
       if (prop === 'has') {
         return (name) => target.has(name)
           || slashKnownNamesCompat.has(String(name))
           || slashKnownAliasesCompat.has(String(name));
       }
+      // [批次E 2026-10-20 · 别名面形状差异 ③] commands.get(别名) 与 [] 同路径。
+      // 一手核实 ST 1.18.0（_reference/sillytavern-1.18.0/public/scripts/slash-commands/
+      // SlashCommandParser.js）：commands 是普通对象（:44 'static commands = {}'），对象上
+      // **没有 .get() 方法**（:105-107 的 'get commands()' 是 parser 实例的取值器，
+      // 不是 commands 对象的方法）⇒ 我们的 .get 是**多出来的便利面**，不是 ST 形状。
+      // 此前它被直通成 Map.get（只认真注册项，主名/别名合成项一律 undefined），与
+      // commands[name] 的执行路径分裂；本批按内部一致性接到 resolveSlashEntryCompat
+      // （Map 本体 > 主名 > 别名），未知名照旧返回 undefined。不对外宣称这是 ST 行为。
+      if (prop === 'get') return (name) => resolveSlashEntryCompat(String(name));
+      // [批次E 2026-10-20 · 别名面形状差异 ①] delete 等 Map 方法占位 = 保持现状，理由：
+      // 一手核实 ST 1.18.0 没有任何"删命令"的公开路径 —— SlashCommandParser.js 全文
+      // （1357 行）的写入 API 只有 addCommand(:53) / addCommandObject(:65) /
+      // addCommandObjectUnsafe(:78) 三个，且对 public/scripts 全树 grep
+      // deleteCommand / removeCommand 零命中。
+      // ⇒ 按派包口径"ST 没有对应语义就保持现状"：commands.delete 继续是 Map 的删除方法，
+      //   别名键 'delete'(→del) 被该方法占位是已知形状差异（f-package 测试已记账）；
+      //   ⛔ 不造"能删命令"的行为：没有 deleteCommand、也没有把别名键从表里摘掉的新能力。
+      // deleteProperty（delete commands[x]）同样维持现状：Map 本体的键可删；别名/主名
+      // 来自宿主种子，视图层删不掉，也不新造删除能力。
       if (
-        prop === 'get' || prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'clear'
+        prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'clear'
         || prop === 'keys' || prop === 'values' || prop === 'entries' || prop === 'forEach'
       ) {
         const method = target[prop];
@@ -1383,6 +1409,8 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     },
     deleteProperty(target, prop) {
       if (typeof prop !== 'string') return true;
+      // [批次E 2026-10-20] 保持现状（ST 无"删命令"公开路径，完整理由见 get 陷阱同批注释）：
+      // Map 本体的键可删；别名/主名来自宿主种子，视图层删不掉，也不新造删除能力。
       return target.delete(prop);
     },
     ownKeys(target) {

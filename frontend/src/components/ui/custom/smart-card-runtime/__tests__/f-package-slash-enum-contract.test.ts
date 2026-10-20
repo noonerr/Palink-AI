@@ -249,8 +249,9 @@ describe('包AA A 别名进表：枚举视图里有别名键，且与主名同�
     const { view, prime } = buildFrameView();
     await prime();
     // ⚠️ 例外口径（实测得出，不是为了让断言变绿而挑的）：我们的视图是 **Map 的 Proxy**，
-    //   part-07.ts 的 get 陷阱把 Map 方法名（get/has/set/delete/clear/keys/values/entries/forEach，
-    //   见 part-07.ts:1136-1143）优先透传给 Map 本体。ST 的 commands 是普通对象、没有这批方法，
+    //   part-07.ts 的 get 陷阱把 Map 方法名（set/delete/clear/keys/values/entries/forEach；
+    //   get 自批次E 2026-10-20 起改走与 [] 相同的解析路径、不再占位）优先透传给 Map 本体。
+    //   ST 的 commands 是普通对象、没有这批方法，
     //   所以 `commands['delete']` 在 ST 拿得到、在我们这里会被 Map 方法占位。
     //   176 个别名里正好撞上两个键：'delete'(→del) 与 'name'(→persona-set，'name' 不在占位名单里，仍可用)。
     //   ⇒ 同对象断言对"未被占位的 175 个别名"逐条成立；占位键单独断言（见后一条用例），不静默放行。
@@ -280,14 +281,17 @@ describe('包AA A 别名进表：枚举视图里有别名键，且与主名同�
     expect(Object.keys(view).indexOf('delete') >= 0).toBe(true);
     expect('delete' in view).toBe(true);
     expect(typeof view.delete).toBe('function');
-    // 实测：Map 方法路径（commands.get(...)）不透传别名 —— part-07.ts:1138-1143 把方法名直通 Map 本体，
-    // 而别名只登记在 slashKnownAliasesCompat，不进 Map ⇒ `get('delete')` 拿不到。
-    // 这条**断成现状**（不是恒真：把 view.get 改成也解析别名时它会红），并把差异记账到报告里。
-    expect(view.get('delete')).toBeUndefined();
+    // [批次E 2026-10-20 改判] 原断言"Map 方法路径 commands.get(...) 不透传别名"
+    // （get('delete') / get('del') 恒 undefined）已按批次E修掉并在此改判：
+    // ST 无 .get 方法（commands 是普通对象），我们的 .get 是额外便利面 ⇒ 与 []
+    // 同一条 resolveSlashEntryCompat 路径（内部一致性）。原注释预判过这一天
+    // （"把 view.get 改成也解析别名时它会红"）—— 红的就是这两行，按新事实改判，不是删断言。
+    // 一手锚点与处置理由见 e-package-slash-alias-shape-deltas.test.ts 与批次E报告。
+    expect(view.get('delete')).toBe(view.del);
     expect(view.has('delete')).toBe(true);
     expect(Object.keys(view).indexOf('delete') >= 0).toBe(true);
-    // 主名也一样：Map 方法路径只认真注册项，合成项只经属性路径给出 —— 现状记账，别当"修好了"。
-    expect(view.get('del')).toBeUndefined();
+    // .get 与 [] 同路径：主名同理（不再是"只认真注册项"）。
+    expect(view.get('del')).toBe(view.del);
     expect(view.del).toBeDefined();
     expect(view.del.name).toBe('del');
   });
