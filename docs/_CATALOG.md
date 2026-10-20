@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-20 02:40**　｜　扫描到 **387** 份 markdown
+> **生成时间：2026-10-20 10:30**　｜　扫描到 **387** 份 markdown
 
 ---
 
