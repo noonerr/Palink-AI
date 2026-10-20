@@ -1332,6 +1332,12 @@ def _chat_header(
     for v in db.query(ChatVariable).filter(ChatVariable.session_id == session.id).all():
         if v.value is None:
             continue
+        # [包AI P-1 2026-10-20] 内部簿记行（会话级预设覆盖层等）不进卡可见的变量表。
+        # 前缀约定见 services/preset_overlay.py:INTERNAL_KEY_PREFIX。此前该表只存
+        # 卡/插件变量，故"全部合入"是对的；加了宿主自己的行之后必须按前缀让路，
+        # 否则 `__palink_internal_preset_overlay_v1` 会作为变量出现在 getContext() 里。
+        if v.key.startswith("__palink_internal_"):
+            continue
         db_variables[v.key] = _parse_variable_value(v.value)
     if db_variables or base_variables:
         # [MVU-READ-PRIORITY 2026-10-05] chat_metadata.variables 是 MVU 引擎写的**真源**，

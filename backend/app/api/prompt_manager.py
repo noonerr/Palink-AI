@@ -11,6 +11,13 @@ from ..core import get_db
 from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.prompt_preset import PromptPreset
+from ..services.preset_overlay import (
+    PresetOverlayError,
+    drop_overlay,
+    effective_preset,
+    require_owned_session,
+    write_overlay,
+)
 
 router = APIRouter(prefix="/api/prompt-manager", tags=["prompt-manager"])
 
@@ -129,3 +136,84 @@ def delete_preset(
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+# ── 会话级预设覆盖层（写时复制）─────────────────────────────────────────────
+# [包AI P-1 2026-10-20] 用户裁定：预设改成"每对话一份分身"，卡片改的是本对话这份，
+# **改了不回写全局**，卡片只能读写自己这份。ST 侧是"全局内容 + 全局选择"
+# （`openai.js:4750` 内容、`:404/4509/4728` 选中），本条属**有意偏离**，见
+# `services/preset_overlay.py` 模块 docstring 与台账 `preset_prompt` 行。
+#
+# 落点**不动表结构**：复用既有 `chat_variables`（session_id + key 唯一）存一行 JSON。
+# 未改动 ⇒ 无行 ⇒ 读全局（不产生副本）；改一次 ⇒ 生成本对话私有行。
+
+
+class SessionPresetWriteRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    entries: Optional[List[Dict[str, Any]]] = None
+    config: Optional[Dict[str, Any]] = None
+    # 显式换基：把另一份全局预设**复制**进本对话（不是引用）
+    base_preset_id: Optional[str] = None
+    base_name: Optional[str] = None
+
+
+def _overlay_http_error(exc: PresetOverlayError) -> HTTPException:
+    status = 404 if exc.code in ("session_not_found", "preset_not_found") else 400
+    return HTTPException(status, exc.message)
+
+
+@router.get("/sessions/{session_id}/preset")
+def get_session_preset(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """本对话当前生效的预设 + 来源（`global` / `session`）。
+
+    `source` 就是 P-3 的可见性字段：卡片设置据此显示"用的是全局默认还是本对话副本"。
+    """
+    try:
+        require_owned_session(db, session_id, user.id)
+    except PresetOverlayError as exc:
+        raise _overlay_http_error(exc) from exc
+    return effective_preset(db, user.id, session_id)
+
+
+@router.put("/sessions/{session_id}/preset")
+def put_session_preset(
+    session_id: str,
+    req: SessionPresetWriteRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """写本对话副本（首次写触发写时复制）。**永不写 `prompt_presets`**。"""
+    try:
+        require_owned_session(db, session_id, user.id)
+        return write_overlay(
+            db,
+            user.id,
+            session_id,
+            name=req.name,
+            entries=req.entries,
+            config=req.config,
+            base_preset_id=req.base_preset_id,
+            base_name=req.base_name,
+        )
+    except PresetOverlayError as exc:
+        raise _overlay_http_error(exc) from exc
+
+
+@router.delete("/sessions/{session_id}/preset")
+def delete_session_preset(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """丢弃本对话副本 ⇒ 回到全局默认。全局预设本身不受影响。"""
+    try:
+        require_owned_session(db, session_id, user.id)
+    except PresetOverlayError as exc:
+        raise _overlay_http_error(exc) from exc
+    result = drop_overlay(db, session_id)
+    result.update(effective_preset(db, user.id, session_id))
+    return result
