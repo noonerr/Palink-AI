@@ -928,6 +928,394 @@ export async function dispatchSmartCardPersonaAction(
   }
 }
 
+// ============================================================
+// [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键的父侧实现。
+// 契约：character.d.ts:59/76/91/141/183、import_raw.d.ts:12、raw_character.d.ts:5-97。
+// 字段映射表（验收物）见 REPORT_包AC §7A；**结论：不需要加列** ——
+//   worldbook → worldbooks 两列合取（复用批次A resolveWorldbookByName / demoteOtherCharBooks）；
+//   first_messages → first_mes + alternate_greetings 双列拆分；
+//   extensions → 既有 JSON 列。
+// 归属：列表/PUT/DELETE 全带登录态；service 按 user_id 过滤
+//   （character_service.py:59-67 / :118-125）⇒ 他人 id 返 404。
+// ============================================================
+
+type PalinkCharacterRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  avatar: string | null;
+  first_mes: string | null;
+  alternate_greetings: string[] | null;
+  creator: string | null;
+  character_version: string | null;
+  creator_notes: string | null;
+  extensions: Record<string, unknown> | null;
+  has_character_book?: boolean;
+};
+
+/** avatar 走 dataURL 的硬上限：超过就报错，不静默截断、不塞进扩展字段 */
+const SMART_CARD_AVATAR_DATAURL_MAX = 512 * 1024;
+
+async function listPalinkCharacters(): Promise<PalinkCharacterRow[]> {
+  const rows = await api.get<PalinkCharacterRow[]>('/api/characters');
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * 角色引用解析：ST 的实参是「角色名 / 头像 id / 'current'」（character.d.ts:92/105/142 等），
+ * Palink 按 uuid 寻址 ⇒ 父侧唯一解析。同名多只一律拒（与 resolvePersonaRef 同口径）。
+ * 'current' 落到 requestContext.selectedCharacterId（当前打开的那张卡）。
+ */
+async function resolveCharacterRef(
+  ref: unknown,
+  currentCharacterId: string,
+): Promise<{ ok: true; character: PalinkCharacterRow } | { ok: false; error: string }> {
+  const raw = ref === undefined || ref === null ? 'current' : String(ref).trim();
+  if (!raw) return { ok: false, error: 'character_ref_required' };
+  let rows: PalinkCharacterRow[];
+  try {
+    rows = await listPalinkCharacters();
+  } catch {
+    return { ok: false, error: 'character_list_failed' };
+  }
+  if (raw === 'current') {
+    const current = String(currentCharacterId || '').trim();
+    if (!current) return { ok: false, error: 'no_active_character' };
+    const found = rows.find((c) => c.id === current);
+    if (!found) return { ok: false, error: 'character_not_found' };
+    return { ok: true, character: found };
+  }
+  const byId = rows.filter((c) => c.id === raw);
+  if (byId.length === 1) return { ok: true, character: byId[0] };
+  if (byId.length > 1) return { ok: false, error: 'character_id_ambiguous' };
+  const byName = rows.filter((c) => c.name === raw);
+  if (byName.length === 1) return { ok: true, character: byName[0] };
+  if (byName.length > 1) return { ok: false, error: 'character_name_ambiguous' };
+  return { ok: false, error: 'character_not_found' };
+}
+
+/**
+ * ST Character → Palink 写侧 patch（只取映射表里有的字段，未知字段丢弃）。
+ * worldbook 不在本函数里：它落 worldbooks 两列，见 applyCharacterWorldbook。
+ * 注意：Palink 专有列（ui_config/preset_data/assets…）一律不碰 —— CharacterUpdate 是
+ * 「传了才改」⇒ replaceCharacter 不会把 UI 配置/预设清空（有后端测试钉住）。
+ */
+function mapStCharacterToPatch(
+  st: Record<string, unknown>,
+): { patch: Record<string, unknown>; error?: string } {
+  const patch: Record<string, unknown> = {};
+  if (st.description !== undefined) patch.description = st.description;
+  if (st.version !== undefined) patch.character_version = st.version;
+  if (st.creator !== undefined) patch.creator = st.creator;
+  if (st.creator_notes !== undefined) patch.creator_notes = st.creator_notes;
+  if (st.extensions !== undefined && st.extensions && typeof st.extensions === 'object') {
+    patch.extensions = st.extensions;
+  }
+  if (st.avatar !== undefined && st.avatar !== null) {
+    if (typeof st.avatar !== 'string') {
+      // 帧内已把 Blob 转成 dataURL 字符串；非字符串说明调用方传了对象 ⇒ 拒绝而不是吞掉
+      return { patch, error: 'avatar_blob_unsupported' };
+    }
+    if (st.avatar.indexOf('data:') === 0 && st.avatar.length > SMART_CARD_AVATAR_DATAURL_MAX * 1.4) {
+      return { patch, error: 'avatar_blob_too_large' };
+    }
+    patch.avatar = st.avatar;
+  }
+  if (Array.isArray(st.first_messages)) {
+    const list = st.first_messages.map((item) => String(item ?? ''));
+    patch.first_mes = list.length > 0 ? list[0] : '';
+    patch.alternate_greetings = list.slice(1);
+  }
+  return { patch };
+}
+
+/**
+ * worldbook 字段的落点：worldbooks 两列合取（character_id + type='character_book'）。
+ * undefined = 不改；null / 空串 = 解绑（全降级）；书名 = 解析后绑定并降级其它书保 primary 唯一。
+ */
+async function applyCharacterWorldbook(
+  characterId: string,
+  worldbook: unknown,
+): Promise<{ ok: boolean; error?: string }> {
+  if (worldbook === undefined) return { ok: true };
+  if (worldbook === null || String(worldbook).trim() === '') {
+    await demoteOtherCharBooks(characterId, '');
+    return { ok: true };
+  }
+  const parsed = await resolveWorldbookByName(worldbook);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  try {
+    await worldbookApi.update(parsed.book.id, {
+      character_id: characterId,
+      type: 'character_book',
+    });
+  } catch {
+    return { ok: false, error: 'character_worldbook_bind_failed' };
+  }
+  await demoteOtherCharBooks(characterId, parsed.book.id);
+  return { ok: true };
+}
+
+/** character.d.ts:59-62 createCharacter(name, character?): Promise<boolean>（同名/current ⇒ false） */
+export async function createSmartCardCharacter(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; created?: boolean; error?: string }> {
+  const rawName = payload?.characterName ?? payload?.character_name;
+  const name = rawName === undefined || rawName === null ? '' : String(rawName);
+  if (!name || name === 'current') return { success: true, created: false };
+  let rows: PalinkCharacterRow[];
+  try {
+    rows = await listPalinkCharacters();
+  } catch {
+    return { success: false, error: 'character_list_failed' };
+  }
+  // 后端 POST 不查重（character_service.py:28-44 一手核实）⇒ 同名失败语义由父侧补
+  if (rows.some((c) => c.name === name)) return { success: true, created: false };
+  const st = (payload?.character && typeof payload.character === 'object' ? payload.character : {}) as Record<string, unknown>;
+  const mapped = mapStCharacterToPatch(st);
+  if (mapped.error) return { success: false, error: mapped.error };
+  try {
+    const created = await api.post<{ character?: { id?: string } }>('/api/characters', {
+      ...mapped.patch,
+      name,
+    });
+    const newId = created?.character?.id;
+    if (newId && 'worldbook' in st) {
+      const wb = await applyCharacterWorldbook(String(newId), st.worldbook);
+      if (!wb.ok) return { success: false, error: wb.error };
+    }
+    return { success: true, created: true };
+  } catch {
+    return { success: false, error: 'character_create_failed' };
+  }
+}
+
+/** character.d.ts:76-80 createOrReplaceCharacter(name, character?): 创建 true / 替换 false */
+export async function createOrReplaceSmartCardCharacter(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; created?: boolean; error?: string }> {
+  const rawName = payload?.characterName ?? payload?.character_name;
+  const name = rawName === undefined || rawName === null ? '' : String(rawName);
+  if (!name || name === 'current') return { success: false, error: 'character_name_unsupported' };
+  let rows: PalinkCharacterRow[];
+  try {
+    rows = await listPalinkCharacters();
+  } catch {
+    return { success: false, error: 'character_list_failed' };
+  }
+  const byId = rows.filter((c) => c.id === name);
+  const byName = rows.filter((c) => c.name === name);
+  if (byName.length > 1) return { success: false, error: 'character_name_ambiguous' };
+  const existing = byId.length === 1 ? byId[0] : byName[0];
+  const st = (payload?.character && typeof payload.character === 'object' ? payload.character : {}) as Record<string, unknown>;
+  const mapped = mapStCharacterToPatch(st);
+  if (mapped.error) return { success: false, error: mapped.error };
+  try {
+    if (existing) {
+      await api.put(`/api/characters/${existing.id}`, mapped.patch);
+      if ('worldbook' in st) {
+        const wb = await applyCharacterWorldbook(existing.id, st.worldbook);
+        if (!wb.ok) return { success: false, error: wb.error };
+      }
+      return { success: true, created: false };
+    }
+    const created = await api.post<{ character?: { id?: string } }>('/api/characters', {
+      ...mapped.patch,
+      name,
+    });
+    const newId = created?.character?.id;
+    if (newId && 'worldbook' in st) {
+      const wb = await applyCharacterWorldbook(String(newId), st.worldbook);
+      if (!wb.ok) return { success: false, error: wb.error };
+    }
+    return { success: true, created: true };
+  } catch {
+    return { success: false, error: 'character_create_failed' };
+  }
+}
+
+/**
+ * character.d.ts:91-94 deleteCharacter(name, {delete_chats}): Promise<boolean>
+ * 契约：失败返 false。⚠ 本仓 delete_character **必然级联席聊**（character_service.py:118-145），
+ * ST 的 delete_chats:false（保留聊天）无法兑现 ⇒ 必须显式 delete_chats:true 才执行，
+ * 否则返 false + `delete_chats_required`，防止按 ST 默认调用造成意外级联删数据。
+ */
+export async function deleteSmartCardCharacter(
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; deleted?: boolean; error?: string }> {
+  const parsed = await resolveCharacterRef(
+    payload?.characterName ?? payload?.character_name,
+    String(context?.selectedCharacterId ?? ''),
+  );
+  if (!parsed.ok) {
+    if (
+      parsed.error === 'character_not_found'
+      || parsed.error === 'character_name_ambiguous'
+      || parsed.error === 'character_id_ambiguous'
+      || parsed.error === 'no_active_character'
+    ) {
+      return { success: true, deleted: false };
+    }
+    return { success: false, error: parsed.error };
+  }
+  const options = (payload?.options && typeof payload.options === 'object' ? payload.options : {}) as Record<string, unknown>;
+  if (options.delete_chats !== true) {
+    return { success: false, error: 'delete_chats_required' };
+  }
+  try {
+    await api.delete(`/api/characters/${parsed.character.id}`);
+    return { success: true, deleted: true };
+  } catch {
+    return { success: false, error: 'character_delete_failed' };
+  }
+}
+
+/** character.d.ts:141-145 replaceCharacter(name, character): Promise<void>（不存在抛） */
+export async function replaceSmartCardCharacter(
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; error?: string }> {
+  const parsed = await resolveCharacterRef(
+    payload?.characterName ?? payload?.character_name,
+    String(context?.selectedCharacterId ?? ''),
+  );
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  const st = (payload?.character && typeof payload.character === 'object' ? payload.character : {}) as Record<string, unknown>;
+  const mapped = mapStCharacterToPatch(st);
+  if (mapped.error) return { success: false, error: mapped.error };
+  try {
+    await api.put(`/api/characters/${parsed.character.id}`, mapped.patch);
+  } catch {
+    return { success: false, error: 'character_replace_failed' };
+  }
+  if ('worldbook' in st) {
+    const wb = await applyCharacterWorldbook(parsed.character.id, st.worldbook);
+    if (!wb.ok) return { success: false, error: wb.error };
+  }
+  return { success: true };
+}
+
+/**
+ * updateCharacterWith 的读半周期（内部动作，不是 TavernHelper 成员键）：
+ * 返回 ST Character 形状（character.d.ts:1-19），供帧内 updater 修改后再 replaceCharacter。
+ * 读回口径：first_messages = [first_mes, ...alternate_greetings]；worldbook = 绑定的角色书名。
+ */
+export async function getSmartCardCharacterDetail(
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; character?: Record<string, unknown>; error?: string }> {
+  const parsed = await resolveCharacterRef(
+    payload?.characterName ?? payload?.character_name,
+    String(context?.selectedCharacterId ?? ''),
+  );
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  const c = parsed.character;
+  let worldbook: string | null = null;
+  try {
+    const books = await worldbookApi.list({ character_id: c.id, type: 'character_book' });
+    const hit = Array.isArray(books) ? books[0] : undefined;
+    if (hit && hit.name) worldbook = String(hit.name);
+  } catch {
+    // 世界书名是增值信息：读不到就不给（null），不阻断角色读取
+    worldbook = null;
+  }
+  const firstMessages: string[] = [];
+  if (c.first_mes) firstMessages.push(String(c.first_mes));
+  if (Array.isArray(c.alternate_greetings)) firstMessages.push(...c.alternate_greetings.map((x) => String(x ?? '')));
+  return {
+    success: true,
+    character: {
+      name: c.name,
+      avatar: c.avatar || '',
+      version: c.character_version || '',
+      creator: c.creator || '',
+      creator_notes: c.creator_notes || '',
+      worldbook,
+      description: c.description || '',
+      first_messages: firstMessages,
+      extensions: c.extensions && typeof c.extensions === 'object' ? c.extensions : {},
+    },
+  };
+}
+
+/** dataURL → Blob（不依赖 fetch 对 data: 协议的支持：jsdom/老 WebView 上不可靠） */
+function dataUrlToBlob(dataUrl: string): Blob | null {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return null;
+  const meta = dataUrl.slice(0, comma);
+  const payload = dataUrl.slice(comma + 1);
+  const mimeMatch = /data:([^;]+)/.exec(meta);
+  const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+  if (meta.indexOf(';base64') < 0) {
+    try {
+      return new Blob([decodeURIComponent(payload)], { type: mime });
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * import_raw.d.ts:12 importRawCharacter(filename, content: Blob): Promise<Response>
+ * 帧内把 Blob 转 dataURL（postMessage 结构化克隆不保证 Blob 到父侧），父侧还原成 Blob
+ * 走 POST /api/characters/import（multipart，character.py:607）。
+ * ⚠ 语义偏差（用户 2026-10-20 拍板接受）：返回 {ok,status,character_id} 而非 fetch Response，
+ *   卡侧不能调 .json()/.ok —— 已在报告 §8 留痕。
+ */
+export async function importSmartCardRawCharacter(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; status?: string; character_id?: string; error?: string }> {
+  const filename = String(payload?.filename ?? payload?.fileName ?? 'card.png');
+  const dataUrl = String(payload?.dataUrl ?? '');
+  if (!dataUrl || dataUrl.indexOf('data:') !== 0) {
+    return { success: false, error: 'raw_character_content_required' };
+  }
+  const blob = dataUrlToBlob(dataUrl);
+  if (!blob) return { success: false, error: 'raw_character_content_invalid' };
+  try {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    const res = await api.post<{ status?: string; character?: { id?: string } }>('/api/characters/import', form);
+    const newId = res?.character?.id;
+    return { success: true, status: String(res?.status ?? 'ok'), character_id: newId ? String(newId) : undefined };
+  } catch {
+    return { success: false, error: 'raw_character_import_failed' };
+  }
+}
+
+/** 角色库 6 个父侧动作的分发（updateCharacterWith 由帧内组合，RawCharacter 帧内本地类） */
+export async function dispatchSmartCardCharacterAction(
+  action: string,
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<Record<string, unknown>> {
+  switch (action) {
+    case 'createCharacter':
+      return createSmartCardCharacter(payload);
+    case 'createOrReplaceCharacter':
+      return createOrReplaceSmartCardCharacter(payload);
+    case 'deleteCharacter':
+      return deleteSmartCardCharacter(payload, context);
+    case 'replaceCharacter':
+      return replaceSmartCardCharacter(payload, context);
+    case 'getCharacterDetail':
+      return getSmartCardCharacterDetail(payload, context);
+    case 'importRawCharacter':
+      return importSmartCardRawCharacter(payload);
+    default:
+      return { success: false, error: 'character_action_unknown' };
+  }
+}
+
 function buildSmartCardWorldBookExport(state: SmartCardCompatControllerState) {
   if (!state.worldBook) {
     return {
@@ -1433,6 +1821,22 @@ export async function handleSmartCardCompatRequest(
       || action.action === 'replacePersona'
     ) {
       result = await dispatchSmartCardPersonaAction(action.action, payload);
+    } else if (
+      // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧（character.d.ts）。
+      // 不进手势闸门：与批次A/段①同源论证（用户激活不传播到 opaque-origin iframe，
+      // 而卡片管理自己的角色库是最正当的无手势用法）；越权面由父侧
+      // resolveCharacterRef（list 带登录态 + service 按 user_id 过滤）兜住；
+      // deleteCharacter 的级联风险由「必须显式 delete_chats:true」兜住。
+      // updateCharacterWith 由帧内 getCharacterDetail + replaceCharacter 组合，不单列分支；
+      // RawCharacter 是帧内本地类，不经过父侧。
+      action.action === 'createCharacter'
+      || action.action === 'createOrReplaceCharacter'
+      || action.action === 'deleteCharacter'
+      || action.action === 'replaceCharacter'
+      || action.action === 'getCharacterDetail'
+      || action.action === 'importRawCharacter'
+    ) {
+      result = await dispatchSmartCardCharacterAction(action.action, payload, requestContext);
     } else if (action.action === 'getWorldbookEntries') {
       // [S1-G11] 同上回退：MVU 的 zn() 用本动作拉 [initvar] 条目。
       result = (await resolveCharWorldbookExport(state, requestContext)).entries;

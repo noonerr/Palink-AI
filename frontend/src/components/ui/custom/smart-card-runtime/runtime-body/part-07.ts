@@ -759,6 +759,116 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       }
       return updated;
     },
+    // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键（character.d.ts）。
+    // 失败语义（一手）：
+    //   createCharacter():59-62 —— 同名/名为 current 返 false，后端失败抛；
+    //   createOrReplaceCharacter():76-80 —— 创建 true / 替换 false；
+    //   deleteCharacter():91-94 —— Promise<boolean>；⚠ 本仓删除必然级联席聊
+    //     （character_service.py:118-145）⇒ 父侧要求显式 options.delete_chats === true，
+    //     否则失败返 false（防按 ST 默认调用意外删掉聊天）；
+    //   replaceCharacter():141-145 —— Promise<void>，不存在抛；
+    //   updateCharacterWith():183-186 —— updater 是帧内函数 ⇒ getCharacterDetail +
+    //     replaceCharacter 两个父侧动作组合，不另造第三份逻辑；
+    //   importRawCharacter（import_raw.d.ts:12）—— Blob 在帧内转 dataURL 再交给父侧
+    //     （postMessage 不保证 Blob 原样到达）；返回 {ok,status,character_id} 而非
+    //     fetch Response —— 已留痕的语义偏差；
+    //   RawCharacter（raw_character.d.ts:5-97）—— 帧内本地类，数据源 getContext().characters；
+    //     getChatsFromFiles / findCharacterIndex 依赖 ST 聊天文件面（本仓不同源）⇒ 契约不明。
+    // 角色引用 = 名称 / 头像 id / 'current'，解析在父侧 resolveCharacterRef。
+    createCharacter: async (characterName, character) => {
+      const res = await requestParent('createCharacter', { characterName, character });
+      if (!res || res.success !== true) throw new Error('TavernHelper: createCharacter 失败: ' + String((res && res.error) || 'unknown'));
+      return res.created === true;
+    },
+    createOrReplaceCharacter: async (characterName, character) => {
+      const res = await requestParent('createOrReplaceCharacter', { characterName, character });
+      if (!res || res.success !== true) throw new Error('TavernHelper: createOrReplaceCharacter 失败: ' + String((res && res.error) || 'unknown'));
+      return res.created === true;
+    },
+    deleteCharacter: async (characterName, options) => {
+      const res = await requestParent('deleteCharacter', { characterName, options });
+      if (!res || res.success !== true) throw new Error('TavernHelper: deleteCharacter 失败: ' + String((res && res.error) || 'unknown'));
+      return res.deleted === true;
+    },
+    replaceCharacter: async (characterName, character) => {
+      const res = await requestParent('replaceCharacter', { characterName, character });
+      if (!res || res.success !== true) throw new Error('TavernHelper: replaceCharacter 失败: ' + String((res && res.error) || 'unknown'));
+    },
+    updateCharacterWith: async (characterName, updater) => {
+      const current = await requestParent('getCharacterDetail', { characterName });
+      if (!current || current.success !== true) {
+        throw new Error('TavernHelper: updateCharacterWith 读取失败: ' + String((current && current.error) || 'unknown'));
+      }
+      const updated = typeof updater === 'function' ? await updater(current.character) : current.character;
+      const res = await requestParent('replaceCharacter', { characterName, character: updated });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: updateCharacterWith 写回失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return updated;
+    },
+    importRawCharacter: async (filename, content) => {
+      const dataUrl = await new Promise((resolve) => {
+        try {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(content);
+        } catch (err) {
+          resolve('');
+        }
+      });
+      const res = await requestParent('importRawCharacter', { filename, dataUrl });
+      if (!res || res.success !== true) throw new Error('TavernHelper: importRawCharacter 失败: ' + String((res && res.error) || 'unknown'));
+      return { ok: true, status: res.status || 'ok', character_id: res.character_id || null };
+    },
+    RawCharacter: (function () {
+      function RawCharacterCompat(characterData) {
+        this.__data = characterData && typeof characterData === 'object' ? characterData : {};
+      }
+      RawCharacterCompat.find = function (options) {
+        const opts = options && typeof options === 'object' ? options : {};
+        const target = opts.name === undefined || opts.name === null ? 'current' : opts.name;
+        const found = th134FindCharacter(target);
+        if (!found) return null;
+        return found.data && typeof found.data === 'object' ? found.data : found;
+      };
+      RawCharacterCompat.findCharacterIndex = function (name) {
+        const target = name === undefined || name === null ? 'current' : name;
+        const list = th134CharacterList();
+        for (let i = 0; i < list.length; i += 1) {
+          const item = list[i];
+          if (!item) continue;
+          if (String(item.name || '') === String(target)) return i;
+          if (th134AvatarBaseName(item.avatar) === String(target)) return i;
+        }
+        return -1;
+      };
+      RawCharacterCompat.getChatsFromFiles = function () {
+        throw new Error('TavernHelper: RawCharacter.getChatsFromFiles 在本仓未实现（聊天文件面不同源）');
+      };
+      RawCharacterCompat.prototype.getCardData = function () {
+        return this.__data || {};
+      };
+      RawCharacterCompat.prototype.getAvatarId = function () {
+        const avatar = this.__data && this.__data.avatar ? String(this.__data.avatar) : '';
+        return th134AvatarBaseName(avatar);
+      };
+      RawCharacterCompat.prototype.getRegexScripts = function () {
+        const ext = this.__data ? this.__data.extensions : null;
+        const scripts = ext && typeof ext === 'object' ? ext.regex_scripts : null;
+        return Array.isArray(scripts) ? scripts : [];
+      };
+      RawCharacterCompat.prototype.getCharacterBook = function () {
+        const book = this.__data ? this.__data.character_book : null;
+        return book && typeof book === 'object' ? book : null;
+      };
+      RawCharacterCompat.prototype.getWorldName = function () {
+        const ext = this.__data ? this.__data.extensions : null;
+        const world = ext && typeof ext === 'object' ? ext.world : null;
+        return world === undefined || world === null ? '' : String(world);
+      };
+      return RawCharacterCompat;
+    })(),
     // displayed_message / util / global
     formatAsDisplayedMessage: th134FormatAsDisplayedMessage,
     refreshOneMessage: async () => {

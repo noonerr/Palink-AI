@@ -225,9 +225,19 @@ describe('A fixture 与注册口径', () => {
     //      同名判重/同名多值拒绝/越权用例与数据闭环见 REPORT_包AC_人设与角色库写通道_2026-10-20.md。
     //   说明：移出的是"帧内无注册"类 D 键；其余 8 个 persona 键改前走探测面合成函数
     //   （调用记 missing_api），本批换成真桥后不再产生该记录 —— C 族内部诚实度升级，不动三数。
+    // ⚠️ 2026-10-20 批次B 段②再改判五键：createCharacter / deleteCharacter / replaceCharacter /
+    //   importRawCharacter / RawCharacter 移出（D 68→63、C 53→58、A+C 上界 66→71）。
+    //   同样不是凑绿：能力当天才落地，三层都有托底 ——
+    //   ① 契约一手：character.d.ts:59/76/91/141/183、import_raw.d.ts:12、raw_character.d.ts:5-97；
+    //   ② 字段映射表（验收物）见 REPORT_包AC §7A：worldbook → worldbooks 两列合取
+    //      （批次A 已验机制）、first_messages → first_mes + alternate_greetings、extensions → JSON 列
+    //      ⇒ **不需要加列**；删除必然级联席聊 ⇒ 必须显式 delete_chats:true 才执行；
+    //   ③ 帧内成员 → 父侧 dispatchSmartCardCharacterAction（SmartCardCompatController.ts）；
+    //      RawCharacter 是帧内本地类（getContext().characters），getChatsFromFiles 诚实抛错。
+    //   说明：createOrReplaceCharacter / updateCharacterWith 本就不在 D 名单（改前走探测面
+    //   合成函数，调用记 missing_api），本批换成真桥属 C 族内部诚实度升级，不动三数。
     const forbidden = [
       'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
-      'createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter',
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
       'injectPrompts', 'uninjectPrompts',
@@ -248,6 +258,17 @@ describe('A fixture 与注册口径', () => {
     (['getPersona', 'createPersona', 'getCurrentPersonaId'] as const).forEach((n) => {
       expect(registered.has(n)).toBe(true);
     });
+    // 正向锚点（批次B 段②角色库五键）：同上 ⇒ 钉住已注册，且帧内逐键走到 requestParent。
+    (['createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter'] as const).forEach((n) => {
+      expect(registered.has(n)).toBe(true);
+    });
+    (['createCharacter', 'createOrReplaceCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter'] as const).forEach((n) => {
+      expect(SRC.indexOf("requestParent('" + n + "'")).toBeGreaterThan(-1);
+    });
+    // RawCharacter 是类（typeof === 'function'）而非桥函数：帧内必须有 find 的真实实现，
+    // 且 getChatsFromFiles 诚实抛错（聊天文件面不同源 ⇒ 契约不明，不造假数据）。
+    expect(SRC.indexOf('RawCharacterCompat.find = function')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('getChatsFromFiles 在本仓未实现')).toBeGreaterThan(-1);
     // 帧内不是空壳：人设族都走到同一个父侧动作族（requestParent 逐键有名有姓），
     // current 的落点是 /api/personas/active（不是列表里猜一只）。
     (['getPersonaNames', 'getPersonaIds', 'getPersona', 'createPersona', 'getCurrentPersonaId', 'deletePersona', 'replacePersona'] as const).forEach((n) => {
