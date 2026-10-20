@@ -1384,10 +1384,15 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // allow-scripts（opaque origin）。放开只针对**本机/内网**（浏览器侧主机名判定，判据在
   // host-origin-policy.ts）：这类访客默认给 allow-same-origin，不再要求逐卡点信任。
   // 裁定原文与主脑补正见 SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2.4。
-  // 真实收益在**存储通道**而不是渲染：opaque 帧里卡片存储只能走 memoryStorage + postMessage
-  // 转发（见 :1362-1364 那条注释），给同源后卡能直接用真 localStorage/IndexedDB；
-  // 代价同源后这张卡能带着登录身份打后端（`palink_session` 是 HttpOnly 读不到，但同源请求
-  // 会带上它）—— 文案已按这个事实改（smart-card-runtime/shared.ts）。
+  // ⚠️ 订正（2026-10-21 批次Q1 报告 §8 实测，覆盖主脑派单时"放开同源就能用真存储"那句）：
+  //   本批**只放开了 DOM 读取面**。卡片存储走不走 shim 由 `ctx.trustedNative` 决定
+  //   （`runtime-body/part-01.ts` 与 `frame-shim/legacy-st-sim-parts/part-a.ts` 各自的
+  //   `if (!ctx.trustedNative)` 那段 defineProperty），主机档只改 sandbox 属性 ⇒
+  //   **本机档未授信的卡拿到的仍是按卡分桶的 shim，不是真 localStorage/IndexedDB**。
+  //   要换成真存储得另立一批，且代价是"同源后卡能直读父 origin 里所有卡的分桶"
+  //   （命名空间只是分桶手段、不是安全边界），先量清收益再动。
+  // 同源本身的代价：这张卡能带着登录身份打后端（`palink_session` 是 HttpOnly 读不到值，
+  // 但同源请求会带上它；`palink_csrf` 那枚 JS 可读）—— 文案已按这个事实改（smart-card-runtime/shared.ts）。
   // 信任开关保留、语义不变：本机只是"不要求"，不是"删掉开关"（storage.ts 一行没动）。
   const hostOriginPolicy = getSmartCardHostOriginPolicy();
   const CAPABILITY_TOKENS = 'allow-modals allow-forms allow-popups allow-downloads';

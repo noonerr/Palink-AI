@@ -33,7 +33,9 @@ const REL = {
   diag: 'frontend/src/components/ui/custom/smart-card-runtime/palink-diag.ts',
   guard: 'frontend/src/components/ui/custom/smart-card-runtime/__tests__/h-tavernhelper-134-contract.test.ts',
   fixture: 'frontend/src/components/ui/custom/smart-card-runtime/__tests__/fixtures/th134-names.json',
-  slashFixture: 'frontend/src/components/ui/custom/smart-card-runtime/__tests__/fixtures/st289-names.json',
+  // 2026-10-21 主脑修正：斜杠侧权威名单一直住在 slash-engine 的 fixture 目录里（289 键），
+  // 本脚本此前指错到 smart-card-runtime 目录 ⇒ ④c 长期误报"分母缺失"。
+  slashFixture: 'frontend/src/lib/slash-engine/__tests__/fixtures/st289-names.json',
 };
 
 const results = [];
@@ -249,17 +251,36 @@ const unclassified = names134.filter((k) => !cls.has(k));
   }
 }
 
-// 报告声明值 vs 键名实测值（报告自己的算术有过 75/76 的松口，不硬判死，但必须显形）
+// 报告声明值 vs 键名实测值。
+// 2026-10-21 主脑修正：declared **不再写死在脚本里**（原先硬编码 {C:68,D:53}，是主脑那轮复验的
+// 快照数；批次AA/A/B/Q1 之后它只能长期 WARN —— 一个只会告警的判据等于没有判据）。
+// 现在从"最后一笔订正的原文"里抠出它自己声明的 C/D 计数：移动必须声明前后计数是本仓约定，
+// 于是这条检查会随台账自己往前走，也能抓到"挪了键但忘了在订正段写数"。
 {
-  const declared = { C: 68, D: 53 }; // 主脑复验再订正段（reportH:179）的权威计数
+  const lastMove = ordered[ordered.length - 1];
+  const readDeclared = (label) => {
+    const re = new RegExp(label + '\\s*=\\s*\\d+\\s*(?:→|->)\\s*(\\d+)');
+    for (let i = (lastMove ? lastMove.cite.expect.length : 0) - 1; i >= 0; i -= 1) {
+      const m = re.exec(norm(lastMove.cite.expect[i]));
+      if (m) return Number.parseInt(m[1], 10);
+    }
+    return NaN;
+  };
+  const declared = { C: readDeclared('C'), D: readDeclared('D') };
   const got = { C: finalC.length, D: finalD.length };
-  if (got.C !== declared.C || got.D !== declared.D) {
-    warn('②b 声明值核对', '报告声明的 C/D 与键名实测不符（需主脑定，脚本不自行改判）', {
-      declared, computed: got,
-      note: '族表按键名闭合到 134，声明值来自报告订正段的算术；两者差 ' + (got.C - declared.C) + ' 键',
+  if (!Number.isFinite(declared.C) || !Number.isFinite(declared.D)) {
+    fail('②b 声明值核对', '最后一笔订正（' + (lastMove ? lastMove.id : '无') + '）原文里没有 '
+      + '"C = x → y / D = x → y" 形式的计数声明 ⇒ 无从核对。补订正段时请把挪动前后的 C/D 数写进原文', {
+      citeExpect: lastMove ? lastMove.cite.expect : null, computed: got,
+    });
+  } else if (got.C !== declared.C || got.D !== declared.D) {
+    fail('②b 声明值核对', '订正段声明的 C/D 与按键名重放的结果不符', {
+      declared, computed: got, lastMove: lastMove ? lastMove.id : null,
+      note: '要么订正段的算术写错，要么有键挪了没登记 MOVES —— 两者都得人核，脚本不自行改判',
     });
   } else {
-    pass('②b 声明值核对', '报告声明 C=68 / D=53 与键名实测一致');
+    pass('②b 声明值核对', '重放结果与订正段声明一致：C=' + declared.C + ' / D=' + declared.D
+      + '（声明取自「' + lastMove.id + '」原文）');
   }
 }
 
@@ -377,11 +398,22 @@ const guardCover = new Set([...forbidden, ...anchors]);
     pass('④ 名字表', byNameKeys.length + ' 个名字：' + face134.length + ' 个命中 134 分母且 id 全在 ST_GAP_IDS；' + notIn134.length + ' 个是斜杠命令形状');
   }
   if (notIn134.length) {
-    warn('④c 斜杠侧分母缺失', notIn134.length + ' 个名字只能按"斜杠命令形状"校验，无法对权威 289 分母逐条核 —— 仓库里没有 st289-names.json（palink-diag.ts:83 注释引用了它）', {
-      keys: notIn134,
-      referencedBy: 'palink-diag.ts 头部注释 "守门测试拿这两份的权威名单（th134-names.json / st289-names.json）校验"',
-      decision: '需主脑定：补 fixture 还是把 ④ 的口径改成"只对 134 面"',
-    });
+    // 2026-10-21 起这是**真检查**不是告警：斜杠侧分母一直在 slash-engine 的 fixture 里（289 键），
+    // 此前 REL.slashFixture 指错目录 ⇒ 本条长期误报"分母缺失"。
+    const slashPath = path.join(ROOT, REL.slashFixture);
+    if (!fs.existsSync(slashPath)) {
+      warn('④c 斜杠侧分母', '指到 ' + REL.slashFixture + ' 但文件不在 ⇒ 退回"只校验形状"', { keys: notIn134 });
+    } else {
+      const rawSlash = JSON.parse(fs.readFileSync(slashPath, 'utf8'));
+      const set289 = new Set(Array.isArray(rawSlash) ? rawSlash : (rawSlash.names || []));
+      const miss = notIn134.filter((k) => !set289.has(k));
+      if (miss.length) {
+        fail('④c 斜杠侧分母', notIn134.length + ' 个非 134 名字里有 ' + miss.length + ' 个不在权威斜杠名单（'
+          + set289.size + ' 键）里 —— 像写错的命令名', { keys: miss, denominator: set289.size, fixture: REL.slashFixture });
+      } else {
+        pass('④c 斜杠侧分母', notIn134.length + ' 个斜杠形状名字全部命中权威 ' + set289.size + ' 分母');
+      }
+    }
   }
 }
 
