@@ -471,22 +471,29 @@ ${bootHeader}
   window.__palinkDiagRecord = palinkDiagRecord;
   window.__palinkDiagDump = palinkDiagDumpText;
   window.__palinkDiagRecords = palinkDiagRecords;
-  // [包W 2026-10-19 / 批次C C-2 2026-10-20 改文案] 全局形状留痕。
+  // [包W 2026-10-19 / 批次C C-2 2026-10-20 改文案 / 批次H 2026-10-20 二改] 全局形状留痕。
   // 一手事实（两棵 ST 1.18 树 + 酒馆助手插件全仓）：**ST 里也没有 window.context 这个全局**。
   //   ST 的 context 恒为局部变量 —— authors-note.js:325/444、extensions.js:90/2062/2144、
   //   slash-commands.js:3892、utils.js:1344、world-info.js:1116 全是 const context = getContext()；
   //   window.context / window.getContext / globalThis.getContext 在 ST 全树与插件里 0 命中。
-  // 用户裁定「与 ST 冲突以 ST 为准」⇒ 这**不是我们的缺陷**，而是卡的写法不合规。
-  // 因此措辞改成如实描述，**记录本身保留**（它是「哪张卡在这么写」的唯一证据）。
-  // 判定逻辑一律不动：owner / kind / name / 同名合并去重 / 上送口径全部原样。
+  //   （包N B-2 当年依据的「st-context.js 的 export const context」经核实不存在：该文件只有
+  //     export function getContext() 与 export default —— 依据本身是误读。）
+  // 用户裁定「与 ST 冲突以 ST 为准」⇒ 帧内定义已于 2026-10-20 批次H 撤掉（part-08 原位留撤销注记）
+  // ⇒ 本留痕说的「未提供」对 ST 与 Palink 两侧同时成立，且 boot 后恒真（本段先于一切卡脚本求值，
+  //    定义已不存在，不存在"先判不存在、后又补出来"的自相矛盾）。
+  // 记录本身保留：① 它是「哪张卡在这么写」的证据之一（另一条是 error 轨 refMatch 命中时记的
+  //   name='context'，见 part-08 的 window error 监听）；② 判定逻辑一律不动：
+  //   owner / kind / name / 同名合并去重 / 上送口径全部原样。
   if (!Object.getOwnPropertyDescriptor(window, 'context')) {
     palinkDiagRecord({
       owner: 'frame_compat',
       kind: 'global_shape_absent',
       name: 'window.context',
       detail: 'ST 亦无此全局：ST 1.18 的 context 恒为局部变量（const context = getContext()），'
-        + 'window.context 在两棵 ST 树与酒馆助手插件里全树 0 命中 ⇒ 卡这么写本身不合规，不是 Palink 的缺陷项。'
-        + '本条只用于统计「哪张卡按不合规写法读了它」；count 增长说明该卡需要作者改写法。',
+        + 'window.context 在两棵 ST 树与酒馆助手插件里全树 0 命中 ⇒ 卡这么写本身不合规。'
+        + '用户裁定「与 ST 冲突以 ST 为准」⇒ Palink 帧内同样不提供（2026-10-20 批次H 撤掉包N B-2 的定义）。'
+        + '卡应调 getContext()，不要直读 window.context；本条只用于统计「哪张卡按不合规写法读了它」，'
+        + 'count 增长说明该卡需要作者改写法。',
     });
   }
   const executeCompatInlineScriptCompat = (source, label = '') => {

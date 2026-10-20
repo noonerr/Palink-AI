@@ -6,6 +6,11 @@
  *   · 策略代码单测全绿 ≠ 接线生效（本项目已踩过多次）；
  *   · 每个补丁的红线都是"不许假成功"，所以失败路径必须有断言。
  *
+ * ⚠️ 批次H（2026-10-20）订正：B-2 的帧内那一半**已撤** —— 包N 依据的「st-context.js 的
+ * export const context」经核实不存在（该文件只有 export function getContext + export default），
+ * 且用户裁定「冲突以 ST 为准」不摆这个全局。帧内断言随之**改判**为"定义已撤 + 顺序不回退"，
+ * 不是删除；沙箱那一半不在批次H 范围，原样保留。
+ *
  * 运行: npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/n-package-context-rename-media-trust.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +35,7 @@ import {
   normalizeStMediaEntry,
   resolveStMessageIndex,
 } from '@/lib/plugin-system/st-message-media';
+import { COMPAT_V2_RUNTIME_ARTIFACT } from './compat-v2-runtime-source';
 
 // ── api mock（控制器 renameChat 用；hoisted 才能被 vi.mock 工厂引用）──────
 const apiMocks = vi.hoisted(() => ({ post: vi.fn(), put: vi.fn() }));
@@ -60,34 +66,44 @@ const RENDERER_SRC = readFileSync(
 );
 
 // ============================================================
-// A. B-2 window.context（帧内 + 沙箱）
+// A. B-2 window.context（帧内已撤 / 沙箱保留）
 // ============================================================
 describe('N-B2 window.context', () => {
   afterEach(() => {
     delete (window as any).context;
   });
 
-  it('帧内：注入产物里 window.context 是 getContextCompat 的实时 getter（与 getContext() 同源）', () => {
+  // 批次H 2026-10-20 改判（依据，勿当"为绿删断言"）：
+  //   ① 一手核实：两棵 ST 1.18 树 + 酒馆助手插件全仓，window.context / globalThis.context
+  //      0 命中；st-context.js 只有 export function getContext() 与 export default，
+  //      **没有 export const context** ⇒ 包N B-2 注释里"ST 1.18 的 context 是 st-context.js
+  //      里的一次性快照"是误读；ST 真实用法是文件内部 const context = getContext()（两树各 57 处）。
+  //   ② 用户裁定（SPEC §2.1 / HANDOFF §0 第 4 条）：「与 ST 冲突以 ST 为准」⇒ 不摆这个全局。
+  //   ③ 真机探针（:16000 露缇雅 7/7 帧）：每帧唯一记录 frame_compat:global_shape_absent:
+  //      window.context 且 count=1，无任何 name='context' 的 error 轨记录 ⇒ 没有在跑的卡依赖它。
+  // ⇒ 断言从"定义在场且是实时 getter"改判为"定义不在场 + 顺序不回退"，执行型证明一并跟上。
+  it('帧内：window.context 定义已撤（批次H「冲突以 ST 为准」），原位置只留撤销注记', () => {
     const start = RUNTIME_BODY_PART_08.indexOf('window.getContext = getContextCompat;');
     const end = RUNTIME_BODY_PART_08.indexOf('// [S5-GDEP3 2026-10-16]');
     expect(start, 'window.getContext 赋值点未命中').toBeGreaterThan(-1);
     expect(end, 'B-2 插入点之后的 S5-GDEP3 标记未命中').toBeGreaterThan(start);
 
     const block = RUNTIME_BODY_PART_08.slice(start, end);
-    expect(block).toContain("Object.defineProperty(window, 'context'");
+    // 顺序断言一：原位置（getContextCompat 赋值之后、S5-GDEP3 之前）不许再有定义本体。
+    // 把 defineProperty 挪回这个区块 ⇒ 本断言红。
+    expect(block).not.toContain("Object.defineProperty(window, 'context'");
+    // 撤销注记必须在场（依据三件事钉在源码里，防止有人凭印象"补回来"）。
+    expect(block).toContain('批次H 2026-10-20 撤销');
+    // 顺序断言二：整段求值后载体（= 生产 iframe 逐字节同源）任何位置都不许出现该定义
+    // ⇒ 挪到 part-08 别处或其它 part 同样红。
+    expect(COMPAT_V2_RUNTIME_ARTIFACT).not.toContain("Object.defineProperty(window, 'context'");
 
-    // 用可控的 getContextCompat 求值这一段真实源码
+    // 执行型证明：用真实源码段求值后，window 上不得落下 context 描述符。
     const fake = { chat: [{ mes: 'hi' }], name1: 'User', characterId: 0 };
-    let reads = 0;
     // eslint-disable-next-line no-new-func
-    new Function('getContextCompat', block)(() => { reads += 1; return fake; });
-
-    expect(typeof (window as any).context).toBe('object');
-    expect((window as any).context.chat[0].mes).toBe('hi');
-    expect((window as any).context.name1).toBe('User');
-    // getter 语义：每次读都取最新（ST 的 context 是快照，这里是超集）
-    void (window as any).context;
-    expect(reads).toBeGreaterThanOrEqual(2);
+    new Function('getContextCompat', block)(() => fake);
+    expect(Object.getOwnPropertyDescriptor(window, 'context')).toBeUndefined();
+    expect(typeof (window as any).context).toBe('undefined');
   });
 
   it('沙箱：包装壳注入 var context，且 script.js 模块映射提供 context（否则 import 会覆盖成 undefined）', () => {

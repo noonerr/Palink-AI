@@ -482,8 +482,8 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     //      Palink 卡帧里 characters 为空 ⇒ **诚实给 0，不填假值**。
     //   ② Palink 的真实角色标识是 boot ctx 里那个 UUID 字符串（本帧以 characterUuid 暴露）。
     //      与父侧 lib/sillytavern/getContext.ts 的包J J-2 保持同键名，插件 camel/snake 两种写法都读得到。
-    //   ③ 帧内 window.context 全局由 [包N B-2 2026-10-19] 补齐（见下方 window.context 定义），
-    //      与 getContextCompat() 同源；此前缺失是登记在 docs/OPEN_ISSUES.md 的形状缺口。
+    //   ③ 帧内**不提供** window.context 全局：ST 两棵树 + 酒馆助手插件 0 命中，用户裁定
+    //      「冲突以 ST 为准」⇒ 2026-10-20 批次H 撤掉包N B-2 的定义（见下方撤销注记）。
     characterId: (typeof window.this_chid === 'number' && Number.isFinite(window.this_chid)) ? window.this_chid : 0,
     characterUuid: ctx.characterId,
     characterIdString: ctx.characterId || '',
@@ -797,21 +797,20 @@ export const RUNTIME_BODY_PART_08 = `  setCompatFunction('messageFormatting', me
     triggerSlash: (...args) => triggerSlashCompat(...args),
   });
   window.getContext = getContextCompat;
-  // [包N B-2 2026-10-19] 补 ST 的 window.context 全局。
-  // 事实：ST 1.18 的 context 是 st-context.js 里的 export const context = getContext()
-  // ——**一次性快照**，不是实时对象。插件里大量直接读 context.chat / context.name1 /
-  // context.characterId（比走 getContext() 更常见），Palink 帧内此前只有 window.getContext，
-  // 没有 window.context ⇒ 这类插件在帧内直接 ReferenceError。
-  // 实现：挂 getter（每次读都拿最新），是 ST 快照语义的超集且无副作用；
-  // 定义失败时静默（帧环境被治理时不值得打断卡脚本）。
+  // [包N B-2 2026-10-19 → 批次H 2026-10-20 撤销] 此处曾以 Object.defineProperty 给 window
+  // 挂过 'context' 的 getter，已按用户裁定「与 ST 冲突以 ST 为准」撤掉。撤销依据是钉过的事实，**勿再加回**：
+  //   ① ST 侧两棵 1.18 树（_reference/sillytavern-1.18.0、D:/SillyTavern-release）+ 酒馆助手插件全仓：
+  //      window.context / globalThis.context 零命中；st-context.js 只有 export function getContext()
+  //      与 export default，**并没有 export const context** ⇒ 包N B-2 注释依据的「ST 1.18 的 context 是
+  //      st-context.js 里的一次性快照」是误读。ST 真实用法是各文件内部 const context = getContext()
+  //      （两棵树各 57 处，如 authors-note.js:325、extensions.js:90、script.js:8388）。
+  //   ② 用户裁定：docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2.1
+  //      「不摆这个全局（摆出来才是造 ST 没有的形状）」。
+  //   ③ 真机探针 2026-10-20（:16000 露缇雅 7/7 帧）：每帧唯一记录是启动留痕 window.context
+  //      （frame_compat:global_shape_absent，count=1），没有任何 name='context' 的 error 轨记录
+  //      ⇒ 没有在跑的卡依赖这个面，撤了不会打断任何卡。
+  // ⇒ 卡应调 getContext()；直读 window.context 得 undefined，与 ST 行为一致。
   // ⚠️ 本文件是模板字符串：禁裸反引号 / 插值 / 注释里裸换行转义。
-  try {
-    Object.defineProperty(window, 'context', {
-      configurable: true,
-      enumerable: true,
-      get: () => getContextCompat(),
-    });
-  } catch (e) { /* 静默：defineProperty 被拒不影响其余兼容面 */ }
   // [S5-GDEP3 2026-10-16] 卡内 triggerSlash 缺口补齐（承接 REPORT_S5架构重建评审 §3.1 /
   // SPEC_ST兼容层修复计划 T2 / OPEN_ISSUES.md [P2-10] 第 1 项）。
   //

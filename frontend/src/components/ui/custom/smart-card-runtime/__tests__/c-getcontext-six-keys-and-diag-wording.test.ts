@@ -12,6 +12,9 @@
  *      每个键的一手锚点（文件:行号）必须写进源码注释，改注释等于改结论 ⇒ 这里钉住。
  *   D. window.context 那条启动留痕的文案改成「ST 亦无此全局」，且判定逻辑
  *      （owner / kind / name）一个字都没动。
+ *      ⚠️ 批次H（2026-10-20）二改：帧内定义已撤，文案补上「Palink 帧内同样不提供 +
+ *      卡应调 getContext()」——只字片语的旧断言按新事实**改判**（依据见下方 D 块注记），
+ *      没有为变绿删任何一条。
  *
  * 运行:
  *   npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/c-getcontext-six-keys-and-diag-wording.test.ts
@@ -154,15 +157,32 @@ describe('C 四个依附子系统/无数据源的键：保持原样，且不造�
   });
 });
 
-describe('D window.context 留痕：只改文案，判定逻辑一个字没动', () => {
-  it('新措辞在场：ST 亦无此全局 + 卡写法不合规', () => {
+describe('D window.context 留痕：批次H 二改文案（ST 与 Palink 两侧都不提供，卡应调 getContext）', () => {
+  // 批次H 2026-10-20 改判依据（勿当"为绿删断言"）：
+  //   ① 一手核实：两棵 ST 1.18 树 + 酒馆助手插件全仓，window.context / globalThis.context
+  //      0 命中；st-context.js 只有 export function getContext() 与 export default，
+  //      **没有 export const context** ⇒ 包N B-2 依据的「ST 快照」是误读（ST 真实用法是
+  //      文件内部 const context = getContext()，两树各 57 处）。
+  //   ② 用户裁定（SPEC §2.1 / HANDOFF §0 第 4 条）：「与 ST 冲突以 ST 为准」⇒ 不摆这个全局，
+  //      帧内定义已撤（part-08 原位留撤销注记）。
+  //   ③ 真机探针（:16000 露缇雅 7/7 帧）：每帧唯一记录 frame_compat:global_shape_absent:
+  //      window.context 且 count=1，无任何 name='context' 的 error 轨记录 ⇒ 没有在跑的卡依赖它。
+  // 文案为什么必须二改：只写"ST 亦无此全局"时，读者无法知道 Palink 这侧摆没摆——
+  // 包N 摆过、批次C 没撤，老矛盾（留痕说没有、代码摆出来）正是这么留下的。
+  // 新文案把两侧立场一次说清：ST 没有、Palink 也不提供、卡应调 getContext()。
+  it('新措辞在场：ST 亦无此全局 + Palink 帧内同样不提供 + 卡应调 getContext()', () => {
     expect(ARTIFACT).toContain('ST 亦无此全局');
     expect(ARTIFACT).toContain('卡这么写本身不合规');
+    expect(ARTIFACT).toContain('Palink 帧内同样不提供');
+    expect(ARTIFACT).toContain('卡应调 getContext()');
   });
 
-  it('旧措辞不在场（读起来像我们缺陷的那句）', () => {
+  it('旧措辞不在场（包W 现场版 + 批次C 版独有尾巴）', () => {
     expect(ARTIFACT).not.toContain('形状缺口：boot 的 ctx 是 IIFE 内的 const');
-    expect(ARTIFACT).not.toContain('本包只留痕不补对象（待用户拍板）');
+    expect(ARTIFACT).not.toContain('本包只留痕不补对象');
+    // 批次C 版以这句收尾；批次H 版改成了"两侧都不提供 + 该怎么办"。
+    // 把文案改回批次C 版 ⇒ 本断言与上一条新措辞断言同时红。
+    expect(ARTIFACT).not.toContain('不是 Palink 的缺陷项');
   });
 
   it('判定逻辑不变：owner / kind / name / 去重前的前提条件全部原样', () => {
@@ -175,5 +195,11 @@ describe('D window.context 留痕：只改文案，判定逻辑一个字没动',
   it('一手锚点（ST 的 context 恒为局部变量）写进源码注释', () => {
     expect(PART01).toContain('authors-note.js:325/444');
     expect(PART01).toContain('const context = getContext()');
+  });
+
+  it('帧内定义已撤：求值后载体与源码里都不再有 window.context 的 defineProperty（顺序断言）', () => {
+    expect(ARTIFACT).not.toContain("Object.defineProperty(window, 'context'");
+    expect(PART08).not.toContain("Object.defineProperty(window, 'context'");
+    expect(PART08).toContain('批次H 2026-10-20 撤销');
   });
 });
