@@ -10,8 +10,19 @@
  *   3. 每条记录必须带「该谁修」标签（owner，取值固定四类），便于直接派单。
  *   4. 去重但不丢弃：同名首次带细节，后续只累加 count 与 lastAt。
  *
- * ⛔ 红线：
- *  - 零网络：本模块不 fetch / 不上传，导出只在浏览器本地下载 JSON。
+ * ⛔ 红线（**2026-10-20 用户授权变更过一条**，见下）：
+ *  - 网络面：包W 原红线是"零网络：不 fetch / 不上传，导出只在本地下载 JSON"。
+ *    2026-10-20 用户裁决 5 原文："可以在前端不报错，后端日志记录（我们处于开发状态，
+ *    允许后台记录报错自动保存，方便以后查验）" ⇒ **在记录器已启用的前提下**
+ *    允许把记录上传到自家后端留痕（`POST /api/diagnostics/records`）。
+ *    放开是**有条件的**，三条硬约束不许放宽（任一条被放宽都算违约）：
+ *      ① 闸门仍是 `palinkDiagEnabled()`（本机/内网/手动开）；外部站点默认关
+ *         ⇒ 公网访客不会往我们后端灌日志。关闭时**连组装都不做**（零开销）。
+ *      ② 只传结构化字段（白名单见 `DIAG_UPLOAD_FIELDS`）；`detail` / `stack`
+ *         **一个字节都不传**（用户明令不看自己的卡内容，那里面可能含正文片段），
+ *         服务端即使收到也只存长度与不可逆摘要。
+ *      ③ 上传失败**静默、只试一次**：不弹框、不重试风暴、不影响页面。
+ *  - 导出仍是本地下载（`exportPalinkDiag`），不经网络。
  *  - 不改用户可见行为：帧内记录经既有 `st:diagnostic` 通道（severity=info，
  *    宿主 toast 闸门对 info 不弹）上送，不新建 postMessage 桥。
  *  - 有界：每类 owner ≤ DIAG_LIMITS.perOwner，总 ≤ DIAG_LIMITS.total。溢出丢最旧并计数。
@@ -80,8 +91,10 @@ export type StGapId = (typeof ST_GAP_IDS)[number] | 'unknown';
  * 名字 → 缺口 id。名单**逐条抄自两份已入库报告**，不是按名字猜：
  *   TavernHelper 侧 = REPORT_包H_TavernHelper广度_2026-10-18.md §3 的 D 类行 + §7.2 的 14 个改判键；
  *   slash 侧        = REPORT_包F_ST命令补全_2026-10-18.md §4.2 的逐族命令名。
- * 守门测试拿这两份的权威名单（th134-names.json / st289-names.json）校验每个键名真实存在，
- * 所以这里写错一个字或凭空加一个名字都会红。
+ * 守门测试拿这两份的权威名单校验每个键名真实存在，所以这里写错一个字或凭空加一个名字都会红。
+ * 两份 fixture 的**实际路径**（2026-10-20 批次I 写准；此前注释只写文件名，被读成"仓库里没有"）：
+ *   · th134-names.json → src/components/ui/custom/smart-card-runtime/__tests__/fixtures/th134-names.json
+ *   · st289-names.json → src/lib/slash-engine/__tests__/fixtures/st289-names.json（文件存在，4818 字节）
  * 名单外的未实现名一律 `unknown` —— 宁可 unknown，也不把没核过的东西塞进排行。
  */
 export const ST_GAP_BY_NAME: Record<string, string> = {
@@ -453,6 +466,7 @@ export function recordPalinkDiag(input: PalinkDiagInput): PalinkDiagRecord | nul
     if (existing.frameId === '' && typeof input.frameId === 'string' && input.frameId) existing.frameId = input.frameId;
     if (existing.textLength < 0 && Number.isFinite(input.textLength)) existing.textLength = Number(input.textLength);
     scheduleSummary();
+    markPendingUpload(key);
     return existing;
   }
 
@@ -487,6 +501,7 @@ export function recordPalinkDiag(input: PalinkDiagInput): PalinkDiagRecord | nul
   };
   state.records.push(record);
   scheduleSummary();
+  markPendingUpload(key);
   return record;
 }
 
@@ -542,6 +557,249 @@ export function palinkDiagTotals(): Record<string, number> {
     if (rec.missingStSubsystem) totals[`stGap:${rec.missingStSubsystem}`] = (totals[`stGap:${rec.missingStSubsystem}`] || 0) + 1;
   }
   return totals;
+}
+
+/**
+ * ── 上传（2026-10-20 用户授权变更的红线段）────────────────────────────────
+ *
+ * 只做一件事：把**已启用的记录器**里攒下的记录，按批 POST 到自家后端的
+ * 只追加留痕端点（`backend/app/api/diagnostics.py`），供开发期查验。
+ *
+ * 三条硬约束（与文件头一致，改任何一条都要先过用户）：
+ *   ① `palinkDiagEnabled()` 为假 ⇒ 不组装、不 fetch（返回 skipped='disabled'）；
+ *   ② 载荷只由 `DIAG_UPLOAD_FIELDS` 逐键拼出来（**不是**把 record 对象摊平再删键），
+ *      `detail` / `stack` 结构上就不可能进载荷；
+ *   ③ 失败静默：一次 fetch，不重试、不抛、不弹框、不写用户可见 UI。
+ *
+ * 计数语义：载荷里的 `count` 是**自上次成功/尝试上传以来的增量**，不是累计值
+ * （帧内上送本来就是增量，见 absorbFrameDiagnostic 的 count 语义）。
+ * 这样同一条记录后续再变多时，服务端不会把之前的次数重复计一遍。
+ */
+export const DIAG_UPLOAD_ENDPOINT = '/api/diagnostics/records';
+
+export const DIAG_UPLOAD_LIMITS = {
+  /** 单批最多几条记录（服务端另有 100 条/批的硬上限）。 */
+  batchRecords: 20,
+  /** 自动上传的节流间隔（毫秒）：攒批，不逐条打网络。 */
+  intervalMs: 15000,
+  /** 单次会话最多上传几批（总量封顶，防长驻页面无限灌）。 */
+  maxBatches: 20,
+  /** 单次请求超时（毫秒）。 */
+  timeoutMs: 5000,
+} as const;
+
+/**
+ * 上传体字段白名单 —— **逐键**拼装，不允许多一个键。
+ * 与后端 `DIAG_UPLOAD_FIELDS` 必须一致（两侧各有一份，互为第二道闸）。
+ */
+export const DIAG_UPLOAD_FIELDS = [
+  'owner',
+  'kind',
+  'name',
+  'count',
+  'filename',
+  'lineno',
+  'colno',
+  'missingStSubsystem',
+  'frameId',
+  'cardId',
+  'textLength',
+] as const;
+
+type DiagUploadState = {
+  pending: Set<string>;
+  uploadedCount: Map<string, number>;
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+  batches: number;
+  sentRecords: number;
+  failedBatches: number;
+  lastResult: string;
+};
+
+const uploadState: DiagUploadState = {
+  pending: new Set<string>(),
+  uploadedCount: new Map<string, number>(),
+  timer: null,
+  inFlight: false,
+  batches: 0,
+  sentRecords: 0,
+  failedBatches: 0,
+  lastResult: 'idle',
+};
+
+/**
+ * 读 CSRF 双提交令牌（`palink_csrf` 是可读 Cookie）。
+ * 刻意不 import `services/api` 的 `getCsrfToken`：这个模块被 main.tsx /
+ * card-script-runner / 渲染器多处引用，把整个 API 客户端拖进来会多一圈
+ * 依赖与潜在的循环引用；这里只要 6 行，代价更小。语义必须与那边一致。
+ */
+function readCsrfCookie(): string {
+  try {
+    if (typeof document === 'undefined') return '';
+    const match = document.cookie.match(/(?:^|;\s*)palink_csrf=([^;]*)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 把一条内部记录压成上传体（白名单逐键，见文件头约束②）。 */
+function toUploadRecord(rec: PalinkDiagRecord, count: number): Record<string, unknown> {
+  return {
+    owner: rec.owner,
+    kind: rec.kind,
+    name: rec.name,
+    count,
+    filename: rec.filename,
+    lineno: rec.lineno,
+    colno: rec.colno,
+    missingStSubsystem: rec.missingStSubsystem,
+    frameId: rec.frameId,
+    cardId: rec.cardId,
+    textLength: rec.textLength,
+  };
+}
+
+/**
+ * 组一批待上传记录。返回的 `keys` 与 `counts` 与 `records` 一一对应。
+ * 只取增量（rec.count - 已上传数）；增量为 0 的键顺手清出 pending。
+ */
+function collectUploadBatch(): {
+  keys: string[];
+  counts: number[];
+  records: Array<Record<string, unknown>>;
+} {
+  const keys: string[] = [];
+  const counts: number[] = [];
+  const records: Array<Record<string, unknown>> = [];
+  for (const key of Array.from(uploadState.pending)) {
+    if (records.length >= DIAG_UPLOAD_LIMITS.batchRecords) break;
+    const rec = findRecord(key);
+    if (!rec) {
+      uploadState.pending.delete(key);
+      continue;
+    }
+    const sent = uploadState.uploadedCount.get(key) || 0;
+    const delta = rec.count - sent;
+    if (delta <= 0) {
+      uploadState.pending.delete(key);
+      continue;
+    }
+    keys.push(key);
+    counts.push(rec.count);
+    records.push(toUploadRecord(rec, delta));
+  }
+  return { keys, counts, records };
+}
+
+/** 记录变更后登记待上传（关闭状态下连登记都不做 —— 零开销）。 */
+function markPendingUpload(key: string): void {
+  if (!palinkDiagEnabled()) return;
+  uploadState.pending.add(key);
+  scheduleDiagUpload();
+}
+
+/** 节流调度：同一个 timer 只挂一次，不建定时器链。 */
+export function scheduleDiagUpload(delayMs: number = DIAG_UPLOAD_LIMITS.intervalMs): void {
+  if (!palinkDiagEnabled()) return;
+  if (typeof setTimeout === 'undefined') return;
+  if (uploadState.timer !== null) return;
+  uploadState.timer = setTimeout(() => {
+    uploadState.timer = null;
+    void flushPalinkDiagUpload();
+  }, delayMs);
+}
+
+export type DiagUploadResult = { sent: number; ok: boolean; skipped: string };
+
+/**
+ * 立即上传一批。**失败静默、只试一次**（不重试、不抛）。
+ * 返回结构化结果只为测试与真机查验，调用方不需要（也不需要处理异常）。
+ */
+export async function flushPalinkDiagUpload(): Promise<DiagUploadResult> {
+  if (!palinkDiagEnabled()) {
+    // 闸门关闭：连组装都不做（约束①）。
+    uploadState.pending.clear();
+    uploadState.lastResult = 'disabled';
+    return { sent: 0, ok: false, skipped: 'disabled' };
+  }
+  if (uploadState.inFlight) return { sent: 0, ok: false, skipped: 'inflight' };
+  if (uploadState.batches >= DIAG_UPLOAD_LIMITS.maxBatches) {
+    uploadState.pending.clear();
+    uploadState.lastResult = 'batch_cap';
+    return { sent: 0, ok: false, skipped: 'batch_cap' };
+  }
+
+  const batch = collectUploadBatch();
+  if (batch.records.length === 0) return { sent: 0, ok: true, skipped: 'empty' };
+
+  const batchId = `d-${Date.now().toString(36)}-${(uploadState.batches + 1).toString(36)}`;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  // 超时即 abort：AbortController.abort() 对已完成/已中止的请求是 no-op、不会抛，
+  // 所以这里不包静默 catch —— 静默 catch 基线是"只降不升"（见
+  // __tests__/palink-diag-silent-point-guards.test.ts），不为新代码破例。
+  const timer = controller
+    ? setTimeout(() => controller.abort(), DIAG_UPLOAD_LIMITS.timeoutMs)
+    : null;
+
+  uploadState.inFlight = true;
+  let result: DiagUploadResult = { sent: 0, ok: false, skipped: 'network_error' };
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const csrf = readCsrfCookie();
+    if (csrf) headers['X-CSRF-Token'] = csrf;
+    const response = await fetch(DIAG_UPLOAD_ENDPOINT, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify({ batchId, records: batch.records }),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response || !response.ok) {
+      uploadState.failedBatches += 1;
+      uploadState.lastResult = `http_${response ? response.status : 'none'}`;
+      result = { sent: 0, ok: false, skipped: 'http_error' };
+    } else {
+      uploadState.batches += 1;
+      uploadState.sentRecords += batch.records.length;
+      uploadState.lastResult = 'ok';
+      result = { sent: batch.records.length, ok: true, skipped: '' };
+    }
+  } catch {
+    // 约束③：静默。网络错 / 超时 / CORS 一律吞掉，页面无感。
+    uploadState.failedBatches += 1;
+    uploadState.lastResult = 'network_error';
+    result = { sent: 0, ok: false, skipped: 'network_error' };
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    uploadState.inFlight = false;
+    // 只试一次：无论成败都把这一批移出 pending，并记住已"处理到"的累计数。
+    for (let i = 0; i < batch.keys.length; i += 1) {
+      uploadState.pending.delete(batch.keys[i]);
+      uploadState.uploadedCount.set(batch.keys[i], batch.counts[i]);
+    }
+  }
+  return result;
+}
+
+/** 上传状态快照（测试与真机查验用，不参与产品逻辑）。 */
+export function diagUploadStats(): {
+  pending: number;
+  batches: number;
+  sentRecords: number;
+  failedBatches: number;
+  lastResult: string;
+  inFlight: boolean;
+} {
+  return {
+    pending: uploadState.pending.size,
+    batches: uploadState.batches,
+    sentRecords: uploadState.sentRecords,
+    failedBatches: uploadState.failedBatches,
+    lastResult: uploadState.lastResult,
+    inFlight: uploadState.inFlight,
+  };
 }
 
 /**
@@ -662,6 +920,18 @@ export function resetPalinkDiagForTest(): void {
   state.dropped = 0;
   state.enabledOverride = null;
   flushPalinkDiagSummary();
+  // 上传态一并复位：pending / 已上传计数 / 批次配额 / 节流 timer。
+  if (uploadState.timer !== null) {
+    clearTimeout(uploadState.timer);
+    uploadState.timer = null;
+  }
+  uploadState.pending.clear();
+  uploadState.uploadedCount.clear();
+  uploadState.inFlight = false;
+  uploadState.batches = 0;
+  uploadState.sentRecords = 0;
+  uploadState.failedBatches = 0;
+  uploadState.lastResult = 'idle';
 }
 
 /**
@@ -752,5 +1022,8 @@ export function installPalinkDiagGlobals(): void {
   w.__palinkDiagEnabled = palinkDiagEnabled;
   // [包Z Z-3] 缺口排行此前只能从 __palinkDiagDump() 的 JSON 里解出来，控制台手查要先 parse。
   w.__palinkDiagRanking = palinkDiagStGapRanking;
+  // 真机查验入口：手动触发一批上传 / 读上传态（批次配额、已发条数、最后结果）。
+  w.__palinkDiagUploadNow = flushPalinkDiagUpload;
+  w.__palinkDiagUploadStats = diagUploadStats;
   if (palinkDiagEnabled()) scheduleSummary();
 }

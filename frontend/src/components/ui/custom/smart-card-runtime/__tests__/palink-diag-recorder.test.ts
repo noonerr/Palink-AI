@@ -5,7 +5,8 @@
  *   1. 去重但不丢弃：同名首次带细节，后续只累加 count 与 lastAt。
  *   2. owner 四类是封闭名单，每条记录必带（主控按它派单）。
  *   3. 缓冲有界：每类 ≤200、总 ≤2000，灌 5000 条也不会无界增长。
- *   4. 零网络、零用户可见提示：模块里不许出现 fetch；关闭状态下连缓冲都不写。
+ *   4. 零用户可见提示：关闭状态下连缓冲都不写、也不组装上传（2026-10-20 起
+ *      网络面按用户授权放开为"启用时上传留痕"，判据见下面最后一条用例）。
  *
  * 运行: npx vitest run src/components/ui/custom/smart-card-runtime/__tests__/palink-diag-recorder.test.ts
  */
@@ -164,9 +165,16 @@ describe('包W 记录器 · schema 与导出', () => {
     expect(line).toContain('slash_command_unimplemented:echo×2');
   });
 
-  it('导出走本地下载，模块内零网络（红线：不许上传）', () => {
+  it('导出走本地下载；上传只允许在 flushPalinkDiagUpload 里发（2026-10-20 红线变更后的新形状）', () => {
     const sourceText = readFileSync(join(process.cwd(), 'src/components/ui/custom/smart-card-runtime/palink-diag.ts'), 'utf8');
-    expect(sourceText).not.toMatch(/fetch\(/);
+    // 原红线是"模块内零 fetch"。2026-10-20 用户授权放开为"记录器启用时允许上传留痕"，
+    // 于是判据改成"网络调用只有一处，且必须落在受闸门约束的 flushPalinkDiagUpload 内"：
+    // 记录/导出路径（recordPalinkDiag / exportPalinkDiag）里出现 fetch 仍然算违约。
+    const fetchSites = sourceText.match(/fetch\(/g) || [];
+    expect(fetchSites).toHaveLength(1);
+    const uploadFnAt = sourceText.indexOf('export async function flushPalinkDiagUpload');
+    expect(uploadFnAt).toBeGreaterThan(-1);
+    expect(sourceText.indexOf('fetch(')).toBeGreaterThan(uploadFnAt);
     expect(sourceText).not.toMatch(/XMLHttpRequest/);
     expect(sourceText).not.toMatch(/sendBeacon/);
     let clicked = '';

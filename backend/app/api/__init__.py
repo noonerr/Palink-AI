@@ -50,6 +50,9 @@ from .connection_profiles import router as connection_profiles_router
 from .themes import router as themes_router
 from .gateway import router as gateway_router
 from .live2d_pool import router as live2d_pool_router
+# 【2026-10-20 包AG 批次D】开发期留痕端点（只追加 JSONL，不是产品功能）。
+# CSRF 守卫写在 router 自身的 dependencies 里（见 app/api/diagnostics.py 文件头）。
+from .diagnostics import router as diagnostics_router
 
 api_router = APIRouter()
 
@@ -109,3 +112,4 @@ api_router.include_router(smart_card_assets_router)
 # 重复段已删，唯一注册 = 带 csrf_guard 版本；tokenizer/live2d_pool 本就无守卫版，保留。
 api_router.include_router(tokenizer_router)
 api_router.include_router(live2d_pool_router)
+api_router.include_router(diagnostics_router)
