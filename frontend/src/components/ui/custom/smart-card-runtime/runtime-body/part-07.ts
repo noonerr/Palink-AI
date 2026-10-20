@@ -459,6 +459,108 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     return String(text ?? '');
   };
 
+  // ---- displayed_message 族 · retrieveDisplayedMessage：读**主页面**那条消息的真实 DOM。
+  // 契约一手（酒馆助手）：st-plugins/third-party/JS-Slash-Runner-main/@types/function/displayed_message.d.ts:21
+  //   declare function retrieveDisplayedMessage(message_id: number): JQuery<HTMLDivElement>;
+  // 实现一手：.../src/function/displayed_message.ts:87-89
+  //   return $( '#chat > .mes[mesid = "<id>"]', window.parent.document ).find( 'div.mes_text' );
+  // （d.ts 原文：能取到返回对应 JQuery，否则返回空 JQuery。）
+  //
+  // Palink 主页面同形：#chat 容器下每楼是 .mes[mesid]（CharacterChat.tsx:1949 的容器 +
+  // Message.tsx:1441 起的 mesid 属性），正文容器是 .mes_text（Message.tsx:1653）。
+  //
+  // 与 ST 的两处**必要偏差**（不许当 bug 修回去）：
+  //  1) 父文档入口不是 window.parent.document：未授信帧的 parent 被 PARENT-ALIAS 代理
+  //     （frame-shim/legacy-st-sim-parts/part-a.ts:41-165），读到的是模拟控件而非真文档；
+  //     同源放开后唯一可信的入口是 window.frameElement.ownerDocument —— opaque origin 时
+  //     frameElement 恒为 null（浏览器保证），正好就是"读不到"的判据。
+  //  2) 读不到时返回 null（批次Q1 执行件原文），不是 ST 的空 JQuery —— 差异见报告 §8。
+  const th134ParentDocument = () => {
+    try {
+      const frame = window.frameElement;
+      if (!frame) return null;
+      return frame.ownerDocument || null;
+    } catch (error) {
+      return null;
+    }
+  };
+  const th134DisplayedWarn = (detail) => {
+    th134Warn('retrieveDisplayedMessage ' + detail);
+    if (typeof palinkDiagRecord === 'function') {
+      palinkDiagRecord({
+        owner: 'frame_compat',
+        kind: 'missing_api',
+        name: 'retrieveDisplayedMessage',
+        detail: detail,
+      });
+    }
+  };
+  // 帧内 $ 的集合在两条轨上不等价：legacy 轨（part-c）自带 .text/.html/.append，
+  // v2 轨（part-05）没有这三个方法，其 nativeFallback 会把 .text() 委托给
+  // 「DOM 元素上并不存在的 text 方法」⇒ 静默返回集合本身（形状对语义错）。
+  // 故只在缺方法时就地补齐 d.ts 示例用到的那三个，补的是真语义
+  // （读写真实节点的 textContent / innerHTML / append），不是另造假对象。
+  const th134EnsureDisplayedMethods = (collection) => {
+    if (!collection) return collection;
+    if (typeof collection.text !== 'function') {
+      collection.text = function (value) {
+        if (value === undefined) {
+          return this.map((node) => String((node && node.textContent) || '')).join('');
+        }
+        this.forEach((node) => { if (node) node.textContent = String(value); });
+        return this;
+      };
+    }
+    if (typeof collection.html !== 'function') {
+      collection.html = function (value) {
+        if (value === undefined) return this[0] ? String(this[0].innerHTML) : '';
+        this.forEach((node) => { if (node) node.innerHTML = String(value); });
+        return this;
+      };
+    }
+    if (typeof collection.append !== 'function') {
+      collection.append = function (content) {
+        this.forEach((node) => {
+          if (!node) return;
+          if (content && content.nodeType) { node.appendChild(content); return; }
+          const holder = (node.ownerDocument || document).createElement('div');
+          holder.innerHTML = String(content === undefined || content === null ? '' : content);
+          while (holder.firstChild) node.appendChild(holder.firstChild);
+        });
+        return this;
+      };
+    }
+    return collection;
+  };
+  const th134RetrieveDisplayedMessage = (messageId) => {
+    const id = Number(messageId);
+    if (!Number.isFinite(id)) {
+      th134DisplayedWarn('需要数字楼层号，收到 ' + String(messageId) + ' ⇒ 返回 null（不造 DOM）');
+      return null;
+    }
+    const parentDoc = th134ParentDocument();
+    if (!parentDoc) {
+      th134DisplayedWarn('当前帧读不到父文档（未放开同源 ⇒ window.frameElement 为 null）⇒ 返回 null');
+      return null;
+    }
+    const row = parentDoc.querySelector('#chat > .mes[mesid="' + String(id) + '"]');
+    if (!row) {
+      th134DisplayedWarn('主页面 #chat 下没有 mesid=' + String(id) + ' 的楼层（未渲染或已离屏）⇒ 返回 null');
+      return null;
+    }
+    const textNode = row.querySelector('div.mes_text');
+    if (!textNode) {
+      th134DisplayedWarn('楼层 mesid=' + String(id) + ' 里没有 div.mes_text ⇒ 返回 null');
+      return null;
+    }
+    const dollar = typeof window.$ === 'function' ? window.$ : null;
+    if (!dollar) {
+      th134DisplayedWarn('帧内没有 $（jQuery 与 shim 均缺席）⇒ 无法按契约返回 JQuery，返回 null');
+      return null;
+    }
+    return th134EnsureDisplayedMethods(dollar(textNode));
+  };
+
   // ---- global 族：上游就是 window[name] = value + 发一条 global_<name>_initialized
   // （global.ts:8-25）。帧内 eventSource 是真实事件总线（part-07:845 的 eventOn 用的就是它）。
   const th134InitializeGlobal = (name, value) => {
@@ -871,6 +973,10 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     })(),
     // displayed_message / util / global
     formatAsDisplayedMessage: th134FormatAsDisplayedMessage,
+    // [批次Q1 2026-10-21] 用户第三次裁定后放开：本机/内网默认给 allow-same-origin ⇒
+    // 帧内终于能读主页面那条消息的真实 DOM。读不到（公网未授信 / 楼层没渲染 / 没有 .mes_text）
+    // 一律诚实返回 null 并走 palinkDiag 留痕，⛔ 不返回假字符串/假对象凑数。
+    retrieveDisplayedMessage: th134RetrieveDisplayedMessage,
     refreshOneMessage: async () => {
       // 帧内没有"重刷单楼显示"的通道，能落到的真能力是整卡重载（父侧 reloadCurrentChat）。
       th134Warn('refreshOneMessage 落到整会话重载（Palink 帧内无单楼重绘通道）');

@@ -41,6 +41,9 @@ import { getSmartCardPluginScriptBundle, getSmartCardPluginSourceKey, slimSmartC
 import { persistFrameExtensionPrompts, computeSmartCardBundleSourceKey } from '@/services/extensionPromptPersistence';
 import { SMART_CARD_RUNTIME_URL } from './smart-card-runtime/runtime-url';
 import { SMART_CARD_LEGACY_URL } from './smart-card-runtime/legacy-url';
+// [批次Q1 2026-10-21] 主机档判定（本机/内网 ⇒ 未授信也给同源）。判据与取值入口都在
+// host-origin-policy.ts，这里只消费 —— 别在本文件里再写一份 includes('localhost')。
+import { getSmartCardHostOriginPolicy } from './smart-card-runtime/host-origin-policy';
 
 export { looksLikeSmartCardHtml, looksLikeRenderableCardHtml } from './smart-card-runtime/helpers';
 export type { SmartCardInspectTarget, SmartCardAction } from './smart-card-runtime/shared';
@@ -1375,10 +1378,22 @@ const IframeRenderer = React.memo(function IframeRenderer({
   //   - allow-popups：允许 window.open（未信任时弹出的是 opaque origin 窗口）
   //   - allow-downloads：允许下载（配置的导入导出/备份）
   // 仍未给：allow-same-origin（未信任时不给，保持 P1-1）、allow-top-navigation。
+  //
+  // [批次Q1 2026-10-21 用户第三次裁定 · 分场合放开]
+  // 上面那条 P1-1 结论对**公网访客仍然成立**，一个字没松：非本机主机名 + 未授信 ⇒ 依旧只给
+  // allow-scripts（opaque origin）。放开只针对**本机/内网**（浏览器侧主机名判定，判据在
+  // host-origin-policy.ts）：这类访客默认给 allow-same-origin，不再要求逐卡点信任。
+  // 裁定原文与主脑补正见 SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2.4。
+  // 真实收益在**存储通道**而不是渲染：opaque 帧里卡片存储只能走 memoryStorage + postMessage
+  // 转发（见 :1362-1364 那条注释），给同源后卡能直接用真 localStorage/IndexedDB；
+  // 代价同源后这张卡能带着登录身份打后端（`palink_session` 是 HttpOnly 读不到，但同源请求
+  // 会带上它）—— 文案已按这个事实改（smart-card-runtime/shared.ts）。
+  // 信任开关保留、语义不变：本机只是"不要求"，不是"删掉开关"（storage.ts 一行没动）。
+  const hostOriginPolicy = getSmartCardHostOriginPolicy();
   const CAPABILITY_TOKENS = 'allow-modals allow-forms allow-popups allow-downloads';
   const sandbox = effectiveMode === 'static-html'
     ? ''
-    : trustedNative
+    : trustedNative || hostOriginPolicy.grantsSameOrigin
       ? `allow-scripts allow-same-origin ${CAPABILITY_TOKENS}`
       : `allow-scripts ${CAPABILITY_TOKENS}`;
   // [CONTENT-UNLOCK] 解锁后 frameHeight 跟随 height（内容高），min 放开到 INLINE_MIN_HEIGHT

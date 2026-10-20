@@ -348,3 +348,27 @@ rc=0
    用完已 `taskkill /PID <监听进程> /T /F`，实测端口不再响应；`.tmp_probe/` 全目录不入库。
    ⚠️ 别用 `taskkill /IM node.exe` 关自己的 dev server —— 那是全机 node，会打断并行 agent。
 
+
+## 8. 订正（2026-10-21，批次Q1 本机默认放开卡片读主页面）
+
+> **订正（2026-10-21，批次Q1）**：`retrieveDisplayedMessage` 一个键从 D 挪到 C
+> ⇒ **C = 70 → 71、D = 51 → 50**（A = 13、B = 0 不变；13 + 71 + 50 = 134 仍闭合）。
+> 挪动依据不是"为了让守卫变绿"，是**前提变了 + 能力真的落地**：
+> ① 用户第三次裁定（SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md §2.4）：
+>    本机/内网访客的卡片帧**默认给 `allow-same-origin`**，不再要求逐卡点信任；
+>    公网未授信仍只给 `allow-scripts`（P1-1 对公网照旧，一个字没松）
+>    ⇒ 原 D 类理由"未授信帧是 opaque origin，父页面 DOM 读不到"对本机档不再成立。
+> ② 契约一手：`st-plugins/third-party/JS-Slash-Runner-main/@types/function/displayed_message.d.ts:21`
+>    `declare function retrieveDisplayedMessage(message_id: number): JQuery<HTMLDivElement>`；
+>    实现一手：同仓 `src/function/displayed_message.ts:87-89`
+>    `$( '#chat > .mes[mesid = "<id>"]', window.parent.document ).find( 'div.mes_text' )`。
+> ③ 帧内真实现：`runtime-body/part-07.ts` H 段
+>    `retrieveDisplayedMessage: th134RetrieveDisplayedMessage` —— 读主页面真实节点，
+>    读不到（未放开同源 / 楼层没渲染 / 没有 `.mes_text` / 帧内没有 `$`）一律**诚实返回 null**
+>    + `palinkDiag` 留痕（owner 固定 `frame_compat`，不再计入缺口排行），不造任何假值。
+> ④ 行为有测试托底：`__tests__/q1-retrieve-displayed-message.test.ts`（12 例，执行型，
+>    用求值后载体 `COMPAT_V2_RUNTIME_ARTIFACT`）；反证过：把帧内成员摘掉 ⇒
+>    `h-tavernhelper-134-contract.test.ts` 的 D 名单断言转红（1 failed | 46 passed）。
+> ⑤ 守卫同步改判：D 名单移除该键 + 三条正向锚点（成员已注册 / 实现桥在场 / ST 选择器在场），
+>    见 `__tests__/h-tavernhelper-134-contract.test.ts` 的批次Q1 注释块。
+> 台账另见 `docs/_active/report/REPORT_批次Q1_本机默认放开卡片读主页面_2026-10-21.md`。

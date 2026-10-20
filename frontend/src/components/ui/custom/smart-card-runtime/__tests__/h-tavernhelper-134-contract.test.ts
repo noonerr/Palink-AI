@@ -251,7 +251,7 @@ describe('A fixture 与注册口径', () => {
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
       'injectPrompts', 'uninjectPrompts',
-      'retrieveDisplayedMessage', 'stopGenerationById', 'getModelList',
+      'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
       'getTavernRegexes', 'formatAsTavernRegexedString',
       // —— 批次I 补列 · ST 预设体系：族表 16 键，原先只盯 6，补 10 ——
@@ -271,6 +271,24 @@ describe('A fixture 与注册口径', () => {
       'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
+    // ⚠️ 2026-10-21 批次Q1 再改判一键：`retrieveDisplayedMessage` 移出 D 名单（D 51→50、C 70→71）。
+    //   同前面几次一样，**不是**为了凑绿这条守卫，而是能力当天才真的落地：
+    //   ① 前提变了：用户第三次裁定（SPEC §2.4）—— 本机/内网访客的卡片帧**默认给
+    //      allow-same-origin**，不再要求逐卡点信任 ⇒ "opaque origin 读不到父页面 DOM"
+    //      这条 D 类理由对本机档不再成立；
+    //   ② 契约一手：@types/function/displayed_message.d.ts:21
+    //      `declare function retrieveDisplayedMessage(message_id: number): JQuery<HTMLDivElement>`；
+    //      实现一手：src/function/displayed_message.ts:87-89
+    //      `$( '#chat > .mes[mesid = "<id>"]', window.parent.document ).find( 'div.mes_text' )`；
+    //   ③ 帧内真实现：part-07 H 段 `retrieveDisplayedMessage: th134RetrieveDisplayedMessage`，
+    //      读主页面真实节点，读不到一律诚实返回 null + palinkDiag 留痕（owner=frame_compat，
+    //      不再计入 host_capability 缺口排行）。行为断言见 q1-retrieve-displayed-message.test.ts。
+    //   台账同步（三层同批）：palink-diag.ts 的 opaque_dom 注释、REPORT_包H 的 2026-10-21 订正段、
+    //      SPEC §2.4 之后追加行、scripts/docs/st-gap-ledger-reconcile.mjs 的 MOVES。
+    //   正向锚点（把帧内实现摘掉 ⇒ 本用例必红）：
+    expect(registered.has('retrieveDisplayedMessage')).toBe(true);
+    expect(SRC.indexOf('retrieveDisplayedMessage: th134RetrieveDisplayedMessage')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('#chat > .mes[mesid="')).toBeGreaterThan(-1);
     // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
     expect(registered.has('registerMacroLike')).toBe(true);
     expect(SRC.indexOf("registerMacroLike: th134Bridge('registerMacroLike')")).toBeGreaterThan(-1);

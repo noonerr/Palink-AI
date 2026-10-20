@@ -152,6 +152,14 @@ const MOVES = [
       'isCharacterTavernRegexesEnabled', 'formatAsTavernRegexedString',
       'importRawWorldbook', 'getAllEnabledScriptButtons', 'getModelList', 'rotateChatMessages'],
   },
+  {
+    // 批次Q1（2026-10-21）：用户第三次裁定把"未授信一律 opaque"改成"分场合放开"
+    // ⇒ 原 D 类理由对本机档不再成立，且帧内真实现当天落地（part-07 th134RetrieveDisplayedMessage）。
+    // 订正段在报告 §8（追加在文末，不动前面任何行号）。
+    id: '批次Q1：retrieveDisplayedMessage D→C',
+    cite: { lines: [352, 372], expect: ['订正（2026-10-21，批次Q1）', 'retrieveDisplayedMessage 一个键从 D 挪到 C', 'C = 70 → 71', 'D = 51 → 50', '13 + 71 + 50 = 134'] },
+    mode: 'keys', from: 'D', to: 'C', keys: ['retrieveDisplayedMessage'],
+  },
 ];
 
 function verifyCite(move) {
@@ -163,7 +171,7 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验'];
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1'];
 const ordered = MOVES.slice().sort((x, y) => {
   const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
   return rank(x) - rank(y);

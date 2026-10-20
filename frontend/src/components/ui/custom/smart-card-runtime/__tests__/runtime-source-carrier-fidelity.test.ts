@@ -279,6 +279,12 @@ describe('D 载体使用纪律 —— 执行型测试不许再吃未求值文本
       + '且同一用例已实测两载体在该区域逐字节一致（归一行尾后）。',
     'runtime-source-carrier-fidelity.test.ts':
       '本文件：new Function 只用来解析载体二；载体一是被审计对象本身。',
+    // [批次Q1 2026-10-21] 新增的 new Function **不吃运行时载体**：入参是
+    // CharacterCardRenderer.tsx 里那段 `sandbox` 表达式（从渲染器 TSX 源码切片）。
+    // 那段表达式不在任何外层模板串里，浏览器拿到的就是同一份文本 ⇒ new Function 执行它
+    // 与生产求值逐字同义（区域内无裸反斜杠、无二次插值）。载体一只继续服务 B1-B9 的字符串断言。
+    'frame-security-and-migration-contract.test.ts':
+      '执行入参是渲染器 TSX 源码里的 sandbox 表达式（不是运行时载体，无外层模板串包裹）；载体一只服务字符串契约断言。',
   };
 
   /** 包L 已迁移的执行型测试（切片来自载体二）。 */

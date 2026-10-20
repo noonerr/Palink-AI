@@ -4,7 +4,8 @@
  * 背景：并轨后所有不可信代码只准在 iframe 单间里跑，主页面只当"服务员"。
  * 本文件把单间轨的安全与迁移语义钉死：
  *   ① 伪造来源的 postMessage 必须拒（帧身份 + 来源双校验，fail-closed）；
- *   ② 陌生人模式不可退（未信任 iframe 不给 allow-same-origin）；
+ *   ② 陌生人模式不可退（**公网/非本机**未授信 iframe 不给 allow-same-origin；
+ *      本机/内网按 2026-10-21 用户第三次裁定默认给 —— 见 B3 的判据说明）；
  *   ③ 模式开关置停时新轨同样停跑（static-html 不执行脚本）；
  *   ④ MVU 写口是真落库（不是大堂轨那种登记桩）；
  *   ⑤ 手势闸门对生成类动作生效（与 gesture-gate-contract.test.ts 互补）；
@@ -19,6 +20,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { handleSmartCardCompatRequest } from '../SmartCardCompatController';
 import { LEGACY_ST_SIM_SEGMENT } from '../frame-shim/legacy-st-sim';
+// [批次Q1 2026-10-21] 端到端那条用例要真判据（不是注入的布尔）
+import { resolveSmartCardHostOriginPolicy } from '../host-origin-policy';
 // [S4 2026-10-15] 运行时体已按行拆到 runtime-body/part-01..08.ts，改为读拼接后的源码文本。
 import { COMPAT_V2_RUNTIME_SOURCE as runtimeSource } from './compat-v2-runtime-source';
 
@@ -70,18 +73,95 @@ describe('B2 弱网/脚本包未到达不白屏', () => {
 // ============================================================
 // B3 陌生人模式不可退
 // ============================================================
-describe('B3 陌生人模式不可退（未信任 iframe 拿不到同源权）', () => {
-  it('未信任 sandbox 只有 allow-scripts + 能力令牌，明确不给 allow-same-origin', () => {
-    // 信任分支才追加 allow-same-origin
-    expect(rendererSource).toMatch(/allow-scripts allow-same-origin \$\{CAPABILITY_TOKENS\}/);
-    // 未信任分支是单独的模板串（不含 allow-same-origin）
+describe('B3 陌生人模式不可退（公网未授信拿不到同源权；本机按裁定放开）', () => {
+  /**
+   * 从生产源码里切出沙箱表达式并**真执行**（不是文本匹配）。
+   *
+   * 为什么必须执行：2026-10-21 批次Q1 的裁定把不变量从
+   *   「未授信 ⇒ 不给 allow-same-origin」
+   * 改成
+   *   「**非本机/公网** 未授信 ⇒ 不给 allow-same-origin；本机/内网 未授信 ⇒ 给」。
+   * 纯文本断言只能证明"那行字还在"，证明不了"公网那一侧还挡着"——把 sandbox 改成恒给
+   * allow-same-origin 时，文本断言照样能绿。所以这里切真源码 + new Function 执行，
+   * 参数 (effectiveMode, trustedNative, hostOriginPolicy) 由用例给。
+   * ⚠️ 切的是 `const CAPABILITY_TOKENS` 到沙箱语句结尾：块内自带 CAPABILITY_TOKENS 声明，
+   * 故该名字**不能**再当参数传（重复声明会 SyntaxError）。
+   */
+  const LITERAL_UNTRUSTED = '`allow-scripts ${CAPABILITY_TOKENS}`';
+  function buildSandbox(
+    effectiveMode: string,
+    trustedNative: boolean,
+    grantsSameOrigin: boolean,
+  ): string {
+    const start = rendererSource.indexOf('const CAPABILITY_TOKENS');
+    expect(start, '找不到沙箱表达式的起点（CAPABILITY_TOKENS）').toBeGreaterThan(-1);
+    const literalIndex = rendererSource.indexOf(LITERAL_UNTRUSTED, start);
+    expect(literalIndex, '找不到未授信分支的字面量').toBeGreaterThan(-1);
+    const end = rendererSource.indexOf(';', literalIndex) + 1;
+    const block = rendererSource.slice(start, end);
+    // eslint-disable-next-line no-new-func
+    const factory = new Function(
+      'effectiveMode',
+      'trustedNative',
+      'hostOriginPolicy',
+      block + '\nreturn sandbox;',
+    ) as (mode: string, trusted: boolean, policy: { grantsSameOrigin: boolean }) => string;
+    return factory(effectiveMode, trustedNative, { grantsSameOrigin });
+  }
+
+  it('公网 + 未授信 ⇒ 只有 allow-scripts + 能力令牌，明确不给 allow-same-origin', () => {
+    const sandbox = buildSandbox('iframe-js', false, false);
+    expect(sandbox).not.toContain('allow-same-origin');
+    expect(sandbox).toBe('allow-scripts allow-modals allow-forms allow-popups allow-downloads');
+    // 未授信分支必须是**单独的**模板串（不含 allow-same-origin），不是拼出来的
     expect(rendererSource).toMatch(/`allow-scripts \$\{CAPABILITY_TOKENS\}`/);
-    // 设计意图注释必须在（P1-1 逃逸修复史：未信任时保持 opaque origin）
+    // 设计意图注释必须在（P1-1 逃逸修复史：公网未授信时保持 opaque origin）
     expect(rendererSource).toContain('仍未给：allow-same-origin');
+  });
+
+  it('本机/内网 + 未授信 ⇒ 也给 allow-same-origin（用户第三次裁定的正向用例）', () => {
+    const sandbox = buildSandbox('iframe-js', false, true);
+    expect(sandbox).toContain('allow-same-origin');
+    expect(sandbox).toContain('allow-scripts');
+    // 接线必须真的问过主机档：条件里少了这一项 ⇒ 本用例红（文本级兜底，与执行级互补）
+    expect(rendererSource).toContain('trustedNative || hostOriginPolicy.grantsSameOrigin');
+  });
+
+  it('公网 + 已授信 ⇒ 给 allow-same-origin（信任开关语义不变）', () => {
+    expect(buildSandbox('iframe-js', true, false)).toContain('allow-same-origin');
+  });
+
+  it('端到端：真判据驱动沙箱（localhost ⇒ 未授信也给；公网域名 ⇒ 不给）', () => {
+    // 上面几条注入的是 grantsSameOrigin 布尔，只证接线；这条把**真判据**接进来，
+    // 让"判据写错/被恒 false 掉"也能在本文件看见（反证①的落点之一）。
+    const local = resolveSmartCardHostOriginPolicy('localhost');
+    const remote = resolveSmartCardHostOriginPolicy('card.example.com');
+    expect(local.grantsSameOrigin).toBe(true);
+    expect(remote.grantsSameOrigin).toBe(false);
+    expect(buildSandbox('iframe-js', false, local.grantsSameOrigin)).toContain('allow-same-origin');
+    expect(buildSandbox('iframe-js', false, remote.grantsSameOrigin)).not.toContain('allow-same-origin');
+  });
+
+  it('任何档位都不给 allow-top-navigation（用户裁定的绝对红线）', () => {
+    const combos: Array<[string, boolean, boolean]> = [
+      ['iframe-js', false, false],
+      ['iframe-js', false, true],
+      ['iframe-js', true, false],
+      ['trusted-native', true, true],
+      ['static-html', false, true],
+    ];
+    for (const [mode, trusted, local] of combos) {
+      expect(buildSandbox(mode, trusted, local), `组合 ${mode}/${trusted}/${local}`)
+        .not.toContain('allow-top-navigation');
+    }
   });
 
   it('static-html 模式 sandbox 为空串（连脚本权都不给）', () => {
     expect(rendererSource).toMatch(/effectiveMode === 'static-html'\s*\n?\s*\? ''/);
+    expect(buildSandbox('static-html', false, false)).toBe('');
+    // 本机放开也不能给不跑脚本的卡开同源（没有脚本就没有要放开的对象）
+    expect(buildSandbox('static-html', false, true)).toBe('');
+    expect(buildSandbox('static-html', true, true)).toBe('');
   });
 });
 

@@ -247,7 +247,15 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   // [ST-GAP:stop_by_id] 按 generation id 中止；Palink 只有全局停止，把"按 id"折成"全停"是语义不符。
   stopGenerationById: 'stop_by_id',
 
-  // [ST-GAP:opaque_dom] ST 私有 DOM 面；未授信帧是 opaque origin ⇒ ⛔ 一行都不许朝"放宽沙箱"修（P1-1）。
+  // [ST-GAP:opaque_dom] ST 私有 DOM 面（retrieveDisplayedMessage 读主页面消息体）。
+  //   **已实现（2026-10-21 批次Q1）**：用户第三次裁定把"未授信一律 opaque"改成**分场合放开**
+  //   —— 本机/内网访客默认给 allow-same-origin（判据见 host-origin-policy.ts），公网未授信
+  //   仍只给 allow-scripts（P1-1 对公网照旧，一个字没松）。帧内实现是 part-07 的
+  //   th134RetrieveDisplayedMessage：读主页面真实节点，读不到（未放开/楼层没渲染/无 .mes_text）
+  //   诚实返回 null + 留痕，且留痕 owner 固定 frame_compat ⇒ **不再计入本 id 的缺口排行**。
+  //   ⚠️ 键名本身**保留**：ST_GAP_BY_NAME 是"卡按这个名字调过"的聚合账，删键会让
+  //   st-gap-ledger-guard.test.ts 的 D 组红，历史卡调用也仍按本 id 归类
+  //   （与 registerMacroLike 同一处理口径）。
   retrieveDisplayedMessage: 'opaque_dom',
 
   // [ST-GAP:script_button_store] 脚本按钮存储只在主页面 realm（card-script-runner.ts:199），帧内根本没有。
