@@ -339,12 +339,29 @@ def build_character_chat_messages(
     # ST 1.18.0 context template wrapping — applied after the existing
     # message assembly so the original Palink prompt structure is preserved.
     # The Default template (and missing template) is a passthrough.
-    # A6 修复: V3 卡独立 jailbreak 消费进 jailbreak 槽（优先级
-    # context_template > 卡自带 > 无）；与 PHI 相同的 V2 回退拷贝不重复消费。
+    # [JB-SLOT 2026-10-21 批次JB] 破甲槽三级优先级（对齐 ST 一手锚点）：
+    #   卡片 jailbreak > 上下文模板 jailbreak > 用户全局 jailbreak(UserSetting.jailbreak)
+    # 依据（参照树 SillyTavern 1.18）：
+    #   - openai.js:1232  systemPrompts = ['nsfw','jailbreak']（系统提示词家族）
+    #   - openai.js:1496-1503  卡侧 jailbreakPromptOverride **覆盖**预设 jailbreak 内容
+    #   - script.js:3358-3362 + power-user.js:204  覆盖源 = 卡 post_history_instructions，
+    #     受 prefer_character_jailbreak（默认 true）门控 ⇒ 卡 > 预设/全局
+    # ⚠️ 订正 A6 旧注释「context_template > 卡自带」：该顺序与 openai.js:1499 相反，
+    #   本批按 ST 翻转（卡优先），并接上此前从未被读取的 UserSetting.jailbreak 死列。
+    # V2 卡 jailbreak==PHI 的回退拷贝不进槽位（PHI 已在历史后注入，恰是 ST 的
+    # jailbreak 落点 PromptManager.js:2131-2134「chatHistory 之后」），但**卡视为
+    # 已占用破甲槽**，抑制模板/全局回退——ST 中覆盖生效时预设 jailbreak 被替换
+    # 而非追加（openai.js:1500-1503），全局叠加会出现两条破甲。
+    # 空值零回归硬线：三级全空时不插消息，序列与改前逐字节一致
+    # （ST openai.js:103 default_jailbreak_prompt='' 同语义）。
     _card_jailbreak = (getattr(char, "jailbreak", None) or "").strip()
     _phi_text = (char.post_history_instructions or "").strip()
+    _card_occupies_jb_slot = bool(_card_jailbreak)
     if _card_jailbreak and _phi_text and _card_jailbreak == _phi_text:
         _card_jailbreak = ""
+    _user_global_jailbreak = ""
+    if not _card_occupies_jb_slot and user_setting is not None:
+        _user_global_jailbreak = (getattr(user_setting, "jailbreak", None) or "").strip()
     messages = _apply_context_template(
         messages,
         context_template=context_template,
@@ -352,6 +369,8 @@ def build_character_chat_messages(
         user_name=user_nickname,
         replace_placeholders=_replace_placeholders,
         card_jailbreak=_card_jailbreak,
+        user_jailbreak=_user_global_jailbreak,
+        card_occupies_jailbreak_slot=_card_occupies_jb_slot,
     )
 
     # T2 守卫（2026-09-27 身份层 ST 化）：prompt 不以 system 结尾（对齐 ST
@@ -376,36 +395,58 @@ def _apply_context_template(
     user_name: str,
     replace_placeholders: callable,
     card_jailbreak: str = "",
+    user_jailbreak: str = "",
+    card_occupies_jailbreak_slot: bool = False,
 ) -> List[Dict[str, Any]]:
     """Wrap the assembled messages with context template fields.
 
     Backward-compatibility contract:
-      - context_template is None → passthrough (unchanged), unless a card
-        jailbreak is provided (see below)
-      - context_template.name == "Default" → passthrough (unchanged)
+      - context_template is None → passthrough (unchanged), unless the
+        jailbreak slot has content (see below)
+      - context_template.name == "Default" → passthrough (unchanged) for the
+        template's own fields (system_prompt / jailbreak / chat_start)
       - otherwise:
           * template.system_prompt (if non-empty) is inserted as a leading
             system message (after macro placeholder replacement)
-          * template.jailbreak (if non-empty) is inserted as a system
-            message immediately after the first system message
+          * the effective jailbreak (if non-empty) is inserted as a system
+            message immediately after the leading system block
           * template.chat_start (if non-empty) is inserted as a system
             separator just before the first user/assistant message
 
-    A6 修复: ``card_jailbreak``（V3 卡独立 jailbreak）在模板未提供 jailbreak
-    时消费进同一槽位（优先级 context_template > 卡自带 > 无，对齐 ST prompt
-    manager 语义）。
+    [JB-SLOT 2026-10-21 批次JB] jailbreak 槽三级优先级（ST 一手锚点见调用处注释）：
+      卡片 jailbreak（``card_jailbreak``）> 模板 ``context_template.jailbreak``
+      > 用户全局 ``user_jailbreak``（UserSetting.jailbreak，ST 主界面 Jailbreak 框）。
+    ``card_occupies_jailbreak_slot=True`` 表示卡已占用破甲槽（含 V2 卡
+    jailbreak==PHI 的去重形态——该文本已按 PHI 注入历史后），此时模板/全局
+    一律不注入（ST openai.js:1500-1503：覆盖是**替换**不是追加）。
+    三级全空 → 不插任何消息，序列逐字节不变（零回归硬线）。
     """
     tmpl_name = getattr(context_template, "name", None)
     tmpl_is_wrapping = (
         context_template is not None and tmpl_name and tmpl_name != "Default"
     )
-    if not tmpl_is_wrapping and not card_jailbreak:
+
+    # Default 模板（或缺省）自身字段保持 passthrough——其 jailbreak 不消费（既有行为）。
+    tmpl_jailbreak = (
+        (getattr(context_template, "jailbreak", None) or "").strip()
+        if tmpl_is_wrapping else ""
+    )
+    # 槽位内容优先级：卡 > 模板 > 用户全局；卡占用槽位时（含 V2 去重形态）不回退。
+    if card_occupies_jailbreak_slot:
+        effective_jailbreak = (card_jailbreak or "").strip()
+    else:
+        effective_jailbreak = (
+            (card_jailbreak or "").strip()
+            or tmpl_jailbreak
+            or (user_jailbreak or "").strip()
+        )
+
+    if not tmpl_is_wrapping and not effective_jailbreak:
         return messages
 
     next_messages: List[Dict[str, Any]] = list(messages)
 
     tmpl_system_prompt = (getattr(context_template, "system_prompt", None) or "").strip()
-    tmpl_jailbreak = (getattr(context_template, "jailbreak", None) or "").strip()
     tmpl_chat_start = (getattr(context_template, "chat_start", None) or "").strip()
 
     # 1) Prepend template.system_prompt as the very first system message.
@@ -417,8 +458,6 @@ def _apply_context_template(
         next_messages.insert(insert_at, {"role": "system", "content": rendered})
 
     # 2) Insert jailbreak as a system message after the leading system block.
-    # A6 修复: 槽位内容优先级 context_template > 卡自带 jailbreak > 无。
-    effective_jailbreak = tmpl_jailbreak or (card_jailbreak or "").strip()
     if effective_jailbreak:
         rendered_jb = replace_placeholders(effective_jailbreak, user_name, char_name)
         # Find the index after the last leading system message.

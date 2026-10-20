@@ -7,6 +7,8 @@ spec: docs/SPEC_清理批次总案_除N8_2026-08-24.md §1
 - A4: world_info_depth 全局扫描深度穿透 + recursive 总开关
 - A5: 世界书百分比预算基数传真实上下文上限（16000 仅兜底）
 - A6: V3 卡独立 jailbreak 消费进 jailbreak 槽（context_template > 卡自带 > 无）
+  〔2026-10-21 批次JB 订正：优先级已按 ST 一手锚点翻转为 卡自带 > context_template
+  > 用户全局（openai.js:1496-1503 卡覆盖预设），见 test_jailbreak_slot_wiring.py〕
 - A7: creator_notes 退出 system prompt 装配层
 """
 
@@ -543,12 +545,16 @@ class TestA6CardJailbreak:
         assert jb_idx >= 1, "jailbreak 槽位应在前导 system 块之后"
         assert all(m["role"] == "system" for m in msgs[: jb_idx + 1])
 
-    def test_template_jailbreak_wins_over_card(self, _run_builder):
+    def test_card_jailbreak_wins_over_template(self, _run_builder):
+        # [JB-SLOT 2026-10-21 批次JB 订正] 原断言「模板 > 卡自带」（A6 旧口径），
+        # 与 ST 一手锚点相反：openai.js:1496-1503 卡侧 jailbreakPromptOverride
+        # **覆盖**预设 jailbreak（script.js:3361 覆盖源=卡 PHI，
+        # prefer_character_jailbreak 默认 true，power-user.js:204）⇒ 卡 > 模板/全局。
         tmpl = SimpleNamespace(name="Custom", system_prompt="", jailbreak="TMPL JB", chat_start="")
         msgs = _run_builder({"jailbreak": "CARD JB"}, context_template=tmpl)
         contents = [m.get("content") for m in msgs]
-        assert "TMPL JB" in contents
-        assert "CARD JB" not in contents, "context_template 优先于卡自带"
+        assert "CARD JB" in contents
+        assert "TMPL JB" not in contents, "卡 jailbreak 优先于 context_template（对齐 ST）"
 
     def test_v2_duplicate_jailbreak_not_double_consumed(self, _run_builder):
         """V2 回退拷贝（jailbreak==PHI）不重复消费进槽位。"""
