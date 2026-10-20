@@ -404,3 +404,31 @@ rc=0
 >    `__tests__/p2-preset-read-keys-parent.test.ts`（13 例，父侧落点 + 越权面）。
 >    反证过：把帧内三成员摘掉 ⇒ 两个文件共 12 例转红。
 > 台账另见 `docs/_active/report/REPORT_批次P2_预设读类与内部键守卫与全局选中名_2026-10-21.md`。
+
+## 10. 订正（2026-10-21，批次P3 预设三键改同步 + 数据源改指）
+
+> **订正（2026-10-21，批次P3）**：预设三键**档位不变**（仍 C），
+> **C = 74 → 74、D = 47 → 47**（A = 13 不变；13 + 74 + 47 = 134 仍闭合）。
+> 本批不做挪动，只订两处**接错**：
+>
+> ① **对外契约接错（P3-A）**：P2 把三键接成了 `async`（帧内 `requestParent` 是异步的），
+>    而 ST 契约是**同步**（`preset.d.ts:150` `getPresetNames(): string[]`）
+>    ⇒ 真卡按 ST 写法取 `getPresetNames().length` 拿到 `undefined`。
+>    **"接错成异步"比"没接"更难发现**：不报错、不留痕、门禁全绿 —— 因为 P2 的用例都
+>    `await` 了返回值，而 `await` 对同步值和 Promise **一样成立**。
+>    修法（主脑定的路线）：宿主在 ctx 里带一份**预设快照**（服务端
+>    `GET /api/prompt-manager/presets/snapshot` 一次算好），帧内三键**同步读快照**。
+>    判据从"断值"改成"**断形状**"：`expect(v && typeof v.then).not.toBe('function')` 三条。
+> ② **数据源接错（P3-B）**：整条链原先建在 `prompt_presets` 上 —— 那张表**全库 0 行**、
+>    也没有第一方界面在用它（`generation_presets` 有 27 行，用户设置界面
+>    `PresetManager.tsx` 走 `/api/roleplay/presets`）。用户 2026-10-20 的裁定是
+>    "默认刚进卡是**设置里自己的那份**" ⇒ 不改指就违反裁定。三层回落语义一字未改，只换表。
+> ③ **新增红线**：`GenerationPreset` 存在 `user_id IS NULL` 的**跨用户共享行**
+>    （`api/presets.py:114-115` 的列表条件含它）⇒ 卡片侧只读本人那份，
+>    写/删通道严禁落到共享行；有越权用例钉住（拿共享行 id 换基 ⇒ 404）。
+> ④ 守卫改写（未删）：`h-tavernhelper-134-contract.test.ts` 里"三键有 requestParent 直连桥"
+>    那条断言**必然失效**（改同步后没有直连桥了），按本仓"守卫要改写不是删"的规矩改成钉住
+>    新不变量：① 键还在；② 是同步箭头（不是 `async`）；③ 不再有 `requestParent` 直连桥；
+>    ④ 读的是 `ctx.presetSnapshot`。
+> ⑤ `isPreset*` 三键**继续留 D**（缺判定字段，不补恒假实现）。
+> 台账另见 `docs/_active/report/REPORT_批次P3_*.md` 与 SPEC §2.7。

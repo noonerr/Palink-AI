@@ -2,7 +2,8 @@
 
 对应任务书 `PROMPT_对话包_批次P预设分身与Q沙箱放开与R插件_2026-10-20.md` §P-1 / §P-3：
   1. **未改动不产生副本**：GET 只有 source=global，且 `chat_variables` 里**不落行**；
-  2. **首次写才复制**（COW）：PUT 之后 source=session，且 `prompt_presets` 那行**一个字节都没动**；
+  2. **首次写才复制**（COW）：PUT 之后 source=session，且 `generation_presets` 那行**一个字节都没动**
+     （[批次P3 P3-B 2026-10-21] 预设行由 `prompt_presets` 改指 `generation_presets`）；
   3. **永不回写全局**：连写两次，全局行仍与写前逐字段相同；
   4. **丢弃副本回到全局**：DELETE 之后 source=global，全局行仍不变；
   5. **越权失败**：别人的 session 一律 404（不泄露存在性），且不落任何行；
@@ -17,8 +18,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from app.core.security import get_password_hash  # noqa: E402
-from app.models import ChatSession, ChatVariable, User  # noqa: E402
-from app.models.prompt_preset import PromptPreset  # noqa: E402
+from app.models import ChatSession, ChatVariable, GenerationPreset, User  # noqa: E402
 from app.services.preset_overlay import OVERLAY_KEY, INTERNAL_KEY_PREFIX  # noqa: E402
 
 
@@ -42,13 +42,17 @@ def _mk_session(db_session, user, sid: str) -> ChatSession:
     return session
 
 
-def _mk_preset(db_session, user, name: str, entries: str, pid: str = None) -> PromptPreset:
-    preset = PromptPreset(
-        id=pid or ("preset-" + name),
+def _mk_preset(db_session, user, name: str, entries: str, pid: str = None) -> GenerationPreset:
+    """[批次P3 P3-B 2026-10-21] 预设行改建在 `generation_presets`。
+
+    `GenerationPreset.id` 是自增 Integer（不像 `PromptPreset.id` 是字符串），
+    所以 `base_preset_id` 现在是数字的字符串形式；服务层按 int 解析。
+    """
+    preset = GenerationPreset(
         user_id=user.id,
         name=name,
-        entries=entries,
-        config='{"temperature": 0.7}',
+        prompts_data=entries,
+        temperature=0.7,
     )
     db_session.add(preset)
     db_session.commit()
@@ -57,8 +61,10 @@ def _mk_preset(db_session, user, name: str, entries: str, pid: str = None) -> Pr
 
 
 def _global_snapshot(db_session, preset_id: str) -> dict:
-    row = db_session.query(PromptPreset).filter(PromptPreset.id == preset_id).first()
-    return {"name": row.name, "entries": row.entries, "config": row.config}
+    row = db_session.query(GenerationPreset).filter(
+        GenerationPreset.id == int(preset_id)
+    ).first()
+    return {"name": row.name, "entries": row.prompts_data, "config": row.temperature}
 
 
 def test_read_without_overlay_does_not_create_copy(db_session, client, test_user):
@@ -171,7 +177,7 @@ def test_other_users_preset_cannot_be_used_as_base(db_session, client, test_user
 
     res = client.put(
         "/api/prompt-manager/sessions/sess-base-guard/preset",
-        json={"base_preset_id": foreign.id},
+        json={"base_preset_id": str(foreign.id)},
     )
     assert res.status_code == 404
     assert "not found" in res.json()["detail"].lower()

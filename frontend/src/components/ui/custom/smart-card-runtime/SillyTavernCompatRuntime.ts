@@ -202,6 +202,14 @@ function buildSmartCardCompatRuntimeBootPayload(options: SmartCardRuntimeV2Optio
     // Object.assign(ctx, …)，随后 refreshDerivedContextStoresCompat（part-05.ts:884）
     // 重算 scopedRegexScripts 与 primaryCharacter.data.extensions ⇒ 无需新增拉取通道。
     presetData: context.presetData || null,
+    // [批次P3 2026-10-21] 帧内预设三键（getPresetNames / getLoadedPresetName / getPreset）的
+    // **同步快照**。ST 契约是同步的，帧内 requestParent 是异步的 ⇒ 只能由宿主把数据带进来，
+    // 帧内三键同步读它（见 runtime-body/part-07.ts 的同名段）。
+    // ⛔ 与上面的 `presetData`（角色预设的 regex 脚本）不是一回事。
+    // 快照是异步到的：首帧可能还没到（那时帧内返回 [] / null 并 palinkDiag 留痕，
+    // 不返回 undefined 冒充"没有预设"）；到达后经 context-update 通道热更进 ctx
+    // （`applyParentContextUpdateCompat` 的 Object.assign(ctx, …)）。
+    presetSnapshot: context.presetSnapshot || null,
     globalRegexScripts: Array.isArray(context.globalRegexScripts) ? context.globalRegexScripts : [],
     stPluginRuntimeConfig: context.stPluginRuntimeConfig && typeof context.stPluginRuntimeConfig === 'object'
       ? context.stPluginRuntimeConfig

@@ -326,6 +326,34 @@ export interface SillyTavernCompatResponse {
   error?: string;
 }
 
+/**
+ * [批次P3 2026-10-21] 帧内预设三键的快照（`GET /api/prompt-manager/presets/snapshot`）。
+ *
+ * `presets` 的每份都是 ST `Preset` 形状 `{settings, prompts, prompts_unused, extensions}`；
+ * `in_use` 是"本对话当前生效那份"（有覆盖层就是副本，否则是全局选中份）；
+ * `loadedName` 是 ST `getLoadedPresetName()` 的语义（'in_use' 从哪份加载来）。
+ * 缺数据时 `inUse` / `loadedName` 是 null、`names` 是 [] —— **不是 undefined**，
+ * 好让帧内能区分"快照还没到"与"真的没有预设"。
+ */
+export interface SmartCardPresetSnapshot {
+  store?: string;
+  names?: string[];
+  loadedName?: string | null;
+  inUse?: {
+    settings?: Record<string, unknown>;
+    prompts?: unknown[];
+    prompts_unused?: unknown[];
+    extensions?: Record<string, unknown>;
+  } | null;
+  presets?: Record<string, {
+    settings?: Record<string, unknown>;
+    prompts?: unknown[];
+    prompts_unused?: unknown[];
+    extensions?: Record<string, unknown>;
+  }>;
+  source?: string;
+}
+
 export interface CharacterSmartCardContext {
   characterId?: string;
   characterName?: string;
@@ -382,6 +410,13 @@ export interface CharacterSmartCardContext {
   idbNamespaceDisabled?: boolean;
   characterExtensions?: Record<string, unknown> | string | null;
   presetData?: Record<string, unknown> | null;
+  // [批次P3 2026-10-21] 帧内预设三键（getPresetNames / getLoadedPresetName / getPreset）
+  // 的**快照**。ST 契约是同步（`preset.d.ts:150` `getPresetNames(): string[]`），而帧内
+  // 唯一数据通道 requestParent 是异步的 ⇒ 帧里拿不到同步真值，只能由宿主把快照带进 ctx，
+  // 三键同步读它。快照由服务端 `GET /api/prompt-manager/presets/snapshot` 一次算好
+  // （数据源 = `generation_presets`，只含本人那份），经 boot 内联 + context-update 热更两套
+  // 通道进帧。⛔ 与上面的 `presetData`（角色预设的 regex 脚本）**不是一回事**，别混。
+  presetSnapshot?: SmartCardPresetSnapshot | null;
   globalRegexScripts?: Array<Record<string, unknown>>;
   stPluginRuntimeConfig?: SillyTavernPluginRuntimeConfig | null;
   sessionId?: string;

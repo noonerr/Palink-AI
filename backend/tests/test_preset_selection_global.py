@@ -23,9 +23,9 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from app.core.security import get_password_hash  # noqa: E402
-from app.models import User, UserSetting  # noqa: E402
-from app.models.prompt_preset import PromptPreset  # noqa: E402
+from app.models import GenerationPreset, User, UserSetting  # noqa: E402
 from app.services.preset_overlay import (  # noqa: E402
+    PRESET_STORE,
     SELECTION_FIELD,
     SELECTION_NAMESPACE,
     get_selected_preset_name,
@@ -47,13 +47,17 @@ def _mk_user(db_session, username: str) -> User:
     return user
 
 
-def _mk_preset(db_session, user, name: str, updated_at=None) -> PromptPreset:
-    preset = PromptPreset(
-        id="preset-" + name,
+def _mk_preset(db_session, user, name: str, updated_at=None) -> GenerationPreset:
+    """[批次P3 P3-B 2026-10-21] 预设行现在建在 `generation_presets` 上。
+
+    原先建在 `prompt_presets`（`PromptPreset`）—— 那张表在全库是 0 行、也没有
+    第一方界面在用它，链建在它上面等于"接了一张空表"。
+    """
+    preset = GenerationPreset(
         user_id=user.id,
         name=name,
-        entries='[{"id": "main", "content": "' + name + '"}]',
-        config='{"temperature": 0.7}',
+        prompts_data='[{"id": "main", "content": "' + name + '"}]',
+        temperature=0.7,
     )
     if updated_at is not None:
         preset.updated_at = updated_at
@@ -113,9 +117,39 @@ def test_selection_is_stored_in_existing_user_setting_json_column(db_session, cl
     assert setting is not None
     blob = json.loads(setting.silly_tavern_settings or "{}")
     assert blob[SELECTION_NAMESPACE][SELECTION_FIELD] == "预设C"
-    # `prompt_presets` 那行一个字节都没动（选中名不是预设内容）
-    preset = db_session.query(PromptPreset).filter(PromptPreset.name == "预设C").first()
-    assert preset.entries == '[{"id": "main", "content": "预设C"}]'
+    # `generation_presets` 那行一个字节都没动（选中名不是预设内容）
+    preset = db_session.query(GenerationPreset).filter(GenerationPreset.name == "预设C").first()
+    assert preset.prompts_data == '[{"id": "main", "content": "预设C"}]'
+
+
+def test_selection_resolves_against_generation_presets_not_prompt_presets(db_session, client, test_user):
+    """[批次P3 P3-B] 数据源改指的正面锚点：两张表都有同名行时，解析必须落到
+    `generation_presets` 那行；只建 `prompt_presets` 行 ⇒ 解析为 none。
+
+    `prompt_presets` 在全库是 0 行（`REPORT_上线实测…2026-10-21.md` §2.2），
+    这条断言钉住"别再退回那张空表"。
+    """
+    from app.models.prompt_preset import PromptPreset
+
+    decoy = PromptPreset(
+        id="decoy-prompt-preset",
+        user_id=test_user.id,
+        name="空表那一份",
+        entries='[{"id": "main", "content": "来自空表"}]',
+        config='{"temperature": 0.1}',
+    )
+    db_session.add(decoy)
+    db_session.commit()
+
+    # 对照组：只有 prompt_presets 行 ⇒ 全局解析为 none（旧表不再参与）
+    assert resolve_global_preset(db_session, test_user.id) is None
+    assert resolve_global_preset_source(db_session, test_user.id) == "none"
+
+    real = _mk_preset(db_session, test_user, "空表那一份")
+    assert resolve_global_preset(db_session, test_user.id).id == real.id
+    assert resolve_global_preset_source(db_session, test_user.id) == "fallback"
+    # 响应里带 base_store，避免下一个人猜是哪张表
+    assert PRESET_STORE == "generation_presets"
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +181,9 @@ def test_selection_pointing_at_deleted_preset_falls_back(db_session, client, tes
     client.put("/api/prompt-manager/presets/selection", json={"name": "会被删"})
     assert resolve_global_preset(db_session, test_user.id).id == gone.id
 
-    client.delete("/api/prompt-manager/presets/" + gone.id)
+    # [批次P3] 预设行现在在 `generation_presets`，删行走 `/api/roleplay/presets/{id}`
+    # （`/api/prompt-manager/presets/{id}` 那四件套仍在，但管的是另一张表，本批不动它）
+    client.delete("/api/roleplay/presets/" + str(gone.id))
     # 选中名还在（没被偷偷清掉），但解析落到剩下的那份
     assert get_selected_preset_name(db_session, test_user.id) == "会被删"
     assert resolve_global_preset(db_session, test_user.id).id == keep.id

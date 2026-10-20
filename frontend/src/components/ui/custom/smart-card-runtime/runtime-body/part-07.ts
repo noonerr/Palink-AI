@@ -696,6 +696,25 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     }
   };
 
+  // [批次P3 P3-A 2026-10-21] 预设三键的**同步**快照读取器（三个键共用，见下方三键处注释）。
+  // 必须定义在 tavernHelperTh134Compat 对象字面量**之外** —— 对象字面量里不能插语句。
+  const readPresetSnapshotCompat = () => {
+    const snap = ctx && ctx.presetSnapshot && typeof ctx.presetSnapshot === 'object' ? ctx.presetSnapshot : null;
+    if (!snap) {
+      th134Warn('预设快照未就绪：getPresetNames/getLoadedPresetName/getPreset 只能返回空值（宿主还没把快照送进帧内）');
+      if (typeof palinkDiagRecord === 'function') {
+        palinkDiagRecord({
+          owner: 'frame_compat',
+          kind: 'missing_api',
+          name: 'preset_snapshot_not_ready',
+          detail: 'ctx.presetSnapshot 缺失，预设三键按同步契约返回空数组/null（不是"没有预设"）',
+        });
+      }
+      return null;
+    }
+    return snap;
+  };
+
   const tavernHelperTh134Compat = {
     // 变量族（写体，ST 的 option.type 语义；getVariables / replaceVariables 两个 A 类键不动，
     // 它们既有实现是 Palink 已上线口径，改它属回归风险，只写进报告 §7 不当场改）
@@ -866,30 +885,50 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       return updated;
     },
     // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类** 3 键（契约逐条抄 preset.d.ts）。
-    // 数据源 = P2-2 的全局选中份 + P-1 的本对话覆盖层，全在父侧
-    // （/api/prompt-manager/sessions/{id}/preset 与 /presets）；帧内只做桥，不缓存副本
-    // —— 缓存在帧里会让"用户改了选中名"和卡看到的名字长期不一致。
-    // 失败语义分族（刻意，不是笔误）：
-    //   getPresetNames():string[]      —— 列表取不到**抛错**，不返空数组：空数组是"真的没有预设"
-    //                                    这个合法状态，两者混一起卡就分不清了；
-    //   getLoadedPresetName():string   —— 一份预设都没有时返 null（契约声明 string，本仓不造
-    //                                    'Default'：没有内置预设，编个名字等于骗卡去 getPreset）；
-    //   getPreset(name)                —— 'in_use' = 本对话当前生效那份；不存在**抛错**（d.ts @throws）。
-    // 返回一律对象包裹（requestParent v2 会把顶层数组/字符串展开成索引键）。
-    getPresetNames: async () => {
-      const res = await requestParent('getPresetNames', {});
-      if (!res || res.success !== true) throw new Error('TavernHelper: getPresetNames 失败: ' + String((res && res.error) || 'unknown'));
-      return Array.isArray(res.names) ? res.names : [];
+    //
+    // [批次P3 P3-A 2026-10-21 订正] 这三个键在 P2 里被接成了 **async**（帧内 requestParent
+    // 是异步的），而 ST 契约是**同步**（preset.d.ts:150 声明 getPresetNames(): string[]）
+    // ⇒ 真卡按 ST 写法取 getPresetNames().length 拿到的是 undefined，
+    //   getPreset('in_use').prompts 直接崩。**"接错成异步"比"没接"更难发现**：
+    //   不报错、不留痕、门禁全绿（用例 await 了返回值，而 await 对同步值和 Promise 一样成立）。
+    // ⇒ 改法（主脑定的路线，不要另发明）：宿主在 ctx 里带一份**预设快照**，帧内三键
+    //   **同步读快照**；快照的刷新走宿主既有的 context-update 通道（Object.assign(ctx, …)）。
+    //   ⛔ 帧内不做"同步等异步"的忙等，也不返回假值。
+    //
+    // 快照的形状（服务端 GET /api/prompt-manager/presets/snapshot 一次算好）：
+    //   ctx.presetSnapshot = { store, names:[], loadedName, inUse, presets:{name:Preset}, source }
+    //   数据源 = generation_presets（用户在设置里那份，**不是**全库 0 行的 prompt_presets），
+    //   且只含本人那份（user_id IS NULL 的共享行由服务端挡掉）。
+    //
+    // 语义诚实（快照可能不是最新 —— 刚改完预设立刻读）：
+    //   拿不到快照 ⇒ 返回**空数组 / null** 并 palinkDiag 留痕，⛔ 不许返回 undefined 冒充
+    //   "没有预设"（undefined 会让 getPresetNames().length 直接 TypeError，卡连错都不知道）。
+    //   getPreset(name) 取不到 ⇒ **抛错**（d.ts @throws，且抛错是可见的，不是静默空值）。
+    getPresetNames: () => {
+      const snap = readPresetSnapshotCompat();
+      if (!snap) return [];
+      return Array.isArray(snap.names) ? snap.names.slice() : [];
     },
-    getLoadedPresetName: async () => {
-      const res = await requestParent('getLoadedPresetName', {});
-      if (!res || res.success !== true) throw new Error('TavernHelper: getLoadedPresetName 失败: ' + String((res && res.error) || 'unknown'));
-      return res.name === undefined || res.name === null ? null : String(res.name);
+    getLoadedPresetName: () => {
+      const snap = readPresetSnapshotCompat();
+      if (!snap) return null;
+      return snap.loadedName === undefined || snap.loadedName === null ? null : String(snap.loadedName);
     },
-    getPreset: async (presetName) => {
-      const res = await requestParent('getPreset', { presetName: presetName });
-      if (!res || res.success !== true) throw new Error('TavernHelper: getPreset 失败: ' + String((res && res.error) || 'unknown'));
-      return res.preset;
+    getPreset: (presetName) => {
+      const snap = readPresetSnapshotCompat();
+      const name = presetName === undefined || presetName === null ? 'in_use' : String(presetName);
+      if (!snap) throw new Error('TavernHelper: getPreset 预设快照未就绪: ' + name);
+      if (name === 'in_use') {
+        if (snap.inUse && typeof snap.inUse === 'object') return snap.inUse;
+        throw new Error('TavernHelper: getPreset 当前没有生效的预设: in_use');
+      }
+      const byName = snap.presets && typeof snap.presets === 'object' ? snap.presets : null;
+      if (!byName) throw new Error('TavernHelper: getPreset 预设快照缺 presets 索引: ' + name);
+      const found = Object.prototype.hasOwnProperty.call(byName, name) ? byName[name] : undefined;
+      if (found === undefined || found === null) {
+        throw new Error('TavernHelper: getPreset 预设不存在: ' + name);
+      }
+      return found;
     },
     // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键（character.d.ts）。
     // 失败语义（一手）：

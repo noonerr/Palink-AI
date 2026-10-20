@@ -26,8 +26,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from app.core.security import get_password_hash  # noqa: E402
-from app.models import Character, CharacterChatSession, ChatVariable, User  # noqa: E402
-from app.models.prompt_preset import PromptPreset  # noqa: E402
+from app.models import Character, CharacterChatSession, ChatVariable, GenerationPreset, User  # noqa: E402
 from app.services.preset_overlay import (  # noqa: E402
     INTERNAL_KEY_PREFIX,
     OVERLAY_KEY,
@@ -75,13 +74,13 @@ def _mk_session(db_session, user, character, sid: str) -> CharacterChatSession:
     return session
 
 
-def _mk_preset(db_session, user, name: str) -> PromptPreset:
-    preset = PromptPreset(
-        id="preset-" + name,
+def _mk_preset(db_session, user, name: str) -> GenerationPreset:
+    """[批次P3 P3-B 2026-10-21] 预设行现在建在 `generation_presets`（用户在用的那张表）。"""
+    preset = GenerationPreset(
         user_id=user.id,
         name=name,
-        entries='[{"id": "main", "content": "g"}]',
-        config='{"temperature": 0.7}',
+        prompts_data='[{"id": "main", "content": "g"}]',
+        temperature=0.7,
     )
     db_session.add(preset)
     db_session.commit()
@@ -89,7 +88,7 @@ def _mk_preset(db_session, user, name: str) -> PromptPreset:
     return preset
 
 
-def _write_overlay(db_session, user, session_id: str, preset: PromptPreset) -> dict:
+def _write_overlay(db_session, user, session_id: str, preset: GenerationPreset) -> dict:
     """走**生产写入路径**产生覆盖层行（不手搓 ChatVariable）。"""
     return write_overlay(
         db_session,

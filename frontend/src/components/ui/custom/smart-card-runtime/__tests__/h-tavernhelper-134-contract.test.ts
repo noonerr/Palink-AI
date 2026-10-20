@@ -303,10 +303,20 @@ describe('A fixture 与注册口径', () => {
     //   台账同步（三层同批）：palink-diag.ts 的 preset_prompt 注释、REPORT_包H 的
     //      2026-10-21 订正段（§9）、SPEC §2.3 追加行、本文件的 MOVES 对应项。
     //   正向锚点（把帧内成员摘掉 ⇒ 本用例必红）：
+    //
+    //   [批次P3 P3-A 2026-10-21 改写，未删] 旧断言是「有直连桥 requestParent('xxx')」，
+    //   而 P3 把三键改成**同步读 ctx.presetSnapshot**（ST 契约同步，帧内异步桥给不出同步值）
+    //   ⇒ 直连桥**必然消失**，旧断言会红。按本仓"守卫要改写不是删"的规矩，改成钉住新不变量：
+    //     ① 键还在；② 是同步箭头函数（不是 async，也不是 requestParent 包装）；
+    //     ③ 读的是 ctx.presetSnapshot 快照。
+    //   三条同时成立才叫"接对了"：只满足 ① 就是 P2 那个"键在、语义错"的 P1。
     (['getPresetNames', 'getLoadedPresetName', 'getPreset'] as const).forEach((n) => {
       expect(registered.has(n), `批次P2 已实现的预设读类键不得丢：${n}`).toBe(true);
-      expect(SRC.indexOf("requestParent('" + n + "'"), `无直连桥：${n}`).toBeGreaterThan(-1);
+      expect(SRC.indexOf(n + ': ('), `${n} 必须是同步箭头函数（ST 契约同步，见 preset.d.ts:150）`).toBeGreaterThan(-1);
+      expect(SRC.indexOf(n + ': async'), `${n} 不得是 async（返回 Promise 会让真卡拿到 undefined）`).toBe(-1);
+      expect(SRC.indexOf("requestParent('" + n + "'"), `${n} 不得再走异步直连桥（P3 改同步快照）`).toBe(-1);
     });
+    expect(SRC.indexOf('ctx.presetSnapshot'), '三键的数据源必须是宿主带进来的预设快照').toBeGreaterThan(-1);
     // ⛔ 反向红线（与上面那条配套）：写类 9 键与 isPreset* 三键**必须仍是 D** ——
     //   写类留到 P3；isPreset* 缺判定字段（本仓预设行没有 marker/system_prompt/
     //   injection_position），补了只能恒 false。谁把它们注册成假实现，这里必红。

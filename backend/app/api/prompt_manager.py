@@ -1,7 +1,7 @@
 """Prompt Manager API routes — CRUD for prompt presets."""
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,7 +12,9 @@ from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.prompt_preset import PromptPreset
 from ..services.preset_overlay import (
+    PRESET_STORE,
     PresetOverlayError,
+    build_preset_snapshot,
     drop_overlay,
     effective_preset,
     get_selected_preset_name,
@@ -95,7 +97,11 @@ def get_preset_selection(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """查询"用户选中的预设名" + 它现在解析到哪份（回落口径见 preset_overlay）。"""
+    """查询"用户选中的预设名" + 它现在解析到哪份（回落口径见 preset_overlay）。
+
+    [批次P3 P3-B 2026-10-21] 解析的**表**由 `prompt_presets` 改指 `generation_presets`
+    （本路由的键位、字段、三层回落语义都不变，只换数据源）。
+    """
     selected = get_selected_preset_name(db, user.id)
     effective = resolve_global_preset(db, user.id)
     return {
@@ -117,6 +123,9 @@ def put_preset_selection(
 
     `{"name": null}` 或空串 ⇒ 清除选择（回到"从未选过"的回落口径）。
     选一份不存在或不属于自己的预设 ⇒ 404（不静默接受一个解析不到的名字）。
+
+    [批次P3 P3-B 2026-10-21] "存在"现在按 `generation_presets` 判；
+    `user_id IS NULL` 的共享行**不可选**（404）—— 共享行不属任何人。
     """
     try:
         selected = set_selected_preset_name(db, user.id, req.name)
@@ -129,6 +138,35 @@ def put_preset_selection(
         "resolved_id": effective.id if effective else None,
         "source": resolve_global_preset_source(db, user.id),
     }
+
+
+# ── 帧内三键的预设快照（批次P3 / P3-A，只读）───────────────────────────────
+# [批次P3 2026-10-21] ST 的预设三键是**同步**的（`preset.d.ts:150`），而帧内唯一的
+# 数据通道 requestParent 是异步的 ⇒ 帧里不可能"同步等到"真值。解法是宿主在 ctx 里
+# 带一份快照，三键同步读它；这里的端点就是那份快照的**唯一服务端算出口**
+# （名单 + 当前生效份 + 按名索引一次给全，避免帧内多次往返与名单/按名不同源）。
+#
+# ⚠️ 路由顺序同样有意义：`/presets/snapshot` 必须声明在 `PUT /presets/{preset_id}`
+# **之前**，否则 FastAPI 会把 "snapshot" 当成 preset_id 吃掉。
+@router.get("/presets/snapshot")
+def get_preset_snapshot(
+    session_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """帧内预设三键的快照（只读，永不写库）。
+
+    `session_id` 给了 ⇒ `in_use` 算"本对话当前生效那份"（他人会话 404）；
+    没给 ⇒ 按全局选中份算。名单与按名索引一律**只含本人**的
+    `generation_presets` 行（共享行红线，见 preset_overlay 文件头）。
+    """
+    try:
+        snapshot = build_preset_snapshot(db, user.id, session_id or None)
+    except PresetOverlayError as exc:
+        raise _overlay_http_error(exc) from exc
+    # 可读性字段：让读响应的人一眼知道 `presets`/`in_use` 来自哪张表
+    snapshot["store"] = PRESET_STORE
+    return snapshot
 
 
 @router.post("/presets")
@@ -209,7 +247,10 @@ class SessionPresetWriteRequest(BaseModel):
     entries: Optional[List[Dict[str, Any]]] = None
     config: Optional[Dict[str, Any]] = None
     # 显式换基：把另一份全局预设**复制**进本对话（不是引用）
-    base_preset_id: Optional[str] = None
+    # [批次P3 P3-B 2026-10-21] 指向 `GenerationPreset.id`（**整数主键**，与旧表
+    # `PromptPreset.id` 的字符串主键不同）。两种写法都收，避免前端传数字被 422 挡掉；
+    # 服务层 `_coerce_generation_preset_id` 统一解析成 int。
+    base_preset_id: Optional[Union[int, str]] = None
     base_name: Optional[str] = None
 
 
@@ -242,7 +283,13 @@ def put_session_preset(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """写本对话副本（首次写触发写时复制）。**永不写 `prompt_presets`**。"""
+    """写本对话副本（首次写触发写时复制）。
+
+    [批次P3 P3-B 2026-10-21] **永不写 `generation_presets`**（原口径为 `prompt_presets`，
+    随数据源改指一起换；"改了不回写全局"这条语义不变）。
+    `base_preset_id` 现在指向 `GenerationPreset.id`；指向共享行（`user_id IS NULL`）
+    或别人那份 ⇒ 404（响应里的 `base_store` 标明它属于 `generation_presets`）。
+    """
     try:
         require_owned_session(db, session_id, user.id)
         return write_overlay(

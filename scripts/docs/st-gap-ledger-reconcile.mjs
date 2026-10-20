@@ -176,6 +176,26 @@ const MOVES = [
     mode: 'keys', from: 'D', to: 'C',
     keys: ['getPresetNames', 'getLoadedPresetName', 'getPreset'],
   },
+  {
+    // 批次P3（2026-10-21）：预设三键改**同步** + 数据源改指 `generation_presets`。
+    // ⚠️ 本条**只加说明、不加移动**：三键在批次P2 已经从 D 挪到 C，本批不挪任何键
+    // ⇒ `keys: []`，档位保持 A=13 / C=74 / D=47（合计 134）。
+    // 之所以仍要登记：②b 的声明值取自「最后一笔订正」的原文，而一条只会告警的判据
+    // 等于没有判据 —— 让最后一笔订正继续声明 C/D，②b 才会一直跟着台账往前走。
+    // 加了假移动（比如把三键再挪一次）会让 ②b 立刻红，别那么写。
+    id: '批次P3：预设三键改同步 + 数据源改指（不挪档位）',
+    cite: {
+      lines: [407, 434],
+      expect: [
+        '订正（2026-10-21，批次P3）',
+        '档位不变',
+        'C = 74 → 74',
+        'D = 47 → 47',
+        '13 + 74 + 47 = 134',
+      ],
+    },
+    mode: 'keys', from: 'D', to: 'C', keys: [],
+  },
 ];
 
 function verifyCite(move) {
@@ -187,7 +207,7 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2'];
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3'];
 const ordered = MOVES.slice().sort((x, y) => {
   const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
   return rank(x) - rank(y);

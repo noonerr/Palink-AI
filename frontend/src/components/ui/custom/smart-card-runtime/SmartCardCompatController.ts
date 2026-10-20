@@ -5,7 +5,11 @@ import { worldbookApi } from '@/services/worldbookApi';
 import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
 import { executeSlashCommandCompat } from '@/lib/sillytavern/getContext';
 import { getStCompatCommandAliases, getStCompatCommandNames } from '@/lib/slash-engine/st-command-catalog';
-import type { CharacterChatSession, SmartCardCompatDiagnostic } from '@/types';
+import type {
+  CharacterChatSession,
+  SmartCardCompatDiagnostic,
+  SmartCardPresetSnapshot,
+} from '@/types';
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
 import { PopupType } from '@/lib/popup-system/types';
@@ -944,10 +948,21 @@ export async function dispatchSmartCardPersonaAction(
 //
 // 形状偏差（如实留痕，见批次P2 报告 §P2-3）：
 //   · ST 的 Preset = { settings, prompts, prompts_unused, extensions }；
-//     本仓 `prompt_presets` 行只有 entries/config ⇒
-//     prompts ← entries（原样透传，**不补 enabled/role/position 假默认**）、
-//     settings ← config（原样透传）、prompts_unused ← []、extensions ← {}。
+//     本仓预设行只有"提示词数组 + 生成参数"两格 ⇒
+//     prompts ← prompts_data（原样透传，**不补 enabled/role/position 假默认**）、
+//     settings ← 生成参数（原样透传）、prompts_unused ← []、extensions ← {}。
 //     所以 `isPresetSystemPrompt` 那三个判定键在本仓**仍然无判定依据**（保持 D 类）。
+//
+// [批次P3 2026-10-21] 两处订正（上面旧注释保留不删，按本节为准）：
+//   · **数据源改指 `generation_presets`**（P3-B）：原先整条链读 `/api/prompt-manager/presets`
+//     （`prompt_presets`：全库 0 行、没有第一方界面在用它），现统一走
+//     `/api/prompt-manager/presets/snapshot` —— 服务端按 `GenerationPreset` 一次算好整份快照，
+//     **只含登录用户自己的行**（共享行 `user_id IS NULL` 不进名单，红线见施工件 §P3-B 第 4 条）。
+//   · **三键对外必须同步**（P3-A）：ST 契约是同步的（`preset.d.ts:150`），而父侧通道是 async
+//     ⇒ 帧内**不再** requestParent 这三个键，改读宿主带进 ctx 的快照（见本文件
+//     `fetchSmartCardPresetSnapshot` 与 `runtime-body/part-07.ts` 的同名段）。
+//     父侧这三个导出函数**保留且改读同一份快照** —— 既给"不走 ctx 的直连调用方"用，
+//     也保证父侧与帧内不会各说一套。
 // ============================================================
 
 type PalinkPresetRow = {
@@ -955,6 +970,16 @@ type PalinkPresetRow = {
   name: string;
   entries: Array<Record<string, unknown>> | null;
   config: Record<string, unknown> | null;
+};
+
+/** 服务端算好的帧内预设快照（`GET /api/prompt-manager/presets/snapshot`）。 */
+export type SmartCardPresetSnapshotPayload = {
+  store?: string;
+  names?: string[];
+  loaded_name?: string | null;
+  in_use?: Record<string, unknown> | null;
+  presets?: Record<string, Record<string, unknown>>;
+  source?: string;
 };
 
 /** 本对话当前生效的预设（`source` = 'session' 本对话副本 / 'global' 全局选中份）。 */
@@ -999,9 +1024,49 @@ async function fetchSmartCardSessionPreset(
   }
 }
 
+/**
+ * [批次P3 P3-A 2026-10-21] 宿主侧的预设快照拉取 —— 帧内三键同步读的那份数据就是它。
+ *
+ * 为什么**服务端一次算好**而不是父侧拼：名单（getPresetNames）与按名解析（getPreset）
+ * 必须同源，分两次拉会出现"名字在名单里但按名取不到"；服务端一次给全，且能在那里
+ * 用 `user_id == :id` 把共享行挡掉（父侧拿不到 user_id，挡不了）。
+ *
+ * `sessionId` 只认宿主自己那份（与 `resolveSmartCardPresetSessionId` 同口径）：
+ * 传了 ⇒ `in_use` 是本对话当前生效那份；不传（含 `__pending__`）⇒ 按全局选中份算。
+ * 拉不到 ⇒ 抛（调用方负责降级成"没有快照"，不许返回假快照）。
+ */
+export async function fetchSmartCardPresetSnapshot(
+  sessionId?: string | null,
+): Promise<SmartCardPresetSnapshotPayload> {
+  const raw = String(sessionId || '').trim();
+  const usable = raw && raw !== '__pending__' ? raw : '';
+  const url = usable
+    ? `/api/prompt-manager/presets/snapshot?session_id=${encodeURIComponent(usable)}`
+    : '/api/prompt-manager/presets/snapshot';
+  const data = await api.get<SmartCardPresetSnapshotPayload>(url);
+  return data && typeof data === 'object' ? data : {};
+}
+
+/**
+ * 旧口径的行列表 —— [批次P3] 不再走 `/api/prompt-manager/presets`（那张表全库 0 行）。
+ * 保留这个函数是为了让"按名解析"与"名单"共用同一份快照（见上方说明）。
+ */
 async function listSmartCardPresets(): Promise<PalinkPresetRow[]> {
-  const rows = await api.get<PalinkPresetRow[]>('/api/prompt-manager/presets');
-  return Array.isArray(rows) ? rows : [];
+  const snapshot = await fetchSmartCardPresetSnapshot();
+  const presets = snapshot.presets && typeof snapshot.presets === 'object' ? snapshot.presets : {};
+  return Object.keys(presets).map((name) => {
+    const st = presets[name] || {};
+    return {
+      id: name,
+      name,
+      // 从 ST 形状倒推回内部视图（settings→config、prompts→entries），
+      // 只在本文件的父侧直连口径里用；帧内不经过这一层。
+      entries: Array.isArray(st.prompts) ? (st.prompts as Array<Record<string, unknown>>) : [],
+      config: st.settings && typeof st.settings === 'object'
+        ? (st.settings as Record<string, unknown>)
+        : null,
+    };
+  });
 }
 
 /**
@@ -1030,6 +1095,57 @@ export async function getSmartCardPresetNames(): Promise<{ success: boolean; nam
   } catch (error) {
     return { success: false, error: 'preset_list_failed' };
   }
+}
+
+/**
+ * [批次P3 P3-A] 快照 → 帧内 ctx 用的形状。
+ *
+ * 服务端给的是蛇形（`loaded_name` / `in_use`），帧内读驼峰（`loadedName` / `inUse`）；
+ * 缺数据时**保留空容器与 null**，不把"没快照"伪装成"没有预设" —— 那是本次要修的
+ * 那个 P1（不报错、不留痕、门禁全绿）的反面。
+ */
+export function toSmartCardPresetSnapshot(
+  payload: SmartCardPresetSnapshotPayload | null | undefined,
+): SmartCardPresetSnapshot | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const presets: SmartCardPresetSnapshot['presets'] = {};
+  const raw = payload.presets && typeof payload.presets === 'object' ? payload.presets : {};
+  Object.keys(raw).forEach((name) => {
+    const st = raw[name] || {};
+    presets[name] = {
+      settings: st.settings && typeof st.settings === 'object'
+        ? (st.settings as Record<string, unknown>)
+        : {},
+      prompts: Array.isArray(st.prompts) ? st.prompts : [],
+      prompts_unused: Array.isArray(st.prompts_unused) ? st.prompts_unused : [],
+      extensions: st.extensions && typeof st.extensions === 'object'
+        ? (st.extensions as Record<string, unknown>)
+        : {},
+    };
+  });
+  const inUseRaw = payload.in_use;
+  const inUse = inUseRaw && typeof inUseRaw === 'object'
+    ? {
+        settings: inUseRaw.settings && typeof inUseRaw.settings === 'object'
+          ? (inUseRaw.settings as Record<string, unknown>)
+          : {},
+        prompts: Array.isArray(inUseRaw.prompts) ? inUseRaw.prompts : [],
+        prompts_unused: Array.isArray(inUseRaw.prompts_unused) ? inUseRaw.prompts_unused : [],
+        extensions: inUseRaw.extensions && typeof inUseRaw.extensions === 'object'
+          ? (inUseRaw.extensions as Record<string, unknown>)
+          : {},
+      }
+    : null;
+  return {
+    store: payload.store || 'generation_presets',
+    names: Array.isArray(payload.names) ? payload.names.slice() : [],
+    loadedName: payload.loaded_name === undefined || payload.loaded_name === null
+      ? null
+      : String(payload.loaded_name),
+    inUse,
+    presets,
+    source: payload.source || 'global',
+  };
 }
 
 /**

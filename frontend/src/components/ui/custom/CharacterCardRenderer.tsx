@@ -7,7 +7,18 @@ import ReactMarkdown from 'react-markdown';
 import { Maximize2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { readIdbNamespaceKillSwitch } from '@/lib/sillytavern/card-idb-namespace';
-import type { CharacterSmartCardContext, SillyTavernPluginRuntimeConfig, SmartCardRenderMode } from '@/types';
+import type {
+  CharacterSmartCardContext,
+  SillyTavernPluginRuntimeConfig,
+  SmartCardPresetSnapshot,
+  SmartCardRenderMode,
+} from '@/types';
+// [批次P3 2026-10-21] 帧内预设三键的快照：ST 契约是同步的，帧内拿不到异步真值
+// ⇒ 由宿主拉好快照塞进 ctx（boot 内联 + context-update 热更两条通道）。
+import {
+  fetchSmartCardPresetSnapshot,
+  toSmartCardPresetSnapshot,
+} from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
 import { buildSillyTavernCompatRuntimeV2Shim } from '@/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime';
 import { promptInjection } from '@/services/prompt-injection';
 import {
@@ -341,6 +352,28 @@ const IframeRenderer = React.memo(function IframeRenderer({
   useEffect(() => {
     resourcePlanConfigRef.current = smartCardRuntimeConfigFallback;
   }, [context.characterId, sourceFingerprint]);
+  // [批次P3 P3-A 2026-10-21] 预设快照：帧内三键（getPresetNames / getLoadedPresetName /
+  // getPreset）在 ST 里是**同步**的，而帧内唯一数据通道 requestParent 是异步的
+  // ⇒ 宿主把快照拉好带进 ctx，帧内同步读它。刷新沿用既有的 context-update 通道
+  // （liveContext 变化 → postContextToFrame → Object.assign(ctx, …)）。
+  // 拉不到就保持 null（帧内返回 [] / null 并 palinkDiag 留痕，不冒充"没有预设"）。
+  const [presetSnapshot, setPresetSnapshot] = useState<SmartCardPresetSnapshot | null>(null);
+  const presetSessionId = String(context.sessionId || '').trim();
+  useEffect(() => {
+    let cancelled = false;
+    setPresetSnapshot(null);
+    fetchSmartCardPresetSnapshot(presetSessionId)
+      .then((payload) => {
+        if (cancelled) return;
+        setPresetSnapshot(toSmartCardPresetSnapshot(payload));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // 拉取失败 ⇒ 保持 null（帧内走"快照未就绪"留痕分支），不造空快照骗卡
+        setPresetSnapshot(null);
+      });
+    return () => { cancelled = true; };
+  }, [context.characterId, presetSessionId]);
   // 智能卡资源模式（direct/proxy）切换时重建 srcDoc：URL 改写结果不同
   //（optimizeSmartCardHtmlForRuntime 的缓存键已含模式，这里只需触发重算）
   const [assetModeVersion, setAssetModeVersion] = useState(0);
@@ -380,6 +413,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // [包G G-1 #2 2026-10-18] 模型名走 context-update 热通道：切换模型不重建 iframe，
     // 但帧内 getContext().getChatCompletionModel() 必须跟着变（boot 那份只到首帧）。
     selectedModel: context.selectedModel,
+    // [批次P3 P3-A] 预设快照：这是**唯一保证到达**帧内的通道（见下方 bootContext 处的说明）。
+    presetSnapshot,
   }), [
     context.characterId,
     context.characterName,
@@ -406,10 +441,11 @@ const IframeRenderer = React.memo(function IframeRenderer({
     trustedNative,
     viewportContext,
     context.selectedModel,
+    presetSnapshot,
   ]);
 
   const bootContextSignature = getSmartCardBootContextSignature(
-    { ...context, stPluginRuntimeConfig },
+    { ...context, stPluginRuntimeConfig, presetSnapshot },
     interfaceLanguage,
     persistedStorage,
     sourceFingerprint,
@@ -439,6 +475,12 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // [包G G-1 #2 2026-10-18] 模型名同样随 boot 进 srcdoc（首帧同步可用；后续切换由
     // context-update 热更，见上方 liveContext）。
     selectedModel: context.selectedModel,
+    // [批次P3 P3-A] 预设快照随 boot 内联：快照已在手时首帧即同步可用。
+    // ⚠️ 快照是异步到的，而 srcDoc 的 useMemo **刻意不依赖 bootContext**（见该文件里
+    // "srcDoc 只依赖内容变化"那段注释 —— 依赖它会让每次晚到数据都触发 iframe 整页重载）
+    // ⇒ 若快照晚于首帧到达，boot 里那份不会补进去，真正保证到达的是 liveContext 的
+    // context-update 通道。两条通道写的是同一个 ctx 键，帧内不区分来源。
+    presetSnapshot,
     // [S1-G6 2026-10-13] 在主框架读 IDB 分库止血开关并下发。帧内读不到主框架的
     // localStorage（未信任卡帧里 window.parent 是 legacy 安全代理），必须由这里读。
     // 每次构建 srcdoc 都重读 ⇒ 刷新即生效，仍满足"不用重新构建就能关掉"。
@@ -458,6 +500,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
     interfaceLanguage,
     bootContextSignature,
     stPluginRuntimeConfig,
+    presetSnapshot,
   ]);
 
   useEffect(() => {

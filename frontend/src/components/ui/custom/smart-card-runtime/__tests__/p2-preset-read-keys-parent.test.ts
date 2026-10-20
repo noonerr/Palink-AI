@@ -32,26 +32,43 @@ vi.mock('@/services/api', () => ({
 
 import { handleSmartCardCompatRequest } from '../SmartCardCompatController';
 
-const PRESETS = [
-  {
-    id: 'p-b',
-    name: '预设B',
-    entries: [{ id: 'main', content: 'B 的主提示词' }],
-    config: { temperature: 0.8 },
+// [批次P3 P3-B 2026-10-21] 数据源改指 `generation_presets`：
+// 父侧不再读 `/api/prompt-manager/presets`（那背后是 `prompt_presets`，**全库 0 行**），
+// 改读服务端一次算好的快照 `/api/prompt-manager/presets/snapshot`。
+// 快照里每份预设已经是 ST `Preset` 形状（`{settings, prompts, prompts_unused, extensions}`）。
+const SNAPSHOT = {
+  store: 'generation_presets',
+  names: ['预设B', '预设A'],
+  loaded_name: '预设A',
+  in_use: {
+    settings: { temperature: 0.5 },
+    prompts: [{ id: 'main', content: '本对话改过的内容' }],
+    prompts_unused: [],
+    extensions: {},
   },
-  {
-    id: 'p-a',
-    name: '预设A',
-    entries: [{ id: 'main', content: 'A 的主提示词' }],
-    config: null,
+  presets: {
+    预设B: {
+      settings: { temperature: 0.8 },
+      prompts: [{ id: 'main', content: 'B 的主提示词' }],
+      prompts_unused: [],
+      extensions: {},
+    },
+    预设A: {
+      settings: {},
+      prompts: [{ id: 'main', content: 'A 的主提示词' }],
+      prompts_unused: [],
+      extensions: {},
+    },
   },
-];
+  source: 'session',
+};
 
 const SESSION_PRESET = {
   source: 'session',
   name: '预设A（本对话副本）',
-  base_preset_id: 'p-a',
+  base_preset_id: '12',
   base_name: '预设A',
+  base_store: 'generation_presets',
   entries: [{ id: 'main', content: '本对话改过的内容' }],
   config: { temperature: 0.5 },
   is_session_copy: true,
@@ -60,9 +77,10 @@ const SESSION_PRESET = {
 function mockApi(overrides: Record<string, unknown> = {}) {
   getMock.mockImplementation(async (url: string) => {
     if (url in overrides) return overrides[url];
-    if (url === '/api/prompt-manager/presets') return PRESETS;
+    if (url === '/api/prompt-manager/presets/snapshot') return SNAPSHOT;
+    if (url.indexOf('/api/prompt-manager/presets/snapshot?') === 0) return SNAPSHOT;
     if (url === '/api/prompt-manager/presets/selection') {
-      return { selected_name: '预设A', resolved_name: '预设A', resolved_id: 'p-a', source: 'selected' };
+      return { selected_name: '预设A', resolved_name: '预设A', resolved_id: 12, source: 'selected' };
     }
     if (url.indexOf('/api/prompt-manager/sessions/') === 0) return SESSION_PRESET;
     return null;
@@ -100,12 +118,19 @@ beforeEach(() => {
 });
 
 describe('预设读类 · getPresetNames', () => {
-  it('从 /presets 取名字列表（数组必须对象包裹到达）', async () => {
+  it('从 `/presets/snapshot` 取名字列表（数组必须对象包裹到达）', async () => {
     const out = await callAction('getPresetNames');
     expect(out.ok).toBe(true);
     expect(out.result.success).toBe(true);
     expect(out.result.names).toEqual(['预设B', '预设A']);
-    expect(getMock.mock.calls.some((c) => c[0] === '/api/prompt-manager/presets')).toBe(true);
+    // [批次P3 P3-B] 数据源改指：这里必须是快照端点，不再是空的 `/presets`
+    expect(
+      getMock.mock.calls.some((c) => String(c[0]).indexOf('/api/prompt-manager/presets/snapshot') === 0),
+    ).toBe(true);
+    expect(
+      getMock.mock.calls.some((c) => c[0] === '/api/prompt-manager/presets'),
+      '`/api/prompt-manager/presets`（prompt_presets，全库 0 行）不再被本链消费',
+    ).toBe(false);
   });
 
   it('后端访问失败 ⇒ success:false（帧内转 throw，不返空数组装成功）', async () => {
