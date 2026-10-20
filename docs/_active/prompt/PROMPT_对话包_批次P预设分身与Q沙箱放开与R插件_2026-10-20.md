@@ -1,5 +1,24 @@
 # PROMPT — 对话派包 · 批次 P（预设分身）/ Q（卡片读主页面 + 凭据加固）/ R（插件启用与安装）2026-10-20
 
+> ## ⛔ 主脑订正（2026-10-20 晚 · 本件写完后一手复核否证了自己的一条前提）
+>
+> **Q-1「先把 JS 可读的 cookie 挪出可达范围，否则默认放开=交出凭据」这个前提不成立，整批 Q 已停手待用户裁决。**
+> 下面第 2 条裁定与 Q-1 的原文**保留不删**（本仓规矩：只进不出，纠错加订正），但**不得照做**。一手事实（主脑本会话逐行读过）：
+> - 访问令牌 `palink_session` 一直就是 `httponly=True`：`backend/app/api/dependencies.py:19-28`（`set_session_cookie`，
+>   登录 `auth.py:152` 与续期 `auth.py:382` 共用这一函数）。
+> - JS 可读的那枚是 **CSRF 双提交随机值**，不是令牌：`backend/app/api/auth.py:153-160` 与 `:383-389`
+>   两处 `httponly=False` 设的都是 `CSRF_COOKIE_NAME`（`secrets.token_urlsafe(32)`）。
+>   ⇒ 把它改成 HttpOnly **救不了**"卡片能读主页面"这件事，只会把前端 CSRF 注入路径打断。
+> - 真正的暴露面是**同源**，与 cookie 属性无关：srcdoc 帧继承父站点 origin；全站无 CSP；
+>   帧内 `fetch` 对未白名单路径**直接落到真实 API**（`frontend/src/components/ui/custom/smart-card-runtime/runtime-body/part-06.ts:714-720`，
+>   `handleStApiFetchCompat` 返回 null ⇒ `nativeFetchCompat(input, init)` 原样转发）；
+>   而 CSRF 判定**只凭 Origin 同源就放行**（`backend/app/core/csrf_guard.py:28-31`，`origin_host == site_host → True`）。
+>   ⇒ 一旦 `allow-same-origin` 默认放开，卡在同一 origin 里就能带着 cookie 打任何写端点，且中间件不会拦。
+> - 复核全文与"整批停手"记录见 `docs/_active/report/REPORT_包AH_Q_沙箱放开前置加固复核与整批停手_2026-10-20.md`，提交 `b40a8b9`。
+>
+> **Q 现在的状态 = 等用户在三档里选（配置开关 / 脱敏快照 / 独立 origin），没有选之前不许动 Q。**
+> **P 与 R 的落点没变，照常执行。**
+
 > 零上下文执行件。复核方 = Qoder「分配分包派遣任务」会话（主脑）。
 > 通用红线读 `docs/_active/HANDOFF_提示词_已授权批次_写桥与人设角色库与getContext与服务端留痕_2026-10-20.md` §0；
 > 并行施工纪律（共享 git 索引）读 `PROMPT_对话包_批次F总账对账与批次G模板串守卫_2026-10-20.md` 同名一节。
