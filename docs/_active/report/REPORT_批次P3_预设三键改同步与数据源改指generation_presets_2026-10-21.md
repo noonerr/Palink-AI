@@ -291,12 +291,12 @@ $ git diff --name-only HEAD <新树> | grep -Ei "frontend/dist|/models/|migratio
 
 | # | 项 | 结论 | 证据 |
 |---|---|---|---|
-| 1 | `git show --stat <提交>` 只含自己文件 | ✅ | 20 文件，`20 files changed, 1553 insertions(+), 200 deletions(-)`；无 `frontend/dist`、无 `backend/models/`、无 `migrations.py`（`git diff --name-only HEAD <树> \| grep -Ei "dist\|/models/\|migrations.py"` ⇒ 无命中，rc=1） |
+| 1 | `git show --stat <提交>` 只含自己文件 | ✅ | 两笔：`101f7c0`（主体，20 文件 `1553 insertions(+), 200 deletions(-)`）+ `3e88b1a`（仅 `docs/_CATALOG.md`，因为报告的 tracked 状态变了、目录必须复生成才不 STALE）。无 `frontend/dist`、无 `backend/models/`、无 `migrations.py`（`git diff --name-only HEAD <树> \| grep -Ei "dist\|/models/\|migrations.py"` ⇒ 无命中，rc=1）；`git status --porcelain -- backend/ frontend/src docs/ scripts/` 提交后为空 |
 | 2 | `models` + `migrations.py` diff 为空 | ✅ | §8 A：零输出 |
 | 3 | `CharacterCardRenderer.tsx` + `host-origin-policy.ts` diff 为空 | ❌ **未做到**（前者） | `host-origin-policy.ts` 零输出 ✅；`CharacterCardRenderer.tsx` **有 47 行改动**（要把快照送进 ctx 必须改它）❌。**补偿证据**：该 diff 里 `grep -in sandbox` **零命中** ⇒ sandbox 表达式未动（§8 C） |
 | 4 | 模板串守卫全绿 | ✅ | `runtime-body-template-literal-guard.test.ts (7 tests)`、`generated-script-parse-guard.test.ts (4 tests)` 全绿；另跑 `runtime-source-carrier-fidelity.test.ts (17 tests)` |
 | 5 | 执行型测试用求值后载体 | ✅ | `p2-preset-read-keys-frame.test.ts`、`h-tavernhelper-134-contract.test.ts` 均 `import { COMPAT_V2_RUNTIME_ARTIFACT }` |
-| 6 | 临时索引提交 + `unset` 后再 `reset` | ✅ | `GIT_INDEX_FILE=$PWD/.tmp_probe/_p3_index` → `read-tree HEAD` → 逐项 `git add` → `write-tree` → `commit-tree` → **`unset GIT_INDEX_FILE`** → `update-ref` → `git reset -q HEAD -- <自己的 path>`；提交后无幽灵 `MM`/`D` |
+| 6 | 临时索引提交 + `unset` 后再 `reset` | ✅ | `GIT_INDEX_FILE=$PWD/.tmp_probe/_p3_index2` → `read-tree HEAD` → 逐项 `git add` → `write-tree` → `commit-tree` → **`unset GIT_INDEX_FILE`** → `update-ref refs/heads/three-tracks-merge-20261012` → `git reset -q HEAD -- <自己的 path>`（顺序未反）。提交后 `git status --porcelain \| grep -E "^(MM\| D\|MD\|D )"` 无输出 ⇒ **无幽灵 `MM`/`D`**；未用 `git add -A` / `--no-verify` / amend |
 
 ### 6.5 一句话
 
