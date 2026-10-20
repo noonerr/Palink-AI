@@ -247,7 +247,8 @@ describe('A fixture 与注册口径', () => {
     //     不许删键、不许放宽名单、不许改产品码来凑绿。
     const forbidden = [
       // —— 包H 首版 24 键（本次未动，顺序与内容保持原样）——
-      'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
+      // [批次P2 2026-10-21] 其中 getPreset / getLoadedPresetName 已移出（读类真落地，见下方锚点）。
+      'setPreset', 'loadPreset', 'builtin', 'default_preset',
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
       'injectPrompts', 'uninjectPrompts',
@@ -255,8 +256,9 @@ describe('A fixture 与注册口径', () => {
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
       'getTavernRegexes', 'formatAsTavernRegexedString',
       // —— 批次I 补列 · ST 预设体系：族表 16 键，原先只盯 6，补 10 ——
+      // [批次P2 2026-10-21] getPresetNames 已移出（读类真落地）；剩 15 键仍为 D。
       'builtin_prompt_default_order', 'createOrReplacePreset', 'createPreset', 'deletePreset',
-      'getPresetNames', 'getProxyPresetNames', 'importRawPreset', 'renamePreset',
+      'getProxyPresetNames', 'importRawPreset', 'renamePreset',
       'replacePreset', 'updatePresetWith',
       // —— 批次I 补列 · 酒馆助手音频播放器：族表 8 键，原先只盯 3，补 5 ——
       'appendAudioList', 'getCurrentAudio', 'pauseAudio', 'replaceAudioList', 'setAudioSettings',
@@ -289,6 +291,37 @@ describe('A fixture 与注册口径', () => {
     expect(registered.has('retrieveDisplayedMessage')).toBe(true);
     expect(SRC.indexOf('retrieveDisplayedMessage: th134RetrieveDisplayedMessage')).toBeGreaterThan(-1);
     expect(SRC.indexOf('#chat > .mes[mesid="')).toBeGreaterThan(-1);
+    // ⚠️ 2026-10-21 批次P2 再改判三键：`getPresetNames` / `getLoadedPresetName` / `getPreset`
+    //   移出 D 名单（D 50→47、C 71→74）。**不是**为凑绿，是读类能力当天落地：
+    //   ① 契约一手：@types/function/preset.d.ts —— getPresetNames():string[]、
+    //      getLoadedPresetName():string、getPreset(name:'in_use'|string):Preset（不存在 @throws）；
+    //   ② 数据源真在库里：P2-2 的"全局选中份"（UserSetting.silly_tavern_settings 的
+    //      palink_prompt_preset.selected_name，零迁移）+ P-1 的本对话覆盖层，
+    //      经 /api/prompt-manager/sessions/{id}/preset 与 /presets 取；
+    //   ③ 帧内三成员 → 父侧 dispatchSmartCardPresetAction（SmartCardCompatController.ts），
+    //      会话 id 只认宿主 requestContext（不读帧内 payload ⇒ 无跨会话越权面）。
+    //   台账同步（三层同批）：palink-diag.ts 的 preset_prompt 注释、REPORT_包H 的
+    //      2026-10-21 订正段（§9）、SPEC §2.3 追加行、本文件的 MOVES 对应项。
+    //   正向锚点（把帧内成员摘掉 ⇒ 本用例必红）：
+    (['getPresetNames', 'getLoadedPresetName', 'getPreset'] as const).forEach((n) => {
+      expect(registered.has(n), `批次P2 已实现的预设读类键不得丢：${n}`).toBe(true);
+      expect(SRC.indexOf("requestParent('" + n + "'"), `无直连桥：${n}`).toBeGreaterThan(-1);
+    });
+    // ⛔ 反向红线（与上面那条配套）：写类 9 键与 isPreset* 三键**必须仍是 D** ——
+    //   写类留到 P3；isPreset* 缺判定字段（本仓预设行没有 marker/system_prompt/
+    //   injection_position），补了只能恒 false。谁把它们注册成假实现，这里必红。
+    //   ⚠️ 刻意**不用** `([...] as const).forEach` 形态：对账脚本
+    //   （scripts/docs/st-gap-ledger-reconcile.mjs 的 anchors 正则）把那种形态当
+    //   "正向锚点"收集，而正向锚点里出现 D 类键会被判成"锚点与分类矛盾"。
+    //   这里断言的方向相反（要求**不注册**），所以用普通数组。
+    const MUST_STAY_D = [
+      'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
+      'createPreset', 'replacePreset', 'updatePresetWith', 'createOrReplacePreset',
+      'deletePreset', 'renamePreset', 'loadPreset', 'setPreset', 'getProxyPresetNames',
+    ];
+    MUST_STAY_D.forEach((n) => {
+      expect(registered.has(n), `D 类键不得被注册成假实现：${n}`).toBe(false);
+    });
     // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
     expect(registered.has('registerMacroLike')).toBe(true);
     expect(SRC.indexOf("registerMacroLike: th134Bridge('registerMacroLike')")).toBeGreaterThan(-1);

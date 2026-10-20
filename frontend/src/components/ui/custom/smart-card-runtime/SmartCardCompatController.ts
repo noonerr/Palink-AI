@@ -929,6 +929,178 @@ export async function dispatchSmartCardPersonaAction(
 }
 
 // ============================================================
+// [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类**三键的父侧实现。
+// 契约一手（st-plugins/third-party/JS-Slash-Runner-main/@types/function/preset.d.ts）：
+//   · getPresetNames(): string[]                      —— 预设名称列表（无 @throws）
+//   · getLoadedPresetName(): string                   —— 'in_use' 是从哪份预设加载来的
+//   · getPreset(name: 'in_use' | string): Preset      —— 不存在 **@throws**
+//
+// 数据源（施工件 P2-3 指定）：P2-2 的全局选中份 + P-1 的本对话覆盖层，全部经
+// `/api/prompt-manager/sessions/{id}/preset`（`prompt_manager.py:165`）与
+// `/api/prompt-manager/presets` 取。**卡片只能看到自己会话那份** ——
+// 会话 id 一律取宿主侧 `requestContext.sessionId`，**不读帧内 payload 里的 sessionId**
+// （帧是卡写的代码，读 payload 等于把越权面交给卡）。
+//
+// 形状偏差（如实留痕，见批次P2 报告 §P2-3）：
+//   · ST 的 Preset = { settings, prompts, prompts_unused, extensions }；
+//     本仓 `prompt_presets` 行只有 entries/config ⇒
+//     prompts ← entries（原样透传，**不补 enabled/role/position 假默认**）、
+//     settings ← config（原样透传）、prompts_unused ← []、extensions ← {}。
+//     所以 `isPresetSystemPrompt` 那三个判定键在本仓**仍然无判定依据**（保持 D 类）。
+// ============================================================
+
+type PalinkPresetRow = {
+  id: string;
+  name: string;
+  entries: Array<Record<string, unknown>> | null;
+  config: Record<string, unknown> | null;
+};
+
+/** 本对话当前生效的预设（`source` = 'session' 本对话副本 / 'global' 全局选中份）。 */
+type PalinkSessionPreset = {
+  source: 'session' | 'global';
+  name: string | null;
+  base_preset_id: string | null;
+  base_name: string | null;
+  entries: Array<Record<string, unknown>>;
+  config: Record<string, unknown> | null;
+  is_session_copy: boolean;
+};
+
+function resolveSmartCardPresetSessionId(context: SmartCardCompatRequestContext | null | undefined): string {
+  const raw = context && context.sessionId ? String(context.sessionId) : '';
+  return raw === '__pending__' ? '' : raw.trim();
+}
+
+async function fetchSmartCardSessionPreset(
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ ok: true; preset: PalinkSessionPreset } | { ok: false; error: string }> {
+  const sessionId = resolveSmartCardPresetSessionId(context);
+  if (!sessionId) return { ok: false, error: 'no_active_session' };
+  try {
+    const data = await api.get<PalinkSessionPreset>(
+      `/api/prompt-manager/sessions/${encodeURIComponent(sessionId)}/preset`,
+    );
+    if (!data || typeof data !== 'object') return { ok: false, error: 'preset_read_failed' };
+    return { ok: true, preset: data };
+  } catch (error) {
+    return { ok: false, error: 'preset_read_failed' };
+  }
+}
+
+async function listSmartCardPresets(): Promise<PalinkPresetRow[]> {
+  const rows = await api.get<PalinkPresetRow[]>('/api/prompt-manager/presets');
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * 本仓行 → ST `Preset` 形状。**只做形状搬运，不造字段**：
+ * entries/config 原样透传（缺什么就是缺什么），prompts_unused/extensions 是空容器
+ * （本仓没有"未加入列表的提示词"与"预设扩展"这两个概念）。
+ */
+function mapPresetRowToSt(preset: {
+  name?: string | null;
+  entries?: Array<Record<string, unknown>> | null;
+  config?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  return {
+    settings: preset.config && typeof preset.config === 'object' ? preset.config : {},
+    prompts: Array.isArray(preset.entries) ? preset.entries : [],
+    prompts_unused: [],
+    extensions: {},
+  };
+}
+
+/** preset.d.ts: `getPresetNames(): string[]` —— 下拉框里的已保存预设名。 */
+export async function getSmartCardPresetNames(): Promise<{ success: boolean; names?: string[]; error?: string }> {
+  try {
+    const rows = await listSmartCardPresets();
+    return { success: true, names: rows.map((row) => String(row.name || '')).filter(Boolean) };
+  } catch (error) {
+    return { success: false, error: 'preset_list_failed' };
+  }
+}
+
+/**
+ * preset.d.ts: `getLoadedPresetName(): string` —— 'in_use' 是从哪份预设加载来的。
+ *
+ * 本仓对应关系：本对话有覆盖层 ⇒ `base_name`（"我在哪份之上改的"，正是 ST 的语义）；
+ * 没有覆盖层 ⇒ 全局选中那份的名字。
+ * ⚠️ 偏差：一份预设都没有时返回 **null**（契约声明 string）。不造 `'Default'`
+ *    —— 本仓不存在内置预设，编一个名字会让卡以为可以按名去 getPreset。
+ */
+export async function getSmartCardLoadedPresetName(
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; name?: string | null; error?: string }> {
+  const session = await fetchSmartCardSessionPreset(context);
+  if (!session.ok) {
+    if (session.error === 'no_active_session') {
+      // 无会话（卡在角色页渲染、还没进聊天）：退回"全局选中那份"，这也是 ST 的
+      // 'in_use' 在无聊天上下文时的实际含义。
+      try {
+        const selection = await api.get<{ resolved_name?: string | null }>('/api/prompt-manager/presets/selection');
+        return { success: true, name: selection?.resolved_name ?? null };
+      } catch (error) {
+        return { success: false, error: 'preset_selection_failed' };
+      }
+    }
+    return { success: false, error: session.error };
+  }
+  const preset = session.preset;
+  const loaded = preset.base_name ?? preset.name ?? null;
+  return { success: true, name: loaded === null ? null : String(loaded) };
+}
+
+/**
+ * preset.d.ts: `getPreset(preset_name: 'in_use' | string): Preset` —— 不存在 **抛错**。
+ *
+ * `'in_use'` = 本对话当前生效那份（有覆盖层就是本对话副本，否则是全局选中份）；
+ * 其他名字 = 全局预设按名解析（`user_id` 过滤，别人的名字解析不到 ⇒ 抛）。
+ */
+export async function getSmartCardPreset(
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; preset?: Record<string, unknown>; error?: string }> {
+  const rawName = payload?.presetName ?? payload?.preset_name;
+  const name = rawName === undefined || rawName === null ? 'in_use' : String(rawName);
+
+  if (name === 'in_use') {
+    const session = await fetchSmartCardSessionPreset(context);
+    if (!session.ok) return { success: false, error: session.error };
+    return { success: true, preset: mapPresetRowToSt(session.preset) };
+  }
+
+  let rows: PalinkPresetRow[];
+  try {
+    rows = await listSmartCardPresets();
+  } catch (error) {
+    return { success: false, error: 'preset_list_failed' };
+  }
+  // 同名多行：取列表里第一条（列表本身按 updated_at desc ⇒ 与 resolve_global_preset 同源）
+  const found = rows.find((row) => String(row.name || '') === name);
+  if (!found) return { success: false, error: 'preset_not_found' };
+  return { success: true, preset: mapPresetRowToSt(found) };
+}
+
+/** 预设读类三键的帧内 action 名 → 父侧动作分发。 */
+export async function dispatchSmartCardPresetAction(
+  action: string,
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<Record<string, unknown>> {
+  switch (action) {
+    case 'getPresetNames':
+      return getSmartCardPresetNames();
+    case 'getLoadedPresetName':
+      return getSmartCardLoadedPresetName(context);
+    case 'getPreset':
+      return getSmartCardPreset(payload, context);
+    default:
+      return { success: false, error: 'preset_action_unknown' };
+  }
+}
+
+// ============================================================
 // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键的父侧实现。
 // 契约：character.d.ts:59/76/91/141/183、import_raw.d.ts:12、raw_character.d.ts:5-97。
 // 字段映射表（验收物）见 REPORT_包AC §7A；**结论：不需要加列** ——
@@ -1821,6 +1993,17 @@ export async function handleSmartCardCompatRequest(
       || action.action === 'replacePersona'
     ) {
       result = await dispatchSmartCardPersonaAction(action.action, payload);
+    } else if (
+      // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类**三键（preset.d.ts）。
+      // 全是只读：不进手势闸门（与批次A/B 同源论证 —— 用户激活不传播到 opaque-origin
+      // iframe，而"读当前预设"是最正当的无手势用法）。
+      // 越权面由「会话 id 只取 requestContext.sessionId + 预设列表/选中名都按登录态
+      // user_id 过滤」兜住；帧内 payload 里的 sessionId 一律不读。
+      action.action === 'getPresetNames'
+      || action.action === 'getLoadedPresetName'
+      || action.action === 'getPreset'
+    ) {
+      result = await dispatchSmartCardPresetAction(action.action, payload, requestContext);
     } else if (
       // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧（character.d.ts）。
       // 不进手势闸门：与批次A/段①同源论证（用户激活不传播到 opaque-origin iframe，

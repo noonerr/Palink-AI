@@ -27,12 +27,29 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from ..models import ChatSession, ChatVariable
+from ..models import CharacterChatSession, ChatSession, ChatVariable, UserSetting
 from ..models.prompt_preset import PromptPreset
 
 # 覆盖层行在 chat_variables 里的 key（前缀是内部簿记约定，见模块 docstring）
 OVERLAY_KEY = "__palink_internal_preset_overlay_v1"
 INTERNAL_KEY_PREFIX = "__palink_internal_"
+
+# ---------------------------------------------------------------------------
+# [批次P2 P2-2 2026-10-21] "用户选中哪份全局预设"的落点 —— **零迁移**。
+#
+# ST 侧把选中名记在全局 settings（`openai.js:404` 默认 'Default'、`:4509`/`:4728`
+# 写 `oai_settings.preset_settings_openai`），本仓对应层就是 `UserSetting` 的 JSON 列。
+# 落点选 `silly_tavern_settings`（不是 `power_user`）的理由：
+#   · 它是本仓**唯一**被 ST 设置链路整体读写的那一坨（`silly_tavern.py` 的
+#     `/api/settings/get` / `/api/settings/save`），ST 自己的 `oai_settings` 就住在这里；
+#   · `power_user` 的语义是 ST 的 UI 偏好对象（字号/主题/人名行为），把"选中哪份预设"
+#     塞进去会让 `_sync_personas_from_power_user` 之类的语义搬运逻辑误读它。
+# 命名空间用 Palink 自己的键名，**不伪装成 ST 的 `preset_settings_openai`**：
+# 那个字段指向 ST 的 openai_settings 对象表，而我们的预设是 `prompt_presets` 行，
+# 名字空间不同 ⇒ 借用 ST 键名只会让后人对错表。
+# ⚠️ 这是**有意偏离**（ST 无 per-chat 维度，见模块 docstring），别当 bug 修回去。
+SELECTION_NAMESPACE = "palink_prompt_preset"
+SELECTION_FIELD = "selected_name"
 
 
 class PresetOverlayError(Exception):
@@ -57,16 +74,36 @@ def _loads(raw: Optional[str]) -> Any:
         return None
 
 
-def require_owned_session(db: Session, session_id: str, user_id: int) -> ChatSession:
-    """只认当前登录用户自己的会话；他人会话一律 404（不泄露存在性）。"""
-    session = (
-        db.query(ChatSession)
-        .filter(ChatSession.id == session_id, ChatSession.user_id == user_id)
-        .first()
-    )
-    if session is None:
-        raise PresetOverlayError("session_not_found", "Session not found")
-    return session
+def require_owned_session(db: Session, session_id: str, user_id: int):
+    """只认当前登录用户自己的会话；他人会话一律 404（不泄露存在性）。
+
+    [批次P2 P2-2 2026-10-21 修正] 两张会话表都要认：
+      · `CharacterChatSession`（`character_chat_sessions`）—— **卡片真正用的那张**
+        （`Message.tsx:2038` 传的 `selectedSession.id`，`useCharacterChat.ts:38`
+        的类型就是 `CharacterChatSession`）；`_chat_header` 与
+        `/api/variables/local/{sid}` 也都按这张表校验。
+      · `ChatSession`（`sessions`）—— 通用聊天会话表，P-1 首版只认这张
+        ⇒ 真卡片的 session_id 进来一律 404，覆盖层路由对卡**不可达**（见批次P2 报告
+        「否证主脑」段）。保留它是为了不打断 P-1 已入库的调用方与测试。
+    两张表都按 `user_id` 过滤 ⇒ 不存在"用别人的 id 命中另一张表"的越权面。
+    """
+    sid = str(session_id or "").strip()
+    if sid:
+        session = (
+            db.query(CharacterChatSession)
+            .filter(CharacterChatSession.id == sid, CharacterChatSession.user_id == user_id)
+            .first()
+        )
+        if session is not None:
+            return session
+        session = (
+            db.query(ChatSession)
+            .filter(ChatSession.id == sid, ChatSession.user_id == user_id)
+            .first()
+        )
+        if session is not None:
+            return session
+    raise PresetOverlayError("session_not_found", "Session not found")
 
 
 def get_overlay_row(db: Session, session_id: str) -> Optional[ChatVariable]:
@@ -85,19 +122,127 @@ def get_overlay(db: Session, session_id: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def resolve_global_preset(db: Session, user_id: int) -> Optional[PromptPreset]:
-    """"全局默认那份"。
+def _get_or_create_user_setting(db: Session, user_id: int) -> UserSetting:
+    setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+    if setting is None:
+        setting = UserSetting(user_id=user_id)
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return setting
 
-    ST 把选中名记在全局 settings 里；本仓 `prompt_presets` 目前**没有**"选中"字段，
-    故取用户最近更新的那份作为全局默认（与 `/api/prompt-manager/presets` 的排序同源）。
-    这是已知偏差：等"全局选中名"有落点时只改这一处。
+
+def _selection_namespace(db: Session, user_id: int) -> Dict[str, Any]:
+    setting = db.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+    if setting is None:
+        return {}
+    blob = _loads(setting.silly_tavern_settings)
+    if not isinstance(blob, dict):
+        return {}
+    namespace = blob.get(SELECTION_NAMESPACE)
+    return namespace if isinstance(namespace, dict) else {}
+
+
+def get_selected_preset_name(db: Session, user_id: int) -> Optional[str]:
+    """用户选中的全局预设名；从未选过 ⇒ None（由调用方回落）。"""
+    raw = _selection_namespace(db, user_id).get(SELECTION_FIELD)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def set_selected_preset_name(db: Session, user_id: int, name: Optional[str]) -> Optional[str]:
+    """记住/清除"选中的预设名"。**只写 UserSetting 的既有 JSON 列，不建表不加列。**
+
+    `name=None` 或空串 ⇒ 清除选择（回到"从未选过"的回落口径）。
+    选中一份**不属于自己**或**不存在**的预设 ⇒ `PresetOverlayError("preset_not_found")`，
+    绝不静默接受一个永远解析不到的名字。
     """
+    wanted = (name or "").strip() or None
+    if wanted is not None:
+        exists = (
+            db.query(PromptPreset)
+            .filter(PromptPreset.user_id == user_id, PromptPreset.name == wanted)
+            .first()
+        )
+        if exists is None:
+            raise PresetOverlayError("preset_not_found", "Preset not found")
+
+    setting = _get_or_create_user_setting(db, user_id)
+    blob = _loads(setting.silly_tavern_settings)
+    if not isinstance(blob, dict):
+        blob = {}
+    namespace = blob.get(SELECTION_NAMESPACE)
+    if not isinstance(namespace, dict):
+        namespace = {}
+    if wanted is None:
+        namespace.pop(SELECTION_FIELD, None)
+    else:
+        namespace[SELECTION_FIELD] = wanted
+    if namespace:
+        blob[SELECTION_NAMESPACE] = namespace
+    else:
+        blob.pop(SELECTION_NAMESPACE, None)
+    setting.silly_tavern_settings = json.dumps(blob, ensure_ascii=False)
+    db.commit()
+    return wanted
+
+
+def resolve_global_preset(db: Session, user_id: int) -> Optional[PromptPreset]:
+    """"全局默认那份" = **用户选中的那份**。
+
+    [批次P2 P2-2 2026-10-21] P-1 首版这里取"`updated_at` 最新那份"并在 docstring 里
+    自认是已知偏差（"等'全局选中名'有落点时只改这一处"）—— 本函数就是那个落点。
+
+    回落口径（三层，写进批次P2 报告）：
+      1. 选中的名字能解析到本人的预设 ⇒ 用它（同名多行时取 `updated_at` 最新那行，
+         与 `/api/prompt-manager/presets` 的排序同源；本表无 (user_id,name) 唯一约束）；
+      2. 选中名解析不到（预设被删/改名，或从未选过）⇒ 回落"最近更新的那份"，
+         即 P-1 的旧口径 —— 这是**兼容回落**，不是新语义；
+      3. 本人一份预设都没有 ⇒ None（与旧口径一致，不造默认预设）。
+    """
+    selected = get_selected_preset_name(db, user_id)
+    if selected:
+        chosen = (
+            db.query(PromptPreset)
+            .filter(PromptPreset.user_id == user_id, PromptPreset.name == selected)
+            .order_by(PromptPreset.updated_at.desc())
+            .first()
+        )
+        if chosen is not None:
+            return chosen
     return (
         db.query(PromptPreset)
         .filter(PromptPreset.user_id == user_id)
         .order_by(PromptPreset.updated_at.desc())
         .first()
     )
+
+
+def resolve_global_preset_source(db: Session, user_id: int) -> str:
+    """`resolve_global_preset` 的结果来自哪一层：`selected` / `fallback` / `none`。
+
+    只读，供 `/api/prompt-manager/presets/selection` 与报告对账用；卡片不需要它。
+    """
+    selected = get_selected_preset_name(db, user_id)
+    if selected:
+        chosen = (
+            db.query(PromptPreset)
+            .filter(PromptPreset.user_id == user_id, PromptPreset.name == selected)
+            .order_by(PromptPreset.updated_at.desc())
+            .first()
+        )
+        if chosen is not None:
+            return "selected"
+    if (
+        db.query(PromptPreset)
+        .filter(PromptPreset.user_id == user_id)
+        .order_by(PromptPreset.updated_at.desc())
+        .first()
+        is not None
+    ):
+        return "fallback"
+    return "none"
 
 
 def _preset_view(preset: Optional[PromptPreset]) -> Optional[Dict[str, Any]]:

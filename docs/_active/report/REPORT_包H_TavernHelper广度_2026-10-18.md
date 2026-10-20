@@ -372,3 +372,35 @@ rc=0
 > ⑤ 守卫同步改判：D 名单移除该键 + 三条正向锚点（成员已注册 / 实现桥在场 / ST 选择器在场），
 >    见 `__tests__/h-tavernhelper-134-contract.test.ts` 的批次Q1 注释块。
 > 台账另见 `docs/_active/report/REPORT_批次Q1_本机默认放开卡片读主页面_2026-10-21.md`。
+
+## 9. 订正（2026-10-21，批次P2 预设读类三键）
+
+> **订正（2026-10-21，批次P2）**：`getPresetNames` / `getLoadedPresetName` / `getPreset`
+> 三个键从 D 挪到 C ⇒ **C = 71 → 74、D = 50 → 47**（A = 13 不变；13 + 74 + 47 = 134 仍闭合）。
+> 挪动依据不是"为了让守卫变绿"，是**读类能力真的落地 + 数据源真在库里**：
+> ① 契约一手：`st-plugins/third-party/JS-Slash-Runner-main/@types/function/preset.d.ts`
+>    —— `getPresetNames(): string[]`（无 @throws）、`getLoadedPresetName(): string`、
+>    `getPreset(name: 'in_use' | string): Preset`（预设不存在 **@throws**）。
+> ② 数据源：批次P2 的 P2-2 把"用户选中哪份全局预设"落进 `UserSetting.silly_tavern_settings`
+>    的 `palink_prompt_preset.selected_name`（**零迁移**：不建表、不加列、不写 alembic），
+>    `resolve_global_preset()` 从"取 updated_at 最新那份"改成"取选中那份 + 三层回落"；
+>    会话侧仍是包AI P-1 的写时复制覆盖层。两者经 `/api/prompt-manager/sessions/{id}/preset`
+>    与 `/api/prompt-manager/presets` 暴露。
+> ③ 帧内真实现：`runtime-body/part-07.ts` H 段三成员 → 父侧
+>    `dispatchSmartCardPresetAction`（`SmartCardCompatController.ts`）。
+>    会话 id **只认宿主 `requestContext.sessionId`**，帧内 payload 里塞的 sessionId 一律不读
+>    ⇒ 无跨会话越权面（有失败测试钉住）。
+> ④ 形状偏差如实留痕：ST 的 `Preset = { settings, prompts, prompts_unused, extensions }`，
+>    本仓 `prompt_presets` 行只有 `entries` / `config` ⇒ `prompts ← entries`（原样透传，
+>    **不补 enabled/role/position 假默认**）、`settings ← config`、另两个是空容器。
+>    因此 `isPresetNormalPrompt` / `isPresetPlaceholderPrompt` / `isPresetSystemPrompt`
+>    三键**仍然保持 D**：缺的不是通道，是**判定字段**（本仓预设行没有 `marker` /
+>    `system_prompt` / `injection_position`），补了只能恒 false —— 那是本仓红线。
+> ⑤ 守卫同步改判：D 名单移除这三键 + 三条正向锚点（成员已注册 / requestParent 直连），
+>    并新增一条**反向红线**（写类 9 键与 isPreset* 三键必须仍是 D）。
+>    见 `__tests__/h-tavernhelper-134-contract.test.ts` 的批次P2 注释块。
+> ⑥ 行为有测试托底：`__tests__/p2-preset-read-keys-frame.test.ts`（11 例，执行型，
+>    用求值后载体 `COMPAT_V2_RUNTIME_ARTIFACT`）与
+>    `__tests__/p2-preset-read-keys-parent.test.ts`（13 例，父侧落点 + 越权面）。
+>    反证过：把帧内三成员摘掉 ⇒ 两个文件共 12 例转红。
+> 台账另见 `docs/_active/report/REPORT_批次P2_预设读类与内部键守卫与全局选中名_2026-10-21.md`。

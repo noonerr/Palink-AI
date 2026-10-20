@@ -98,8 +98,15 @@ export type StGapId = (typeof ST_GAP_IDS)[number] | 'unknown';
  * 名单外的未实现名一律 `unknown` —— 宁可 unknown，也不把没核过的东西塞进排行。
  */
 export const ST_GAP_BY_NAME: Record<string, string> = {
-  // [ST-GAP:preset_prompt] ST 预设体系与"预设里这条提示词是什么类型"的判定；Palink 无预设对象层。
+  // [ST-GAP:preset_prompt] ST 预设体系与"预设里这条提示词是什么类型"的判定。
   // ST 侧判定式已核到 PromptManager.js:1723（见台账 §2），本包不搬预设管理器 UI。
+  // ⚠️ 2026-10-21 批次P2 订正：族里**读类 3 键已落地**（getPresetNames /
+  //   getLoadedPresetName / getPreset → 父侧 dispatchSmartCardPresetAction，
+  //   数据源 = 全局选中份 + 本对话覆盖层），故下面三个名字现在只是**分类表残留**，
+  //   不代表它们仍是缺口。剩下 16 个仍是 D 类（写类 9 键 + builtin/default_preset/
+  //   importRawPreset + isPreset* 三键）。isPreset* 不做的理由不是"缺通道"而是
+  //   **缺判定字段**：本仓 prompt_presets 行只有 entries/config，没有 marker /
+  //   system_prompt / injection_position ⇒ 补了只能恒 false（本仓红线）。
   builtin: 'preset_prompt',
   builtin_prompt_default_order: 'preset_prompt',
   createOrReplacePreset: 'preset_prompt',

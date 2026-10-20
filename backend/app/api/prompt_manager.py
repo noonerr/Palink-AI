@@ -15,7 +15,11 @@ from ..services.preset_overlay import (
     PresetOverlayError,
     drop_overlay,
     effective_preset,
+    get_selected_preset_name,
     require_owned_session,
+    resolve_global_preset,
+    resolve_global_preset_source,
+    set_selected_preset_name,
     write_overlay,
 )
 
@@ -73,6 +77,58 @@ def list_presets(
         .all()
     )
     return [_preset_to_dict(p) for p in presets]
+
+
+# ── 全局"选中哪份预设"（P2-2，零迁移）───────────────────────────────────────
+# [批次P2 P2-2 2026-10-21] ST 把选中名记在全局 settings（openai.js:404/4509/4728），
+# 本仓落点是 UserSetting.silly_tavern_settings 的 `palink_prompt_preset.selected_name`
+# —— **不加列、不建表、不写 alembic**（`prompt_presets` 至今没有 `is_default` 列）。
+#
+# ⚠️ 路由顺序有意义：这两个必须声明在 `PUT /presets/{preset_id}` **之前**，
+# 否则 FastAPI 会把 "selection" 当成 preset_id 吃掉。
+class PresetSelectionRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.get("/presets/selection")
+def get_preset_selection(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """查询"用户选中的预设名" + 它现在解析到哪份（回落口径见 preset_overlay）。"""
+    selected = get_selected_preset_name(db, user.id)
+    effective = resolve_global_preset(db, user.id)
+    return {
+        "selected_name": selected,
+        "resolved_name": effective.name if effective else None,
+        "resolved_id": effective.id if effective else None,
+        # selected = 命中选中名；fallback = 选中名缺失/失效后回落最近更新；none = 一份都没有
+        "source": resolve_global_preset_source(db, user.id),
+    }
+
+
+@router.put("/presets/selection")
+def put_preset_selection(
+    req: PresetSelectionRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """记住/清除选中的预设名。只写 UserSetting 的既有 JSON 列。
+
+    `{"name": null}` 或空串 ⇒ 清除选择（回到"从未选过"的回落口径）。
+    选一份不存在或不属于自己的预设 ⇒ 404（不静默接受一个解析不到的名字）。
+    """
+    try:
+        selected = set_selected_preset_name(db, user.id, req.name)
+    except PresetOverlayError as exc:
+        raise _overlay_http_error(exc) from exc
+    effective = resolve_global_preset(db, user.id)
+    return {
+        "selected_name": selected,
+        "resolved_name": effective.name if effective else None,
+        "resolved_id": effective.id if effective else None,
+        "source": resolve_global_preset_source(db, user.id),
+    }
 
 
 @router.post("/presets")

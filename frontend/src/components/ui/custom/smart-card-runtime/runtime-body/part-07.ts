@@ -247,9 +247,13 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   //
   // 三条硬规矩（本区域逐条守）：
   //  1) 宿主能力只走**已存在**的 requestParent 动作与帧内已注册的真实现，不新造父侧通道；
-  //  2) 没有真实现支撑的键（预设 / persona / 音频 / 扩展安装 / 角色库写侧 / 删书 / 正则对象模型 /
-  //     inject / rotateChatMessages / importRaw* / getModelList / 脚本按钮）**不在这里出现** ——
-  //     proxy 的 has() 会如实报缺，好过注册一个恒真的假成功；
+  //  2) 没有真实现支撑的键（预设写侧与类型判定 / 音频 / 扩展安装 / 角色库删除以外的写侧 /
+  //     删书 / 正则对象模型 / inject / rotateChatMessages / importRaw* / getModelList /
+  //     脚本按钮）**不在这里出现** —— proxy 的 has() 会如实报缺，好过注册一个恒真的假成功；
+  //     [批次P2 2026-10-21] 预设族里**读类 3 键**（getPresetNames / getLoadedPresetName /
+  //     getPreset）已落地，剩下的写类 9 键与 builtin/default_preset/importRawPreset
+  //     仍不注册；isPreset* 三键**保持不注册**（本仓预设行没有 marker/system_prompt/
+  //     injection_position 这些判定字段，补了只能恒 false —— 那正是本仓红线）。
   //  3) 桥接一律**调用时**再取 window 上的实现：本段之后 part-08 才注册 triggerSlash 等全局。
   const th134Warn = (message) => {
     post({ type: 'log', level: 'warn', message: 'TavernHelper: ' + String(message) });
@@ -860,6 +864,32 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
         throw new Error('TavernHelper: updatePersonaWith 写回失败: ' + String((res && res.error) || 'unknown'));
       }
       return updated;
+    },
+    // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类** 3 键（契约逐条抄 preset.d.ts）。
+    // 数据源 = P2-2 的全局选中份 + P-1 的本对话覆盖层，全在父侧
+    // （/api/prompt-manager/sessions/{id}/preset 与 /presets）；帧内只做桥，不缓存副本
+    // —— 缓存在帧里会让"用户改了选中名"和卡看到的名字长期不一致。
+    // 失败语义分族（刻意，不是笔误）：
+    //   getPresetNames():string[]      —— 列表取不到**抛错**，不返空数组：空数组是"真的没有预设"
+    //                                    这个合法状态，两者混一起卡就分不清了；
+    //   getLoadedPresetName():string   —— 一份预设都没有时返 null（契约声明 string，本仓不造
+    //                                    'Default'：没有内置预设，编个名字等于骗卡去 getPreset）；
+    //   getPreset(name)                —— 'in_use' = 本对话当前生效那份；不存在**抛错**（d.ts @throws）。
+    // 返回一律对象包裹（requestParent v2 会把顶层数组/字符串展开成索引键）。
+    getPresetNames: async () => {
+      const res = await requestParent('getPresetNames', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPresetNames 失败: ' + String((res && res.error) || 'unknown'));
+      return Array.isArray(res.names) ? res.names : [];
+    },
+    getLoadedPresetName: async () => {
+      const res = await requestParent('getLoadedPresetName', {});
+      if (!res || res.success !== true) throw new Error('TavernHelper: getLoadedPresetName 失败: ' + String((res && res.error) || 'unknown'));
+      return res.name === undefined || res.name === null ? null : String(res.name);
+    },
+    getPreset: async (presetName) => {
+      const res = await requestParent('getPreset', { presetName: presetName });
+      if (!res || res.success !== true) throw new Error('TavernHelper: getPreset 失败: ' + String((res && res.error) || 'unknown'));
+      return res.preset;
     },
     // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键（character.d.ts）。
     // 失败语义（一手）：

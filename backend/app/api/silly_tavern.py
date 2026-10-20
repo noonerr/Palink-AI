@@ -49,6 +49,9 @@ from ..models import (
     WorldBookStage,
 )
 from ..services.character_import_service import CharacterImportService
+# [批次P2 P2-1 2026-10-21] 内部簿记键前缀的**唯一来源**。此前这里是手写的前缀字符串，
+# 与 services/preset_overlay.py 的常量各写一份 ⇒ 改一处漏一处。
+from ..services.preset_overlay import INTERNAL_KEY_PREFIX
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
 from ..services.local_model_registry import list_enabled_chat_models
 from ..services.provider_registry import get_providers
@@ -1333,10 +1336,11 @@ def _chat_header(
         if v.value is None:
             continue
         # [包AI P-1 2026-10-20] 内部簿记行（会话级预设覆盖层等）不进卡可见的变量表。
-        # 前缀约定见 services/preset_overlay.py:INTERNAL_KEY_PREFIX。此前该表只存
-        # 卡/插件变量，故"全部合入"是对的；加了宿主自己的行之后必须按前缀让路，
-        # 否则 `__palink_internal_preset_overlay_v1` 会作为变量出现在 getContext() 里。
-        if v.key.startswith("__palink_internal_"):
+        # [批次P2 P2-1 2026-10-21] 前缀判定改用常量 INTERNAL_KEY_PREFIX（唯一来源），
+        # 不再手写字符串。此前该表只存卡/插件变量，故"全部合入"是对的；加了宿主
+        # 自己的行之后必须按前缀让路，否则 `__palink_internal_preset_overlay_v1`
+        # 会作为变量出现在 getContext() 里。
+        if v.key.startswith(INTERNAL_KEY_PREFIX):
             continue
         db_variables[v.key] = _parse_variable_value(v.value)
     if db_variables or base_variables:
@@ -2276,6 +2280,25 @@ async def st_save_settings(
             payload_data["extension_settings"] = {**old_ext, **payload_ext}
     elif old_ext:
         payload_data["extension_settings"] = old_ext
+
+    # [批次P2 P2-2 2026-10-21] Palink 自己的命名空间（"用户选中哪份预设"）也要**增量保护**。
+    # 这条链路是"整块替换"（下面一行直接覆盖 silly_tavern_settings），而 ST 前端的
+    # saveSettings 只回传它认识的字段 ⇒ 不保护的话，用户在 ST 设置界面点一次保存，
+    # 选中的预设名就被静默抹掉（表现成"下次进卡回到了最近更新那份"）。
+    # 语义与 extension_settings 同源：payload 带了就按 payload，没带就保留旧值。
+    from ..services.preset_overlay import SELECTION_NAMESPACE as _PRESET_SELECTION_NS
+
+    old_ns = (
+        old_stored.get(_PRESET_SELECTION_NS)
+        if isinstance(old_stored, dict) and isinstance(old_stored.get(_PRESET_SELECTION_NS), dict)
+        else None
+    )
+    payload_ns = payload_data.get(_PRESET_SELECTION_NS)
+    if isinstance(payload_ns, dict):
+        if old_ns:
+            payload_data[_PRESET_SELECTION_NS] = {**old_ns, **payload_ns}
+    elif old_ns:
+        payload_data[_PRESET_SELECTION_NS] = old_ns
 
     setting.silly_tavern_settings = _json_dumps(payload_data)
     # ST 1.18.0 ui_settings: persist separately from silly_tavern_settings

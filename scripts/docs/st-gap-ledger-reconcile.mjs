@@ -162,6 +162,20 @@ const MOVES = [
     cite: { lines: [352, 372], expect: ['订正（2026-10-21，批次Q1）', 'retrieveDisplayedMessage 一个键从 D 挪到 C', 'C = 70 → 71', 'D = 51 → 50', '13 + 71 + 50 = 134'] },
     mode: 'keys', from: 'D', to: 'C', keys: ['retrieveDisplayedMessage'],
   },
+  {
+    // 批次P2（2026-10-21）：预设**读类**三键。数据源是 P2-2 新落的"全局选中名"
+    // （UserSetting.silly_tavern_settings 的 palink_prompt_preset.selected_name，零迁移）
+    // + P-1 的会话覆盖层；帧内三成员 → 父侧 dispatchSmartCardPresetAction。
+    // 订正段在报告 §9（同样追加在文末）。isPreset* 三键**不在**本条里：
+    // 缺的是判定字段（marker/system_prompt/injection_position），不是通道 ⇒ 仍 D。
+    id: '批次P2：预设读类三键 D→C',
+    cite: {
+      lines: [377, 380],
+      expect: ['订正（2026-10-21，批次P2）', 'getPresetNames / getLoadedPresetName / getPreset', '三个键从 D 挪到 C', 'C = 71 → 74', 'D = 50 → 47', '13 + 74 + 47 = 134'],
+    },
+    mode: 'keys', from: 'D', to: 'C',
+    keys: ['getPresetNames', 'getLoadedPresetName', 'getPreset'],
+  },
 ];
 
 function verifyCite(move) {
@@ -173,7 +187,7 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1'];
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2'];
 const ordered = MOVES.slice().sort((x, y) => {
   const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
   return rank(x) - rank(y);

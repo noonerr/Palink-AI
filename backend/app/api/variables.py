@@ -10,6 +10,8 @@ from ..api.dependencies import get_current_user
 from ..models import User
 from ..models.character import CharacterChatSession
 from ..models.chat_variable import ChatVariable, GlobalVariable
+# [批次P2 P2-1 2026-10-21] 内部簿记键（会话级预设覆盖层）的前缀唯一来源。
+from ..services.preset_overlay import INTERNAL_KEY_PREFIX
 
 router = APIRouter(prefix="/api/variables", tags=["variables"])
 
@@ -48,9 +50,21 @@ def _global_to_dict(items) -> Dict[str, str]:
 def _local_to_dict(items) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for v in items:
+        # [批次P2 P2-1 2026-10-21] 宿主自己的簿记行（`__palink_internal_` 前缀，
+        # 例如会话级预设覆盖层 `__palink_internal_preset_overlay_v1`）不是
+        # 用户自建变量：既不能出现在变量面板里，也不能被这里当普通变量删掉。
+        # 它们各有专属端点（`/api/prompt-manager/sessions/{id}/preset`）。
+        if v.key.startswith(INTERNAL_KEY_PREFIX):
+            continue
         if v.value is not None:
             result[v.key] = v.value
     return result
+
+
+def _reject_internal_key(key: str) -> None:
+    """内部簿记键一律不许经"用户变量"端点改写/删除（否则覆盖层会被静默破坏）。"""
+    if key.startswith(INTERNAL_KEY_PREFIX):
+        raise HTTPException(status_code=400, detail="Reserved internal variable key")
 
 
 # ──────────────────────────────────────────────
@@ -142,6 +156,7 @@ def set_local_variable(
 ):
     # M-1 修复: 校验 session 归属当前用户（防止水平越权）
     _verify_local_session_owner(db, user, session_id)
+    _reject_internal_key(key)
     existing = db.query(ChatVariable).filter(
         ChatVariable.session_id == session_id,
         ChatVariable.key == key,
@@ -163,6 +178,7 @@ def delete_local_variable(
 ):
     # M-1 修复: 校验 session 归属当前用户（防止水平越权）
     _verify_local_session_owner(db, user, session_id)
+    _reject_internal_key(key)
     existing = db.query(ChatVariable).filter(
         ChatVariable.session_id == session_id,
         ChatVariable.key == key,
