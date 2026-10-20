@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-20 12:01**　｜　扫描到 **390** 份 markdown
+> **生成时间：2026-10-20 12:15**　｜　扫描到 **390** 份 markdown
 
 ---
 
@@ -316,7 +316,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`REPORT_代码级体检与臃肿治理_2026-10-12.md`](./_active/report/REPORT_代码级体检与臃肿治理_2026-10-12.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-12 |
 | [`REPORT_包AA_别名进表与listvar照ST与宏成员键_2026-10-20.md`](./_active/report/REPORT_包AA_别名进表与listvar照ST与宏成员键_2026-10-20.md) | `REPORT_` | 2026-10 | 2026-10-01 | 已完工待验收 | 2026-10-20 |
 | [`REPORT_包AB_写桥四键_2026-10-20.md`](./_active/report/REPORT_包AB_写桥四键_2026-10-20.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-20 |
-| [`REPORT_包AC_人设与角色库写通道_2026-10-20.md`](./_active/report/REPORT_包AC_人设与角色库写通道_2026-10-20.md) | `REPORT_` | 2026-10 | 2026-10-01 | 施工中 | 2026-10-20 |
+| [`REPORT_包AC_人设与角色库写通道_2026-10-20.md`](./_active/report/REPORT_包AC_人设与角色库写通道_2026-10-20.md) | `REPORT_` | 2026-10 | 2026-10-01 | 已完工待验收 | 2026-10-20 |
 | [`REPORT_包A_srcdoc瘦身_外部化与启动数据_2026-10-18.md`](./_active/report/REPORT_包A_srcdoc瘦身_外部化与启动数据_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | 施工中 | 2026-10-18 |
 | [`REPORT_包B_ST兼容补齐_斜杠命令与getContext_2026-10-18.md`](./_active/report/REPORT_包B_ST兼容补齐_斜杠命令与getContext_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-18 |
 | [`REPORT_包C_后端Extras端点_2026-10-18.md`](./_active/report/REPORT_包C_后端Extras端点_2026-10-18.md) | `REPORT_` | 2026-10 | 2026-10-01 | — | 2026-10-18 |

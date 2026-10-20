@@ -166,6 +166,15 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 > （用户 2026-10-20 拍板）。判据与反证原始输出见
 > `REPORT_包AC_人设与角色库写通道_2026-10-20.md`。
 
+> **订正（2026-10-20，批次B 段② 角色库写侧 7 键）**：再挪 **5 个键** ——
+> **C 53 → 58**、**D 68 → 63**、**A + C 本包上界 66 → 71**。
+> 挪出去的是角色库写侧里帧内无注册的 D 类键 `createCharacter` / `deleteCharacter` /
+> `replaceCharacter` / `importRawCharacter` / `RawCharacter`；角色库写侧族按族口径 D 7 → 2
+> （`createOrReplaceCharacter` / `updateCharacterWith` 本就不在 D 名单，改前走探测面合成函数，
+> 本批换成真桥，属 C 族内部诚实度升级，三数不变）。上界算术变成 71 + 30 ≈ 101，仍 < 110 ——
+> 本节结论不变。字段映射表（验收物）见 `REPORT_包AC_*` §7A（结论：不需要加列）；
+> 删除必然级联席聊 ⇒ 必须显式 delete_chats:true 才执行。判据与反证原始输出同上报告。
+
 D 的 76 个键按族是：预设 19、persona 11、扩展安装 9、音频 8、角色库写侧 7、正则对象模型 5、
 原始导入 4（`importRawWorldbook`/`importRawChat`/`importRawTavernRegex` + 角色 1 已计入写侧族）、
 世界书删除 2、inject 2、聊天绑定写侧 2（`setCurrentCharLorebooks`/`rebindCharWorldbooks`）、
