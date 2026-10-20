@@ -236,7 +236,17 @@ describe('A fixture 与注册口径', () => {
     //      RawCharacter 是帧内本地类（getContext().characters），getChatsFromFiles 诚实抛错。
     //   说明：createOrReplaceCharacter / updateCharacterWith 本就不在 D 名单（改前走探测面
     //   合成函数，调用记 missing_api），本批换成真桥属 C 族内部诚实度升级，不动三数。
+    // ⚠️ 2026-10-20 批次I 补齐漏列 27 键（D 名单 24 → 51，与 D 类实测 51 键对齐）。
+    //   名单**逐条来自对账脚本的机器输出**，不是手抄：
+    //     node scripts/docs/st-gap-ledger-reconcile.mjs   ⇒ ③ 守卫漏列明细
+    //   （脚本按 包H §3 族表 + 其后全部订正段算出 D 类 51 键，再减去本数组原有 24 键 = 27）
+    //   加之前逐键在 runtime-body/ + frame-shim/ 里 grep：27 键全部 0 命中 ⇒ 确实都没注册，
+    //   故本条守卫加完后仍然全绿。这正是"漏列"的判定口径：**没注册才该进 D 名单**。
+    //   ⛔ 反向红线：若哪天往这里加键会让本用例变红，说明那个键**已经被注册**了 ——
+    //     那就不是"补名单"，是"分类改判"，必须三层同批（正向锚点 + 台账行 + 包H 计数），
+    //     不许删键、不许放宽名单、不许改产品码来凑绿。
     const forbidden = [
+      // —— 包H 首版 24 键（本次未动，顺序与内容保持原样）——
       'getPreset', 'setPreset', 'loadPreset', 'getLoadedPresetName', 'builtin', 'default_preset',
       'playAudio', 'getAudioList', 'getAudioSettings',
       'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
@@ -244,6 +254,21 @@ describe('A fixture 与注册口径', () => {
       'retrieveDisplayedMessage', 'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
       'getTavernRegexes', 'formatAsTavernRegexedString',
+      // —— 批次I 补列 · ST 预设体系：族表 16 键，原先只盯 6，补 10 ——
+      'builtin_prompt_default_order', 'createOrReplacePreset', 'createPreset', 'deletePreset',
+      'getPresetNames', 'getProxyPresetNames', 'importRawPreset', 'renamePreset',
+      'replacePreset', 'updatePresetWith',
+      // —— 批次I 补列 · 酒馆助手音频播放器：族表 8 键，原先只盯 3，补 5 ——
+      'appendAudioList', 'getCurrentAudio', 'pauseAudio', 'replaceAudioList', 'setAudioSettings',
+      // —— 批次I 补列 · tavern regex 族：族表 5 键，原先只盯 2，补 3 ——
+      'isCharacterTavernRegexesEnabled', 'replaceTavernRegexes', 'updateTavernRegexesWith',
+      // —— 批次I 补列 · ST 扩展安装体系：族表 9 键，原先只盯 4，补 5 ——
+      'getExtensionStatus', 'getExtensionType', 'reinstallExtension', 'uninstallExtension',
+      'updateExtension',
+      // —— 批次I 补列 · ST 原始对象导入器：族表 2 键，原先只盯 1，补 1 ——
+      'importRawTavernRegex',
+      // —— 批次I 补列 · 预设提示词类型判定：族表 3 键，原先一个没盯，补 3 ——
+      'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
     // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
