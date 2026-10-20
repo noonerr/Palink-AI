@@ -262,8 +262,37 @@ describe('A fixture 与注册口径', () => {
     (['createCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter', 'RawCharacter'] as const).forEach((n) => {
       expect(registered.has(n)).toBe(true);
     });
-    (['createCharacter', 'createOrReplaceCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter'] as const).forEach((n) => {
-      expect(SRC.indexOf("requestParent('" + n + "'")).toBeGreaterThan(-1);
+    // ⚠️ 主脑复验补锚（2026-10-20 批次B 段②）：上面两组"移出 D 名单"只移了
+    //   守卫**列过的**名字（人设 3 / 角色库 5），而报告 §3 的族表把人设 11 键、
+    //   角色库 7 键**全数**记在 D 里 ⇒ 守卫的 D 名单本身就漏列 10 个键
+    //   （漏列的后果：这 10 个键将来被人塞成空壳，这条红守卫看不见）。
+    //   主脑逐键核实这 18 键确有真实现（帧内成员 + 桥到父侧动作；
+    //   `updatePersonaWith` = getPersona+replacePersona、`updateCharacterWith` =
+    //   getCharacterDetail+replaceCharacter，二者是 ST 的读-改-写语义而非空壳），
+    //   故把 18 键全部钉成正向锚点，并把计数订正写到报告 §3 与本文件上方注释。
+    (['createOrReplacePersona', 'createPersona', 'deletePersona', 'getPersona', 'getPersonaAvatarPath',
+      'getPersonaIds', 'getPersonaNames', 'getCurrentPersonaId', 'getCurrentPersonaName',
+      'replacePersona', 'updatePersonaWith',
+      'createCharacter', 'createOrReplaceCharacter', 'deleteCharacter', 'replaceCharacter',
+      'updateCharacterWith', 'importRawCharacter', 'RawCharacter'] as const).forEach((n) => {
+      expect(registered.has(n), `批次B 已实现的键不得丢：${n}`).toBe(true);
+    });
+    // 逐键必须有 requestParent 直连，或是"读-改-写"复合（两个父侧动作）——两者都不许是空壳。
+    const DIRECT_BRIDGE = ['createOrReplacePersona', 'createPersona', 'deletePersona', 'getPersona',
+      'getPersonaAvatarPath', 'getPersonaIds', 'getPersonaNames', 'getCurrentPersonaId',
+      'getCurrentPersonaName', 'replacePersona',
+      'createCharacter', 'createOrReplaceCharacter', 'deleteCharacter', 'replaceCharacter', 'importRawCharacter'];
+    const COMPOSITE_BRIDGE = ['updatePersonaWith', 'updateCharacterWith'];
+    DIRECT_BRIDGE.forEach((n) => {
+      expect(SRC.indexOf("requestParent('" + n + "'"), `无直连桥：${n}`).toBeGreaterThan(-1);
+    });
+    // 复合族：读 + 写两个父侧动作都必须在场（缺一个就退化成"只读不写"的假实现）。
+    expect(SRC.indexOf("requestParent('getPersona'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('replacePersona'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('getCharacterDetail'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('replaceCharacter'")).toBeGreaterThan(-1);
+    COMPOSITE_BRIDGE.forEach((n) => {
+      expect(SRC.indexOf(n + ': async'), `复合成员缺失：${n}`).toBeGreaterThan(-1);
     });
     // RawCharacter 是类（typeof === 'function'）而非桥函数：帧内必须有 find 的真实实现，
     // 且 getChatsFromFiles 诚实抛错（聊天文件面不同源 ⇒ 契约不明，不造假数据）。

@@ -168,6 +168,19 @@ grep -rhoE "readonly [a-zA-Z_$][a-zA-Z0-9_$]*[?]?\s*:" \
 
 > **订正（2026-10-20，批次B 段② 角色库写侧 7 键）**：再挪 **5 个键** ——
 > **C 53 → 58**、**D 68 → 63**、**A + C 本包上界 66 → 71**。
+>
+> **⚠️ 主脑复验再订正（2026-10-20 批次B）**：上面这两条 53→58 / 66→71 **少算了 10 个键**。
+> 原因是执行方按"契约测试 D 名单里列了谁"来移键，而**那份 D 名单本身就漏列**：
+> 报告 §3 的人设族是 **11 键**、角色库写侧族是 **7 键**（共 18），守卫里只列了 3 + 5。
+> 主脑逐键核实这 18 个都有真实现（帧内成员在字面量里、且桥到父侧动作；
+> `updatePersonaWith` = `getPersona`+`replacePersona`、`updateCharacterWith` =
+> `getCharacterDetail`+`replaceCharacter`，属 ST 的读-改-写语义而非空壳；
+> `RawCharacter` 是帧内本地类，其 `getChatsFromFiles` 诚实抛错并留 K 痕），
+> ⇒ 权威计数应为 **C 50 → 68**、**D 71 → 53**、**A + C 上界 63 → 81**（13 + 68 + 53 = 134 闭合）。
+> 同时已把 18 键全部钉成 `h-tavernhelper-134-contract` 的正向锚点（含"复合族必须读写两个父侧动作都在场"），
+> 并反证过：把一个键名改成不存在的键 ⇒ `1 failed | 46 passed`，还原 ⇒ `47 passed`。
+> **口径教训**：移键必须按**报告的族表**逐条对账，不能按守卫列表"列了几个移几个"——
+> 守卫漏列的键，改判时会静默少算，而这恰恰是"下次有人把它们塞成空壳也无人发现"的那批。
 > 挪出去的是角色库写侧里帧内无注册的 D 类键 `createCharacter` / `deleteCharacter` /
 > `replaceCharacter` / `importRawCharacter` / `RawCharacter`；角色库写侧族按族口径 D 7 → 2
 > （`createOrReplaceCharacter` / `updateCharacterWith` 本就不在 D 名单，改前走探测面合成函数，
