@@ -6,6 +6,15 @@
 > ⚠️ 批次 D（后端留痕）**与本批同改 `palink-diag.ts`，严禁同对话顺带做，也不许两个对话并行。**
 
 ## 0. 开工前自查（任一不满足就停手回报）
+
+⚠️ **并行施工纪律**：本批与另两个对话（批次 F 对账脚本、批次 G 模板串守卫）同时在同一个工作区跑。
+四条必须守：① 只 `git add` 自己改动的路径，禁 `git add -A` / `git commit -a`；
+② 禁不带路径的裸 `git commit -m`，一律 `git commit -F <消息文件> -o -- <路径…>`；
+③ 提交前看 `git status --short`，不属于本批的改动保持原样，禁 `git stash` / `git checkout .` / `git reset --hard`；
+④ `docs/_CATALOG.md` 是生成物，**提交前现跑一次** `py scripts/docs/gen_docs_catalog.py`（别提交旧版），
+撞到 `.git/index.lock` 就等 10 秒重试而不是删文件。细则见
+`PROMPT_对话包_批次F总账对账与批次G模板串守卫_2026-10-20.md` 的「并行施工纪律」。
+
 1. `git log --oneline -4` 里能看到 `c3c5639`（主脑复验纠偏）与 `201eec2`/`fdc779f`（批次B 段②）。
 2. `git status --short` 除 `.workbuddy-ai/**`（**别人会话的文件，绝不碰**）外干净。
 3. `curl -s -o /dev/null -w "%{http_code}\n" http://localhost:16000/` = 200，且 `docker ps` 五容器 healthy。
