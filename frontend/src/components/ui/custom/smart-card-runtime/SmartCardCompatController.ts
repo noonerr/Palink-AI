@@ -938,8 +938,9 @@ export async function dispatchSmartCardPersonaAction(
 // 数据源（施工件 P2-3 指定）：P2-2 的全局选中份 + P-1 的本对话覆盖层，全部经
 // `/api/prompt-manager/sessions/{id}/preset`（`prompt_manager.py:165`）与
 // `/api/prompt-manager/presets` 取。**卡片只能看到自己会话那份** ——
-// 会话 id 一律取宿主侧 `requestContext.sessionId`，**不读帧内 payload 里的 sessionId**
-// （帧是卡写的代码，读 payload 等于把越权面交给卡）。
+// 会话 id 一律取宿主侧 `requestContext.selectedSession.id`（宿主构造的对象）。
+// ⚠️ 不能用 `requestContext.sessionId`：那个值在帧内 payload 带了 `__palinkContext.sessionId`
+// 且宿主当时没有会话时**会被帧的值顶包**（合并见本文件 handleSmartCardCompatRequest）。
 //
 // 形状偏差（如实留痕，见批次P2 报告 §P2-3）：
 //   · ST 的 Preset = { settings, prompts, prompts_unused, extensions }；
@@ -968,7 +969,17 @@ type PalinkSessionPreset = {
 };
 
 function resolveSmartCardPresetSessionId(context: SmartCardCompatRequestContext | null | undefined): string {
-  const raw = context && context.sessionId ? String(context.sessionId) : '';
+  // ⚠️ 只用 `selectedSession.id`（宿主构造的对象），**不用 `context.sessionId`**：
+  // `handleSmartCardCompatRequest` 里那行合并
+  // `sessionId: context.sessionId || payload.__palinkContext?.sessionId`
+  // 允许帧在宿主无会话时**自己塞一个会话 id**（历史行为，其它动作依赖它）。
+  // 预设面按用户裁定必须只碰"本对话那一份"，所以只认宿主对象 —— 帧改不到 selectedSession。
+  // 主脑复核实测（2026-10-21）：改前帧可用 `__palinkContext.sessionId` 把别人的**同用户**会话 id
+  // 打进 URL（跨对话读预设；后端仍按 user_id 过滤，所以不是跨账号），
+  // 判据见 `__tests__/p2-preset-read-keys-parent.test.ts` 的"真实通道"那例。
+  const raw = context && context.selectedSession && context.selectedSession.id
+    ? String(context.selectedSession.id)
+    : '';
   return raw === '__pending__' ? '' : raw.trim();
 }
 
@@ -1997,7 +2008,7 @@ export async function handleSmartCardCompatRequest(
       // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类**三键（preset.d.ts）。
       // 全是只读：不进手势闸门（与批次A/B 同源论证 —— 用户激活不传播到 opaque-origin
       // iframe，而"读当前预设"是最正当的无手势用法）。
-      // 越权面由「会话 id 只取 requestContext.sessionId + 预设列表/选中名都按登录态
+      // 越权面由「会话 id 只取宿主构造的 requestContext.selectedSession.id + 预设列表/选中名都按登录态
       // user_id 过滤」兜住；帧内 payload 里的 sessionId 一律不读。
       action.action === 'getPresetNames'
       || action.action === 'getLoadedPresetName'

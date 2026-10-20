@@ -77,7 +77,10 @@ async function callAction(
   let out: { ok: boolean; result: any } = { ok: false, result: null };
   await handleSmartCardCompatRequest(
     {} as never,
-    { sessionId, selectedCharacterName: '露缇雅' } as never,
+    // 与生产同形：`CharacterChat.tsx:1078` 那次调用**同时**给 selectedSession 与 sessionId，
+    // 且 selectedSession 只由宿主构造（帧改不到它）。只给 sessionId 就测不到
+    // "帧用 payload.__palinkContext.sessionId 顶包"这条真实通道（主脑复核补）。
+    { sessionId, selectedSession: sessionId ? ({ id: sessionId } as never) : null, selectedCharacterName: '露缇雅' } as never,
     {
       type: 'request',
       requestId: 'req-1',
@@ -200,6 +203,24 @@ describe('预设读类 · 越权面', () => {
     expect(
       getMock.mock.calls.some((c) => String(c[0]).indexOf('someone-else') >= 0),
       '帧内传入的 sessionId 绝不能进 URL',
+    ).toBe(false);
+  });
+
+  it('宿主无会话时，帧经 payload.__palinkContext.sessionId 顶包也不生效（真实通道）', async () => {
+    // 这是 `handleSmartCardCompatRequest` 里唯一让帧影响会话 id 的入口：
+    // `sessionId: context.sessionId || payload.__palinkContext.sessionId`。
+    // 上一例塞的是 payload.sessionId（那个键根本没人读），所以它测不到这条通道。
+    // 预设面只认宿主的 selectedSession.id ⇒ 宿主没会话就是 no_active_session，
+    // 绝不能拿帧给的 id 去打会话端点（用户裁定：卡片只能读自己这一份对话分身）。
+    const out = await callAction('getPreset', {
+      presetName: 'in_use',
+      __palinkContext: { sessionId: 'someone-else-session' },
+    }, null);
+    expect(out.result.success).toBe(false);
+    expect(out.result.error).toBe('no_active_session');
+    expect(
+      getMock.mock.calls.some((c) => String(c[0]).indexOf('someone-else-session') >= 0),
+      '帧内 __palinkContext 传入的 sessionId 绝不能进 URL',
     ).toBe(false);
   });
 
