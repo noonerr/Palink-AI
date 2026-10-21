@@ -251,6 +251,12 @@ export interface SillyTavernPluginRuntimeItem {
   id: string;
   name: string;
   plugin_type: string;
+  // [批次R1 2026-10-21] 后端 _plugin_runtime_payload 新增：全局（user_id IS NULL）/
+  // 本人私有（user_id == 当前用户）。runtime/config 已按用户过滤，这一位用于帧内区分
+  // ST getExtensionType 的 'global' / 'local'。
+  owner_scope?: 'global' | 'local';
+  // 仅 include_disabled=1（管理面）会带；默认模式只会下发启用项。
+  enabled?: boolean;
   version?: string | null;
   author?: string | null;
   source_type?: string | null;
@@ -354,6 +360,42 @@ export interface SmartCardPresetSnapshot {
   source?: string;
 }
 
+/**
+ * [批次R1 2026-10-21] 帧内扩展读面（getExtensionType / isInstalledExtension /
+ * getExtensionStatus）的宿主侧快照。
+ *
+ * 数据源：`GET /api/plugins/runtime/config`（按登录态 user_id 作用域过滤；
+ * 管理员加 `include_disabled=1` 才能看到禁用插件）。`type` 直接对应 ST
+ * `getExtensionType` 的 `'local' | 'global' | 'system'` 三值 —— 本仓当前只有
+ * local（本人私有）与 global（`plugins.user_id IS NULL`），没有 system 内置扩展。
+ *
+ * 为什么是快照而不是每键一次 requestParent：`getExtensionType` 与
+ * `isInstalledExtension` 在 ST 契约里是**同步**的（`extension.d.ts:15/40`），
+ * 异步通道给不出同步值。
+ */
+export interface SmartCardExtensionCatalogEntry {
+  /** 后端 plugins.id（启停时 PUT /api/plugins/{id}/toggle 用它）。 */
+  id: string;
+  /** ST 语义的扩展 id（manifest.name 优先，退化为插件 name）。 */
+  extensionId: string;
+  name: string;
+  manifestName?: string;
+  type: 'local' | 'global' | 'system';
+  enabled: boolean;
+  version?: string | null;
+  /** 安装来源 URL（当前导入链不落库时为空串；R2 引入来源记录后再填）。 */
+  sourceUrl?: string | null;
+}
+
+export interface SmartCardExtensionCatalog {
+  plugins: SmartCardExtensionCatalogEntry[];
+  /** 当前登录用户是不是管理员（`/api/users/me` 的 role === 'admin'）。 */
+  isAdmin: boolean;
+  /** runtime_config = 管理面（含禁用）；runtime_config_enabled_only = 非管理员降级。 */
+  source: 'runtime_config' | 'runtime_config_enabled_only';
+  generatedAt?: string;
+}
+
 export interface CharacterSmartCardContext {
   characterId?: string;
   characterName?: string;
@@ -417,6 +459,15 @@ export interface CharacterSmartCardContext {
   // （数据源 = `generation_presets`，只含本人那份），经 boot 内联 + context-update 热更两套
   // 通道进帧。⛔ 与上面的 `presetData`（角色预设的 regex 脚本）**不是一回事**，别混。
   presetSnapshot?: SmartCardPresetSnapshot | null;
+  // [批次R1 2026-10-21] 帧内扩展读面的快照（getExtensionType / isInstalledExtension /
+  // getExtensionStatus 的数据源）。与 presetSnapshot 同一套投递方式：boot 内联 +
+  // context-update 热更。异步晚到 ⇒ 首帧可能为 null（帧内按"目录未就绪"留痕，
+  // 不冒充"未安装"）。
+  extensionCatalog?: SmartCardExtensionCatalog | null;
+  // [批次R1 2026-10-21] 当前登录用户是否管理员（ST isAdmin 的同步真值来源）。
+  // 由 CharacterCardRenderer 用 `App.tsx` 写入的 current-user-role 快照填；
+  // 与 `/api/users/me` 的 role === 'admin' 同口径，⛔ 不从帧内参数取。
+  isAdmin?: boolean;
   globalRegexScripts?: Array<Record<string, unknown>>;
   stPluginRuntimeConfig?: SillyTavernPluginRuntimeConfig | null;
   sessionId?: string;

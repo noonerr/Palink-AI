@@ -41,3 +41,9 @@
 3. 全量 `gate.sh frontend` / `backend`，只认 `failed=0 / errors=0`（⚠️ 后端测试必须在 `backend/` 内跑）。
 4. 写 `REPORT_批次R1_插件只读与启停_2026-10-21.md`，然后逐项 pathspec 提交。
 5. **未上线**；上线判据见任务表（实机只能验"键在 & 零回归"，启停要用**自己的**插件试，别动全局插件）。
+
+## 补记（2026-10-21 收尾时发现）
+`frontend/src/types/index.ts` 的改动（`SillyTavernPluginRuntimeItem.owner_scope/enabled` 与
+`SmartCardExtensionCatalogEntry` 类型）是在本备份快照**之后**才落盘的（agent 最后一次写文件）。
+本备份 `full/` 里**没有**它的中断态；它已在收尾提交 `328c993` 之后单独入库，未丢失。
+⇒ 教训：中断现场的快照与"agent 最后写入"之间可能有几秒竞态，收尾时要再 `git status` 一次。
