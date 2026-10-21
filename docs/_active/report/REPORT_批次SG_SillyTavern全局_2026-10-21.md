@@ -2,6 +2,7 @@
 
 > 状态：**已完工待验收**
 > 施工范围：`frontend/src/lib/plugin-system/sandbox.ts` + 新增测试；未动后端、未重建 dist、未启停容器。
+> 代码提交：`0d310fb`（本报告随后以 docs 提交补入仓库）。
 > 真机复验（Kimi Thinking Prefill）按计划由主脑上线后执行，本报告只写预期与下一步。
 
 ## 1. 结论
@@ -22,7 +23,7 @@ globalThis.SillyTavern = {
 
 | 文件 | 位置 | 内容 |
 |---|---|---|
-| `frontend/src/lib/plugin-system/sandbox.ts` | `buildWrappedCode` 的 prelude，`sandbox.ts:2940-2952`（IIFE 内、`${transpiledCode}` 之前） | `var SillyTavern = { libs: __sandbox.SillyTavernLibs, getContext: __sandbox.getContext };` + `globalThis.SillyTavern = SillyTavern;` |
+| `frontend/src/lib/plugin-system/sandbox.ts` | `buildWrappedCode` 的 prelude，`sandbox.ts:2940-2951`（IIFE 内、`${transpiledCode}` 之前） | `var SillyTavern = { libs: __sandbox.SillyTavernLibs, getContext: __sandbox.getContext };` + `globalThis.SillyTavern = SillyTavern;` |
 | 同上 | `createSandboxGlobal`，`sandbox.ts:3142-3152` | 把原先在 `:3950` 附近的 `sandboxLibs` 清单**上移**为唯一来源（jQuery/$/Handlebars/toastr/marked/DOMPurify），下方注入 `sandboxedWindow` 的循环改为复用同一引用，避免两处清单漂移 |
 | 同上 | `sandbox.ts:3155-3156` | sandbox 对象新增 `SillyTavernLibs: sandboxLibs`，仅供 prelude 组装 `SillyTavern.libs` |
 | `frontend/src/lib/plugin-system/__tests__/sg-sillytavern-global.test.ts` | 新增 | 7 个可执行用例（jsdom + 真实 `PluginSandbox.executePluginCode`） |
