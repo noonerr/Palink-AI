@@ -2464,13 +2464,24 @@ function dirOf(path: string): string {
  * 以 baseDir 为基准解析相对路径（支持 ./ 与 ../），返回规范化后的插件内路径。
  * 例：baseDir='core', rel='../shared/util.js' → 'shared/util.js'
  *     baseDir='',    rel='./core/constants.js' → 'core/constants.js'
+ *
+ * [批次MC 2026-10-21] `..` 越过插件根时返回 null：ST 里相对 import 走真实文件
+ * 系统，插件目录之上的文件（../../../extensions.js、../../../../scripts/macros.js）
+ * 属于 ST scripts 根，不是插件本地模块。旧实现把越界 `..` 静默丢弃
+ * （parts.pop() 对空数组是 no-op），'../../../../scripts/macros.js' 会变成
+ * 'scripts/macros.js' 并可能误配插件内同名文件。
  */
-function joinLocalPaths(baseDir: string, rel: string): string {
+function joinLocalPaths(baseDir: string, rel: string): string | null {
   const parts = baseDir ? baseDir.split('/') : [];
   for (const seg of rel.split('/')) {
     if (seg === '' || seg === '.') continue;
-    if (seg === '..') parts.pop();
-    else parts.push(seg);
+    if (seg === '..') {
+      // 已在插件根还要往上 => 离开插件目录，交给 ST 模块表
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
   }
   return parts.join('/');
 }
@@ -2788,9 +2799,12 @@ export class PluginSandbox {
         var Function = function() {
           throw new TypeError('Function constructor is disabled in sandbox');
         };
-        var module = { exports: {} };
-        var exports = module.exports;
         var __sandbox = arguments[0];
+        // [批次MC 2026-10-21] 本地模块求值时由调用方预置 exports 容器，
+        // 让「循环依赖中途拿到占位对象」的导入方能在被依赖模块求值完成后看到真实导出。
+        // 入口模块不传 __moduleExports，仍从空对象开始。
+        var module = { exports: __sandbox.__moduleExports || {} };
+        var exports = module.exports;
         var require = __sandbox.require;
         var getContext = __sandbox.getContext;
         // [包N B-2 2026-10-19] ST 的 context 是 st-context.js 的 export const context = getContext()
@@ -2960,6 +2974,9 @@ export class PluginSandbox {
   /**
    * 执行插件本地模块文件（同步），供 require 惰性加载。
    * 与入口共用 buildWrappedCode 的受限环境，仅 require 指向基于本文件目录的解析器。
+   *
+   * @param initialExports 循环依赖时由 require 预置的占位对象。传入后模块直接往
+   *   这个对象上挂导出（而不是最后换成新对象），先前拿到占位引用的模块才能看到导出。
    */
   private evalLocalFile(
     localKey: string,
@@ -2967,11 +2984,14 @@ export class PluginSandbox {
     fileRequire: (importPath: string) => Record<string, unknown>,
     context: PluginContext | PluginContextWithHooks,
     pluginId: string,
+    initialExports?: Record<string, unknown>,
   ): Record<string, unknown> {
     try {
       const transpiled = transpileEsmToCommonJS(content);
       const sandboxGlobal = this.createSandboxGlobal(context, pluginId);
-      (sandboxGlobal as Record<string, unknown>).require = fileRequire;
+      const globals = sandboxGlobal as Record<string, unknown>;
+      globals.require = fileRequire;
+      globals.__moduleExports = initialExports;
       const executor = new Function(this.buildWrappedCode(transpiled));
       return executor(sandboxGlobal) || {};
     } catch (error) {
@@ -5583,30 +5603,58 @@ export class PluginSandbox {
     };
 
     /**
-     * 基于目录的 require 解析器：ST 模块白名单优先，其次解析插件本地模块。
+     * 基于目录的 require 解析器：插件本地相对模块优先，其次 ST 模块白名单。
      * 本地模块按 baseDir 解析相对路径（支持 ./ 与 ../），惰性求值并缓存导出。
+     *
+     * [批次MC 2026-10-21] 解析顺序从「ST 白名单优先」改为「相对导入本地优先」。
+     * 真机证据：Smart Memory 1.8.3 的 index.js:127 `import { registerSmartMemoryMacros }
+     * from './macros.js'` 被 normalizeModulePath 抹成 'macros.js'，命中 ST 的
+     * `macros.js` shim（只有 MacrosParser）→ 具名导入 undefined →
+     * 模块初始化时 `registerSmartMemoryMacros is not a function`（未捕获 rejection）。
+     * 同类还有该插件的 './constants.js'（21 处导入）撞 ST `constants.js`。
+     *
+     * 语义依据：ST 里相对 import 按**文件系统**解析，扩展目录下的 `./macros.js`
+     * 永远是插件自己的 macros.js，不可能是 `public/scripts/macros.js`；只有
+     * `../../../extensions.js` / `../../../../scripts/macros.js` 这类**越过插件根**的
+     * 路径才指向 ST scripts。越界判定见 joinLocalPaths 的 null 返回。
      */
     const makeRequire = (baseDir: string): ((importPath: string) => Record<string, unknown>) => {
+      /** 惰性求值并缓存一个插件本地模块（循环依赖时先返回预置空对象） */
+      const loadLocalModule = (localKey: string): Record<string, unknown> => {
+        const cached = this.pluginLocalExports.get(localKey);
+        if (cached) return cached;
+        // 预置空对象以支持循环依赖：求值时直接写入这个对象（不换新对象），
+        // 循环链上先拿到它的模块求值完成后能读到导出（见 evalLocalFile initialExports）。
+        const placeholder: Record<string, unknown> = {};
+        this.pluginLocalExports.set(localKey, placeholder);
+        const content = this.pluginLocalFiles.get(localKey)!;
+        const fileRequire = makeRequire(dirOf(localKey));
+        const exports = this.evalLocalFile(localKey, content, fileRequire, context, pluginId, placeholder);
+        // 模块若自行改写 module.exports（CJS 形态），以返回值为准
+        if (exports !== placeholder) this.pluginLocalExports.set(localKey, exports);
+        return exports;
+      };
+
       return (importPath: string): Record<string, unknown> => {
-        // 1. ST 模块白名单优先
-        const normalized = normalizeModulePath(importPath);
+        const spec = String(importPath ?? '');
+        const isRelative = spec.startsWith('.');
+
+        // 1. 相对路径且仍在插件根内：插件本地文件优先（见上方批次MC说明）
+        const localKey = isRelative ? joinLocalPaths(baseDir, spec) : null;
+        if (localKey !== null && localKey !== '' && this.pluginLocalFiles.has(localKey)) {
+          return loadLocalModule(localKey);
+        }
+
+        // 2. ST 模块白名单
+        const normalized = normalizeModulePath(spec);
         const stMod = moduleMap[normalized];
         if (stMod) return stMod;
 
-        // 2. 插件本地模块（相对路径按 baseDir 解析）
-        const localKey = importPath.startsWith('.')
-          ? joinLocalPaths(baseDir, importPath)
-          : normalized;
-        if (this.pluginLocalFiles.has(localKey)) {
-          const cached = this.pluginLocalExports.get(localKey);
-          if (cached) return cached;
-          // 预置空对象以支持循环依赖，再惰性求值覆盖
-          this.pluginLocalExports.set(localKey, {});
-          const content = this.pluginLocalFiles.get(localKey)!;
-          const fileRequire = makeRequire(dirOf(localKey));
-          const exports = this.evalLocalFile(localKey, content, fileRequire, context, pluginId);
-          this.pluginLocalExports.set(localKey, exports);
-          return exports;
+        // 3. 非相对路径的插件本地模块（历史行为：'core/x.js' 这类裸路径也查本地表）；
+        //    相对路径走到这里说明插件里没有该文件，允许 ST 兜底（旧行为）但不覆盖本地。
+        const fallbackLocalKey = isRelative ? localKey : normalized;
+        if (fallbackLocalKey && this.pluginLocalFiles.has(fallbackLocalKey)) {
+          return loadLocalModule(fallbackLocalKey);
         }
 
         // ⚠️ 留痕必须走降级登记，不能只靠 console：生产产物 terser 的
@@ -5615,10 +5663,10 @@ export class PluginSandbox {
         // name 统一用 'module:<规范化路径>' 前缀，与 API 桩区分开，便于按前缀筛。
         recordStubHit(
           `module:${normalized || importPath}`,
-          `未找到 ST 模块 ${importPath} → ${localKey}（plugin=${pluginId}），返回空对象：具名导入将全部为 undefined`,
+          `未找到 ST 模块 ${importPath} → ${fallbackLocalKey ?? normalized}（plugin=${pluginId}），返回空对象：具名导入将全部为 undefined`,
         );
         console.warn(
-          `[PluginSandbox] 未找到模块: ${importPath} → ${localKey} (plugin=${pluginId})，返回空对象`,
+          `[PluginSandbox] 未找到模块: ${importPath} → ${fallbackLocalKey ?? normalized} (plugin=${pluginId})，返回空对象`,
         );
         return {};
       };
