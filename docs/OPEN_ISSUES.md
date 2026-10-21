@@ -708,3 +708,26 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 ⇒ 谁关的未知，**需用户确认**：如果那是他自己关的，验收① 就要等他重新打开再跑；
    如果不是，那是另一条待查（插件启停状态被谁改了，与 R1 的作用域收紧有关吗）。
    复跑脚本现成：`.tmp_probe/wu_ab.js`（会话 `wu_live1`，约 40s，不花钱）。
+
+### [P2-15] bundled 插件 quick-reply 的「保存快捷回复集」其实一直失败（2026-10-21 · 一手实测）
+
+- 调用方 `st-plugins/quick-reply/src/QuickReplySet.js:377` POST `/api/quick-replies/save`（`:392` 是 delete）。
+- ST 侧这两条是真端点：`src/server-startup.js:146` 挂 `/api/quick-replies`，
+  `src/endpoints/quick-replies.js:9/:22` 按 `body.name` 写/删 `quickreplies/<name>.json`。
+- Palink 侧**全仓无该路由**（`grep -rn "quick.repl" backend/app/api/*.py` 命中 0 个路由定义），
+  只有 `backend/app/api/silly_tavern.py:6044` 的注释**承诺**了它（"与 /api/quick-replies/save 复用同一存储"）。
+  旁证：真机日志里 `[QR2] sets: []` 恒空。
+⇒ 用户可见后果：**快捷回复集保存不下来**（不是噪音，是一个不可用的功能）。
+待定档：① 照 ST 补两个端点（挂 `silly_tavern_router`，沿用 `get_st_current_user` + csrf_guard，
+写进注释里那个 `extension_settings.quickReply.sets`）——主脑建议这条（"越像 ST 越好"是用户裁定）；
+② 前端轨把 URL 重定向到既有 `POST /api/plugins/runtime/settings`。
+⚠️ 选 ① 属**新增后端可写端点**，需用户点头 + 重建镜像才生效。
+
+### [P2-16] `/st/locales/*.json` 404：ST i18n 这条能力从未生效过（2026-10-21 · 一手实测）
+
+- 取用方是我们自己的 `frontend/src/lib/i18n/index.ts:74`，失败时 `:76` 静默返回 `{}`。
+- 资产**不存在**：`frontend/public/st/locales/` 整个目录都没有（`ls` 直接 No such file or directory）。
+- 上游体量：`/d/SillyTavern-release/public/locales` 实测 **2.4 MB**，`zh-cn.json` 单文件 **287,692 字节**。
+⇒ 两条路都要用户定：**搬上游语言文件**（AGPL 上游的翻译数据，按需懒加载、不进入口包）
+或 **删掉这 30 行死代码 + 别再声称支持 ST i18n**。主脑没擅自搬（版权与体积不是技术判断）。
+每次进页面吃一个 404，是控制台噪声源之一。

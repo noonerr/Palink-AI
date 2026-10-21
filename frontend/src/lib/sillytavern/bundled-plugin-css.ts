@@ -13,8 +13,9 @@
  * 那条链由 esbuild 在 Vite 插件生效前解析，`?raw` 查询串会解析失败。
  *
  * 同步纪律：st-plugins/regex/debugger.css 改动后必须重新生成
- * bundled-plugin-css.generated.ts；守卫测试 bundled-plugin-css.generated.test.ts
- * 逐字节比对两者，漂移即红。
+ * bundled-plugin-css.generated.ts —— 命令 `node scripts/gen-bundled-plugin-css.mjs`
+ * （什么时候要重跑见 scripts/README.md）。守卫测试 bundled-plugin-css.generated.test.ts
+ * 逐字节比对两者，漂移即红。产物是机器生成的，不要手工编辑。
  */
 
 import { REGEX_DEBUGGER_CSS } from './bundled-plugin-css.generated';

@@ -791,6 +791,15 @@ function createSandboxedDocument(
               return wrapSandboxedElement(created);
             }
           }
+          // [小尾巴 ③-B4 2026-10-21] 读写同域回退：容器外、但落在"写侧本来就能写进去"的
+          // ST 挂载点 / 惰性容器之下的元素，读侧也认（详见 isInsidePluginWritableMount）。
+          // 病根：$('#regex_container').append(...) 把面板写进真实挂载点，而
+          // document.getElementById('regex_presets') 只查私有 container ⇒ 插件读不到自己
+          // 刚写进去的节点 ⇒ 监听器永远不挂。
+          const mountScoped = document.getElementById(id);
+          if (mountScoped && isInsidePluginWritableMount(mountScoped)) {
+            return wrapSandboxedElement(mountScoped);
+          }
           return null;
         };
       }
@@ -816,6 +825,13 @@ function createSandboxedDocument(
               created.setAttribute('data-sandbox-created-container', '');
               mount.appendChild(created);
               return wrapSandboxedElement(created);
+            }
+          }
+          // [小尾巴 ③-B4 2026-10-21] 与 getElementById 分支同一口径的读写同域回退
+          if (idMatch) {
+            const mountScoped = document.getElementById(idMatch[1]);
+            if (mountScoped && isInsidePluginWritableMount(mountScoped)) {
+              return wrapSandboxedElement(mountScoped);
             }
           }
           return null;
@@ -1509,6 +1525,37 @@ function isStChatSelector(selector: string): boolean {
   if (typeof selector !== 'string' || selector.length === 0) return false;
   // 正则匹配 ST 聊天相关 token；用 \b 边界避免误匹配 .message 等同类前缀
   return /(?:^|[^a-zA-Z0-9_-])(\.mes\b|\.mes_text\b|\[mesid\b|#chat\b|#gal-global-overlay\b|#galgame-database-container\b)/.test(selector);
+}
+
+/**
+ * [小尾巴批次 ③-B4 2026-10-21] 读写同域回退的判据。
+ *
+ * 病根（实机复现，非推测）：写侧 `createSandboxedJQuery` 的 `$('#regex_container')` 在插件私有
+ * container 查不到时，会**回退到真实 document 的 ST 标准挂载点**（或在 `#palink-plugin-mount`
+ * 下惰性建一个 `[data-sandbox-created-container]`），于是 `.append()` 把面板写进了
+ * 挂载点里；而读侧 `sandboxedDocument.getElementById('regex_presets')` 只查私有 container，
+ * container 外一律不认（`regex_presets` 既不在 ST_MOUNT_POINT_IDS 也不在 ST_CHAT_SELECTOR_IDS）。
+ * ⇒ 节点确实在 DOM 里，插件却取不到自己刚写进去的那个元素。
+ * 直接后果：`st-plugins/regex/index.js:161` 拿不到 `#regex_presets` ⇒ `:163` console.error
+ * 并 return ⇒ 预设下拉的 change/create/update/apply/delete 监听器**永远不挂**（宿主轨）。
+ *
+ * 修法边界（刻意收紧，不放开任意真实 document 元素）：只有当目标元素落在
+ * **写侧本来就能写进去的那两处**之内时才回退——
+ *   ① 某个 id 命中 ST_MOUNT_POINT_IDS 的祖先之下（`$('#id')` 的回退目标），
+ *   ② 带 `data-sandbox-created-container` 的惰性容器之下（`$()` 的惰性创建产物）。
+ * 插件因此只能读到它自己有能力写入的区域，读面不超出既有写面，不泄露应用内部节点
+ * （消息正文所在的 `#chat` 等仍只走原 ST_CHAT_SELECTOR_IDS 口径）。
+ */
+function isInsidePluginWritableMount(el: Element): boolean {
+  let node: Element | null = el;
+  let depth = 0;
+  while (node && node !== document.body && depth < 64) {
+    if (node.id && ST_MOUNT_POINT_IDS.has(node.id)) return true;
+    if (node.hasAttribute('data-sandbox-created-container')) return true;
+    node = node.parentElement;
+    depth += 1;
+  }
+  return false;
 }
 
 /**
