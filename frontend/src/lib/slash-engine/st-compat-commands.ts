@@ -36,6 +36,12 @@ import { SlashCommandEngine, ARGUMENT_TYPE } from './index';
 import type { CommandDefinition } from './index';
 import { variableManager } from '../variables/manager';
 import { api } from '../../services/api';
+// [批次R1 2026-10-21] 扩展启停/状态的宿主侧实现（复用 runtime/config + plugins.toggle）。
+import {
+  fetchSmartCardExtensionCatalog,
+  findSmartCardExtension,
+  toggleSmartCardExtension,
+} from '@/components/ui/custom/smart-card-runtime/extension-catalog';
 
 /** ST 的数值序列解析：空格分隔 / JSON 数组 / 变量名，非法值直接丢弃。 */
 function parseNumericSeries(value: unknown): number[] {
@@ -650,6 +656,87 @@ export function registerStCompatCommands(): string[] {
         params: prompt ? { prompt } : {},
       });
       return typeof response?.summary === 'string' ? response.summary : '';
+    },
+  });
+
+  // ── [批次R1 2026-10-21] 扩展启停/状态：ST 1.18 把这一族暴露成**斜杠命令**，
+  //    而不是 TavernHelper 成员（public/scripts/extensions-slashcommands.js:89/130/171/230/266）。
+  //    ⇒ 帧内 `triggerSlash('/extension-enable Foo')` 就能到；**不新增** TavernHelper 键名
+  //    （那才是自发明 API）。
+  //
+  //    语义逐条对齐 ST：
+  //      extension-enable  (named: reload)          —— 启用；返回内部扩展名
+  //      extension-disable (named: reload)          —— 停用；返回内部扩展名
+  //      extension-toggle  (named: reload, state)   —— state=true/false 显式设，缺省取反
+  //      extension-state                            —— 返回 String(enabled)，不存在返 ''
+  //      extension-exists  (alias: extension-installed) —— 'true' / 'false'
+  //
+  //    ⚠️ 有意偏离：ST 默认 `reload=true` 会整页刷新；Palink 不能为一个扩展重载整个应用
+  //    （会打断当前对话/生成），因此 `reload` 参数被接受但**不执行刷新** —— 启停立即落库，
+  //    已在帧内加载的插件脚本要等下一次进入会话/重建卡帧才生效。这一点写进命令描述。
+  const parseStBooleanArg = (value: unknown): boolean | undefined => {
+    const text = String(value ?? '').trim().toLowerCase();
+    if (text === 'true' || text === '1' || text === 'on' || text === 'yes') return true;
+    if (text === 'false' || text === '0' || text === 'off' || text === 'no') return false;
+    return undefined;
+  };
+  const runStExtensionToggle = async (extensionId: string, desiredEnabled?: boolean): Promise<string> => {
+    const name = String(extensionId || '').trim();
+    if (!name) throw new Error('Extension name must be a string.');
+    const result = await toggleSmartCardExtension(name, desiredEnabled);
+    if (!result.success) {
+      throw new Error(result.message || result.error || 'extension toggle failed');
+    }
+    return result.extensionId || name;
+  };
+  const extensionToggleArgs = [
+    { name: 'reload', description: 'accepted for ST parity; Palink never reloads the page', type: [ARGUMENT_TYPE.BOOLEAN], isRequired: false },
+  ];
+  register('extension-enable', {
+    description: 'Enable an installed extension (returns its internal name; no page reload in Palink)',
+    namedArgs: extensionToggleArgs,
+    unnamedArgs: [strArg('extensionName', 'internal extension name')],
+    callback: async (_n, u) => runStExtensionToggle(u.join(' ').trim(), true),
+  });
+  register('extension-disable', {
+    description: 'Disable an installed extension (returns its internal name; no page reload in Palink)',
+    namedArgs: extensionToggleArgs,
+    unnamedArgs: [strArg('extensionName', 'internal extension name')],
+    callback: async (_n, u) => runStExtensionToggle(u.join(' ').trim(), false),
+  });
+  register('extension-toggle', {
+    description: 'Toggle an extension; state=true/false sets explicitly (ST extensions-slashcommands.js:171)',
+    namedArgs: [
+      ...extensionToggleArgs,
+      { name: 'state', description: 'explicit target state (true = enable, false = disable)', type: [ARGUMENT_TYPE.BOOLEAN], isRequired: false },
+    ],
+    unnamedArgs: [strArg('extensionName', 'internal extension name')],
+    callback: async (n, u) => runStExtensionToggle(u.join(' ').trim(), parseStBooleanArg(n.state)),
+  });
+  register('extension-state', {
+    description: 'Return whether an extension is enabled (true/false), empty when it does not exist',
+    unnamedArgs: [strArg('extensionName', 'internal extension name')],
+    callback: async (_n, u) => {
+      const name = u.join(' ').trim();
+      if (!name) return '';
+      const catalog = await fetchSmartCardExtensionCatalog();
+      const entry = findSmartCardExtension(catalog, name);
+      if (!entry) {
+        console.warn(`Extension ${name} does not exist.`);
+        return '';
+      }
+      return String(entry.enabled);
+    },
+  });
+  register('extension-exists', {
+    description: 'Return true/false whether an extension is installed',
+    aliases: ['extension-installed'],
+    unnamedArgs: [strArg('extensionName', 'internal extension name')],
+    callback: async (_n, u) => {
+      const name = u.join(' ').trim();
+      if (!name) return 'false';
+      const catalog = await fetchSmartCardExtensionCatalog();
+      return findSmartCardExtension(catalog, name) ? 'true' : 'false';
     },
   });
 

@@ -432,3 +432,41 @@ rc=0
 >    ④ 读的是 `ctx.presetSnapshot`。
 > ⑤ `isPreset*` 三键**继续留 D**（缺判定字段，不补恒假实现）。
 > 台账另见 `docs/_active/report/REPORT_批次P3_*.md` 与 SPEC §2.7。
+
+## 11. 订正（2026-10-21，批次R1 扩展读类五键）
+
+> **订正（2026-10-21，批次R1）**：`getExtensionStatus` / `getExtensionType` /
+> `getTavernHelperExtensionId` / `isInstalledExtension` / `isAdmin`
+> 五个键从 D 挪到 C ⇒ **C = 74 → 79、D = 47 → 42**（A = 13 不变；13 + 79 + 42 = 134 仍闭合）。
+> 挪动依据不是"为了让守卫变绿"，是读类能力当天落地，且**逐键一手核过 ST 契约**：
+> ① `getExtensionType` / `isInstalledExtension` / `getTavernHelperExtensionId` / `isAdmin`
+>    在 `st-plugins/third-party/JS-Slash-Runner-main/@types/function/extension.d.ts:2/5/15/40`
+>    全是**同步**；数据源 = 宿主带进 ctx 的扩展目录快照（后端 `/api/plugins/runtime/config`
+>    按 user_id 作用域过滤，新增 `owner_scope` 区分 local/global）。
+> ② `getExtensionStatus` **不是"启用与否"**：`@types/function/index.d.ts:47` 把它别名到
+>    `getExtensionInstallationInfo`，`src/function/extension.ts:23-39` 返回
+>    `Promise<{current_branch_name,current_commit_hash,is_up_to_date,remote_url}|null>`；
+>    本批按该契约实现（父侧动作 `getExtensionStatus`），另附 Palink 字段 `enabled`。
+>    ⚠️ 本仓没有远端版本通道（update/reinstall 属 R2）⇒ `is_up_to_date` 的语义是
+>    "没有可更新到的新版本"，不是远端比对结果；R2 引入远端版本后必须重算。
+> ③ `isAdmin` 的真值来源：`GET /api/users/me` 的 `role === 'admin'`（与 `App.tsx:896`
+>    同口径），由 App 写入 `lib/current-user-role.ts` 快照，帧内同步读 `ctx.isAdmin`。
+>    ⛔ 不从帧内 payload 取、不恒 true/false；宿主未下发时按安全默认 false 并留痕。
+>    两角色测试见 `__tests__/r1-extension-read-keys-frame.test.ts`。
+> ④ **启停没有新增 TavernHelper 键名**：ST 把这一族暴露成斜杠命令
+>    `extension-enable` / `extension-disable` / `extension-toggle` / `extension-state` /
+>    `extension-exists`（`public/scripts/extensions-slashcommands.js:89/130/171/230/266`），
+>    `@types/function/` 里没有 enable/disable 成员 ⇒ 按"没有对应函数就不要自造键名"，
+>    本批只补命令（宿主 slash 引擎），帧内 `triggerSlash` 可达。父侧走
+>    `PUT /api/plugins/{id}/toggle`，后端作用域同步收紧：本人私有允许、全局仅管理员、
+>    他人私有 404（`backend/app/api/plugins.py` 同名路由；测试
+>    `backend/tests/test_plugin_toggle_scope.py`）。
+> ⑤ **install / uninstall / reinstall / update 四键继续留 D**（批次R2；必须白名单源 +
+>    每次显式确认）。守卫里同时钉了反向红线：这四键在本批不得被注册。
+> ⑥ 守卫同步改判：D 名单移除这五键 + 两条正向锚点组（成员已注册 / 帧内实现在场）。
+>    见 `__tests__/h-tavernhelper-134-contract.test.ts` 的批次R1 注释块。
+> ⑦ 行为有测试托底：`__tests__/r1-extension-read-keys-frame.test.ts`（16 例，执行型，
+>    用求值后载体 `COMPAT_V2_RUNTIME_ARTIFACT`）、
+>    `__tests__/r1-extension-read-keys-parent.test.ts`（10 例，父侧落点 + 越权面）、
+>    `src/lib/slash-engine/__tests__/r1-extension-slash-commands.test.ts`（9 例，ST 命令语义）。
+> 台账另见 `docs/_active/report/REPORT_批次R1_插件只读与启停_2026-10-21.md`。

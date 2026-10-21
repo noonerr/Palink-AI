@@ -183,7 +183,17 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   getAudioSettings: 'audio_player',
   setAudioSettings: 'audio_player',
 
-  // [ST-GAP:ext_install] 扩展安装/权限模型；口径 c 已拍板**不学**，只保留标记。
+  // [ST-GAP:ext_install] 扩展安装/权限模型。
+  //   [批次R1 2026-10-21] 用户裁定改为"允许做"，本族拆成两半：
+  //     · 读类 5 键**已落地**（getExtensionStatus / getExtensionType /
+  //       getTavernHelperExtensionId / isInstalledExtension / isAdmin → D→C）：
+  //       帧内 H 段 + 父侧 getExtensionStatus / extension-catalog；isAdmin 真值取
+  //       /api/users/me 的 role（经 App 的 current-user-role 快照同步进 ctx）。
+  //     · 写类 4 键**仍 D**（installExtension / uninstallExtension / reinstallExtension /
+  //       updateExtension → R2，必须白名单源 + 每次显式确认）。
+  //   下面 5 个斜杠命令名（extension-*）**已实现**（宿主 slash 引擎，ST
+  //   extensions-slashcommands.js:89/130/171/230/266），保留在此只为历史卡调用仍能
+  //   归到本族；实现后不会再产生这条记录。
   installExtension: 'ext_install',
   uninstallExtension: 'ext_install',
   reinstallExtension: 'ext_install',

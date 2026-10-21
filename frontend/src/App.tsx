@@ -19,6 +19,7 @@ import { useImageTaskExecutor } from '@/lib/image-gen/use-image-task-executor';
 import { AuthScreen } from '@/components/views/AuthScreen';
 import { api, ApiError, AUTH_FAILURE_EVENT, invalidateCache, isAbortError } from '@/services/api';
 import { onEvent } from '@/lib/event-bus';
+import { setCurrentUserRole } from '@/lib/current-user-role';
 import { pluginManager } from '@/lib/plugin-system/manager';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import type { User, Model, Language, Theme, Provider } from '@/types';
@@ -752,12 +753,16 @@ function App() {
     // 200 → 有登录态，无感进入主界面；401 → 无登录态，清应用状态后停留登录页。
     setPrivateConfigReady(false);
     setUser(null);
+    setCurrentUserRole(null);
     setLoading(true);
 
     api.get<User>('/api/users/me', { signal: controller.signal })
       .then(u => {
         if (!isMounted) return;
         setUser(u);
+        // [批次R1 2026-10-21] 智能卡帧内 isAdmin() 的同步真值来源：App 的登录态
+        // 探测结果（/api/users/me 的 role）。子组件挂载时只读这份快照，不再各自请求。
+        setCurrentUserRole(u.role);
         setPrivateConfigReady(true);
         setLoading(false);
       })
@@ -767,6 +772,7 @@ function App() {
         // 401 由 api.ts 派发 'auth:failure' 兜底清理；此处对 abort/网络错误同样降级登出态。
         setPrivateConfigReady(false);
         setUser(null);
+        setCurrentUserRole(null);
         clearCachedUserSnapshot();
         localStorage.removeItem('palink-silly-tavern-mode');
         localStorage.removeItem('palink-silly-tavern-theme');
@@ -804,6 +810,7 @@ function App() {
       localStorage.removeItem('palink-silly-tavern-theme');
       clearCachedUserSnapshot();
       setUser(null);
+      setCurrentUserRole(null);
       setModels([]);
       setProviders([]);
       setSystemDefaults({});
@@ -850,6 +857,8 @@ function App() {
   const handleLogin = useCallback((_data?: { access_token?: string }) => {
     setPrivateConfigReady(false);
     setUser(null);
+    // 登录页提交后角色未知，先清空；/api/users/me 探测成功会立即写回真值。
+    setCurrentUserRole(null);
     setModels([]);
     setProviders([]);
     setSystemDefaults({});
@@ -868,6 +877,7 @@ function App() {
     localStorage.removeItem('palink-silly-tavern-theme');
     clearCachedUserSnapshot();
     setUser(null);
+    setCurrentUserRole(null);
     setModels([]);
     setProviders([]);
     setSystemDefaults({});

@@ -196,6 +196,24 @@ const MOVES = [
     },
     mode: 'keys', from: 'D', to: 'C', keys: [],
   },
+  {
+    // 批次R1（2026-10-21）：扩展读类五键。写类四键（install/uninstall/reinstall/
+    // update）**不挪**，留 R2；启停走 ST 斜杠命令，不新增 TavernHelper 键名。
+    // 订正段在报告 §11（追加在文末，不动前面任何行号）。
+    id: '批次R1：扩展读类五键 D→C',
+    cite: {
+      lines: [436, 472],
+      expect: [
+        '订正（2026-10-21，批次R1 扩展读类五键）',
+        '五个键从 D 挪到 C',
+        'C = 74 → 79',
+        'D = 47 → 42',
+        '13 + 79 + 42 = 134',
+      ],
+    },
+    mode: 'keys', from: 'D', to: 'C',
+    keys: ['getExtensionStatus', 'getExtensionType', 'getTavernHelperExtensionId', 'isInstalledExtension', 'isAdmin'],
+  },
 ];
 
 function verifyCite(move) {
@@ -207,7 +225,7 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3'];
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3', '批次R1'];
 const ordered = MOVES.slice().sort((x, y) => {
   const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
   return rank(x) - rank(y);

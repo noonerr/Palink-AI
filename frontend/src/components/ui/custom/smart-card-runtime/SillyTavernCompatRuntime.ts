@@ -210,6 +210,16 @@ function buildSmartCardCompatRuntimeBootPayload(options: SmartCardRuntimeV2Optio
     // 不返回 undefined 冒充"没有预设"）；到达后经 context-update 通道热更进 ctx
     // （`applyParentContextUpdateCompat` 的 Object.assign(ctx, …)）。
     presetSnapshot: context.presetSnapshot || null,
+    // [批次R1 2026-10-21] 帧内扩展读面的快照（getExtensionType / isInstalledExtension /
+    // getExtensionStatus）。与 presetSnapshot 同一条投递方式：boot 内联首帧可用，
+    // 晚到/变更走 context-update 的 Object.assign(ctx, …) 热更。
+    // ⛔ 与上面的 stPluginRuntimeConfig 不是一回事：后者只含**启用**且按卡过滤后的
+    // 运行 payload，读不出"已安装但被禁用"的插件，也没有 local/global 位。
+    extensionCatalog: context.extensionCatalog || null,
+    // [批次R1 2026-10-21] ST isAdmin() 是同步契约，数据源必须是宿主先算好的真值
+    // （App.tsx 的 user.role === 'admin'，经 current-user-role 快照传进来）。
+    // 缺省 false 只表示"宿主未下发"，帧内会留痕，不当作权限结论。
+    isAdmin: Boolean(context.isAdmin),
     globalRegexScripts: Array.isArray(context.globalRegexScripts) ? context.globalRegexScripts : [],
     stPluginRuntimeConfig: context.stPluginRuntimeConfig && typeof context.stPluginRuntimeConfig === 'object'
       ? context.stPluginRuntimeConfig

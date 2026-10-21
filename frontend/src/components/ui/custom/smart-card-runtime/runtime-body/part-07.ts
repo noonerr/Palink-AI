@@ -247,13 +247,17 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   //
   // 三条硬规矩（本区域逐条守）：
   //  1) 宿主能力只走**已存在**的 requestParent 动作与帧内已注册的真实现，不新造父侧通道；
-  //  2) 没有真实现支撑的键（预设写侧与类型判定 / 音频 / 扩展安装 / 角色库删除以外的写侧 /
+  //  2) 没有真实现支撑的键（预设写侧与类型判定 / 音频 / 扩展**安装**（install /
+  //     uninstall / reinstall / update 四键，批次R2 才做）/ 角色库删除以外的写侧 /
   //     删书 / 正则对象模型 / inject / rotateChatMessages / importRaw* / getModelList /
   //     脚本按钮）**不在这里出现** —— proxy 的 has() 会如实报缺，好过注册一个恒真的假成功；
   //     [批次P2 2026-10-21] 预设族里**读类 3 键**（getPresetNames / getLoadedPresetName /
   //     getPreset）已落地，剩下的写类 9 键与 builtin/default_preset/importRawPreset
   //     仍不注册；isPreset* 三键**保持不注册**（本仓预设行没有 marker/system_prompt/
   //     injection_position 这些判定字段，补了只能恒 false —— 那正是本仓红线）。
+  //     [批次R1 2026-10-21] 扩展族里**读类 5 键**（getExtensionStatus / getExtensionType /
+  //     getTavernHelperExtensionId / isInstalledExtension / isAdmin）已落地；安装/卸载/
+  //     重装/更新四键**继续不注册**（R2，且必须逐次用户确认 + 白名单源）。
   //  3) 桥接一律**调用时**再取 window 上的实现：本段之后 part-08 才注册 triggerSlash 等全局。
   const th134Warn = (message) => {
     post({ type: 'log', level: 'warn', message: 'TavernHelper: ' + String(message) });
@@ -715,6 +719,52 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     return snap;
   };
 
+  // [批次R1 2026-10-21] 扩展读面（ST extension.d.ts:2/5/15/40 + index.d.ts:47）。
+  //
+  // 数据源：宿主带进 ctx 的 extensionCatalog（后端 /api/plugins/runtime/config，
+  // 已按登录态 user_id 过滤；管理员额外带 include_disabled=1）。为什么同步键读快照：
+  // getExtensionType / isInstalledExtension 在 ST 契约里是**同步**的，而帧内
+  // requestParent 是异步的 —— 接线成 async 会让真卡拿到 undefined（批次P3 踩过）。
+  // 快照未就绪 ⇒ 读类返回 null/false 并**留痕**，不冒充"未安装"。
+  const th134ExtensionList = () => {
+    const snap = ctx && ctx.extensionCatalog && typeof ctx.extensionCatalog === 'object' ? ctx.extensionCatalog : null;
+    if (!snap) return null;
+    return Array.isArray(snap.plugins) ? snap.plugins : [];
+  };
+  // ST getExtensionType 的匹配口径：extensionTypes 的键 endswith(extension_id)
+  // （src/function/extension.ts:11-14）。这里同样做后缀匹配，另加精确匹配。
+  const th134ExtensionMatches = (entry, extensionId) => {
+    const id = String(extensionId === undefined || extensionId === null ? '' : extensionId);
+    if (!id) return false;
+    const keys = [entry && entry.extensionId, entry && entry.name, entry && entry.manifestName, entry && entry.id];
+    for (let i = 0; i < keys.length; i += 1) {
+      const value = keys[i] ? String(keys[i]) : '';
+      if (!value) continue;
+      if (value === id) return true;
+      if (value.length > id.length && value.slice(value.length - id.length) === id) return true;
+    }
+    return false;
+  };
+  const th134FindExtensionInList = (list, extensionId) => {
+    if (!list) return null;
+    for (let i = 0; i < list.length; i += 1) {
+      if (th134ExtensionMatches(list[i], extensionId)) return list[i];
+    }
+    return null;
+  };
+  const th134GetExtensionType = (extensionId) => {
+    const list = th134ExtensionList();
+    if (!list) {
+      th134Warn('getExtensionType: 宿主扩展目录未就绪，返回 null（不是"未安装"）');
+      return null;
+    }
+    const entry = th134FindExtensionInList(list, extensionId);
+    if (!entry) return null;
+    const type = String(entry.type || '');
+    if (type === 'local' || type === 'global' || type === 'system') return type;
+    return null;
+  };
+
   const tavernHelperTh134Compat = {
     // 变量族（写体，ST 的 option.type 语义；getVariables / replaceVariables 两个 A 类键不动，
     // 它们既有实现是 Palink 已上线口径，改它属回归风险，只写进报告 §7 不当场改）
@@ -929,6 +979,37 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
         throw new Error('TavernHelper: getPreset 预设不存在: ' + name);
       }
       return found;
+    },
+    // [批次R1 2026-10-21] 扩展读面 5 键（契约逐条抄 @types/function/extension.d.ts）。
+    //
+    // 契约一手：
+    //   isAdmin(): boolean                                   —— extension.d.ts:2（同步）
+    //   getTavernHelperExtensionId(): string                 —— :5（同步，助手恒为 'JS-Slash-Runner'）
+    //   getExtensionType(id): 'local'|'global'|'system'|null —— :15（同步）
+    //   isInstalledExtension(id): boolean                    —— :40（同步，= getExtensionType !== null）
+    //   getExtensionStatus = getExtensionInstallationInfo    —— index.d.ts:47 +
+    //     src/function/extension.ts:23-39（**异步**，Promise<{current_branch_name,
+    //     current_commit_hash,is_up_to_date,remote_url}|null>；不是"启用与否"）
+    //
+    // isAdmin 的真值来源：宿主把 App.tsx 的 user.role === 'admin' 经
+    // current-user-role 快照写进 ctx.isAdmin（boot 内联 + context-update 热更）。
+    // ⛔ 不从帧内 payload 取、不恒 true/false；宿主没下发时按安全默认 false 返回并留痕。
+    isAdmin: () => {
+      if (typeof ctx.isAdmin === 'boolean') return ctx.isAdmin;
+      th134Warn('isAdmin: 宿主未下发当前用户角色，按 false 返回（安全默认，不是权限判定）');
+      return false;
+    },
+    getTavernHelperExtensionId: () => 'JS-Slash-Runner',
+    getExtensionType: th134GetExtensionType,
+    isInstalledExtension: (extensionId) => th134GetExtensionType(extensionId) !== null,
+    // 异步桥：父侧 getExtensionStatus 动作拉一次作用域内插件目录再回答。
+    // 找不到 ⇒ null（d.ts 的"未安装"口径）；父侧失败 ⇒ 抛错（不静默 null 装成"未安装"）。
+    getExtensionStatus: async (extensionId) => {
+      const res = await requestParent('getExtensionStatus', { extensionId: extensionId });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: getExtensionStatus 失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return res.info === undefined || res.info === null ? null : res.info;
     },
     // [ST-BRIDGE-CHARLIB 2026-10-20 批次B 段②] 角色库写侧 7 键（character.d.ts）。
     // 失败语义（一手）：

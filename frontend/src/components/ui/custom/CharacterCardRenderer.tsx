@@ -10,6 +10,7 @@ import { readIdbNamespaceKillSwitch } from '@/lib/sillytavern/card-idb-namespace
 import type {
   CharacterSmartCardContext,
   SillyTavernPluginRuntimeConfig,
+  SmartCardExtensionCatalog,
   SmartCardPresetSnapshot,
   SmartCardRenderMode,
 } from '@/types';
@@ -19,6 +20,13 @@ import {
   fetchSmartCardPresetSnapshot,
   toSmartCardPresetSnapshot,
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
+// [批次R1 2026-10-21] 帧内扩展读面（同步键）的快照 + isAdmin 真值。
+// 与预设快照同一条投递方式：宿主拉好塞进 ctx，boot 内联 + context-update 热更。
+import {
+  fetchSmartCardExtensionCatalog,
+  SMART_CARD_EXTENSION_CATALOG_CHANGED_EVENT,
+} from '@/components/ui/custom/smart-card-runtime/extension-catalog';
+import { isCurrentUserAdmin } from '@/lib/current-user-role';
 // [批次UI1 2026-10-21] 第一方切换"全局选中预设"后，必须让本快照重拉 ——
 // 否则帧内 getPresetNames/getLoadedPresetName/getPreset 会继续读旧快照。
 import { PRESET_SELECTION_CHANGED_EVENT } from '@/lib/promptPresetSelection';
@@ -391,6 +399,33 @@ const IframeRenderer = React.memo(function IframeRenderer({
       });
     return () => { cancelled = true; };
   }, [context.characterId, presetSessionId, presetSnapshotRevision]);
+  // [批次R1 2026-10-21] 扩展读面快照：帧内 getExtensionType / isInstalledExtension 是
+  // **同步**契约（extension.d.ts:15/40），而 requestParent 是异步的 ⇒ 宿主把
+  // /api/plugins/runtime/config（按 user_id 作用域过滤）拉好塞进 ctx。
+  // 启停（/extension-enable 等）成功后 extension-catalog 广播事件，这里重拉；
+  // 晚到/变更经 liveContext → context-update 热更进帧，不重建 srcDoc。
+  const [extensionCatalog, setExtensionCatalog] = useState<SmartCardExtensionCatalog | null>(null);
+  const [extensionCatalogRevision, setExtensionCatalogRevision] = useState(0);
+  useEffect(() => {
+    const onCatalogChanged = () => setExtensionCatalogRevision((v) => v + 1);
+    window.addEventListener(SMART_CARD_EXTENSION_CATALOG_CHANGED_EVENT, onCatalogChanged);
+    return () => window.removeEventListener(SMART_CARD_EXTENSION_CATALOG_CHANGED_EVENT, onCatalogChanged);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSmartCardExtensionCatalog()
+      .then((catalog) => {
+        if (!cancelled) setExtensionCatalog(catalog);
+      })
+      .catch(() => {
+        // 拉取失败 ⇒ 保持 null（帧内同步键走"目录未就绪"留痕分支，不造空目录骗卡）
+        if (!cancelled) setExtensionCatalog(null);
+      });
+    return () => { cancelled = true; };
+  }, [extensionCatalogRevision]);
+  // isAdmin 同步真值：App 登录探测时写入的 current-user-role 快照（与 /api/users/me
+  // 的 role === 'admin' 同口径）。允许 context 覆盖（测试/其他宿主入口显式传）。
+  const currentUserIsAdmin = typeof context.isAdmin === 'boolean' ? context.isAdmin : isCurrentUserAdmin();
   // 智能卡资源模式（direct/proxy）切换时重建 srcDoc：URL 改写结果不同
   //（optimizeSmartCardHtmlForRuntime 的缓存键已含模式，这里只需触发重算）
   const [assetModeVersion, setAssetModeVersion] = useState(0);
@@ -432,6 +467,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     selectedModel: context.selectedModel,
     // [批次P3 P3-A] 预设快照：这是**唯一保证到达**帧内的通道（见下方 bootContext 处的说明）。
     presetSnapshot,
+    // [批次R1 2026-10-21] 扩展读面快照 + isAdmin 同步真值（同上，走 context-update 热更）。
+    extensionCatalog,
+    isAdmin: currentUserIsAdmin,
   }), [
     context.characterId,
     context.characterName,
@@ -459,10 +497,12 @@ const IframeRenderer = React.memo(function IframeRenderer({
     viewportContext,
     context.selectedModel,
     presetSnapshot,
+    extensionCatalog,
+    currentUserIsAdmin,
   ]);
 
   const bootContextSignature = getSmartCardBootContextSignature(
-    { ...context, stPluginRuntimeConfig, presetSnapshot },
+    { ...context, stPluginRuntimeConfig, presetSnapshot, extensionCatalog, isAdmin: currentUserIsAdmin },
     interfaceLanguage,
     persistedStorage,
     sourceFingerprint,
@@ -498,6 +538,9 @@ const IframeRenderer = React.memo(function IframeRenderer({
     // ⇒ 若快照晚于首帧到达，boot 里那份不会补进去，真正保证到达的是 liveContext 的
     // context-update 通道。两条通道写的是同一个 ctx 键，帧内不区分来源。
     presetSnapshot,
+    // [批次R1 2026-10-21] 同预设快照：首帧已在手就内联；晚到由 liveContext 热更。
+    extensionCatalog,
+    isAdmin: currentUserIsAdmin,
     // [S1-G6 2026-10-13] 在主框架读 IDB 分库止血开关并下发。帧内读不到主框架的
     // localStorage（未信任卡帧里 window.parent 是 legacy 安全代理），必须由这里读。
     // 每次构建 srcdoc 都重读 ⇒ 刷新即生效，仍满足"不用重新构建就能关掉"。
@@ -518,6 +561,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
     bootContextSignature,
     stPluginRuntimeConfig,
     presetSnapshot,
+    extensionCatalog,
+    currentUserIsAdmin,
   ]);
 
   useEffect(() => {

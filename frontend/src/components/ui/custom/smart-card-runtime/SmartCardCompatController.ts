@@ -13,6 +13,12 @@ import type {
 import type { SmartCardAction } from '@/components/ui/custom/CharacterCardRenderer';
 import { popupManager } from '@/lib/popup-system';
 import { PopupType } from '@/lib/popup-system/types';
+// [批次R1 2026-10-21] 扩展读面 / 启停的宿主侧实现（插件目录按 user_id 作用域过滤）。
+import {
+  fetchSmartCardExtensionCatalog,
+  findSmartCardExtension,
+  toSmartCardExtensionInstallationInfo,
+} from './extension-catalog';
 // [包N B-3 2026-10-19] 会话改名的宿主侧广播（与 lib/sillytavern/getContext.ts 的宿主轨同源）
 import { emitEvent } from '@/lib/event-bus';
 
@@ -2326,6 +2332,28 @@ export async function handleSmartCardCompatRequest(
       result = { success: true };
     } else if (action.action === 'saveExtensionSettings') {
       result = await saveSmartCardExtensionSettings(payload);
+    } else if (action.action === 'getExtensionCatalog') {
+      // [批次R1 2026-10-21] 帧内扩展读面的**刷新**入口：返回当前用户作用域内的插件目录。
+      // 同步键（getExtensionType / isInstalledExtension）读的是 ctx 快照；这个动作给
+      // 宿主/测试做一次显式刷新，也供 getExtensionStatus 在快照缺失时兜底。
+      // 只读、无副作用 ⇒ 不在手势闸门名单里。
+      const catalog = await fetchSmartCardExtensionCatalog();
+      result = { success: true, catalog };
+    } else if (action.action === 'getExtensionStatus') {
+      // [批次R1 2026-10-21] 契约一手：@types/function/index.d.ts:47
+      //   `getExtensionStatus: typeof getExtensionInstallationInfo`
+      //   src/function/extension.ts:23-39 —— 异步，返回
+      //   {current_branch_name,current_commit_hash,is_up_to_date,remote_url} | null。
+      // ⚠️ 它不是"启用与否"：启用状态在 ST 是 extension_settings.disabledExtensions，
+      //   本仓对应 plugins.enabled（另见 extension-catalog.ts 的附加 enabled 字段与
+      //   /extension-state 命令）。找不到扩展 ⇒ 按 d.ts 返回 null，不抛错。
+      const extensionId = payload.extensionId ?? payload.extension_id ?? payload.name;
+      const catalog = await fetchSmartCardExtensionCatalog();
+      const entry = findSmartCardExtension(catalog, extensionId);
+      result = {
+        success: true,
+        info: entry ? toSmartCardExtensionInstallationInfo(entry) : null,
+      };
     } else if (action.action === 'callGenericPopup' || action.action === 'callPopup') {
       // Task 8.2: 委托到 popupManager.show() 并返回 PopupResult
       const rawMessage = typeof payload.message === 'string' ? payload.message : String(payload.message ?? '');

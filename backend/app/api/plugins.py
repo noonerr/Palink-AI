@@ -605,6 +605,10 @@ def _plugin_runtime_payload(plugin: Plugin) -> dict:
         # DB 启用标志（管理面 include_disabled 模式靠它区分启用/禁用；
         # 默认模式下恒为 True，消费方不读取该字段）
         "enabled": bool(plugin.enabled),
+        # [批次R1 2026-10-21] ST getExtensionType 的判据来源：NULL = 全局扩展（所有用户可见），
+        # 非 NULL = 该用户的本地扩展。runtime/config 本身已按 user_id 作用域过滤，
+        # 但作用域过滤后仍分不出"全局"与"本人私有"——帧内要回答 local/global，必须下发这一位。
+        "owner_scope": "global" if plugin.user_id is None else "local",
         "version": plugin.version,
         "author": plugin.author,
         "source_type": plugin.source_type,
@@ -2029,11 +2033,26 @@ async def import_regex_to_target(
 @router.put("/{plugin_id}/toggle")
 async def toggle_plugin(
     plugin_id: str,
-    user: User = Depends(get_admin),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """启用/停用插件（**只作用于当前用户作用域内**，批次R1 2026-10-21 收紧）。
+
+    改前：`Depends(get_admin)` + 只按 id 查库 ⇒ 管理员能切到**别人**的私有插件。
+    改后口径与 runtime/config / asset / source 三处既有作用域过滤对齐：
+      - 本人私有插件（user_id == 当前用户）⇒ 允许；
+      - 全局插件（user_id IS NULL）⇒ 仅管理员允许（与 ST 一致：全局扩展共享状态）；
+      - 他人私有插件 ⇒ **404**（不返回 403 —— 403 等于告诉调用方"这个 id 存在但你不配"，
+        可被探测他人插件；口径对齐 character.py / get_plugin_asset 的 404）。
+    不建表不加列，也不新增端点。
+    """
     plugin = db.query(Plugin).filter(Plugin.id == plugin_id).first()
     if not plugin:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    if plugin.user_id is None:
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员才能切换全局插件")
+    elif plugin.user_id != user.id:
         raise HTTPException(status_code=404, detail="Plugin not found")
     plugin.enabled = not plugin.enabled
     plugin.updated_at = datetime.now(timezone.utc)

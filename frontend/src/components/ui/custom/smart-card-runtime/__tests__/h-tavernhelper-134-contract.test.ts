@@ -250,7 +250,9 @@ describe('A fixture 与注册口径', () => {
       // [批次P2 2026-10-21] 其中 getPreset / getLoadedPresetName 已移出（读类真落地，见下方锚点）。
       'setPreset', 'loadPreset', 'builtin', 'default_preset',
       'playAudio', 'getAudioList', 'getAudioSettings',
-      'installExtension', 'isInstalledExtension', 'isAdmin', 'getTavernHelperExtensionId',
+      // [批次R1 2026-10-21] isInstalledExtension / isAdmin / getTavernHelperExtensionId
+      // 已移出（扩展读类真落地）。安装/卸载/重装/更新四键仍留在这里（R2）。
+      'installExtension',
       'injectPrompts', 'uninjectPrompts',
       'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
@@ -265,7 +267,9 @@ describe('A fixture 与注册口径', () => {
       // —— 批次I 补列 · tavern regex 族：族表 5 键，原先只盯 2，补 3 ——
       'isCharacterTavernRegexesEnabled', 'replaceTavernRegexes', 'updateTavernRegexesWith',
       // —— 批次I 补列 · ST 扩展安装体系：族表 9 键，原先只盯 4，补 5 ——
-      'getExtensionStatus', 'getExtensionType', 'reinstallExtension', 'uninstallExtension',
+      // [批次R1 2026-10-21] getExtensionStatus / getExtensionType 已移出（读类真落地）；
+      // 剩 install/uninstall/reinstall/update 四键仍是 D（R2，且必须逐次用户确认）。
+      'reinstallExtension', 'uninstallExtension',
       'updateExtension',
       // —— 批次I 补列 · ST 原始对象导入器：族表 2 键，原先只盯 1，补 1 ——
       'importRawTavernRegex',
@@ -392,6 +396,36 @@ describe('A fixture 与注册口径', () => {
     // 而且 proxy 也不会为它们造假存在性：H 段没有往 tavernHelperCompat 里塞同名键
     ['getPreset', 'createCharacter', 'playAudio', 'getModelList'].forEach((n) => {
       expect(topLevelKeys(SRC, 'tavernHelperCompat')).not.toContain(n);
+    });
+
+    // ⚠️ 2026-10-21 批次R1 再改判五键：getExtensionStatus / getExtensionType /
+    //   getTavernHelperExtensionId / isInstalledExtension / isAdmin 移出 D 名单
+    //   （D 47→42、C 74→79）。**不是**为凑绿，是读类能力当天落地：
+    //   ① 契约一手：@types/function/extension.d.ts:2/5/15/40 + index.d.ts:47
+    //      （getExtensionStatus = getExtensionInstallationInfo，**异步**，不是"启用与否"）；
+    //   ② 数据源：后端 /api/plugins/runtime/config 按 user_id 作用域过滤，
+    //      新增 owner_scope 位区分 local/global；isAdmin 取 /api/users/me 的 role，
+    //      经 App 的 current-user-role 快照同步进 ctx；
+    //   ③ 帧内 H 段 5 成员 → 父侧 getExtensionStatus 动作；启停走 ST 斜杠命令
+    //      extension-enable/disable/toggle/state/exists（extensions-slashcommands.js:89/130/171/230/266），
+    //      **不新增 TavernHelper 键名**；install/uninstall/reinstall/update 仍 D（R2）。
+    //   台账同步（三层同批）：palink-diag.ts 的 ext_install 注释、REPORT_包H §11、
+    //      SPEC §2.2 之后的追加段、scripts/docs/st-gap-ledger-reconcile.mjs 的 MOVES。
+    //   正向锚点（把帧内成员/父侧动作摘掉 ⇒ 本用例必红）：
+    (['getExtensionStatus', 'getExtensionType', 'getTavernHelperExtensionId', 'isInstalledExtension', 'isAdmin'] as const)
+      .forEach((n) => {
+        expect(registered.has(n), `批次R1 已实现的扩展读类键不得丢：${n}`).toBe(true);
+      });
+    expect(SRC.indexOf('getExtensionType: th134GetExtensionType')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('isInstalledExtension: (extensionId) => th134GetExtensionType(extensionId) !== null')).toBeGreaterThan(-1);
+    expect(SRC.indexOf("getTavernHelperExtensionId: () => 'JS-Slash-Runner'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf('isAdmin: () => {')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('ctx.isAdmin')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('getExtensionStatus: async (extensionId)')).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('getExtensionStatus'")).toBeGreaterThan(-1);
+    // ⛔ 反向红线：安装/卸载/重装/更新四键**必须仍是 D**（R2 才做，且逐次用户确认）。
+    ['installExtension', 'uninstallExtension', 'reinstallExtension', 'updateExtension'].forEach((n) => {
+      expect(registered.has(n), `R2 才能做的键不得在本批注册：${n}`).toBe(false);
     });
   });
 });
