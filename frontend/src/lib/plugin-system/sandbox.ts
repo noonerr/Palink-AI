@@ -47,6 +47,8 @@ import {
 // [批次E2b 2026-10-21] 插件 CSS 的相对 @import 内联（debugger.css 在插件资产里不存在，
 // 改 URL 已被实机否证；内容来自构建期生成的 bundled-plugin-css.generated.ts）。
 import { inlineBundledStPluginCssImports } from '../sillytavern/bundled-plugin-css';
+// [批次WU 2026-10-21] 插件网络白名单的解析/读写（设置页与沙箱判定共用同一份实现）。
+import { readEffectivePluginFetchWhitelist } from './plugin-fetch-whitelist';
 // ST 兼容库：真实库注入沙箱，使依赖 jQuery/Handlebars/toastr/select2/marked 的插件可用
 import jQuery from 'jquery';
 import Handlebars from 'handlebars';
@@ -1342,19 +1344,6 @@ function createSandboxedWindow(
 }
 
 /**
- * 沙箱网络/脚本加载白名单（S-1）。
- * 默认包含常见 CDN 域名，确保插件能加载外部依赖（GSAP、PIXI.js 等）。
- * fetch 与 fake script 外部脚本加载共用同一套白名单判定。
- */
-const DEFAULT_CDN_WHITELIST = [
-  'cdn.jsdelivr.net',
-  'unpkg.com',
-  'cdnjs.cloudflare.com',
-  'raw.githubusercontent.com',
-  'github.com',
-];
-
-/**
  * ST tokenizerType 枚举 → 后端 tokenizer 名称（tiktoken 编码名）。
  * ST 1.18.0 tokenizers.js:16-38 的枚举：NONE:0/GPT2:1/OPENAI:2/LLAMA:3/...
  * Palink 后端 /api/tokenizers/* 支持 cl100k_base/gpt2 等 tiktoken 编码名；
@@ -1372,24 +1361,13 @@ function _stTokenizerTypeToName(tokenizerType?: number): string | undefined {
 }
 
 /**
- * 读取当前生效的域名白名单（默认 CDN + 用户配置，逗号分隔、去重）。
+ * 读取当前生效的域名白名单（默认 CDN + 用户配置）。
+ * [批次WU 2026-10-21] 解析/读写已抽到 plugin-fetch-whitelist.ts（设置页共用），
+ * 语义保持不变：默认项在前、用户项按出现顺序去重、hostname 小写、逗号分隔。
  * localStorage 不可用时仅返回默认白名单。
  */
 function readPluginFetchWhitelist(): string[] {
-  const whitelist = [...DEFAULT_CDN_WHITELIST];
-  try {
-    const raw = localStorage.getItem('palink_plugin_fetch_whitelist');
-    if (raw) {
-      const userWhitelist = raw
-        .split(',')
-        .map(d => d.trim().toLowerCase())
-        .filter(Boolean);
-      return [...new Set([...whitelist, ...userWhitelist])];
-    }
-  } catch {
-    // localStorage 不可用时使用默认白名单
-  }
-  return whitelist;
+  return readEffectivePluginFetchWhitelist();
 }
 
 /**

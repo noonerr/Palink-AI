@@ -676,3 +676,21 @@ Kimi 的那两条报错必须消失，且**沙箱里读不到父站凭据**不�
   ⚠️ 我先写成 JSON `["localhost","127.0.0.1"]` 时**不生效**——解析器按逗号切，引号和方括号会留在 hostname 里。
 - ⇒ 用户裁定"要开白名单"后，要做的是**给这个键补 UI**（插件管理页：列表增删 + 本机 AI 服务一键预设
   `localhost` / `127.0.0.1`，写入时用逗号格式），**默认保持空**（恶意插件探测用户本机服务是真风险）。
+
+### [P2-14] 补记 2（2026-10-21 夜 · 批次WU 已做完第 1 条的 UI）
+
+UI 已落地：**设置 → 插件 → 「插件网络白名单」**（`AdminPluginsTab.tsx`）。
+解析/读写抽到 `frontend/src/lib/plugin-system/plugin-fetch-whitelist.ts`，
+沙箱判定改为共用它（同一份格式契约，不再有第二套解析器）。
+行号锚点（**本批后有效，上面 :1378/:1401 已因抽模块漂移**）：
+`plugin-fetch-whitelist.ts:17` 键名 / `:108` 写入 / `:127` 生效名单，
+`sandbox.ts:1369` 读取入口 / `:1379` 判定函数。
+守卫两文件：`__tests__/wu-plugin-fetch-whitelist.test.ts`（格式契约 + 真判定函数）、
+`settings-tabs/__tests__/wu-plugin-whitelist-ui.test.tsx`（点 UI → 落盘 → 判定放行 整链）。
+**第 2 条（`extension_settings.memory` 缺子键）仍未动**，与本批无关，继续挂 P2。
+
+⚠️ 实测中纠正一条本批写文档时的想当然：**"畸形 URL 判 false"是不对的**。
+`isUrlAllowedByPluginWhitelist('not a url')` 返回 **true** —— 因为判定时带了
+`new URL(url, window.location.href)` 基址，相对写法一律解析成同源并被放行
+（插件 fetch 自己的 `/scripts/...` 模板正依赖这条）。白名单只约束**跨源绝对地址**。
+真返回 false 的只有"URL 构造本身失败"（如 `http://`）。

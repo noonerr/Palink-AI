@@ -60,11 +60,20 @@
 
 ## 用户可配置项
 
+**插件网络白名单**有 UI 了（批次WU 2026-10-21）：**设置 → 插件 → 「插件网络白名单」**
+—— 逐条增删 + 一键加本机 AI 服务（`localhost` / `127.0.0.1`），改动即时生效、无需重启。
+底层存储仍是同一个 localStorage 键，手工写法继续有效（下次在 UI 里改动时会被归一）：
+
 ```
 localStorage.palink_plugin_fetch_whitelist = "example.com,cdn.example.org"
 ```
 
 追加到默认 CDN 白名单，两条执行路径共用。
+⚠️ 格式是**逗号分隔的裸主机名**，不是 JSON 数组 —— 写成 `["example.com"]` 会被整条丢弃
+（引号和方括号留在 hostname 里，匹配不上）。判定只看主机名：端口和路径不参与比较，
+所以放开 `localhost` 等于放开本机**所有端口**。默认用户项为空，五个 CDN 固定放行、删不掉。
+实现集中在 `frontend/src/lib/plugin-system/plugin-fetch-whitelist.ts`（解析/读写），
+沙箱判定 `isUrlAllowedByPluginWhitelist()`（`sandbox.ts`）共用它，两路径不会再各写一套解析。
 
 ## ESM 沙箱路径的边界（摘要）
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { Plus, Trash2, ChevronDown, Check, Settings2, Save } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, Check, Settings2, Save, Globe } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,12 @@ import { Switch } from '@/components/ui/switch';
 import { SettingsGroup } from './settings-ui';
 import { api, invalidateCache, isAbortError } from '@/services/api';
 import { CompatStubStatsCard } from './CompatStubStatsCard';
+import {
+  DEFAULT_PLUGIN_FETCH_WHITELIST,
+  normalizeWhitelistHostInput,
+  readUserWhitelist,
+  writeUserWhitelist,
+} from '@/lib/plugin-system/plugin-fetch-whitelist';
 
 interface Plugin {
   id: string;
@@ -70,6 +76,11 @@ export function AdminPluginsTab() {
   const [settingsPluginId, setSettingsPluginId] = useState<string | null>(null);
   const [settingsText, setSettingsText] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
+  // [批次WU 2026-10-21] 插件网络白名单（localStorage `palink_plugin_fetch_whitelist`）。
+  // 用户项默认空；每次变更立即落盘，判定侧每次 fetch 现读 ⇒ 对下一次请求即生效。
+  const [userHosts, setUserHosts] = useState<string[]>(() => readUserWhitelist());
+  const [hostInput, setHostInput] = useState('');
+  const [hostError, setHostError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pluginsAbortRef = useRef<AbortController | null>(null);
   const scriptsAbortRef = useRef<AbortController | null>(null);
@@ -258,6 +269,50 @@ export function AdminPluginsTab() {
     }
   };
 
+  const persistUserHosts = (next: string[], message: string) => {
+    const saved = writeUserWhitelist(next);
+    setUserHosts(saved);
+    setHostError('');
+    toast.success(message);
+  };
+
+  const handleAddHost = () => {
+    const host = normalizeWhitelistHostInput(hostInput);
+    if (!host) {
+      setHostError('请输入合法主机名，例如 localhost 或 127.0.0.1');
+      return;
+    }
+    setHostInput('');
+    // 固定放行项不落成用户项：否则用户会看到一个"删了也照样放行"的假条目
+    if (DEFAULT_PLUGIN_FETCH_WHITELIST.includes(host)) {
+      toast.success('该主机名本来就在固定放行名单里');
+      return;
+    }
+    if (userHosts.includes(host)) {
+      toast.success('该主机名已在白名单中');
+      return;
+    }
+    persistUserHosts([...userHosts, host], '已添加，对下一次插件请求立即生效');
+  };
+
+  const handleRemoveHost = (host: string) => {
+    persistUserHosts(userHosts.filter((item) => item !== host), '已删除，对下一次插件请求立即生效');
+  };
+
+  // 本机 AI 服务（Ollama / SD WebUI / ComfyUI 等）都落在 localhost / 127.0.0.1
+  const handlePresetLocalAi = () => {
+    // 去重：已加过的不重复出现（两个预置项可能已在表里，点一次就补齐缺的那条）。
+    const missing = ['localhost', '127.0.0.1'].filter((host) => !userHosts.includes(host));
+    if (!missing.length) {
+      toast.success('本机 AI 服务主机已在白名单中');
+      return;
+    }
+    persistUserHosts(
+      [...userHosts, ...missing],
+      '已添加本机 AI 服务主机，对下一次插件请求立即生效',
+    );
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -300,6 +355,104 @@ export function AdminPluginsTab() {
             （等同网页自身代码，可访问登录凭据与全部 DOM；fetch 跨源受域名白名单限制）。
             请仅导入可信来源，详见 docs/PLUGIN_SECURITY_MODEL.md。
           </p>
+        </div>
+      </SettingsGroup>
+
+      {/*
+        [批次WU 2026-10-21] 插件网络白名单。
+        判据在 sandbox.ts 的 isUrlAllowedByPluginWhitelist（同源恒放行，跨源只比 hostname），
+        存储契约是 localStorage `palink_plugin_fetch_whitelist` 的**逗号分隔裸主机名**。
+        这一栏存在的意义：机制早就通，但只有手工敲 localStorage 才能改 —— 对普通用户等于没有。
+      */}
+      <SettingsGroup label="插件网络白名单">
+        <div className="px-4 py-3 space-y-3">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            插件在沙箱里请求**外部地址**时，只有命中下面名单的主机名才会放行（本站同源请求不受影响）。
+            只填主机名，不带协议和路径；端口和路径会被忽略，判定只看主机名。
+            改动即时生效，无需重启。
+          </p>
+
+          <div>
+            <p className="text-xs font-medium mb-1.5 text-muted-foreground">固定放行（默认 CDN，不可删除）</p>
+            <div className="flex flex-wrap gap-1.5">
+              {DEFAULT_PLUGIN_FETCH_WHITELIST.map((host) => (
+                <span
+                  key={host}
+                  className="px-2 py-0.5 rounded-full text-[11px] bg-muted text-muted-foreground font-mono"
+                >
+                  {host}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              data-testid="plugin-whitelist-input"
+              value={hostInput}
+              onChange={(e) => {
+                setHostInput(e.target.value);
+                if (hostError) setHostError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAddHost();
+                }
+              }}
+              placeholder="例如 localhost 或 127.0.0.1"
+              className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <Button
+              data-testid="plugin-whitelist-add"
+              onClick={handleAddHost}
+              className="h-8 shrink-0 rounded-md px-3 text-xs gap-1.5"
+            >
+              <Plus size={14} />
+              添加
+            </Button>
+            <Button
+              variant="outline"
+              data-testid="plugin-whitelist-preset-local"
+              onClick={handlePresetLocalAi}
+              className="h-8 shrink-0 rounded-md px-3 text-xs gap-1.5"
+              title="一次加上 localhost 与 127.0.0.1（Ollama / SD WebUI / ComfyUI 等本机服务）"
+            >
+              <Globe size={14} />
+              加本机 AI 服务
+            </Button>
+          </div>
+
+          {hostError && (
+            <p data-testid="plugin-whitelist-error" className="text-xs text-red-500">{hostError}</p>
+          )}
+
+          {userHosts.length === 0 ? (
+            <p data-testid="plugin-whitelist-empty" className="text-xs text-muted-foreground">
+              当前没有自定义放行主机 —— 插件只能请求本站与上面那五个 CDN。
+            </p>
+          ) : (
+            <div data-testid="plugin-whitelist-user" className="flex flex-wrap gap-1.5">
+              {userHosts.map((host) => (
+                <span
+                  key={host}
+                  data-testid={`plugin-whitelist-chip-${host}`}
+                  className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[11px] font-mono"
+                >
+                  {host}
+                  <button
+                    type="button"
+                    data-testid={`plugin-whitelist-remove-${host}`}
+                    onClick={() => handleRemoveHost(host)}
+                    className="opacity-70 hover:opacity-100"
+                    aria-label={`从白名单移除 ${host}`}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </SettingsGroup>
 
