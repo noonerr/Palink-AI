@@ -2937,6 +2937,17 @@ export class PluginSandbox {
             var open = __sandbox.open;
             var close = __sandbox.close;
             var postMessage = __sandbox.postMessage;
+            // ===== 批次SG 2026-10-21: ST 1.18.0 全局对象 globalThis.SillyTavern = { libs, getContext } =====
+            // 一手依据：ST public/script.js:292-295 只有这两个字段。第三方插件最常见的首行
+            // const { eventSource, event_types } = SillyTavern.getContext(); 用的是裸标识符，
+            // 只挂 globalThis 不够 —— new Function 的作用域链不查 sandboxedWindow，必须同时声明
+            // 同名 var 才能消掉 ReferenceError。此处的 globalThis 已在上面被遮蔽为 sandboxedWindow，
+            // 写入走 pluginGlobals 隔离存储，不触碰宿主 window。
+            var SillyTavern = {
+              libs: __sandbox.SillyTavernLibs,
+              getContext: __sandbox.getContext,
+            };
+            globalThis.SillyTavern = SillyTavern;
             ${transpiledCode}
           })();
         } catch (e) {
@@ -3128,7 +3139,21 @@ export class PluginSandbox {
       },
     });
 
+    // [批次SG 2026-10-21] SillyTavern.libs 的唯一清单：只装本沙箱**真实注入**的六个库。
+    // 与下方「注入 ST 兼容库到沙箱 window」共用同一份引用，避免两处清单各自漂移。
+    // ⚠️ 不要为了凑 ST 的 25 键造假对象：ST 有而我们没注入的键就是 undefined（诚实缺口）。
+    const sandboxLibs: Record<string, unknown> = {
+      jQuery: wrappedJQuery,
+      $: wrappedJQuery,
+      Handlebars,
+      toastr,
+      marked,
+      DOMPurify,
+    };
+
     const sandbox: Record<string, unknown> = {
+      // [批次SG 2026-10-21] buildWrappedCode 的 prelude 用它组装 SillyTavern.libs。
+      SillyTavernLibs: sandboxLibs,
       // 核心上下文
       // P-1: getContext() 聚合 ST 兼容字段（chat/saveChat/groupId/chatMetadata/
       // characters/name1/name2/characterId 等）。惰性 Proxy：优先沙箱自有 API
@@ -3932,14 +3957,7 @@ export class PluginSandbox {
     // 注入 ST 兼容库到沙箱 window 对象（插件可通过 window.jQuery 等访问）
     // 每个库独立 try-catch，失败时记录日志但不阻塞沙箱初始化
     // $/jQuery 使用前面定义的 wrappedJQuery（已解包 Proxy 参数）
-    const sandboxLibs: Record<string, unknown> = {
-      jQuery: wrappedJQuery,
-      $: wrappedJQuery,
-      Handlebars,
-      toastr,
-      marked,
-      DOMPurify,
-    };
+    // [批次SG 2026-10-21] 清单已上移到 sandbox 字面量之前，与 SillyTavern.libs 同源。
     for (const [libName, libValue] of Object.entries(sandboxLibs)) {
       try {
         (sandboxedWindow as any)[libName] = libValue;
