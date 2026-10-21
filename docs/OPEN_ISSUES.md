@@ -711,6 +711,12 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 
 ### [P2-15] bundled 插件 quick-reply 的「保存快捷回复集」其实一直失败（2026-10-21 · 一手实测）
 
+> **✅ 2026-10-21 夜已修并上线**（批次QR，提交 `dc76b3a`）：补 `POST /api/quick-replies/save|delete`，
+> 落点用 Palink 自有命名空间 `extension_settings.quickReplySets`（**不是** `quickReplyV2.sets` ——
+> 那里会被插件自己的 `settings/save` 整块覆盖擦掉）。真机判据：存一条集后重载角色页，
+> 插件自己的日志从 `[QR2] sets: []` 变 `[QR2] sets: [QuickReplySet]`。
+> 细节与踩坑见 `REPORT_批次QR与I18N_快捷回复落库与ST语言资产_2026-10-21.md` §1。
+
 - 调用方 `st-plugins/quick-reply/src/QuickReplySet.js:377` POST `/api/quick-replies/save`（`:392` 是 delete）。
 - ST 侧这两条是真端点：`src/server-startup.js:146` 挂 `/api/quick-replies`，
   `src/endpoints/quick-replies.js:9/:22` 按 `body.name` 写/删 `quickreplies/<name>.json`。
@@ -724,6 +730,12 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 ⚠️ 选 ① 属**新增后端可写端点**，需用户点头 + 重建镜像才生效。
 
 ### [P2-16] `/st/locales/*.json` 404：ST i18n 这条能力从未生效过（2026-10-21 · 一手实测）
+
+> **✅ 2026-10-21 夜已适配并上线**（批次I18N，提交 `86b37cb`，用户裁定"那就进行适配"）：
+> 搬入 `zh-cn.json`（3645 条，线上 gzip 95,819 字节）+ `en.json`（上游就是 `{}`，4 字节）+ `lang.json`，
+> 并把 `ST_LOCALES` 从 17 收成 2 —— 判据是"**清单=资产清单，不是愿望清单**"，
+> 由 `frontend/src/i18n/__tests__/i18n-st-locale-assets-inventory.test.ts` 钉住（往清单塞一个没文件的语言即红）。
+> 真机：`/st/locales/zh-cn.json` **404 → 200**。见同一份报告 §2。
 
 - 取用方是我们自己的 `frontend/src/lib/i18n/index.ts:74`，失败时 `:76` 静默返回 `{}`。
 - 资产**不存在**：`frontend/public/st/locales/` 整个目录都没有（`ls` 直接 No such file or directory）。
