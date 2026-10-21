@@ -307,3 +307,50 @@ P3 已于 `101f7c0` 入库）。共享树基线干净，故未使用隔离 workt
 - `py scripts/docs/gen_docs_catalog.py --check` → `OK 415 docs, catalog up to date`（rc=0）。
 - 未包含：`.workbuddy-ai/memory/*`（他人在途改动）、`_BACKUPS/**`（永久排除）、
   P3 文件（本批一行未碰）。
+
+---
+
+## 主脑上线后实机复验（2026-10-21 上午 · 上面 §5 的"预期归零"有一条被实机否证）
+
+上线与产物指纹：新入口 `index-BtqaaMD6.js`，帧内 runtime `palink-smart-card-runtime-e794f8706716.js`；
+`@import url(` 在旧 dist **0** 命中、新 dist **1** 命中（重写逻辑确实进了产物）。
+
+### ✅ 两条真修好了（实机计数）
+`.tmp_probe/errtriage_full.js` 原样输出（7 帧同页）：
+```
+CNT_B3_translate_init=0      （改前 14 类报错里的 Chat Translation init）
+CNT_B5_summarize_tdz=0       （改前 Summarize 的 MODULE_NAME TDZ）
+FRAME0={"esTranslate":"object","esMemory":"object", ...}
+```
+`esTranslate / esMemory` 现在是**对象**（改前 `extension_settings` 里根本没有这两个命名空间）⇒ E2-1 命中要害。
+
+### ❌ B10（debugger.css）**没有归零**，仍 14 次 —— 我 §5 的预期写错了
+```
+CNT_B10_debugger_css_mime=14
+SAMPLE_B10="Refused to apply style from 'http://localhost:16000/api/plugins/db0c6324-…/asset/debugger.css'
+            because its MIME type ('text/html') is not a supported stylesheet MIME type"
+FRAME0.regexCssFirstLine="@import url(\"/api/plugins/db0c6324-…"
+```
+**重写本身是对的**（帧内 CSS 首行已是绝对路径），但**目标不存在**。主脑一手核实根因：
+- `curl` 那个资产端点 → `404 text/html`（nginx SPA 回退的 HTML，于是浏览器报 MIME）；
+- 该插件行（`id=db0c6324-…`，`name=Regex`、`type=sillytavern_extension`）的 `source_data` 里
+  **没有 `debugger.css`**（`select … like '%debugger.css%'` → `f`）⇒ 资产端点自然 404；
+- 仓库里 `st-plugins/regex/debugger.css` 确实存在，但 `/st-plugins/regex/*` 经站点访问是 **404**（nginx 不下发这个目录）。
+⇒ 结论：**"把相对路径改成绝对路径"只解决了形式，目标文件既不在插件资产里、也不在可访问的静态路径上。**
+正确修法（已立项，未做）：在**宿主注入插件 CSS 的那一刻**把 `@import` 的内容**内联拼进去**
+（构建期把 `st-plugins/regex/debugger.css` 当资源读入），或把捆绑插件的 assets 正式导入到
+`plugins.source_data` 让资产端点能服务它。⛔ 不要再往"改 URL"这个方向使劲。
+
+### ⚠️ 修好两条后**暴露出两条新的**（同一批插件，更靠后的一跳）
+```
+SAMPLE_OTHER0/1="[PluginSandbox] 插件 Summarize 钩子 init 执行失败: TypeError: macros.register is not a function"
+SAMPLE_OTHER2/3/4="Unhandled promise rejection: TypeError: getScriptsByType(...).forEach is not a function
+                  at loadRegexScripts … at checkCharEmbeddedRegexScripts" + PAGEERROR 同文
+```
+改前这两条**不存在**，因为插件在更早的那一跳就崩了（TDZ / `Object.hasOwn(undefined)`）。
+⇒ 这属于"修一个、露下一个"，**不是 E2 引入的回归**，但意味着：**这两个插件仍然没跑通**，
+下一个缺口是宿主 `macros.register` 与 `getScriptsByType` 的返回形状。已登记待办。
+
+### 零回归
+`PARENT_IFRAMES=7 readable=7 opaque=0`；`F0–F6` 全部 `styles=25 nonEmpty=25 withId=7 scripts=18 th=148 ctx=196`
+⇒ 帧数、插件 CSS、键数三项均未回退。

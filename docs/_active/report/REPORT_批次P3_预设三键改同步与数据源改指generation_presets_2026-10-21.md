@@ -303,3 +303,31 @@ $ git diff --name-only HEAD <新树> | grep -Ei "frontend/dist|/models/|migratio
 **该做的都做了，实机四项卡在"不许部署"这一条硬约束上 —— 上线后请主脑自己复跑
 `.tmp_probe/PQ_preset_shape.js` 与 `.tmp_probe/PQ_after_regression.js`，预期 `thenable=false` ×3、
 `AWAIT_NAMES` 为同步数组且 `n >= 1`（admin 在 `generation_presets` 有 3 行）。**
+
+---
+
+## 10. 主脑上线后实机复验（2026-10-21 上午 · 上面 §9 里三条 ❌ **现已转 ✅**）
+
+上线动作（主脑）：`dist` 整份归档（`_BACKUPS/2026-10-21_dist重建前_批次P3与E2与JB上线/`，tar 内含 **8002** 文件）
+→ `VITE_OUT_DIR=dist_p3e2` 旁路构建（39.58s，新入口 **`index-BtqaaMD6.js`**）
+→ `cp -r` 只增不删（8002 → **8072**）→ gzip 3503 → `docker compose build backend && up -d`（healthy）。
+产物指纹（旧 dist → 新 dist）：`preset_snapshot_not_ready` **0→1**、`presets/snapshot` **0→2**、`@import url(` **0→1**；
+新入口引用的帧内 runtime = **`palink-smart-card-runtime-e794f8706716.js`**（534,343 字节）。
+
+探针 `.tmp_probe/PQ_preset_shape.js`（同一帧，原样输出）：
+
+```
+A=getPresetNames:type=object tag=[object Array] thenable=false len=3
+B=getLoadedPresetName:type=string tag=[object String] thenable=false len=2
+C=getPreset:type=object tag=[object Object] thenable=false len=n/a
+AWAIT_NAMES=ok isArray=true n=3
+AWAIT_PRESET=keys=extensions,prompts,prompts_unused,settings
+```
+
+逐帧（7/7 帧完全一致，`PQ_live_after.js`）：
+`th=148 retrieve=true preset3=3 so=true rdm0=jq_len=17 rdm1=jq_len=1662 pn=n=3 lpn=len=2 gp=keys=extensions,prompts,prompts_unused,settings store=shim(value) ctx=196`
+—— 即 §9 里三条 ❌（thenable / n≥1 / 四键形状）**全部在真机上成立**，且帧数、键数、`getContext`、存储 shim 全部无回归。
+`HOST_POLICY=local-or-private|localhost|grants=true`、`SANDBOX_WITH_SAME_ORIGIN=7` 与上一版一致。
+
+⚠️ 口径提醒：`n=3` 是 admin 账号在 `generation_presets` 里的行数（不是"所有预设总数"）；
+换个用户读数会不同，**别把这个 3 写死成基线**。
