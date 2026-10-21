@@ -635,3 +635,19 @@ _（当前无）_
 2. 状态变化（有人开工了 / 查清了 / 关掉了）**必须回来改这一条**，否则本文档也会僵尸化。
 3. **P3 不要为了清空列表而往里塞**——"决定不做"要有理由，否则它会变成垃圾桶。
 4. 引用本文档结论前，⚠️ 先看条目标注的日期与证据层级（一手实测 / 二手 / 仅代码推理）。
+
+### [P2-13] 第三方真实插件实验暴露的两条通用缺口（2026-10-21 · 一手实测）
+
+> 实验全文：`docs/_active/report/REPORT_第三方真实插件实验与链接安装_2026-10-21.md`。
+> 测试对象是三个真实 GitHub 扩展（Kimi Thinking Prefill 1.1.0 / ComfyInject 0.3.0 / Smart Memory 1.8.3），
+> 链接安装与上传安装**都能跑通**；三个里 1 个干净加载，2 个撞在下面两条上。测试插件**已全部禁用**。
+
+| # | 缺口 | 档位 | 证据与影响 |
+|---|---|---|---|
+| 1 | **没有 `SillyTavern` 全局对象** | **P1（ST 生态最常见的入口之一）** | Kimi Thinking Prefill 第一行 `const { eventSource, event_types } = SillyTavern.getContext();` ⇒ 页面级 `ReferenceError: SillyTavern is not defined`（initSetting + PAGEERROR 两处）。我们只有模块化 shim 与 `TavernHelper`，没有这个全局。⚠️ 补它**不能直接暴露宿主对象**，要按现有 shim 口径包一层并评估沙箱红线（`SillyTavern.getContext()` 至少要能给出 eventSource/event_types/chat 等只读面） |
+| 2 | **每卡插件 allowlist 无前端入口** | **P1（安装功能对"卡内使用"不可达）** | 测试角色库内实测 `plugin_scope_mode=allowlist`；后端 `_filter_runtime_config_for_character` 的 allowlist 分支只放 "allowlist ∪ exempt" ⇒ 新装插件不进任何卡的帧（7/7 帧实测 `hasNewCss=0`，但 `isInstalledExtension` 仍为 true）。`grep frontend/src` 对 `plugin_scope_mode` **0 命中**（后端 `character.py:150` 能写）⇒ 用户装完在卡里用不上，也没有界面能把它加进某张卡。修法与 [P2-12] 第 19 行的"设置没 UI"同源 |
+| 3 | Smart Memory 的 `registerSmartMemoryMacros is not a function` | P2 | 其 31 个模块的导出链里有一个函数没挂上；与 E2b 修的规则 11/8b 属同类但形态不同（不是 TDZ，是"根本没导出"）。需按该插件自己的模块结构定位 |
+
+验收建议：① 用**真实插件**（不许自造）复跑，判据写进报告；② `SillyTavern.getContext()` 补上后，
+Kimi 的那两条报错必须消失，且**沙箱里读不到父站凭据**不能退；③ allowlist UI 落地后，
+"给某卡加一个插件 → 刷新 → 帧内 `hasNewCss` 从 0 变 1"作为端到端判据。
