@@ -323,9 +323,17 @@ export type TranslationKey = keyof typeof TRANSLATIONS.zh;
  * ST (SillyTavern) 可用 locale 列表
  * 对应 frontend/public/st/locales/{locale}.json 文件
  * 用于运行时动态加载 ST 翻译数据，补充 Palink 内置 zh/en 之外的 locale
+ *
+ * ⚠️ [批次I18N 2026-10-21] **这份名单就是资产清单，不是愿望清单**。
+ * 历史病灶：这里曾写 17 个 locale，而 `public/st/locales/` 目录**一个文件都没有**
+ * ⇒ 每次进页面必吃一个 `/st/locales/zh-cn.json` 404，且 `lib/i18n/index.ts:75` 静默返回 `{}`
+ * ⇒ ST 插件的 `t('…')`（经 `getContext.ts:2794` 委托到 i18nManager）永远拿回原始英文 key。
+ * 判据由 `__tests__/i18n-st-locale-assets-inventory.test.ts` 钉住：**名单里的每一项都必须有文件**，
+ * 少文件即红。要加一门语言 = 往 `public/st/locales/` 放同名文件 + 在这里加一行，两步一起。
+ * 只放 zh-cn / en 是因为本产品可切到的界面语言就这两种（其余 15 个上游语言无人可达，
+ * 空放 2.4MB 翻译数据只是把死代码摊大到资产里）。
  */
 export const ST_LOCALES: string[] = [
-  'ar-sa', 'de-de', 'en', 'es-es', 'fr-fr', 'is-is', 'it-it', 'ja-jp',
-  'ko-kr', 'nl-nl', 'pt-pt', 'ru-ru', 'th-th', 'uk-ua', 'vi-vn',
-  'zh-cn', 'zh-tw',
+  'en',
+  'zh-cn',
 ];
