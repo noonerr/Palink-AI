@@ -97,6 +97,8 @@ $ node scripts/gen-bundled-plugin-css.mjs     # 第二次
   ✓ 前端 tsc --noEmit
   ✓ 前端 vitest
   全部门禁通过（rc=0）
+  →  Test Files 131 passed (131)
+     Tests 1690 passed | 3 skipped (1693)
 ```
 
 ⚠️ ~~**本条未上线**~~ → **已上线并真机复验**（见 §2.5）。
