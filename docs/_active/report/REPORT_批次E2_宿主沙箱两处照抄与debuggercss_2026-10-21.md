@@ -297,14 +297,13 @@ P3 已于 `101f7c0` 入库）。共享树基线干净，故未使用隔离 workt
 
 ## 8. 提交
 
-按任务书临时索引提交，逐项 pathspec，先 `git status` 复核后只暂存本批 6 个路径：
+按任务书临时索引提交，逐项 pathspec，先 `git status` 复核后只暂存本批路径：
 
-- `frontend/src/lib/sillytavern/extension-settings-store.ts`
-- `frontend/src/lib/plugin-system/sandbox.ts`
-- `frontend/src/components/ui/custom/smart-card-runtime/runtime-body/part-01.ts`
-- `frontend/src/lib/plugin-system/__tests__/extension-settings-preset-namespaces.test.ts`
-- `frontend/src/lib/plugin-system/__tests__/export-live-binding-transpile.test.ts`
-- `frontend/src/components/ui/custom/smart-card-runtime/__tests__/css-import-asset-rewrite-contract.test.ts`
-- 本报告
-
-提交号与 `docs/_CATALOG.md` 刷新结果见交付回话（报告写入后执行）。
+- 代码 + 3 份测试 + 本报告：`c9dba97`
+  `feat(批次E2): 宿主沙箱补 ST 预置命名空间与 export 活绑定，帧内 @import 改指插件资产`
+  （7 files changed, 799 insertions(+), 10 deletions(-)）
+- 目录刷新：`d1493ec`
+  `chore(docs): 复生成 _CATALOG.md（批次E2 报告入库后 tracked 数 412→413）`
+- `py scripts/docs/gen_docs_catalog.py --check` → `OK 415 docs, catalog up to date`（rc=0）。
+- 未包含：`.workbuddy-ai/memory/*`（他人在途改动）、`_BACKUPS/**`（永久排除）、
+  P3 文件（本批一行未碰）。
