@@ -645,7 +645,7 @@ _（当前无）_
 | # | 缺口 | 档位 | 证据与影响 |
 |---|---|---|---|
 | 1 | **没有 `SillyTavern` 全局对象** | **P1（ST 生态最常见的入口之一）** | Kimi Thinking Prefill 第一行 `const { eventSource, event_types } = SillyTavern.getContext();` ⇒ 页面级 `ReferenceError: SillyTavern is not defined`（initSetting + PAGEERROR 两处）。我们只有模块化 shim 与 `TavernHelper`，没有这个全局。⚠️ 补它**不能直接暴露宿主对象**，要按现有 shim 口径包一层并评估沙箱红线（`SillyTavern.getContext()` 至少要能给出 eventSource/event_types/chat 等只读面） |
-| 2 | **每卡插件 allowlist 无前端入口** | **P1（安装功能对"卡内使用"不可达）** | 测试角色库内实测 `plugin_scope_mode=allowlist`；后端 `_filter_runtime_config_for_character` 的 allowlist 分支只放 "allowlist ∪ exempt" ⇒ 新装插件不进任何卡的帧（7/7 帧实测 `hasNewCss=0`，但 `isInstalledExtension` 仍为 true）。`grep frontend/src` 对 `plugin_scope_mode` **0 命中**（后端 `character.py:150` 能写）⇒ 用户装完在卡里用不上，也没有界面能把它加进某张卡。修法与 [P2-12] 第 19 行的"设置没 UI"同源 |
+| 2 | **每卡插件 allowlist 无前端入口** | **P1（安装功能对"卡内使用"不可达）** | 测试角色库内实测 `plugin_scope_mode=allowlist`；后端 `_filter_runtime_config_for_character` 的 allowlist 分支只放 "allowlist ∪ exempt" ⇒ 新装插件不进任何卡的帧（7/7 帧实测 `hasNewCss=0`，但 `isInstalledExtension` 仍为 true）。〔⚠️ **主脑订正 2026-10-21**：这条说错了。每卡插件白名单**有 UI** —— 在**角色编辑器的「插件」Tab**（`frontend/src/components/views/character/CharacterPluginsTab.tsx`，挂载于 `CharacterEditor.tsx:476`，走 `GET/PUT /api/characters/{id}/plugin-state`，支持 `inherit`/`allowlist` + 逐插件勾选）。`grep plugin_scope_mode` 0 命中是因为前端用的是 `mode` 字段名，不是 DB 列名——我搜错了关键词。⇒ 新装插件进不了卡**不是缺 UI**，是那张卡处于 allowlist 模式且没把新插件勾进去；**用户可自行在角色编辑器里勾选**。原文保留：〕~~`grep frontend/src` 对 `plugin_scope_mode` **0 命中**（后端 `character.py:150` 能写）⇒ 用户装完在卡里用不上，也没有界面能把它加进某张卡。~~修法与 [P2-12] 第 19 行的"设置没 UI"同源 |
 | 3 | Smart Memory 的 `registerSmartMemoryMacros is not a function` | P2 | 其 31 个模块的导出链里有一个函数没挂上；与 E2b 修的规则 11/8b 属同类但形态不同（不是 TDZ，是"根本没导出"）。需按该插件自己的模块结构定位 |
 
 验收建议：① 用**真实插件**（不许自造）复跑，判据写进报告；② `SillyTavern.getContext()` 补上后，
@@ -665,3 +665,14 @@ Kimi 的那两条报错必须消失，且**沙箱里读不到父站凭据**不�
 
 验收：① 真插件复跑，`Embedding model fetch failed` 消失（若选 allowlist）；② `lastActive` 那条消失；
 ③ 两条都存在时，插件仍不得影响其他插件（隔离性）；④ 任何放宽都要有"未授权时仍被拦"的失败测试。
+
+### [P2-14] 补记（2026-10-21 傍晚 · 主脑实测）
+**第 1 条（本机 AI 服务被拦）已实测：机制存在且可用，缺的只是 UI。**
+- 落点：`frontend/src/lib/plugin-system/sandbox.ts` 的 `readPluginFetchWhitelist()`（`:1378`）
+  读 **localStorage 键 `palink_plugin_fetch_whitelist`**，格式是**逗号分隔的 hostname**（不是 JSON 数组！）；
+  判定 `isUrlAllowedByPluginWhitelist()`（`:1401`）：同源恒放行，跨源只看 hostname 是否命中。
+- 实测：把该键写成 `localhost,127.0.0.1` → 真插件 Smart Memory 的
+  `Embedding model fetch failed (url=http://localhost:11434/api/tags)` **消失**（只剩 `lastActive` 那条）。
+  ⚠️ 我先写成 JSON `["localhost","127.0.0.1"]` 时**不生效**——解析器按逗号切，引号和方括号会留在 hostname 里。
+- ⇒ 用户裁定"要开白名单"后，要做的是**给这个键补 UI**（插件管理页：列表增删 + 本机 AI 服务一键预设
+  `localhost` / `127.0.0.1`，写入时用逗号格式），**默认保持空**（恶意插件探测用户本机服务是真风险）。
