@@ -143,6 +143,12 @@ export interface SmartCardCompatRequestContext {
   selectedCharacterId?: string | null;
   selectedModel?: string | null;
   selectedSession: CharacterChatSession | null;
+  /**
+   * @deprecated [批次S 2026-10-21] 历史字段。当前宿主（CharacterChat.tsx）传的确实是
+   * `selectedSession?.id`，但所有动作的会话解析已统一改走 `resolveSmartCardHostSessionId`
+   * （只读 `selectedSession`），**本字段不再被任何分支消费**。保留只为兼容既有调用方，
+   * 新代码不要用它解析本轮对话。
+   */
   sessionId?: string | null;
   branchId?: string | null;
   wb: any;
@@ -278,18 +284,42 @@ function buildSmartCardWorldBookImport(name: string, entries: SmartCardWorldBook
   };
 }
 
+/**
+ * [批次S 2026-10-21] 所有"当前会话"动作的**唯一**解析口径。
+ *
+ * 只认宿主构造的 `selectedSession.id` —— 该对象由 `CharacterChat.tsx` 的 React state
+ * 构造后直接传给控制器，**帧的 postMessage 改不到它**。`__pending__`（会话正在创建）
+ * 视为"还没有会话"。
+ *
+ * 明确**不读**的三样东西：
+ *   · `payload.__palinkContext.sessionId` —— 帧写在请求体里的值。卡可以绕过 shim 直接
+ *     postMessage，因此这个键等同"卡自己声明的会话"（主脑 2026-10-21 实测）。
+ *   · `payload.sessionId` 等其它帧侧键 —— 从来没有任何分支读过。
+ *   · `context.sessionId` —— 当前宿主传的虽是同源值，但它是可被任意调用方独立填写的
+ *     字段，不能作为"宿主身份"的证据；已在本批次标为 deprecated（见接口注释）。
+ *
+ * 历史（P2 预设面先收口，批次S 推广到全链）：`handleSmartCardCompatRequest` 曾把
+ * `context.sessionId || payload.__palinkContext?.sessionId` 合并进 requestContext，
+ * 宿主没有会话时帧可自塞一个**同用户**会话 id —— 后端按 user_id 过滤，所以不是跨账号，
+ * 但违反用户裁定「卡片只能碰自己这一份对话」。
+ */
+function resolveSmartCardHostSessionId(context: SmartCardCompatRequestContext | null | undefined): string {
+  const raw = context && context.selectedSession && context.selectedSession.id
+    ? String(context.selectedSession.id)
+    : '';
+  return raw === '__pending__' ? '' : raw.trim();
+}
+
 async function createOrReplaceSmartCardWorldBook(
   state: SmartCardCompatControllerState,
   context: SmartCardCompatRequestContext,
   requestedName: unknown,
   requestedEntries: unknown,
 ) {
-  const { selectedCharacterName, selectedSession, sessionId: fallbackSessionId, wb } = context;
+  const { selectedCharacterName, wb } = context;
   const text = getSmartCardControllerCleanText();
-  const resolvedSessionId = selectedSession && selectedSession.id !== '__pending__'
-    ? selectedSession.id
-    : String(fallbackSessionId || '').trim();
-  if (!resolvedSessionId || resolvedSessionId === '__pending__') {
+  const resolvedSessionId = resolveSmartCardHostSessionId(context);
+  if (!resolvedSessionId) {
     throw new Error(text.noActiveSession);
   }
 
@@ -355,11 +385,9 @@ export async function renameSmartCardChatSession(
   const newName = String(payload.title ?? payload.newName ?? payload.name ?? '').trim();
   if (!newName) return { success: false, error: 'new_name_required' };
 
-  const { selectedSession, sessionId: fallbackSessionId, selectedCharacterId } = context;
-  const resolvedSessionId = selectedSession && selectedSession.id !== '__pending__'
-    ? selectedSession.id
-    : String(fallbackSessionId || '').trim();
-  if (!resolvedSessionId || resolvedSessionId === '__pending__') {
+  const { selectedCharacterId } = context;
+  const resolvedSessionId = resolveSmartCardHostSessionId(context);
+  if (!resolvedSessionId) {
     return { success: false, error: 'no_active_session' };
   }
 
@@ -943,8 +971,8 @@ export async function dispatchSmartCardPersonaAction(
 // `/api/prompt-manager/sessions/{id}/preset`（`prompt_manager.py:165`）与
 // `/api/prompt-manager/presets` 取。**卡片只能看到自己会话那份** ——
 // 会话 id 一律取宿主侧 `requestContext.selectedSession.id`（宿主构造的对象）。
-// ⚠️ 不能用 `requestContext.sessionId`：那个值在帧内 payload 带了 `__palinkContext.sessionId`
-// 且宿主当时没有会话时**会被帧的值顶包**（合并见本文件 handleSmartCardCompatRequest）。
+// [批次S 2026-10-21] 全链已统一：帧侧的 `payload.__palinkContext.sessionId` 不再合并进
+// requestContext，解析只走 `resolveSmartCardHostSessionId`（世界书/改名/生成同口径）。
 //
 // 形状偏差（如实留痕，见批次P2 报告 §P2-3）：
 //   · ST 的 Preset = { settings, prompts, prompts_unused, extensions }；
@@ -993,25 +1021,13 @@ type PalinkSessionPreset = {
   is_session_copy: boolean;
 };
 
-function resolveSmartCardPresetSessionId(context: SmartCardCompatRequestContext | null | undefined): string {
-  // ⚠️ 只用 `selectedSession.id`（宿主构造的对象），**不用 `context.sessionId`**：
-  // `handleSmartCardCompatRequest` 里那行合并
-  // `sessionId: context.sessionId || payload.__palinkContext?.sessionId`
-  // 允许帧在宿主无会话时**自己塞一个会话 id**（历史行为，其它动作依赖它）。
-  // 预设面按用户裁定必须只碰"本对话那一份"，所以只认宿主对象 —— 帧改不到 selectedSession。
-  // 主脑复核实测（2026-10-21）：改前帧可用 `__palinkContext.sessionId` 把别人的**同用户**会话 id
-  // 打进 URL（跨对话读预设；后端仍按 user_id 过滤，所以不是跨账号），
-  // 判据见 `__tests__/p2-preset-read-keys-parent.test.ts` 的"真实通道"那例。
-  const raw = context && context.selectedSession && context.selectedSession.id
-    ? String(context.selectedSession.id)
-    : '';
-  return raw === '__pending__' ? '' : raw.trim();
-}
-
 async function fetchSmartCardSessionPreset(
   context: SmartCardCompatRequestContext | null | undefined,
 ): Promise<{ ok: true; preset: PalinkSessionPreset } | { ok: false; error: string }> {
-  const sessionId = resolveSmartCardPresetSessionId(context);
+  // [批次S 2026-10-21] 预设面原本自己写了一份同口径解析，现统一走
+  // `resolveSmartCardHostSessionId`（只认 selectedSession.id，见该函数注释）。
+  // 判据见 `__tests__/p2-preset-read-keys-parent.test.ts` 的"真实通道"那例。
+  const sessionId = resolveSmartCardHostSessionId(context);
   if (!sessionId) return { ok: false, error: 'no_active_session' };
   try {
     const data = await api.get<PalinkSessionPreset>(
@@ -1031,7 +1047,7 @@ async function fetchSmartCardSessionPreset(
  * 必须同源，分两次拉会出现"名字在名单里但按名取不到"；服务端一次给全，且能在那里
  * 用 `user_id == :id` 把共享行挡掉（父侧拿不到 user_id，挡不了）。
  *
- * `sessionId` 只认宿主自己那份（与 `resolveSmartCardPresetSessionId` 同口径）：
+ * `sessionId` 只认宿主自己那份（与 `resolveSmartCardHostSessionId` 同口径）：
  * 传了 ⇒ `in_use` 是本对话当前生效那份；不传（含 `__pending__`）⇒ 按全局选中份算。
  * 拉不到 ⇒ 抛（调用方负责降级成"没有快照"，不许返回假快照）。
  */
@@ -2034,15 +2050,12 @@ export async function handleSmartCardCompatRequest(
       });
       return;
     }
-    const payloadContext = payload.__palinkContext && typeof payload.__palinkContext === 'object'
-      ? payload.__palinkContext as { sessionId?: unknown }
-      : null;
-    const requestContext: SmartCardCompatRequestContext = {
-      ...context,
-      sessionId: context.sessionId || (
-        typeof payloadContext?.sessionId === 'string' ? payloadContext.sessionId : null
-      ),
-    };
+    // [批次S 2026-10-21] 这里**不再**把帧侧 `payload.__palinkContext.sessionId` 合并进
+    // requestContext（原写法 `context.sessionId || payload.__palinkContext?.sessionId`）。
+    // 帧可以绕过 shim 直接 postMessage，那个键等同"卡自己声明的会话"；所有需要"当前会话"
+    // 的动作已统一改走 `resolveSmartCardHostSessionId`（只认宿主构造的 selectedSession.id）。
+    // 判据（逐动作清点）：docs/_active/report/REPORT_批次S_帧侧会话顶包收口_2026-10-21.md §S-1。
+    const requestContext: SmartCardCompatRequestContext = context;
     let result: unknown = { success: true };
 
     if (
@@ -2069,11 +2082,10 @@ export async function handleSmartCardCompatRequest(
       );
     } else if (action.action === 'rebindChatWorldbook' || action.action === 'activateChatWorldbook') {
       const current = state.worldBook;
-      const { selectedSession, sessionId, wb } = requestContext;
-      const resolvedSessionId = selectedSession && selectedSession.id !== '__pending__'
-        ? selectedSession.id
-        : String(sessionId || '').trim();
-      if (current && resolvedSessionId && resolvedSessionId !== '__pending__') {
+      const { wb } = requestContext;
+      // [批次S] 只认宿主 selectedSession.id（帧侧 __palinkContext 已不再进入 requestContext）。
+      const resolvedSessionId = resolveSmartCardHostSessionId(requestContext);
+      if (current && resolvedSessionId) {
         await api.post(`/api/character-sessions/${resolvedSessionId}/worldbook`, {
           world_book_id: current.id,
         });
@@ -2233,12 +2245,16 @@ export async function handleSmartCardCompatRequest(
     } else if (action.action === 'generateRaw' || action.action === 'generateQuietPrompt') {
       const content = extractMessageContentFromPayload(payload);
       if (content && requestContext.selectedCharacterId && requestContext.selectedModel) {
+        // [批次S] 会话 id 只取宿主 selectedSession.id；宿主没有会话就不带 session_id
+        // （后端按空会话装配：quiet 不读任何历史，raw 本来只用 prompt）。
+        // ⚠️ 不再回落 `requestContext.sessionId` / `payload.__palinkContext.sessionId`：
+        // 原写法允许帧指名**同用户另一个会话**把它的历史拉进提示词（后端按 user_id 过滤，
+        // 不是跨账号，但违反「卡片只能碰自己这一份对话」）。
+        const hostSessionId = resolveSmartCardHostSessionId(requestContext);
         const response = await api.post<{ success?: boolean; content?: string }>('/api/character-chat/smart-card-generate', {
           character_id: requestContext.selectedCharacterId,
           prompt: content,
-          session_id: requestContext.selectedSession?.id && requestContext.selectedSession.id !== '__pending__'
-            ? requestContext.selectedSession.id
-            : requestContext.sessionId,
+          session_id: hostSessionId || undefined,
           branch_id: requestContext.branchId,
           model: requestContext.selectedModel,
           mode: action.action === 'generateRaw' ? 'raw' : 'quiet',
