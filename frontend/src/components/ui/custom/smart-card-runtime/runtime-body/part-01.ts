@@ -975,11 +975,29 @@ ${IDB_NS_RUNTIME_SOURCE}
     return found ? { plugin, resource: found } : null;
   };
   const stLocalModuleCacheCompat = new Map();
-  const rewriteStPluginCssUrlsCompat = (css, plugin, basePath = '') => String(css || '').replace(/url\\(\\s*(['"]?)([^)'"]+)\\1\\s*\\)/gi, (match, quote, url) => {
-    const value = String(url || '').trim();
-    if (!value || /^(?:data:|blob:|https?:|\\/|#)/i.test(value)) return match;
-    return 'url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
-  });
+  // [批次E2 2026-10-21] @import 也要重写：st-plugins/regex/style.css 首行是
+  // @import "debugger.css"。此前只重写 url()，@import 的相对路径按帧文档 base
+  // （继承父页 /characters/<cid>）解析 → GET /characters/debugger.css → nginx SPA
+  // fallback 返回 text/html → strict MIME 拒绝（批次Q1 放开 same-origin 后每轮 14 条）。
+  // 与 url() 同源解析：相对路径改指插件资产端点（后端 resources.assets 已收 debugger.css，
+  // /api/plugins/<id>/asset/... 返回 text/css）；外链/data:/blob:/根路径原样保留。
+  // 重写后仍是 @import 且位于样式表首部，后面的 url() 规则不会二次改写绝对路径。
+  const rewriteStPluginCssUrlsCompat = (css, plugin, basePath = '') => String(css || '')
+    .replace(/@import\\s+url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)/gi, (match, quote, raw) => {
+      const value = String(raw || '').trim();
+      if (!value || /^(?:data:|blob:|https?:|\\/\\/|\\/|#)/i.test(value)) return match;
+      return '@import url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
+    })
+    .replace(/@import\\s+(['"])([^'"]+)\\1/gi, (match, quote, raw) => {
+      const value = String(raw || '').trim();
+      if (!value || /^(?:data:|blob:|https?:|\\/\\/|\\/|#)/i.test(value)) return match;
+      return '@import url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
+    })
+    .replace(/url\\(\\s*(['"]?)([^)'"]+)\\1\\s*\\)/gi, (match, quote, url) => {
+      const value = String(url || '').trim();
+      if (!value || /^(?:data:|blob:|https?:|\\/|#)/i.test(value)) return match;
+      return 'url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
+    });
   const escapeHtmlCompat = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
     '<': '&lt;',

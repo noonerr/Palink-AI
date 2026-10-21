@@ -24,6 +24,27 @@ const LEGACY_PLUGIN_PREFIX = 'palink_plugin_';
 const LEGACY_EXT_PREFIX = 'ext_settings_';
 const MIGRATION_FLAG = '__palink_ext_settings_migrated_v1';
 
+/**
+ * ST 1.18.0 预置命名空间名单（批次E2，2026-10-21）。
+ *
+ * 为什么要有：ST 扩展的 init/loadSettings 直接读 extension_settings.<ns> 的子对象
+ * （translate 的 Object.hasOwn(settings, ...)、memory 的 Object.keys(settings)），
+ * 不先判空；宿主 extension_settings 里没有这个键时它们拿到 undefined 直接抛
+ * TypeError，插件 init 整条死掉（真机：Chat Translation / Memory）。
+ *
+ * ⚠️ 这份名单在帧内还有一份（智能卡 runtime-body/part-01.ts 的
+ * applyStPluginRuntimeConfigCompat，模板字符串里不能 import），两处必须逐键一致；
+ * 守卫测试 extension-settings-preset-namespaces.test.ts 断言两份相等。
+ * 新增命名空间时**两边同改**，否则守卫红。
+ */
+export const ST_EXTENSION_SETTINGS_PRESET_NAMESPACES = [
+  'quickReply',
+  'quickReplyV2',
+  'translate',
+  'memory',
+  'regex',
+] as const;
+
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function loadFromStorage(): Record<string, any> {
@@ -47,6 +68,26 @@ function loadFromStorage(): Record<string, any> {
  * 所有 ST 扩展（sandbox 插件系统加载的）共享此对象。
  */
 export const globalExtensionSettings: Record<string, any> = loadFromStorage();
+
+/**
+ * 补齐 ST 预置命名空间与两个契约数组（批次E2）。
+ *
+ * 只补「缺失 / 不是对象 / 该是数组却不是数组」的键；已有数据原样保留，绝不覆盖。
+ * 只写名单内的键 —— 名单外的未知键仍由沙箱 Proxy 返回 undefined（ST 1.18.0 语义）。
+ *
+ * 调用时机：宿主沙箱 createSandboxGlobal 里 migrateLegacyExtensionSettings() **之后**
+ * （先迁移旧隔离存储，再补空壳，否则预置的空对象会把待迁移的同名命名空间挡掉）。
+ */
+export function ensureStExtensionSettingsPresets(
+  target: Record<string, any> = globalExtensionSettings,
+): void {
+  if (!Array.isArray(target.disabledExtensions)) target.disabledExtensions = [];
+  for (const key of ST_EXTENSION_SETTINGS_PRESET_NAMESPACES) {
+    const current = target[key];
+    if (!current || typeof current !== 'object' || Array.isArray(current)) target[key] = {};
+  }
+  if (!Array.isArray(target.regex_presets)) target.regex_presets = [];
+}
 
 /**
  * 持久化到 localStorage（debounced，对齐 ST saveSettingsDebounced 500ms）

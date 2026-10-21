@@ -39,6 +39,7 @@ import {
   writeExtensionSettingsField,
   saveExtensionSettingsDebounced,
   migrateLegacyExtensionSettings,
+  ensureStExtensionSettingsPresets,
 } from '../sillytavern/extension-settings-store';
 // ST 兼容库：真实库注入沙箱，使依赖 jQuery/Handlebars/toastr/select2/marked 的插件可用
 import jQuery from 'jquery';
@@ -2592,12 +2593,15 @@ function transpileEsmToCommonJS(code: string): string {
     (_m, kind, name) => `${kind} ${name} = module.exports.${name} =`,
   );
 
-  // 8b. export const/let/var X;  (无初始化声明)  →  let X; module.exports.X = X
+  // 8b. export const/let/var X;  (无初始化声明)  →  let X; （活绑定导出）
   // quick-reply/index.js:52 `export let quickReplyApi;` 踩中：旧规则 8 只匹配带 `=` 的
   // 初始化形式，无初始化声明残留 export 关键字 → new Function 抛 SyntaxError。
+  // [批次E2 2026-10-21] 旧实现是 `module.exports.X = X;`（立即赋值），导出的是声明时的
+  // undefined 快照；ES module 是活绑定，后续对 X 赋值应当被导入方看见。与规则 11 同因，
+  // 一并改成 defineProperty getter（configurable 允许后面规则 11 再定义同名导出）。
   result = result.replace(
     /^\s*export\s+(const|let|var)\s+(\w+)\s*;/gm,
-    (_m, kind, name) => `${kind} ${name};\nmodule.exports.${name} = ${name};`,
+    (_m, kind, name) => `${kind} ${name};\nObject.defineProperty(module.exports, ${JSON.stringify(name)}, { enumerable: true, configurable: true, get: function () { return ${name}; } });`,
   );
 
   // 9. export function / async function X  (记录名称，提升到末尾导出)
@@ -2619,24 +2623,41 @@ function transpileEsmToCommonJS(code: string): string {
   );
 
   // 11. export { a, b as c }  (without from)
+  // [批次E2 2026-10-21] 活绑定 getter，不再立即赋值：export 列表可以早于 const 声明
+  // （st-plugins/memory/index.js:34 `export { MODULE_NAME }` 早于 :36 的 const），
+  // ES module 语义是懒绑定；立即赋值会在模块求值那一刻读未初始化的 const，撞 TDZ：
+  // "ReferenceError: Cannot access 'MODULE_NAME' before initialization"（真机 Summarize 同因）。
+  // 与帧内 normalizeStExportListCompat（runtime-body/part-02.ts）同形；宿主多一个
+  // configurable: true —— 规则 8 已把 `export const X` 写成 module.exports.X 数据属性，
+  // 同一模块再 `export { X }` 时非 configurable 的 defineProperty 会抛
+  // "Cannot redefine property"（帧内规则顺序不同，不需要这一位）。
   result = result.replace(
     /^\s*export\s*\{\s*([^}]+?)\s*\}/gm,
     (_m, bindings) => {
       return parseNamedBindings(bindings)
         .map(item => {
+          let local = item;
+          let exported = item;
           if (item.includes(':')) {
             const parts = item.split(':').map(s => s.trim());
-            return `module.exports.${parts[1]} = ${parts[0]};`;
+            local = parts[0];
+            exported = parts[1];
           }
-          return `module.exports.${item} = ${item};`;
+          return `Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, configurable: true, get: function () { return ${local}; } });`;
         })
         .join(' ');
     },
   );
 
   // 追加函数/类导出（提升到末尾，确保声明已执行）
+  // [批次E2 2026-10-21] 已由规则 11 的活绑定 getter 定义过的名字跳过：否则
+  // `export { Klass }; export class Klass {}` 会在末尾对 getter-only 属性赋值，
+  // 严格模式下抛 "Cannot set property ... which has only a getter"，并中断后续
+  // 所有 hoisted 导出的赋值（getter 本身已能读到值，不需要再赋一次）。
   if (hoistedExports.length > 0) {
-    result += '\n' + hoistedExports.map(n => `module.exports.${n} = ${n};`).join('\n');
+    result += '\n' + hoistedExports
+      .map(n => `if (!Object.prototype.hasOwnProperty.call(module.exports, ${JSON.stringify(n)})) module.exports.${n} = ${n};`)
+      .join('\n');
   }
 
   return result;
@@ -3062,6 +3083,12 @@ export class PluginSandbox {
     // 恒为 undefined → 直接全局引用 extension_settings.xxx 的插件 TypeError。
     // 构建于 createSandboxGlobal 层级：sandbox 顶层与 moduleMap 指向同一 Proxy。
     migrateLegacyExtensionSettings();
+    // [批次E2 2026-10-21] ST 预置命名空间：translate/memory 等扩展 init 直接读
+    // extension_settings.<ns> 的子对象（Object.hasOwn(undefined) / Object.keys(undefined)）。
+    // 帧内 applyStPluginRuntimeConfigCompat 早已补齐同一份名单（part-01.ts），宿主漏补。
+    // 必须在 migrate 之后调用：先迁旧隔离存储，再补空壳，避免预置空对象挡掉迁移数据。
+    // ⚠️ 只补名单内五个 + 两个数组，Proxy 对名单外未知键仍返回 undefined（ST 1.18.0 语义）。
+    ensureStExtensionSettingsPresets();
     const extensionSettings = new Proxy(globalExtensionSettings, {
       get: (target, prop) => {
         if (typeof prop !== 'string') return (target as any)[prop as any];
