@@ -201,12 +201,37 @@ $ node scripts/gen-bundled-plugin-css.mjs     # 第二次
 已经定位完了（包J/包N），现在它的边际作用是遮噪。⚠️ 与 `docs/OPEN_ISSUES.md` 的"遗留②"方向可能冲突，
 所以**留给用户裁定，我没动**。
 
-## 6. ② preset-session-source 实机验 —— **本轮没做，零产出**
+## 6. ② preset-session-source 实机验 —— **数据通道已验通，UI 渲染那一步没点到**
 
-子 agent 中断前没碰这条，主脑本轮预算用于接通与复验 ①③-B4。
-现状维持不变：那条只有**代码级确认**，缺"设置页无会话时 sessionId 到底取到什么"的实机读数。
-要补的最小动作已写好可复用：`.tmp_probe/wu_live.js` 是同套路（登录 → 走 UI → 只报键名与长度），
-改目标即可，且必须遵守"不触发任何模型生成"（网关余额是付费的，探针一律零生成）。
+子 agent 中断前没碰这条；主脑本轮补做了**通道级**实机验（`.tmp_probe/preset_src_live.js`，会话 `b4_live1`，全程零生成）：
+
+```json
+{ "login": 200, "sessionsHttp": 200, "sessionCount": 32,
+  "usedSessionIdLen": 36,
+  "presetHttp": 200,
+  "presetKeys": ["source","name","base_preset_id","base_name","base_store",
+                 "entries","config","updated_at","is_session_copy"],
+  "source": "global", "hasBaseName": true, "nameLen": 2,
+  "uiBranch": "跟随全局" }
+```
+
+- 端点 `GET /api/prompt-manager/sessions/{id}/preset` 在**真实会话**上返回 **200**，
+  字段与前端 `PresetManager.tsx:113` 消费的形状一致（这条以前只有代码级确认）。
+- **后端两个可见性字段互不矛盾**：`preset_overlay.py:344-369` 里
+  `source="session"` 与 `is_session_copy=True` 同分支产生，`global` 侧同理为 False
+  ⇒ UI 只读 `source` 不会与卡片设置里的"本对话副本"标记打架。
+- 读数只报键名/长度/枚举值，预设名与任何正文一律不回显（`nameLen: 2` 是长度不是内容）。
+
+⚠️ **没验到的一环，说清**：`[data-testid="preset-session-source"]` 这个 DOM 行**没有在真机上点到**。
+入口在 `ChatMoreMenu.tsx:110`「预设管理」，藏在"更多"下拉里（Radix 未展开时节点不存在），
+我在角色页按文本找 `预设|Prompt|Preset` 的 button 命中数为 **0**（`triggerFound: false, candCount: 0`）。
+⇒ 要么先点开"更多"再点"预设管理"（我没继续花轮次走这层 UI 壳），
+⇒ 要么这条留给用户自己看一眼：打开任一对话 → 更多 → 预设管理 → 底部应有一行
+「· 本对话: 跟随全局默认…」。**通道是通的，就差肉眼确认那行字渲染出来**。
+
+顺带纠正我自己写的一条废断言：脚本里 `emptyIdAttempt: "SENT"` 什么也没证明 ——
+它测的是网络层能不能发一个畸形 URL，而前端"没有会话就不发请求"的短路在
+`PresetManager.tsx:101`（`if (!open || !sessionId)`）组件内部，用 fetch 探不到。别照这条下结论。
 
 ## 7. 门禁与交付边界
 
