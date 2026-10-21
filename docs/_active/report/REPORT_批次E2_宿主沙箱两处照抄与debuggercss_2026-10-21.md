@@ -347,9 +347,18 @@ SAMPLE_OTHER0/1="[PluginSandbox] 插件 Summarize 钩子 init 执行失败: Type
 SAMPLE_OTHER2/3/4="Unhandled promise rejection: TypeError: getScriptsByType(...).forEach is not a function
                   at loadRegexScripts … at checkCharEmbeddedRegexScripts" + PAGEERROR 同文
 ```
-改前这两条**不存在**，因为插件在更早的那一跳就崩了（TDZ / `Object.hasOwn(undefined)`）。
-⇒ 这属于"修一个、露下一个"，**不是 E2 引入的回归**，但意味着：**这两个插件仍然没跑通**，
-下一个缺口是宿主 `macros.register` 与 `getScriptsByType` 的返回形状。已登记待办。
+改前这两条**不存在**，但**它们不是同一性质**，必须分开记账（主脑 2026-10-21 读码一手确认）：
+- `macros.register is not a function` = **"修一跳、露下一跳"**：宿主 shim 里
+  `'macros/macro-system.js'` 的 `macros` 是个**空对象**（`sandbox.ts:5399-5419`），
+  而 ST 的 `macros` 带 `registry/register/registerAlias`（参照树 `macros/macro-system.js:44-58`）。
+  以前摘要在 TDZ 那一跳就崩了，走不到这里 ⇒ 属**新暴露的既有缺口**。
+- `getScriptsByType(...).forEach is not a function` = **本批 E2-1 自己引入的回归**：
+  `ensureStExtensionSettingsPresets()` 把五个预置命名空间**一律**补成 `{}`（`extension-settings-store.ts` 的补壳循环），
+  其中包含 `regex`；但 ST 的 regex 扩展要求 `extension_settings.regex` 是**脚本数组**
+  （`st-plugins/regex/engine.js:108-112`：`return extension_settings.regex ?? []` 之后直接 `.forEach`）。
+  补成对象后 `.forEach` 必然不是函数。帧内那份名单（`part-01.ts`）有同样的问题，只是当前插件跑在宿主侧才先在宿主暴露。
+  ⇒ **这条不能算"露出来的"，是我们修坏的**，已在批次E2b 里作为最高优先级修（`regex` 必须是数组）。
+⚠️ 结论：**这两个插件仍然没跑通**；且"补命名空间"这类修法必须**按类型补**，不能一律 `{}`。
 
 ### 零回归
 `PARENT_IFRAMES=7 readable=7 opaque=0`；`F0–F6` 全部 `styles=25 nonEmpty=25 withId=7 scripts=18 th=148 ctx=196`
