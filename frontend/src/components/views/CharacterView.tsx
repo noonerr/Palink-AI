@@ -25,6 +25,7 @@ import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 import { RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
+import { fetchPresetSelection } from '@/lib/promptPresetSelection';
 // [包N C-1 2026-10-19] 导入时信任提示（TOFU：导入检测到脚本才弹 → 写持久 optin →
 // 首次渲染采纳当前 sourceFingerprint；指纹变化即失效；撤销同时清 optin）
 import { CardScriptTrustPrompt, detectCardScripts } from '@/components/ui/custom/smart-card-runtime/import-trust-prompt';
@@ -229,6 +230,40 @@ export function CharacterView({
   const [branchTree, setBranchTree] = useState<BranchTree | null>(null);
   const [forkPoint, setForkPoint] = useState<{ branchId: string; messageId: number } | null>(null);
   const [currentPreset, setCurrentPreset] = useState<GenerationPreset | null>(null);
+
+  // [批次UI1 2026-10-21] 进角色页即对齐后端"全局选中预设"，不再等用户打开预设管理器。
+  // 此前 currentPreset 只在本组件 state 里（起始 null）⇒ 第一方生成参数走系统默认，
+  // 而卡片 in_use 读的是后端 selection，两套口径。只填"尚未确定"的情况，不覆盖用户选择。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await api.post('/api/roleplay/presets/ensure-defaults');
+        const [presets, selection] = await Promise.all([
+          api.get<GenerationPreset[]>('/api/roleplay/presets'),
+          fetchPresetSelection().catch(() => null),
+        ]);
+        if (cancelled) return;
+        setCurrentPreset((prev) => {
+          if (prev) return prev;
+          const picked = selection
+            ? (selection.resolved_id != null
+                ? presets.find((p) => p.id === selection.resolved_id)
+                : undefined)
+              || (selection.resolved_name
+                ? presets.find((p) => p.name === selection.resolved_name)
+                : undefined)
+            : undefined;
+          return picked || presets.find((p) => p.is_default) || presets[0] || null;
+        });
+      } catch (e) {
+        console.error('Failed to load selected preset:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [storylineCollapsed, setStorylineCollapsed] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpenRaw] = useState(false);

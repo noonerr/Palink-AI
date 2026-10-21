@@ -26,6 +26,7 @@ import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { SettingsGroup, SettingsRow, Segmented } from './settings-ui';
 import { Switch } from '@/components/ui/switch';
 import { PresetManager } from '@/components/ui/custom/PresetManager';
+import { fetchPresetSelection } from '@/lib/promptPresetSelection';
 import { useRoleplayTheme, RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 
 type RoleplayEngineSubTab = 'theme' | 'regex' | 'preset' | 'sillytavern';
@@ -603,10 +604,23 @@ export function RoleplayEngineTab({ bottomPadding, onOpenAdminPlugins }: Rolepla
     setPresetsLoading(true);
     try {
       await api.post('/api/roleplay/presets/ensure-defaults');
-      const data = await api.get('/api/roleplay/presets');
+      // [批次UI1] "当前预设"不再只靠组件 state：优先采用后端 selection 的解析结果，
+      // 否则设置页显示 A、卡片 in_use 是 B 的两套口径会继续存在。
+      const [data, selection] = await Promise.all([
+        api.get('/api/roleplay/presets'),
+        fetchPresetSelection().catch(() => null),
+      ]);
       setPresets(data);
       if (!currentPreset && data.length > 0) {
-        const def = data.find((p: any) => p.is_default) || data[0];
+        const backendPicked = selection
+          ? (selection.resolved_id != null
+              ? data.find((p: any) => p.id === selection.resolved_id)
+              : undefined)
+            || (selection.resolved_name
+              ? data.find((p: any) => p.name === selection.resolved_name)
+              : undefined)
+          : undefined;
+        const def = backendPicked || data.find((p: any) => p.is_default) || data[0];
         setCurrentPreset(def);
       }
     } catch (e) {

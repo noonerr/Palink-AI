@@ -17,12 +17,28 @@ class UserSettingUpdate(BaseModel):
     prompt_language: Optional[str] = None
     character_display_mode: Optional[str] = None
     author_note: Optional[str] = None
-    # ST 1.18.0 author note position (single Integer field):
-    #   0 = in story, 1 = after post-history, 2 = last in chat, 3 = inactive.
+    # ST 1.18.0 author note position —— 取值与 ST extension_prompt_types 一致
+    # （public/script.js:483-488，参照树 d:/SillyTavern-release）：
+    #   -1 = NONE          （不注入）
+    #    0 = IN_PROMPT      （After Main Prompt / Story String，追加到 system 末尾）
+    #    1 = IN_CHAT        （In-chat @ Depth，按 author_note_depth 插入历史；ST 默认）
+    #    2 = BEFORE_PROMPT  （Before Main Prompt / Story String，前插到 system 开头）
+    # 〔2026-10-21 批次UI1 订正〕旧注释写的 "0=in story / 1=after post-history /
+    # 2=last in chat / 3=inactive" 是迁移 0056 之前的**旧 Palink 值域**，与 ST 源码、
+    # models/system.py:27-33 及装配读取（roleplay_prompt_assembly.py:3546-3564）均不一致；
+    # 列里现存的已是 0056 转换后的 ST 对齐值，以本节为准。
     author_note_position: Optional[int] = None
+    # ST 1.18.0 Insertion Frequency：0 = 停用、1 = 每条（index.html:7775-7779）。
+    # ⚠️ 本仓装配（roleplay_prompt_assembly.py:3606-3619）把 0 与 1 都视为"每条"
+    # （0 是历史默认值，改语义会改变存量用户行为），停用请用 position=-1。
     author_note_frequency: Optional[int] = None
-    # ST 1.18.0 depth insertion depth when position == 0 (in story).
+    # ST 1.18.0 In-chat @ Depth 的深度（仅 position==1 时生效；ST 默认 4）。
     author_note_depth: Optional[int] = None
+    # ST 1.18.0 用户全局破甲（主界面 Jailbreak 框），对应 UserSetting.jailbreak。
+    # 空串 = 显式清空 = 不注入（装配侧 strip 后为空即跳过）；None = PUT 不改。
+    # 优先级：卡片 jailbreak > 上下文模板 jailbreak > 本字段
+    # （character_message_builder.py:342-374；ST openai.js:1496-1504）。
+    jailbreak: Optional[str] = None
     custom_chat_prompt_zh: Optional[str] = None
     custom_chat_prompt_en: Optional[str] = None
     custom_character_prompt_zh: Optional[str] = None

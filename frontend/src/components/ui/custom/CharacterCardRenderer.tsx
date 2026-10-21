@@ -19,6 +19,9 @@ import {
   fetchSmartCardPresetSnapshot,
   toSmartCardPresetSnapshot,
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
+// [批次UI1 2026-10-21] 第一方切换"全局选中预设"后，必须让本快照重拉 ——
+// 否则帧内 getPresetNames/getLoadedPresetName/getPreset 会继续读旧快照。
+import { PRESET_SELECTION_CHANGED_EVENT } from '@/lib/promptPresetSelection';
 import { buildSillyTavernCompatRuntimeV2Shim } from '@/components/ui/custom/smart-card-runtime/SillyTavernCompatRuntime';
 import { promptInjection } from '@/services/prompt-injection';
 import {
@@ -358,10 +361,24 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // （liveContext 变化 → postContextToFrame → Object.assign(ctx, …)）。
   // 拉不到就保持 null（帧内返回 [] / null 并 palinkDiag 留痕，不冒充"没有预设"）。
   const [presetSnapshot, setPresetSnapshot] = useState<SmartCardPresetSnapshot | null>(null);
+  // [批次UI1] 第一方 PresetManager 写完后广播事件，这里自增触发重拉。
+  const [presetSnapshotRevision, setPresetSnapshotRevision] = useState(0);
   const presetSessionId = String(context.sessionId || '').trim();
+  // 只有"换了角色/会话"才清空快照；选中变化触发的重拉保留旧值到新值到达为止，
+  // 否则帧内会在空窗期同步读到 null（把一次刷新误当成"没有预设"）。
+  const presetSnapshotKeyRef = useRef('');
+  useEffect(() => {
+    const onPresetSelectionChanged = () => setPresetSnapshotRevision((v) => v + 1);
+    window.addEventListener(PRESET_SELECTION_CHANGED_EVENT, onPresetSelectionChanged);
+    return () => window.removeEventListener(PRESET_SELECTION_CHANGED_EVENT, onPresetSelectionChanged);
+  }, []);
   useEffect(() => {
     let cancelled = false;
-    setPresetSnapshot(null);
+    const snapshotKey = `${context.characterId}|${presetSessionId}`;
+    if (presetSnapshotKeyRef.current !== snapshotKey) {
+      presetSnapshotKeyRef.current = snapshotKey;
+      setPresetSnapshot(null);
+    }
     fetchSmartCardPresetSnapshot(presetSessionId)
       .then((payload) => {
         if (cancelled) return;
@@ -373,7 +390,7 @@ const IframeRenderer = React.memo(function IframeRenderer({
         setPresetSnapshot(null);
       });
     return () => { cancelled = true; };
-  }, [context.characterId, presetSessionId]);
+  }, [context.characterId, presetSessionId, presetSnapshotRevision]);
   // 智能卡资源模式（direct/proxy）切换时重建 srcDoc：URL 改写结果不同
   //（optimizeSmartCardHtmlForRuntime 的缓存键已含模式，这里只需触发重算）
   const [assetModeVersion, setAssetModeVersion] = useState(0);

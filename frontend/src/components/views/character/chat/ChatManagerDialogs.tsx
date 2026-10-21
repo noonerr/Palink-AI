@@ -130,6 +130,8 @@ export function ChatManagerDialogs({
         theme={isDark ? 'dark' : 'light'}
         open={showPresetManager}
         onClose={() => onShowPresetManagerChange(false)}
+        // [批次UI1] 只读展示"本对话副本 / 全局默认"；不传则整行不渲染
+        sessionId={selectedSessionId}
       />
     </>
   );

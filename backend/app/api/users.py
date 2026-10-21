@@ -60,6 +60,9 @@ async def get_user_settings(user: User = Depends(get_current_user), db: Session 
         "author_note_position": setting.author_note_position if setting.author_note_position is not None else 1,
         "author_note_frequency": setting.author_note_frequency if setting.author_note_frequency is not None else 0,
         "author_note_depth": setting.author_note_depth if setting.author_note_depth is not None else 4,
+        # [批次UI1 2026-10-21] 全局破甲：空串与 NULL 都表示"不注入"，
+        # 统一回 "" 供前端 textarea 直接绑定（GET 不区分 null/""）。
+        "jailbreak": setting.jailbreak or "",
         "show_character_status": setting.show_character_status if setting.show_character_status is not None else False,
         "auto_generate_chat_images": setting.auto_generate_chat_images if setting.auto_generate_chat_images is not None else False,
         # silly_tavern_mode/silly_tavern_theme 已于 2026-09-04 A1 删除（alembic 0062）
@@ -96,9 +99,13 @@ async def update_user_settings(req: UserSettingUpdate, user: User = Depends(get_
     if req.author_note_position is not None:
         setting.author_note_position = req.author_note_position
     if req.author_note_frequency is not None:
-     setting.author_note_frequency = req.author_note_frequency
+        setting.author_note_frequency = req.author_note_frequency
     if req.author_note_depth is not None:
         setting.author_note_depth = req.author_note_depth
+    # [批次UI1 2026-10-21] 全局破甲：空串是合法的"清空"（落库 ""，不是 NULL），
+    # 装配侧 strip 后为空即不注入；None = 本次不修改（沿用全局 PUT 约定）。
+    if req.jailbreak is not None:
+        setting.jailbreak = req.jailbreak
     if req.custom_chat_prompt_zh is not None:
         setting.custom_chat_prompt_zh = req.custom_chat_prompt_zh
     if req.custom_chat_prompt_en is not None:

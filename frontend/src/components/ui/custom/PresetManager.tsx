@@ -1,13 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, Plus, Upload, Download, Trash2, Check, ChevronDown,
-  Sliders, Search, FileJson,
+  Sliders, Search, FileJson, Globe,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/services/api';
 import type { GenerationPreset } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import {
+  fetchPresetSelection,
+  fetchSessionPresetSource,
+  putPresetSelection,
+  type SessionPresetSource,
+} from '@/lib/promptPresetSelection';
 
 export interface PresetManagerProps {
   currentPreset: GenerationPreset | null;
@@ -15,6 +22,8 @@ export interface PresetManagerProps {
   theme?: 'dark' | 'light';
   open?: boolean;
   onClose?: () => void;
+  /** [批次UI1] 当前会话 id —— 只用于只读展示"本对话副本 / 全局默认"。 */
+  sessionId?: string;
 }
 
 export function PresetManager({
@@ -23,6 +32,7 @@ export function PresetManager({
   theme = 'dark',
   open = false,
   onClose,
+  sessionId,
 }: PresetManagerProps) {
   const [presets, setPresets] = useState<GenerationPreset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -31,42 +41,114 @@ export function PresetManager({
   const [newName, setNewName] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
-  const initialized = useRef(false);
+  // [批次UI1] 后端"选中哪份"（GET /presets/selection）；此前这个 UI 只有组件内 state。
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [selectionSource, setSelectionSource] = useState<string>('none');
+  const [savingSelectionName, setSavingSelectionName] = useState<string | null>(null);
+  // [批次UI1] 本对话来源：**只读**展示（source=session/global），不做任何写操作。
+  const [sessionPreset, setSessionPreset] = useState<SessionPresetSource | null>(null);
+  const [sessionPresetError, setSessionPresetError] = useState(false);
+  // [批次UI1] 用 ref 承接"当前预设/回调"：loadPresets 只应在**打开时**跑一次。
+  // 旧实现把二者放进 useCallback 依赖，而父组件每次渲染都可能传新函数 ⇒ 打开期间
+  // 每次渲染都重拉名单；本批加了 selection 回写后这会**覆盖刚写入的选中态**
+  // （实测：点选预设后被一次重拉的旧 selection 顶回去）。
+  const currentPresetRef = useRef(currentPreset);
+  const onPresetChangeRef = useRef(onPresetChange);
+  useEffect(() => {
+    currentPresetRef.current = currentPreset;
+  }, [currentPreset]);
+  useEffect(() => {
+    onPresetChangeRef.current = onPresetChange;
+  }, [onPresetChange]);
   const isDark = theme === 'dark';
 
   const loadPresets = useCallback(async () => {
     setLoading(true);
     try {
       await api.post('/api/roleplay/presets/ensure-defaults');
-      const data: GenerationPreset[] = await api.get('/api/roleplay/presets');
+      // [批次UI1] 名单与"后端选中份"并行取：当前预设不再由本组件猜默认值。
+      const [data, selection] = await Promise.all([
+        api.get<GenerationPreset[]>('/api/roleplay/presets'),
+        fetchPresetSelection().catch(() => null),
+      ]);
       setPresets(data);
-      if (!currentPreset && data.length > 0) {
-        const def = data.find((p) => p.is_default) || data[0];
-        onPresetChange(def);
+      if (selection) {
+        setSelectedName(selection.selected_name ?? null);
+        setSelectionSource(selection.source || 'none');
+      }
+      if (!currentPresetRef.current && data.length > 0) {
+        // 口径优先级：后端已解析出的选中份 > is_default > 列表第一条。
+        // （`resolved_name` 在"从未选过"时是兼容回落份，仍然比前端瞎猜可靠。）
+        // 先按 resolved_id 命中（同名多行/共享行同名时名字不可靠），再退回名字。
+        const backendPicked = selection
+          ? (selection.resolved_id != null
+              ? data.find((p) => p.id === selection.resolved_id)
+              : undefined)
+            || (selection.resolved_name
+              ? data.find((p) => p.name === selection.resolved_name)
+              : undefined)
+          : undefined;
+        const def = backendPicked || data.find((p) => p.is_default) || data[0];
+        onPresetChangeRef.current(def);
       }
     } catch (e) {
       console.error('Failed to load presets:', e);
     } finally {
       setLoading(false);
     }
-  }, [currentPreset, onPresetChange]);
+  }, []);
 
+  // [批次UI1] 本对话预设来源 —— 只读；窗口关闭或没有会话时不发请求。
   useEffect(() => {
-    if (open && !initialized.current) {
-      initialized.current = true;
-      loadPresets();
+    if (!open || !sessionId) {
+      setSessionPreset(null);
+      setSessionPresetError(false);
+      return undefined;
     }
-  }, [open, loadPresets]);
+    let cancelled = false;
+    setSessionPreset(null);
+    setSessionPresetError(false);
+    fetchSessionPresetSource(sessionId)
+      .then((data) => {
+        if (!cancelled) setSessionPreset(data);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionPresetError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sessionId]);
 
+  // 每次"打开"拉一次（关闭时不打请求）；关掉再开能看到别处新增/改名的预设。
   useEffect(() => {
-    if (open) {
-      loadPresets();
-    }
+    if (!open) return;
+    loadPresets();
   }, [open, loadPresets]);
 
   const filteredPresets = presets.filter((p) =>
     p.name.toLowerCase().includes(search.toLowerCase())
   );
+
+  /**
+   * [批次UI1] "选用" = 本地切换 + 写后端全局选中（PUT /presets/selection）。
+   * 写失败不回滚本地选择，但必须 toast 出来（用户要能看出"这次没存上"）。
+   */
+  const handleSelectPreset = useCallback(async (preset: GenerationPreset) => {
+    onPresetChange(preset);
+    if (selectedName === preset.name) return;
+    setSavingSelectionName(preset.name);
+    try {
+      const res = await putPresetSelection(preset.name);
+      setSelectedName(res.selected_name ?? preset.name);
+      setSelectionSource(res.source || 'selected');
+    } catch (e) {
+      console.error('Failed to save preset selection:', e);
+      toast.error(`全局选中保存失败：${preset.name}`);
+    } finally {
+      setSavingSelectionName(null);
+    }
+  }, [onPresetChange, selectedName]);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -85,19 +167,34 @@ export function PresetManager({
       setNewName('');
       setShowCreate(false);
       await loadPresets();
-      onPresetChange(created);
+      // 新建即选中（与旧行为一致），同时把它写成后端全局选中。
+      await handleSelectPreset(created);
     } catch (e) {
       console.error('Failed to create preset:', e);
     }
   };
 
   const handleDelete = async (id: number) => {
+    const deleted = presets.find((p) => p.id === id);
     try {
       await api.delete(`/api/roleplay/presets/${id}`);
+      const remaining = presets.filter((p) => p.id !== id);
       await loadPresets();
-      if (currentPreset?.id === id) {
-        const remaining = presets.filter((p) => p.id !== id);
-        if (remaining.length > 0) onPresetChange(remaining[0]);
+      if (currentPreset?.id === id && remaining.length > 0) {
+        onPresetChange(remaining[0]);
+      }
+      // 删掉的正是后端选中份 ⇒ 显式改选剩下第一份（或清除），
+      // 不把"指向已删名字的选中名"留给后端回落（否则 UI 与后端都是隐性状态）。
+      if (deleted && selectedName === deleted.name) {
+        const nextName = remaining[0]?.name ?? null;
+        try {
+          const res = await putPresetSelection(nextName);
+          setSelectedName(res.selected_name ?? nextName);
+          setSelectionSource(res.source || 'none');
+        } catch (e) {
+          console.error('Failed to clear deleted preset selection:', e);
+          toast.error('删除后更新全局选中失败');
+        }
       }
     } catch (e) {
       console.error('Failed to delete preset:', e);
@@ -154,13 +251,13 @@ export function PresetManager({
         formData.append('file', file);
         const created: GenerationPreset = await api.post('/api/roleplay/presets/import', formData);
         await loadPresets();
-        onPresetChange(created);
+        await handleSelectPreset(created);
       } catch (err) {
         console.error('Failed to import preset:', err);
       }
     };
     input.click();
-  }, [loadPresets, onPresetChange]);
+  }, [loadPresets, handleSelectPreset]);
 
   const handleExportAll = useCallback(() => {
     const blob = new Blob([JSON.stringify(presets, null, 2)], { type: 'application/json' });
@@ -308,12 +405,24 @@ export function PresetManager({
                             ? (isDark ? 'text-white font-medium' : 'text-slate-900 font-medium')
                             : (isDark ? 'text-slate-200' : 'text-slate-700')
                         )}
-                        onClick={() => onPresetChange(preset)}
+                        onClick={() => handleSelectPreset(preset)}
                       >
                         {preset.name}
                       </button>
                     )}
                   </div>
+
+                  {selectedName === preset.name && (
+                    <span
+                      className={cn(
+                        'text-[10px] px-1.5 py-0.5 rounded shrink-0',
+                        isDark ? 'bg-emerald-500/15 text-emerald-300' : 'bg-emerald-50 text-emerald-700'
+                      )}
+                      title="后端全局选中：没有本对话副本的对话默认用它"
+                    >
+                      全局选中
+                    </span>
+                  )}
 
                   {preset.is_default && (
                     <span className={cn(
@@ -325,6 +434,20 @@ export function PresetManager({
                   )}
 
                   <div className="flex items-center gap-0.5 shrink-0">
+                    {selectedName !== preset.name && (
+                      <button
+                        className={cn(
+                          'h-7 w-7 rounded-md flex items-center justify-center transition-colors',
+                          isDark ? 'text-slate-400 hover:bg-white/10 hover:text-slate-200' : 'text-slate-500 hover:bg-[#FFFAFA]/80 hover:text-slate-700'
+                        )}
+                        onClick={() => handleSelectPreset(preset)}
+                        disabled={savingSelectionName === preset.name}
+                        title="设为全局选中（写入后端 selection）"
+                        data-testid={`preset-select-global-${preset.id}`}
+                      >
+                        <Globe size={12} />
+                      </button>
+                    )}
                     {!preset.is_default && (
                       <button
                         className={cn(
@@ -381,15 +504,41 @@ export function PresetManager({
 
         {/* Footer summary */}
         <div className={cn(
-          'px-4 py-2 text-[11px] border-t',
+          'px-4 py-2 text-[11px] border-t space-y-0.5',
           isDark ? 'border-white/10 text-slate-400' : 'border-[#ddd4c5] text-slate-500'
         )}>
-          共 {presets.length} 个预设{search ? `，筛选后 ${filteredPresets.length} 个` : ''}
-          {currentPreset && (
-            <span className="ml-2">
-              · 当前: <span className={isDark ? 'text-slate-200' : 'text-slate-700'}>{currentPreset.name}</span>
-            </span>
+          <div>
+            共 {presets.length} 个预设{search ? `，筛选后 ${filteredPresets.length} 个` : ''}
+            {currentPreset && (
+              <span className="ml-2">
+                · 当前: <span className={isDark ? 'text-slate-200' : 'text-slate-700'}>{currentPreset.name}</span>
+              </span>
+            )}
+          </div>
+          <div data-testid="preset-global-selection-summary">
+            · 全局选中:{' '}
+            {selectedName ? (
+              <span className={isDark ? 'text-slate-200' : 'text-slate-700'}>{selectedName}</span>
+            ) : selectionSource === 'fallback' ? (
+              <span>未选择（回落「{currentPreset?.name || '—'}」）</span>
+            ) : (
+              <span>无</span>
+            )}
+          </div>
+          {sessionId && (
+            <div data-testid="preset-session-source">
+              {sessionPreset
+                ? sessionPreset.source === 'session'
+                  ? `· 本对话: 使用副本（基于「${sessionPreset.base_name || sessionPreset.name || '—'}」）`
+                  : `· 本对话: 跟随全局默认${sessionPreset.name ? `「${sessionPreset.name}」` : ''}`
+                : sessionPresetError
+                  ? '· 本对话: 预设来源读取失败'
+                  : '· 本对话: 来源读取中…'}
+            </div>
           )}
+          <div className={cn('pt-0.5', isDark ? 'text-slate-500' : 'text-slate-400')}>
+            全局选中只决定「还没有本对话副本」的对话用哪份；已有副本时仍以副本为准。
+          </div>
         </div>
       </div>
     </div>
