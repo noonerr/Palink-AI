@@ -203,16 +203,35 @@ def _get_global_world_names(db: Session, user: User) -> list[str]:
 
 
 def _extract_quick_reply_presets(settings_data: dict[str, Any]) -> list:
-    """Fix-6: 从 extension_settings.quickReplyV2.sets 读取 Quick Reply presets。
+    """Fix-6: 从 extension_settings 读取 Quick Reply presets。
 
     ST 1.18.0 期望 /api/settings/get 返回 quickReplyPresets 数组，
     之前缺失，导致 ST Quick Reply 扩展无法加载用户保存的 sets。
+
+    [批次QR 2026-10-21] 取数优先级（三档，从高到低）：
+      1. `quickReplySets.sets` —— **Palink 自有命名空间**，由
+         `POST /api/quick-replies/save|delete` 写（插件的写侧只打那两个地址，
+         见 `st-plugins/quick-reply/src/QuickReplySet.js:377/:392`）。
+         放这里而不是放 V2 里，是因为 `settings/save` 的 namespace 内整体替换语义
+         会让插件自己那次不含 sets 的 `quickReplyV2` 保存把集合擦掉
+         （`src/QuickReplySettings.js:72`）。
+      2. `quickReplyV2.sets` / 3. `quickReply.sets` —— 历史兼容，
+         任何在本批之前就往这两个键写过东西的数据仍然读得到。
     """
     if not isinstance(settings_data, dict):
         return []
     ext = settings_data.get("extension_settings")
     if not isinstance(ext, dict):
         return []
+    # 1) Palink 自有命名空间（本批新增的写侧落点）
+    #    ⚠️ **只在非空时才短路**：删光所有集以后这里会是 `sets: []`，
+    #    若照原样返回就把下面两档历史键**遮蔽**掉了（用户会看到"数据又冒出来"或相反，
+    #    取决于哪一档先命中）。空列表在这里的语义是"这一档没东西"，不是"最终答案"。
+    palink_ns = ext.get(_QR_SETS_NAMESPACE)
+    if isinstance(palink_ns, dict):
+        sets = palink_ns.get("sets")
+        if isinstance(sets, list) and sets:
+            return sets
     # 优先 V2 结构
     qrv2 = ext.get("quickReplyV2")
     if isinstance(qrv2, dict):
@@ -6064,6 +6083,174 @@ class QuickReplyUpdateRequest(BaseModel):
     label: Optional[str] = None
     text: Optional[str] = None
     data: Optional[dict[str, Any]] = None
+
+
+# ===========================================================================
+# [批次QR 2026-10-21] /api/quick-replies/save|delete —— 补齐 quick-reply 扩展的
+# 唯一**写侧**通道（用户批准："可以，根据你调研的来"）
+#
+# ST 侧一手依据：
+#   - `src/endpoints/quick-replies.js:9` `POST /save`：`body.name` 必填否则 400，
+#     整份 body 落盘成 `quickreplies/<sanitize(name)>.json`；`:22` `POST /delete` 按 name 删文件。
+#   - `src/server-startup.js:146` 把它挂到 `/api/quick-replies`。
+#   - `src/endpoints/settings.js:261` 把该目录读回来塞进 settings/get 的
+#     `quickReplyPresets`（:281）⇒ **ST 的读侧也在这套文件上**。
+# 插件侧一手依据（本仓 vendored 源码，行号为证）：
+#   - 写：`st-plugins/quick-reply/src/QuickReplySet.js:377` POST `/api/quick-replies/save`，
+#     `:392` POST `/api/quick-replies/delete`，body 都是 `JSON.stringify(this)`
+#     （= `toJSON()`：`{version:2, name, disableSend, placeBeforeInput, injectInput,
+#        color, onlyBorderColor, qrList, idIndex}`）。
+#   - 读：`st-plugins/quick-reply/index.js:47-55` `loadSets()` 只认
+#     settings/get 响应里的 `quickReplyPresets`，逐条 `QuickReplySet.from(...)` 进
+#     `QuickReplySet.list`（:92）。
+#
+# 为什么此前"sets 永远是空"（真机读数 `[QR2] sets: []`）：
+#   读侧 Fix-6 已经在 `extension_settings.quickReplyV2.sets` 取数
+#   （本文件 `_extract_quick_reply_presets`），**但全仓没有任何写侧往那个键写过东西**
+#   ——插件自己的 `QuickReplySettings.toJSON()`（`src/QuickReplySettings.js:89-102`）
+#   只写 isEnabled/isCombined/isPopout/showPopoutButton/config/characterConfigs，
+#   **不含 sets**。写侧又正是这两条 404。⇒ 两侧永久错位，用户的快捷回复集存不下来。
+#
+# 落点选择（以及为什么不用 ST 的文件语义、也不用插件自己的命名空间）：
+#   写进 **`extension_settings.quickReplySets`（Palink 自有命名空间）**，
+#   读侧 `_extract_quick_reply_presets` 把它放在**最优先**一档，
+#   再回退 `quickReplyV2.sets` / `quickReply.sets`（兼容任何早已写过这两处的数据）。
+#   ⚠️ 为什么不直接写 `quickReplyV2.sets`：本文件 `settings/save` 的 T3 语义是
+#   **namespace 内整体替换**，而插件自己的 `QuickReplySettings.save()`
+#   （`src/QuickReplySettings.js:72`）会把整个 `quickReplyV2` 重写一遍且**不含 sets**
+#   ⇒ 写在那个键里的集会被插件下一次保存设置**静默擦掉**。
+#   放到插件不拥有的命名空间，才谈得上"存得下来"。（同一形状由测试
+#   `test_save_preserves_other_extension_settings_namespaces` 的反向段钉住。）
+#   不落地成文件：本仓后端不持有 ST 的 per-user 目录树，写进 DB 的用户设置 blob
+#   与既有 `settings/save` 同一份数据，天然跟着账号走、不引入新文件系统面。
+#
+# ⛔ 三条边界：
+#   1. **只动 `quickReplySets.sets` 这一个子键**，其余 namespace 原样保留。
+#   2. 作用域 = 当前登录用户（`get_st_current_user`），与 `/api/themes/save` 同一入口，
+#      不给跨用户可达面；本端点不返回任何他人的数据。
+#   3. 上限护栏：sets 条数与 name 长度有界 —— 这是用户设置里的单个 JSON 列，
+#      不能让一个循环 save 的插件把它撑爆（ST 落文件系统时由磁盘兜着，我们没有）。
+# ===========================================================================
+
+_QR_SETS_NAMESPACE = "quickReplySets"
+_QR_SETS_MAX_NAME_LEN = 200
+_QR_SETS_MAX_COUNT = 500
+
+
+def _qr_sets_read(ext: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
+    """取 `extension_settings.quickReplyV2`（含其 `sets` 列表）。
+
+    形状不对时**新建而不是改写**：quickReplyV2 也可能是 None 或非 dict
+    （老用户从没碰过这个扩展），但绝不能是 list —— 那种脏值按"没有"处理。
+    """
+    ns = ext.get(_QR_SETS_NAMESPACE)
+    if not isinstance(ns, dict):
+        ns = {}
+    sets = ns.get("sets")
+    if not isinstance(sets, list):
+        sets = []
+    return ns, sets
+
+
+def _qr_sets_write(
+    setting: UserSetting,
+    ext_patch: dict[str, Any],
+    db: Session,
+) -> None:
+    """把改好的 `extension_settings` 写回用户设置 blob（其余键原样保留）。"""
+    stored = _safe_json_loads(setting.silly_tavern_settings, {})
+    if not isinstance(stored, dict):
+        stored = {}
+    stored["extension_settings"] = ext_patch
+    setting.silly_tavern_settings = _json_dumps(stored)
+    db.commit()
+
+
+@router.post("/api/quick-replies/save")
+async def st_quick_replies_save(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST 兼容：保存一个 Quick Reply 集（`quick-replies.js:9` 的 POST /save）。
+
+    与 ST 同语义的三点：`name` 必填（否则 400）、整份 body 原样存、同名覆盖。
+    与 ST 不同的一点：落 DB 用户设置而不是落文件（见上方落点说明）。
+    """
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "payload required"}, status_code=400)
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        # ST: `if (!request.body || !request.body.name) return response.sendStatus(400)`
+        return JSONResponse({"ok": False, "error": "set name required"}, status_code=400)
+    if len(name) > _QR_SETS_MAX_NAME_LEN:
+        return JSONResponse({"ok": False, "error": "set name too long"}, status_code=400)
+
+    setting = _get_or_create_user_setting(user, db)
+    stored = _safe_json_loads(setting.silly_tavern_settings, {})
+    ext_old = stored.get("extension_settings") if isinstance(stored, dict) else None
+    ext: dict[str, Any] = ext_old if isinstance(ext_old, dict) else {}
+    ns, sets = _qr_sets_read(ext)
+
+    replaced = any(
+        isinstance(item, dict) and item.get("name") == name for item in sets
+    )
+    sets = [
+        item
+        for item in sets
+        if not (isinstance(item, dict) and item.get("name") == name)
+    ]
+    sets.append(payload)
+    if len(sets) > _QR_SETS_MAX_COUNT:
+        # 越界时拒绝而不是静默丢弃最早的一条：丢用户数据比报一次错严重得多
+        return JSONResponse(
+            {"ok": False, "error": f"quick reply set limit {_QR_SETS_MAX_COUNT} reached"},
+            status_code=409,
+        )
+
+    ns["sets"] = sets
+    ext[_QR_SETS_NAMESPACE] = ns
+    _qr_sets_write(setting, ext, db)
+    # ST 成功侧是 `sendStatus(200)`（无 body）；这里回一个 ST 插件不读的 ok 形状，
+    # 便于 Palink 自己的探针判据（插件只看 response.ok）。
+    return {"ok": True, "name": name, "replaced": replaced, "count": len(sets)}
+
+
+@router.post("/api/quick-replies/delete")
+async def st_quick_replies_delete(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST 兼容：删除一个 Quick Reply 集（`quick-replies.js:22` 的 POST /delete）。
+
+    ST 语义同样是 `name` 必填否则 400；文件不存在时不报错（`fs.existsSync` 后才 unlink），
+    这里对应"名单里没有该 name 也照样回 200"。
+    """
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "payload required"}, status_code=400)
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return JSONResponse({"ok": False, "error": "set name required"}, status_code=400)
+
+    setting = _get_or_create_user_setting(user, db)
+    stored = _safe_json_loads(setting.silly_tavern_settings, {})
+    ext_old = stored.get("extension_settings") if isinstance(stored, dict) else None
+    ext: dict[str, Any] = ext_old if isinstance(ext_old, dict) else {}
+    ns, sets = _qr_sets_read(ext)
+
+    before = len(sets)
+    sets = [
+        item
+        for item in sets
+        if not (isinstance(item, dict) and item.get("name") == name)
+    ]
+    removed = before - len(sets)
+    ns["sets"] = sets
+    ext[_QR_SETS_NAMESPACE] = ns
+    _qr_sets_write(setting, ext, db)
+    return {"ok": True, "name": name, "removed": removed, "count": len(sets)}
+
 
 
 # ===========================================================================
