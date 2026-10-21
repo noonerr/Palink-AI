@@ -692,5 +692,19 @@ UI 已落地：**设置 → 插件 → 「插件网络白名单」**（`AdminPlu
 ⚠️ 实测中纠正一条本批写文档时的想当然：**"畸形 URL 判 false"是不对的**。
 `isUrlAllowedByPluginWhitelist('not a url')` 返回 **true** —— 因为判定时带了
 `new URL(url, window.location.href)` 基址，相对写法一律解析成同源并被放行
-（插件 fetch 自己的 `/scripts/...` 模板正依赖这条）。白名单只约束**跨源绝对地址**。
-真返回 false 的只有"URL 构造本身失败"（如 `http://`）。
+（插件 fetch 自己的 `/scripts/...` 模板正依赖这条）。真返回 false 的只有"URL 构造本身失败"（如 `http://`）。
+
+### [P2-14] 补记 3（2026-10-21 夜 · WU 上线后真机读数，验收① **未闭环**）
+
+UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的判据全绿：
+该栏在 设置→插件管理 可见、五个默认 CDN 只读、粘贴 `http://localhost:11434/api/tags`
+落盘为 `localhost`、一键预置得 `localhost,127.0.0.1`、非法输入报错且不写盘、
+存储值确认是**逗号不是 JSON**（`storedIsCommaNotJson=true`）。
+
+**但验收① 这一轮无法判定**：跑了 A/B（一臂删空白名单、一臂填 `localhost,127.0.0.1`），
+**双臂的 `Embedding model fetch failed`/`lastActive` 都是 0 次** —— 不是修复生效，是
+**Smart Memory 插件现在是 `enabled=false`**（`ComfyInject`、`Kimi Thinking Prefill` 同样关着）。
+⇒ 它不发请求，就没有对照组。**不是本批关的**（WU 全部探针只读 + 重建 dist，没发过 `PUT /toggle`）。
+⇒ 谁关的未知，**需用户确认**：如果那是他自己关的，验收① 就要等他重新打开再跑；
+   如果不是，那是另一条待查（插件启停状态被谁改了，与 R1 的作用域收紧有关吗）。
+   复跑脚本现成：`.tmp_probe/wu_ab.js`（会话 `wu_live1`，约 40s，不花钱）。

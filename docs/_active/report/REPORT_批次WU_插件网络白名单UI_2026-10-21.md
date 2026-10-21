@@ -1,6 +1,6 @@
 # REPORT_批次WU_插件网络白名单UI_2026-10-21
 
-> 状态：**已完工，前端门禁全绿，尚未重建 dist 上线**（本批纯前端）。
+> 状态：**已完工并已上线**（纯前端，第九次上线窗口；真机读数见 §5）。
 > 施工范围：把一条"机制早就通、只有手工敲 localStorage 才能用"的能力变成用户点得到的设置。
 > 用户裁定原文：`要开白名单`（对应 `docs/OPEN_ISSUES.md` [P2-14] 补记 第 1 条）。
 
@@ -75,23 +75,74 @@ bash scripts/gate.sh frontend
   全部门禁通过（rc=0）
 ```
 
-判据按 `failed=0`（用例数随并行会话增长，今天 1684 不是基线）。后端与文档门禁见下节。
+判据按 `failed=0`（用例数随并行会话增长，今天 1684 不是基线）。文档门禁同批跑过：
+`bash scripts/gate.sh docs` → 目录一致 + ST 上游引用可复核，`failed = 0`，rc=0。
 
-**未做的验证**：真机浏览器读数（需要重建 dist，见 §5）；
-以及 OPEN_ISSUES [P2-14] 验收 ①「真插件复跑后 `Embedding model fetch failed` 消失」——
-本批只保证**加白名单这件事用户能自己点**，那条真插件复跑要在上线后跑一次探针才算闭环。
+## 5. 上线（第九次上线窗口，纯前端）
 
-## 5. 上线待办（下一个 agent / 主脑复跑时照做）
+```
+备份   _BACKUPS/2026-10-21_dist重建前_WU白名单UI/frontend_dist.tar.gz（236 MB）
+构建   VITE_OUT_DIR=dist_wu node scripts/build-vite.mjs → ✓ built in 44.16s（196 文件）
+覆盖   cp -r dist_wu/. dist/（只增不删：8866 → 8988 文件）
+gzip   node scripts/gzip-dist.cjs → 3878 个 .gz
+指纹   dist 里 插件网络白名单 / 加本机 AI 服务 / palink_plugin_fetch_whitelist / 当前没有自定义放行主机 全部命中
+服务   curl :16000/ 入口 = index-B1gYRfbW.js（旧 index-CikMaYdG.js 仍在盘上，已开着的页面不会被抽掉 chunks）
+```
 
-1. `tar` 备份现 `frontend/dist` 进 `_BACKUPS/2026-10-21_dist重建前_WU白名单UI/`（含 BACKUP_INFO.md + 台账行）。
-2. `VITE_OUT_DIR=dist_x node scripts/build-vite.mjs` → 校验指纹 → `cp -r dist_x/. dist/` → `node scripts/gzip-dist.cjs`。
-   纯前端改动，backend 镜像没动，不需要 `docker compose build backend`。
-3. 字符串指纹：`grep -c "插件网络白名单" dist/assets/*.js`（**只能 grep 字面量**，标识符会被压缩抹掉）。
-4. 真机探针（playwright，独立会话名，付费端点 `page.route` 挡掉）：
-   打开 设置 → 插件 → 该栏存在且可见；加 `localhost`；
-   `localStorage.getItem('palink_plugin_fetch_whitelist') === 'localhost'`（**逗号，不是 JSON**）；
-   复跑 Smart Memory 真插件，看 `Embedding model fetch failed (…11434…)` 是否消失。
-   这一步是唯一能证明"用户点的东西真的到达运行时"的证据，别只凭 vitest 绿就宣布闭环。
+`grep 字面量` 是唯一可信的产物校验（标识符与路径会被压缩抹掉），四个字符串各命中 1–2 次。
+backend 镜像没动，未重建容器。
+
+### 5.1 真机读数（playwright 会话 `wu_live1`，`.tmp_probe/wu_live.js`）
+
+走的是**用户会走的那条路**：设置 → 插件管理 → 这一栏。
+
+```json
+{ "login": 200, "tabClicked": true, "sectionVisible": true,
+  "defaultChips": ["cdn.jsdelivr.net","unpkg.com","cdnjs.cloudflare.com","raw.githubusercontent.com","github.com"],
+  "emptyStateShown": true,
+  "afterUrlAdd": "localhost",            // 粘的是 http://localhost:11434/api/tags
+  "chipLocalhost": true,
+  "afterPreset": "localhost,127.0.0.1",  // 已存在的 localhost 没被重复加
+  "invalidErrorShown": true, "afterInvalid": "localhost,127.0.0.1",   // 报错且没写盘
+  "afterDefaultAdd": "localhost,127.0.0.1", "userChipUnpkg": false,   // 固定项不落成用户项
+  "afterRemove": "localhost",
+  "finalStored": "localhost,127.0.0.1", "storedIsCommaNotJson": true }
+```
+
+⇒ **本批的核心承诺（UI 写出来的东西 = 运行时认的格式）在真机上成立**：
+落盘是 `localhost,127.0.0.1`，逗号、裸主机名、无引号无方括号。
+
+### 5.2 ⚠️ 一条我打算验证却**没验成**的事（基线自己消失了）
+
+原计划：上线后复跑 Smart Memory 真插件，看 `Embedding model fetch failed (…:11434…)`
+从"有"变"没有"，作为 [P2-14] 验收① 的闭环。
+跑了 A/B（`.tmp_probe/wu_ab.js`，同一张卡、同样 16s 等待，只是白名单一臂删空一臂填上）：
+
+```json
+{ "noWhitelist":   { "stored": null, "kinds": 27, "n11434": 0, "nLastActive": 0 },
+  "withWhitelist": { "stored": "localhost,127.0.0.1", "kinds": 27, "n11434": 0, "nLastActive": 0 } }
+```
+
+**双臂都是 0 —— 不是"白名单生效所以错误消失"，是插件根本没发那个请求。**
+查 `/api/plugins`（`.tmp_probe/wu_plugins.js`，只取 name/type/enabled/count）：
+
+```
+Smart Memory  sillytavern_extension  enabled=false
+ComfyInject   sillytavern_extension  enabled=false
+Kimi Thinking Prefill  …             enabled=false
+Regex / Summarize / Token Counter / Chat Translation / Quick Replies / 酒馆助手  enabled=true
+```
+
+⇒ **Smart Memory 现在是关的**，所以它不联网、不报错，A/B 失去对照组。
+21:04 那轮日志（`console-…T13-04-35…log`：`11434` 命中 5 次、`Embedding model fetch failed` 2 次）
+时它是开的 —— **在 21:04 与 21:37 之间被关掉了，不是我关的**（本批所有探针没有发过
+任何 `PUT /api/plugins/{id}/toggle`，只读 + 重建 dist）。
+谁关的我不知道，留给用户确认；这条不作为本批结论。
+
+⇒ 所以 [P2-14] 验收① 的准确表述是：**"UI 写入格式正确 + 运行时读同一份"已由真机 + 25 个用例证明；
+"真插件因此联网成功"这一环本轮无法证伪也无法证实**。要补的话，得先把 Smart Memory 打开再跑
+`.tmp_probe/wu_ab.js`（⛔ 那是全局插件，开启会影响其他用户的插件面，需用户点头或改用自己的私有插件）。
+`lastActive`（[P2-14] 第 2 条）同样因为插件没跑而本轮读不到，既没修好也没坏。
 
 ## 6. 没做 / 不该在本批做的事
 
