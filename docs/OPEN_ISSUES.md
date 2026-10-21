@@ -651,3 +651,17 @@ _（当前无）_
 验收建议：① 用**真实插件**（不许自造）复跑，判据写进报告；② `SillyTavern.getContext()` 补上后，
 Kimi 的那两条报错必须消失，且**沙箱里读不到父站凭据**不能退；③ allowlist UI 落地后，
 "给某卡加一个插件 → 刷新 → 帧内 `hasNewCss` 从 0 变 1"作为端到端判据。
+
+### [P2-14] 真实插件 Smart Memory 修好模块链后露出的两条"下一跳"（2026-10-21 · 一手实测）
+
+> 背景：批次MC（`c1eb693`）修了"相对路径 import 被 ST 白名单抢先匹配"的加载器缺陷，
+> 真插件 27 个模块全部求值、宏注册成功；`registerSmartMemoryMacros is not a function` 已消失。
+> 下面是它加载后立刻撞上的两堵墙，**都不是模块链问题**。
+
+| # | 现象 | 档位 | 根因与建议 |
+|---|---|---|---|
+| 1 | `Embedding model fetch failed … url=http://localhost:11434/api/tags` | **P1（安全口径 vs 兼容性，需用户拍板）** | 插件要直连本机 Ollama（11434），被**插件沙箱网络守卫**拦掉。ST 是单机、插件可直连本机服务；我们是多用户站点，默认拦本机/内网地址（SSRF 防护）。可选：① 给本机 AI 服务端口（11434 Ollama / 7860 SD WebUI / 8188 ComfyUI …）开**显式 allowlist**（配置项，默认空）；② 要求插件改走我们的代理端点；③ 维持拦截、在 UI 明说"本机插件联网被禁止"。⛔ 不要默认放开内网。 |
+| 2 | `TypeError: Cannot set properties of undefined (setting 'lastActive')` | P2 | 插件期望 `extension_settings.memory` 里已有子键（ST 里 memory 扩展默认 38 个键）；我们只给空对象 `{}`。修法：按**扩展名**补默认子键（可从对应 bundled 扩展的 loadSettings 默认值生成），不要为单个插件写死。⚠️ 与 D1/D1b 的"命名空间级默认"是两层，别混。 |
+
+验收：① 真插件复跑，`Embedding model fetch failed` 消失（若选 allowlist）；② `lastActive` 那条消失；
+③ 两条都存在时，插件仍不得影响其他插件（隔离性）；④ 任何放宽都要有"未授权时仍被拦"的失败测试。
