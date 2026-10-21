@@ -107,16 +107,26 @@ WSL **不是**可用选项：本机只有 `docker-desktop` 一个发行版（`ws
 5. 遇到 `silly_tavern_mode` / `st-compat` / `st-native` 相关代码时，优先按"palink-native 主攻"的立场评估修改影响面。**命名陷阱（勿因名字删）**：`synthesize_tts_st_compat`（Palink TTS 端点，在用）、`'st-compat-v2'`（智能卡 runtime 版本标签）、`st-vec::`（记忆向量前缀）、`get_st_current_user`（共享认证依赖）、`lib/group-chat/`（第一方 UI 已删但它经 `getContext.ts` 活着，勿连带误删）。
 6. ⚠️ **「ST 双轨已删」≠「ST 兼容层可删」**（2026-10-10 订正，依据：
    `docs/_active/report/REPORT_悲观刻薄审计_第二次全仓体检_2026-10-10-new.md` 文首订正）。
+   ⚠️ **2026-10-22 再订正：本节下面那几个行号与"三个大文件"的形状已过期，别照数字判断**。
+   分包批次把那两个前端大文件**拆开了**，实测现状（`grep -c ""` 亲自数）：
+   `…/smart-card-runtime/SillyTavernCompatRuntime.ts` = **322 行**（装配器，不是 6961），
+   真身在 `…/smart-card-runtime/runtime-body/part-01..08.ts` = **合计 10085 行**；
+   `…/smart-card-runtime/frame-shim/legacy-st-sim.ts` = **27 行**（重导出壳，不是 2452），
+   真身在 `…/frame-shim/legacy-st-sim-parts/part-a|b|c.ts`（两处合计 **2590 行**）；
+   `backend/app/api/silly_tavern.py` = **6521 行**（这条仍对，只是长大了）。
+   ⇒ **禁止**因为"找不到 6961 行的文件"就以为兼容层被删过；**禁止**按旧路径改动。
+   改模板串分段后必须跑 `scripts/verify-shim-identity.mjs`（字节快照守卫，在场实测）。
    已删除的是 **st-native（iframe 嵌入完整 ST）** 与 **st-compat（服务端 ST 1.18 装配）**
    两个**模式**；但 **"Palink 原生模式"的卡片渲染底座，本身就是一个 SillyTavern 兼容运行时**，
    后端仍在提供卡片 runtime 所需的 ST 风格端点。这些是**在用的生产代码，不是残留**。
-   引用链（动它们之前**必须**先查）：
-   - `CharacterCardRenderer.tsx:10` → import `buildSillyTavernCompatRuntimeV2Shim`（`:435` 调用）
-   - `smart-card-runtime/helpers.ts:6` → import `LEGACY_ST_SIM_SEGMENT`
-   - `api/__init__.py:37/55` → 注册 `silly_tavern_router`（带 `csrf_guard`）
-   - `RoleplayEngineTab.tsx:173` → 实调 `POST /api/settings/get`
-   ⇒ **禁止以"ST 已删"为由删除** `SillyTavernCompatRuntime.ts`(6961 行)、
-     `legacy-st-sim.ts`(2452 行)、`api/silly_tavern.py`(6247 行)。
+   引用链（动它们之前**必须**先查；行号会漂，**2026-10-22 实测**已就地更正，仍要自己 grep 复核）：
+   - `CharacterCardRenderer.tsx:33` → import `buildSillyTavernCompatRuntimeV2Shim`（**`:591` 调用**）
+   - `smart-card-runtime/helpers.ts:6` → import `buildLegacyShimBody`（来自 `./frame-shim/legacy-shim-source`；旧记录里写的符号名 `LEGACY_ST_SIM_SEGMENT` 已不存在）
+   - `api/__init__.py:37` → import；**`:62`** `include_router(silly_tavern_router, dependencies=[Depends(csrf_guard)])`
+   - `RoleplayEngineTab.tsx` → 走 `POST /api/settings/get` 读通道（该文件行号随改动漂移最大，按字符串 `/api/settings/get` 找）
+   ⇒ **禁止以"ST 已删"为由删除** 兼容运行时与 `api/silly_tavern.py`。
+     行数目测见上（`SillyTavernCompatRuntime.ts` 322 行 + `runtime-body/part-01..08.ts` 10085 行 +
+     `frame-shim/legacy-st-sim*` 2590 行 + `api/silly_tavern.py` 6521 行）。
      要做瘦身就**逐个端点查调用方**（`grep -rn "<path>" frontend/src backend/app`），
      **不要按名字删、不要整文件删**。
    ⇒ 同理，审计报告里凡涉及"删"的建议，动工前先做引用链复核 ——
