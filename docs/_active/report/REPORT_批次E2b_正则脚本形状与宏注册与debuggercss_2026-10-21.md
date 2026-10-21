@@ -169,7 +169,8 @@
   → **rc=0 / built in 36.32s**；产物 `palink-smart-card-runtime-*.js` 内含 `#regex_debugger_rules`，
   主 `index-*.js` 也含宿主内联所需内容 ⇒ 构建期字符串模块在配置期/浏览器产物两条链都能用。
 - 文档目录：`py scripts/docs/gen_docs_catalog.py --check` → **`OK 418 docs, catalog up to date`（rc=0）**。
-  本报告入库前已生成 `_CATALOG.md`（tracked=414）。
+  本报告与 `_CATALOG.md` 同笔入库后，按仓库惯例再复生成一次 `_CATALOG.md`
+  （报告的入库状态从「未入库」变「已跟踪」，tracked 414→415）。
 
 ---
 
@@ -240,5 +241,6 @@
   `fix(批次E2b): regex 预置改数组、macros/macro-system 接真注册表、debugger.css 构建期内联`
   （12 files changed, 853 insertions(+), 196 deletions(-)；含 1 个测试文件改名：
   `css-import-asset-rewrite-contract.test.ts` → `css-import-inline-contract.test.ts`）
-- 文档笔：本报告 + `docs/_CATALOG.md`（418 docs，tracked=414），紧随 `1c28e87` 单独提交。
+- 文档笔：本报告 + `docs/_CATALOG.md`（418 docs），紧随 `1c28e87` 单独提交；
+  报告入库后按仓库惯例再复生成 `_CATALOG.md`（tracked 414→415），单独一笔 `chore(docs)`。
 - 门禁在提交前跑：`bash scripts/gate.sh frontend` rc=0、`failed=0 / errors=0`（见 §3）。
