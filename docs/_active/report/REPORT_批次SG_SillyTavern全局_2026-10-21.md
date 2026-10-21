@@ -212,3 +212,32 @@ jQuery/$/toastr 在 ST 里是 `window.*` 独立全局。任务书把它们说成
  M frontend/src/lib/plugin-system/sandbox.ts
 ?? frontend/src/lib/plugin-system/__tests__/sg-sillytavern-global.test.ts
 ```
+
+---
+
+## 上线实测（2026-10-21 傍晚 · 主脑自己跑，**真实插件复验**）
+
+上线：`dist` 归档（**8622** 文件，改前入口 `index-BiIprpTC.js`）→ 构建 **1m37s**
+→ 只增不删覆盖（8622 → **8691**）→ gzip **3772** → 站点 200，新入口 **`index-y1h404Oz.js`**。
+本次零后端改动，**未重建镜像**。
+
+### 复验方式（真插件，不是自造）
+把之前禁用掉的真实第三方插件 **Kimi Thinking Prefill 1.1.0** 重新启用 → 打开角色页 → 抓控制台。
+（测完已再次禁用，运行配置回到 6 个插件。）
+
+| 判据 | 改前 | 改后 |
+|---|---|---|
+| `ReferenceError: SillyTavern is not defined` | **有**（`initSetting` + PAGEERROR 两处） | **消失** |
+| 控制台错误**种类** | **11** | **6** |
+| 剩余种类 | — | 404（locales / quick-replies）、401（登录前）、RegexPresetManager 竞态、QR save、WebSocket 提示、卡侧 `style_removal` |
+| 卡片帧零回归 | — | 7/7 帧 `pluginCss=5 nonEmpty=5`、`th=153`、`read5=5`、`ctx=196` |
+
+⚠️ 边界：Kimi **现在能干净加载**，但它真正干的活是"注入 reasoning_content 预填"，
+要在真实生成时才生效——那需要调模型（付费），**本批没有验证它的功能**，只验证了"不再在加载期炸"。
+
+### 总结这条缺口
+ST 的全局对象只有 `{ libs, getContext }` 两个字段（`script.js:292-295`）；
+我们两样本来都有，**缺的只是把它们挂成那个全局名**。施工方额外发现：只写 `globalThis.SillyTavern` 不够——
+插件用裸标识符 `SillyTavern.xxx` 时仍会 `ReferenceError`，必须在沙箱 prelude 里同时声明 `var SillyTavern`。
+`libs` 只装了我们**真实注入**的 6 个库（jQuery / $ / Handlebars / toastr / marked / DOMPurify），
+ST 权威 25 键里其余 23 键诚实留空——没有造假。
