@@ -52,6 +52,8 @@ from ..services.character_import_service import CharacterImportService
 # [批次P2 P2-1 2026-10-21] 内部簿记键前缀的**唯一来源**。此前这里是手写的前缀字符串，
 # 与 services/preset_overlay.py 的常量各写一份 ⇒ 改一处漏一处。
 from ..services.preset_overlay import INTERNAL_KEY_PREFIX
+# [批次D1 2026-10-21] ST 1.18.0 power_user 默认状态（83 键，只含配置事实）。
+from ..services.st_power_user_defaults import build_st_power_user_defaults
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
 from ..services.local_model_registry import list_enabled_chat_models
 from ..services.provider_registry import get_providers
@@ -1658,18 +1660,10 @@ def _default_st_settings(db: Session, user: User, setting: UserSetting) -> dict[
     context_length = next((int(m.get("context_length") or 4096) for m in models if m.get("id") == model_id), 4096)
     max_tokens = int(getattr(preset, "max_tokens", 1024) or 1024) if preset else 1024
     # ST 1.18.0 power_user: prefer DB-persisted value (full power_user JSON),
-    # fall back to hardcoded defaults when DB has none.
-    _power_user_defaults = {
-        "auto_scroll_chat_to_bottom": True,
-        "message_token_count_enabled": False,
-        "trim_spaces": True,
-        "collapse_newlines": False,
-        "allow_name1_display": True,
-        "allow_name2_display": True,
-        "charListGrid": False,
-        "auto_load_chat": False,
-    }
-    _power_user = dict(_power_user_defaults)
+    # fall back to the 83-key default state shipped by ST 1.18.0.
+    # [批次D1 2026-10-21] 默认值独立到 services/st_power_user_defaults.py：
+    # 原实现只硬编码 8 键，第三方插件读 power_user.<其它键> 全部拿到 undefined。
+    _power_user = build_st_power_user_defaults()
     raw_power_user = getattr(setting, "power_user", None)
     if isinstance(raw_power_user, str) and raw_power_user.strip():
         try:

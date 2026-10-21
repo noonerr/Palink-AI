@@ -747,15 +747,19 @@ ${IDB_NS_RUNTIME_SOURCE}
     // [S3-PLUGIN-SHIM-GAP] ST 扩展的 settings 子对象：ST 里由扩展首次 init 时自建并持久化，
     // Palink 的 settings.json 从来没有这些键 => translate loadSettings 的
     // Object.hasOwn(undefined) / memory loadSettings 的 Object.keys(undefined) 全抛。
-    // 键名 = 各扩展实际读取的 extension_settings.<key>（见 st-plugins 各 index.js loadSettings），
+    // 键名 = ST 1.18.0 default/content/settings.json 的 extension_settings 21 个命名空间。
     // 新增扩展时按同名单补。regex_presets 是数组型（305 行有 .map）。
     // [批次E2b 2026-10-21] E2 曾把五个命名空间一律补成 {}，其中 regex 被补坏：
     // st-plugins/regex/engine.js getScriptsByType 对 GLOBAL 返回
     // extension_settings.regex ?? []，调用方 loadRegexScripts 直接 .forEach =>
     // 对象上 forEach 不是函数（真机 getScriptsByType(...).forEach is not a function）。
-    // 故按类型补：四个设置命名空间用 {}，regex 用 []。
-    const ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT = ['quickReply', 'quickReplyV2', 'translate', 'memory'];
-    const ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT = ['regex'];
+    // 故按类型补：对象给 {}，数组给 []，字符串给 ST 默认值，布尔给 false。
+    // [批次D1 2026-10-21] 名单从 5 个扩到 21 个；嵌套默认值不搬（ST 的 memory.prompt /
+    // sd.prompts / objective.customPrompts 是提示词正文，只给空对象）。
+    const ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT = ['caption', 'cfg', 'chromadb', 'dice', 'expressions', 'memory', 'note', 'objective', 'quickReply', 'randomizer', 'rvc', 'sd', 'speech_recognition', 'translate', 'tts'];
+    const ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT = ['disabledExtensions', 'expressionOverrides', 'regex'];
+    const ST_PLUGIN_PRESET_STRING_NAMESPACES_COMPAT = ['apiKey', 'apiUrl'];
+    const ST_PLUGIN_PRESET_BOOLEAN_NAMESPACES_COMPAT = ['autoConnect'];
     ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT.forEach((key) => {
       const current = window.extension_settings[key];
       if (!current || typeof current !== 'object' || Array.isArray(current)) window.extension_settings[key] = {};
@@ -775,11 +779,19 @@ ${IDB_NS_RUNTIME_SOURCE}
           severity: 'info',
           code: 'st_extension_settings_preset_normalized',
           apiName: key,
-          message: 'extension_settings.' + key + ' 不是数组，已归一为 []（regex 插件要求脚本数组）',
+          message: 'extension_settings.' + key + ' 不是数组，已归一为 []',
           detail: '原值已存 window.__palinkExtensionSettingsNormalized["' + key + '"]，type=' + (current === null ? 'null' : typeof current),
         });
       }
       window.extension_settings[key] = [];
+    });
+    ST_PLUGIN_PRESET_STRING_NAMESPACES_COMPAT.forEach((key) => {
+      if (typeof window.extension_settings[key] === 'string') return;
+      window.extension_settings[key] = key === 'apiUrl' ? 'http://localhost:5100' : '';
+    });
+    ST_PLUGIN_PRESET_BOOLEAN_NAMESPACES_COMPAT.forEach((key) => {
+      if (typeof window.extension_settings[key] === 'boolean') return;
+      window.extension_settings[key] = false;
     });
     if (!Array.isArray(window.extension_settings.regex_presets)) window.extension_settings.regex_presets = [];
     const runtimeConfig = ctx.stPluginRuntimeConfig && typeof ctx.stPluginRuntimeConfig === 'object'

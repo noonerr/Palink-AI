@@ -25,6 +25,9 @@ import {
   globalExtensionSettings,
   ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES,
   ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES,
+  ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES,
+  ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES,
+  ST_EXTENSION_SETTINGS_PRESET_STRING_DEFAULTS,
   ST_EXTENSION_SETTINGS_PRESET_NAMESPACES,
   NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY,
 } from '../../sillytavern/extension-settings-store';
@@ -32,8 +35,26 @@ import {
 const FRAME_PART_01 = 'src/components/ui/custom/smart-card-runtime/runtime-body/part-01.ts';
 const REGEX_ENGINE = 'st-plugins/regex/engine.js';
 
-const OBJECT_PRESET_NAMES = ['quickReply', 'quickReplyV2', 'translate', 'memory'];
-const ARRAY_PRESET_NAMES = ['regex'];
+// ST 1.18.0 default/content/settings.json → extension_settings 的 21 个命名空间，
+// 按类型拆分（批次D1 2026-10-21 一手核参照树）。
+const OBJECT_PRESET_NAMES = [
+  'caption', 'cfg', 'chromadb', 'dice', 'expressions', 'memory', 'note', 'objective',
+  'quickReply', 'randomizer', 'rvc', 'sd', 'speech_recognition', 'translate', 'tts',
+];
+const ARRAY_PRESET_NAMES = ['disabledExtensions', 'expressionOverrides', 'regex'];
+const STRING_PRESET_NAMES = ['apiKey', 'apiUrl'];
+const BOOLEAN_PRESET_NAMES = ['autoConnect'];
+const ALL_PRESET_NAMES = [
+  ...OBJECT_PRESET_NAMES,
+  ...ARRAY_PRESET_NAMES,
+  ...STRING_PRESET_NAMES,
+  ...BOOLEAN_PRESET_NAMES,
+];
+
+const STRING_DEFAULTS: Record<string, string> = {
+  apiKey: '',
+  apiUrl: 'http://localhost:5100',
+};
 
 /** 最小 PluginContext：只实现 createSandboxGlobal 与 extension_settings 读取用得到的面。 */
 const CONTEXT = {
@@ -68,33 +89,65 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('E2b-1 宿主沙箱按类型预置 ST 命名空间（执行型）', () => {
-  it('四个设置命名空间是普通对象、regex 是数组；regex_presets/disabledExtensions 也是数组', async () => {
-    const exports = await runPlugin(`
+describe('E2b-1 / D1 宿主沙箱按类型预置 ST 命名空间（执行型）', () => {
+  /** 生成一段插件源码：把 21 个命名空间的值和 Object.keys 结果带回宿主。 */
+  function snapshotPluginSource(): string {
+    const entries = ALL_PRESET_NAMES.map((name) => `${name}: extension_settings.${name}`).join(',\n        ');
+    return `
       module.exports = {
-        quickReply: extension_settings.quickReply,
-        quickReplyV2: extension_settings.quickReplyV2,
-        translate: extension_settings.translate,
-        memory: extension_settings.memory,
-        regex: extension_settings.regex,
-        regex_presets: extension_settings.regex_presets,
-        disabledExtensions: extension_settings.disabledExtensions,
+        values: {
+        ${entries},
+        },
+        ownKeys: Object.keys(extension_settings),
       };
-    `);
+    `;
+  }
+
+  it('21 个命名空间按 ST 类型预置：15 对象 / 3 数组 / 2 字符串 / 1 布尔', async () => {
+    const exports = await runPlugin(snapshotPluginSource());
 
     for (const name of OBJECT_PRESET_NAMES) {
-      expect(exports[name], name + ' 必须是对象').toBeTypeOf('object');
-      expect(Array.isArray(exports[name]), name + ' 不该是数组').toBe(false);
-      expect(exports[name]).toEqual({});
+      expect(exports.values[name], name + ' 必须是对象').toBeTypeOf('object');
+      expect(Array.isArray(exports.values[name]), name + ' 不该是数组').toBe(false);
+      expect(exports.values[name]).toEqual({});
     }
     for (const name of ARRAY_PRESET_NAMES) {
-      expect(Array.isArray(exports[name]), name + ' 必须是数组').toBe(true);
-      expect(exports[name]).toEqual([]);
+      expect(Array.isArray(exports.values[name]), name + ' 必须是数组').toBe(true);
+      expect(exports.values[name]).toEqual([]);
     }
-    expect(Array.isArray(exports.regex_presets)).toBe(true);
-    expect(exports.regex_presets).toEqual([]);
-    expect(Array.isArray(exports.disabledExtensions)).toBe(true);
-    expect(exports.disabledExtensions).toEqual([]);
+    for (const name of STRING_PRESET_NAMES) {
+      expect(typeof exports.values[name], name + ' 必须是字符串').toBe('string');
+      expect(exports.values[name]).toBe(STRING_DEFAULTS[name]);
+    }
+    for (const name of BOOLEAN_PRESET_NAMES) {
+      expect(typeof exports.values[name], name + ' 必须是布尔').toBe('boolean');
+      expect(exports.values[name]).toBe(false);
+    }
+  });
+
+  it('真实插件式读取不抛：Object.keys(sd) / note.x / regex.forEach / apiUrl.length / autoConnect', async () => {
+    const exports = await runPlugin(`
+      var sdKeys = Object.keys(extension_settings.sd);
+      var noteX = extension_settings.note.x;
+      var regexCount = 0;
+      extension_settings.regex.forEach(function () { regexCount += 1; });
+      var overrides = extension_settings.expressionOverrides.map(function (item) { return item; });
+      var disabled = extension_settings.disabledExtensions.indexOf('regex');
+      var apiUrl = extension_settings.apiUrl;
+      var autoConnect = extension_settings.autoConnect;
+      module.exports = { sdKeys: sdKeys, noteX: noteX, regexCount: regexCount,
+        overrides: overrides, disabled: disabled, apiUrl: apiUrl, autoConnect: autoConnect };
+    `);
+
+    expect(Array.isArray(exports.sdKeys)).toBe(true);
+    expect(exports.sdKeys).toEqual([]);
+    expect(exports.noteX).toBeUndefined();       // 读不存在的子字段返回 undefined，但不抛
+    expect(exports.regexCount).toBe(0);
+    expect(exports.overrides).toEqual([]);
+    expect(exports.disabled).toBe(-1);
+    expect(typeof exports.apiUrl).toBe('string');
+    expect(exports.apiUrl.length).toBeGreaterThan(0);
+    expect(exports.autoConnect).toBe(false);
   });
 
   it('未知键仍然返回 undefined，且读操作不会把它创建出来（ST 1.18.0 语义）', async () => {
@@ -109,7 +162,7 @@ describe('E2b-1 宿主沙箱按类型预置 ST 命名空间（执行型）', () 
     expect(exports.unknown).toBeUndefined();
     expect(exports.hasUnknown).toBe(false);
     expect(exports.ownKeys).not.toContain('__e2b_1_missing_namespace__');
-    for (const name of [...OBJECT_PRESET_NAMES, ...ARRAY_PRESET_NAMES]) {
+    for (const name of ALL_PRESET_NAMES) {
       expect(exports.ownKeys).toContain(name);
     }
   });
@@ -229,25 +282,34 @@ describe('E2b-1 真实 regex engine 的 forEach 回归（执行型）', () => {
   });
 });
 
-describe('E2b-1 两份名单逐键、逐类型一致（帧内模板串不能 import，只能靠测试防漂）', () => {
+describe('E2b-1 / D1 宿主与帧内四份名单逐键、逐类型一致（帧内模板串不能 import，只能靠测试防漂）', () => {
   function frameArray(source: string, constName: string): string[] {
     const match = source.match(new RegExp(`const ${constName} = \\[([^\\]]*)\\]`));
     expect(match, `part-01.ts 里找不到 ${constName}`).toBeTruthy();
     return Array.from(String(match![1]).matchAll(/'([^']+)'/g)).map((m) => m[1]);
   }
 
-  it('宿主常量与帧内 part-01.ts 的对象型/数组型名单逐键、逐序相等', () => {
+  it('宿主常量就是 ST 1.18.0 的 21 个命名空间（按类型拆分，无重复）', () => {
+    expect([...ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES]).toEqual(OBJECT_PRESET_NAMES);
+    expect([...ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES]).toEqual(ARRAY_PRESET_NAMES);
+    expect([...ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES]).toEqual(STRING_PRESET_NAMES);
+    expect([...ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES]).toEqual(BOOLEAN_PRESET_NAMES);
+    expect([...ST_EXTENSION_SETTINGS_PRESET_NAMESPACES]).toEqual(ALL_PRESET_NAMES);
+    expect(new Set(ALL_PRESET_NAMES).size, '21 个键不能有重复').toBe(21);
+    expect(ALL_PRESET_NAMES).toHaveLength(21);
+    expect(ST_EXTENSION_SETTINGS_PRESET_STRING_DEFAULTS).toEqual(STRING_DEFAULTS);
+  });
+
+  it('宿主常量与帧内 part-01.ts 的四份名单逐键、逐序相等', () => {
     const frameSrc = readFileSync(join(process.cwd(), FRAME_PART_01), 'utf8');
     expect(frameArray(frameSrc, 'ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT'))
       .toEqual([...ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES]);
     expect(frameArray(frameSrc, 'ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT'))
       .toEqual([...ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES]);
-    expect(OBJECT_PRESET_NAMES).toEqual([...ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES]);
-    expect(ARRAY_PRESET_NAMES).toEqual([...ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES]);
-    expect([...ST_EXTENSION_SETTINGS_PRESET_NAMESPACES]).toEqual([
-      ...OBJECT_PRESET_NAMES,
-      ...ARRAY_PRESET_NAMES,
-    ]);
+    expect(frameArray(frameSrc, 'ST_PLUGIN_PRESET_STRING_NAMESPACES_COMPAT'))
+      .toEqual([...ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES]);
+    expect(frameArray(frameSrc, 'ST_PLUGIN_PRESET_BOOLEAN_NAMESPACES_COMPAT'))
+      .toEqual([...ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES]);
   });
 
   it('帧内同样把 disabledExtensions / regex_presets 钉成数组（同一份契约的另外两个键）', () => {
@@ -261,5 +323,15 @@ describe('E2b-1 两份名单逐键、逐类型一致（帧内模板串不能 imp
     // 数组型命名空间必须用 [] 补，不许再走 {} 分支
     expect(frameSrc).toContain('window.extension_settings[key] = [];');
     expect(frameSrc).toContain('window.extension_settings[key] = {};');
+  });
+
+  it('帧内按类型赋值：字符串给 ST 默认值、布尔给 false（不只是键存在）', () => {
+    const frameSrc = readFileSync(join(process.cwd(), FRAME_PART_01), 'utf8');
+    expect(frameSrc).toContain(
+      "window.extension_settings[key] = key === 'apiUrl' ? 'http://localhost:5100' : '';",
+    );
+    expect(frameSrc).toContain('window.extension_settings[key] = false;');
+    expect(frameSrc).toContain('typeof window.extension_settings[key] === \'string\'');
+    expect(frameSrc).toContain('typeof window.extension_settings[key] === \'boolean\'');
   });
 });

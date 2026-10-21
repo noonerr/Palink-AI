@@ -25,7 +25,8 @@ const LEGACY_EXT_PREFIX = 'ext_settings_';
 const MIGRATION_FLAG = '__palink_ext_settings_migrated_v1';
 
 /**
- * ST 1.18.0 预置命名空间名单（批次E2，2026-10-21；批次E2b 按类型拆分）。
+ * ST 1.18.0 预置命名空间名单（批次E2，2026-10-21；批次E2b 按类型拆分；
+ * 批次D1 2026-10-21 补齐到 ST settings.json 的全部 21 个）。
  *
  * 为什么要有：ST 扩展的 init/loadSettings 直接读 extension_settings.<ns> 的子对象
  * （translate 的 Object.hasOwn(settings, ...)、memory 的 Object.keys(settings)），
@@ -36,7 +37,20 @@ const MIGRATION_FLAG = '__palink_ext_settings_migrated_v1';
  * ST 的 regex 扩展要求 extension_settings.regex 是**脚本数组**
  * （st-plugins/regex/engine.js:108 `return extension_settings.regex ?? []`，调用方
  * 直接 `.forEach`）。补成对象后真机报 `getScriptsByType(...).forEach is not a function`。
- * 故名单按类型拆分：四个扩展设置对象用 {}，regex 用 []。
+ * 故名单按类型拆分：对象 {}、数组 []、字符串 ''、布尔 false。
+ *
+ * ⚠️ 2026-10-21 批次D1：名单从 5 个扩到 21 个，键名与类型以 ST 1.18.0
+ * `default/content/settings.json` 的 `extension_settings` 为准：
+ *   - 对象 15：caption / cfg / chromadb / dice / expressions / memory / note /
+ *     objective / quickReply / randomizer / rvc / sd / speech_recognition /
+ *     translate / tts
+ *   - 数组 3：disabledExtensions / expressionOverrides / regex
+ *   - 字符串 2：apiKey / apiUrl
+ *   - 布尔 1：autoConnect
+ * 嵌套默认值**不搬**：ST 的 memory.prompt / sd.prompts / objective.customPrompts
+ * 是提示词正文，按版权边界只给空对象；插件自建嵌套字段时走自己的 loadSettings。
+ * quickReplyV2 不在 settings.json 的 21 键里（ST 的 quick-reply 扩展 init 时自建），
+ * 本名单不预置它，避免把非 ST 默认态写成契约。
  *
  * ⚠️ 这份名单在帧内还有一份（智能卡 runtime-body/part-01.ts 的
  * applyStPluginRuntimeConfigCompat，模板字符串里不能 import），两处必须逐键、逐类型一致；
@@ -44,19 +58,49 @@ const MIGRATION_FLAG = '__palink_ext_settings_migrated_v1';
  * 新增命名空间时**两边同改**，否则守卫红。
  */
 export const ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES = [
-  'quickReply',
-  'quickReplyV2',
-  'translate',
+  'caption',
+  'cfg',
+  'chromadb',
+  'dice',
+  'expressions',
   'memory',
+  'note',
+  'objective',
+  'quickReply',
+  'randomizer',
+  'rvc',
+  'sd',
+  'speech_recognition',
+  'translate',
+  'tts',
 ] as const;
 
-/** 数组型预置命名空间：regex 存的是正则脚本列表（engine.js getScriptsByType 直接返回）。 */
-export const ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES = ['regex'] as const;
+/** 数组型预置命名空间：regex 是正则脚本列表；expressionOverrides 是表达式覆盖列表；
+ *  disabledExtensions 是已禁用扩展名列表（regex 插件 init 首行就 includes）。 */
+export const ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES = [
+  'disabledExtensions',
+  'expressionOverrides',
+  'regex',
+] as const;
+
+/** 字符串型预置命名空间（ST 默认值见 ST_EXTENSION_SETTINGS_PRESET_STRING_DEFAULTS）。 */
+export const ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES = ['apiKey', 'apiUrl'] as const;
+
+/** 布尔型预置命名空间。 */
+export const ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES = ['autoConnect'] as const;
+
+/** 字符串型命名空间的 ST 1.18.0 默认值（apiUrl = ST Extras 默认地址）。 */
+export const ST_EXTENSION_SETTINGS_PRESET_STRING_DEFAULTS: Readonly<Record<string, string>> = {
+  apiKey: '',
+  apiUrl: 'http://localhost:5100',
+};
 
 /** 旧口径的合并名单（键名，不含类型）。保留给只关心「有哪些预置键」的调用方。 */
 export const ST_EXTENSION_SETTINGS_PRESET_NAMESPACES: readonly string[] = [
   ...ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES,
   ...ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES,
+  ...ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES,
+  ...ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES,
 ];
 
 /**
@@ -119,16 +163,19 @@ function loadFromStorage(): Record<string, any> {
 export const globalExtensionSettings: Record<string, any> = loadFromStorage();
 
 /**
- * 补齐 ST 预置命名空间与两个契约数组（批次E2，2026-10-21；E2b 按类型拆分）。
+ * 补齐 ST 预置命名空间与两个契约数组（批次E2，2026-10-21；E2b 按类型拆分；
+ * 批次D1 补齐到 21 个命名空间）。
  *
  * 只补「缺失 / 类型不符」的键；已有数据原样保留，绝不覆盖。
  * 只写名单内的键 —— 名单外的未知键仍由沙箱 Proxy 返回 undefined（ST 1.18.0 语义）。
  *
- * 类型规则：
- *   - quickReply / quickReplyV2 / translate / memory：普通对象 {}（扩展自建设置命名空间）；
- *   - regex：**数组** []（正则脚本列表）。非数组脏值（对象/字符串/null）归一为 []，
- *     原值备份到 localStorage[NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY] 并 console.warn，
- *     不静默丢弃。
+ * 类型规则（依次处理四类名单）：
+ *   - 对象：caption/cfg/chromadb/dice/expressions/memory/note/objective/quickReply/
+ *     randomizer/rvc/sd/speech_recognition/translate/tts → {}
+ *   - 数组：disabledExtensions/expressionOverrides/regex → []
+ *     （regex 非数组的脏值会备份原值并 console.warn，不静默丢弃）
+ *   - 字符串：apiKey/apiUrl → ST 默认值（'' / http://localhost:5100）
+ *   - 布尔：autoConnect → false
  *
  * 调用时机：宿主沙箱 createSandboxGlobal 里 migrateLegacyExtensionSettings() **之后**
  * （先迁移旧隔离存储，再补空壳，否则预置的空对象会把待迁移的同名命名空间挡掉）。
@@ -149,6 +196,18 @@ export function ensureStExtensionSettingsPresets(
     if (Array.isArray(current)) continue;
     if (current !== undefined && current !== null) preserveNormalizedPresetValue(key, current);
     target[key] = [];
+  }
+  for (const key of ST_EXTENSION_SETTINGS_PRESET_STRING_NAMESPACES) {
+    const current = target[key];
+    if (typeof current === 'string') continue;
+    if (current !== undefined && current !== null) preserveNormalizedPresetValue(key, current);
+    target[key] = ST_EXTENSION_SETTINGS_PRESET_STRING_DEFAULTS[key] ?? '';
+  }
+  for (const key of ST_EXTENSION_SETTINGS_PRESET_BOOLEAN_NAMESPACES) {
+    const current = target[key];
+    if (typeof current === 'boolean') continue;
+    if (current !== undefined && current !== null) preserveNormalizedPresetValue(key, current);
+    target[key] = false;
   }
   if (!Array.isArray(target.regex_presets)) target.regex_presets = [];
 }
