@@ -1,6 +1,6 @@
 # REPORT_批次小尾巴_CSS生成器与沙箱读写同域_2026-10-21
 
-> 状态：**部分完工，主脑已复验并提交；②③-A④ 三条只出证据未动手**。
+> 状态：**部分完工并已上线**（① generator、③-B4 读写同域已修且真机复验；②③-A④ 只出证据未动手）。
 > 由来：派给子 agent 的"小尾巴批次"四项（① bundled-plugin-css generator、
 > ② preset-session-source 实机验、③ 三处既有报错、④ style_removal 刷屏量化）。
 > 该 agent 撞 **150 轮上限**中断，交付形态是"半成品 + 零报告 + 工作区不绿"。
@@ -99,9 +99,39 @@ $ node scripts/gen-bundled-plugin-css.mjs     # 第二次
   全部门禁通过（rc=0）
 ```
 
-⚠️ **本条未上线**（不重建 dist）。上线后真机判据现成：同一张卡的控制台里
-`Could not find preset select element` 应从 11 次变 **0 次**，
-且 `[QR2] sets: []` 那类"保存不下来"另说（见 §3）。
+⚠️ ~~**本条未上线**~~ → **已上线并真机复验**（见 §2.5）。
+
+### 2.5 上线（第十次窗口）与真机判据
+
+```
+备份   _BACKUPS/2026-10-21_dist重建前_小尾巴B4上线/dist_before.tar.gz
+       （8988 文件，改前入口 index-B1gYRfbW.js）
+构建   VITE_OUT_DIR=dist_b4 node scripts/build-vite.mjs → ✓ built in 51.56s
+覆盖   cp -r dist_b4/. dist/（只增不删 8988 → 9110）→ gzip 3931
+产物判据（只能 grep 字面量）：
+  data-sandbox-created-container 在入口 chunk 里 改前 2 次 → 改后 **3 次**
+    （多出的一次就是 isInsidePluginWritableMount 的 hasAttribute 检查）
+  插件网络白名单 在 SettingsView chunk 仍 2 次（WU 没被这次重建挤掉）
+服务   curl :16000/ 入口 = index-DfHH7IYY.js
+```
+
+真机复跑（`.tmp_probe/b4_live.js`，会话 `b4_live1`，同一张卡、18s 等待、零生成不花钱）：
+
+```json
+{ "login": 200, "entryHash": "/assets/index-DfHH7IYY.js",
+  "totalErrKinds": 25,
+  "presetSelectErr": 0,        // ← 改前同一判据实测 11
+  "regexPresetAny": [],        // RegexPresetManager 一类报错整族消失
+  "qrSetsLines": 2,
+  "whitelistStillThere": null }
+```
+
+⇒ **上线前 11 次、上线后 0 次**，且错误种类 27 → 25。这条是真机闭环，不是单测外推。
+（`whitelistStillThere: null` 是因为这是**新开的浏览器会话**、localStorage 干净，
+不是 WU 回退 —— WU 的产物判据在同一个 dist 里已单独核过。）
+
+⇒ 但**快捷回复集仍保存不下来**：`[QR2] sets` 还在，`/api/quick-replies/save` 仍是 404，
+那是 §3 的 P2-15（后端缺端点），与本条是两个不同的洞，别混。
 
 ## 3. ③-A `/api/quick-replies/save` 404 —— 定性完成，**没动手**（需用户点头）
 
@@ -188,4 +218,4 @@ bash scripts/gate.sh frontend
 
 （用例数随并行会话增长，判据只认 `failed = 0`；本批净增 6 例 = B4 那份。）
 后端与文档门禁：本批**没有后端改动**；`docs/_CATALOG.md` 已随本文刷新并 `--check` OK。
-**未上线**：不重建 dist、不重建镜像（③-A/③-C 都在等用户点头，接通后的 B4 也攒到下一个上线窗口）。
+**上线状态**：③-B4 与 CSS 注释改动**已随第十次窗口上线并真机复验**（§2.5）；未重建后端镜像（③-A/③-C 两条在等用户点头）。
