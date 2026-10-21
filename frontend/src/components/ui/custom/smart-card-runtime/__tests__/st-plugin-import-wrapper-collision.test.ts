@@ -226,8 +226,10 @@ describe('ST 插件 import 变换 vs wrapper 参数表 撞名防御', () => {
     const body = runtimeBody();
     expect(body, 'SlashCommandCommonEnumsProvider 映射缺失（regex commonEnumProviders.boolean 会抛）')
       .toMatch(/match: \['slash-commands\/slashcommandcommonenumsprovider\.js'/);
-    // settings 子对象键名 ensure（translate/memory loadSettings 的前提）
-    expect(body, 'settings 子对象初始化缺失（Object.hasOwn(undefined) 会抛）').toMatch(/'quickReply', 'quickReplyV2', 'translate', 'memory', 'regex'/);
+    // settings 子对象键名 ensure（translate/memory loadSettings 的前提）。
+    // [批次E2b 2026-10-21] 名单按类型拆分：regex 必须是数组，不能混在对象名单里。
+    expect(body, 'settings 子对象初始化缺失（Object.hasOwn(undefined) 会抛）').toMatch(/'quickReply', 'quickReplyV2', 'translate', 'memory'\]/);
+    expect(body, 'regex 数组初始化缺失（getScriptsByType().forEach 会抛）').toMatch(/ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT = \['regex'\]/);
     expect(body, 'regex_presets 数组初始化缺失（.map 会抛）').toMatch(/\.regex_presets = \[\]/);
   });
 

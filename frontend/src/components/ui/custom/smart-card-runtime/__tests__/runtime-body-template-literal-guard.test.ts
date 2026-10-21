@@ -41,11 +41,15 @@ const PARTS = [
  * 而登记这一步就是人工复核的门。
  *   bootHeader / IDB_NS_RUNTIME_SOURCE / VARIABLES_COMPAT_SOURCE
  *   = runtimeBodyPartNN 的三个宿主实参（见 SillyTavernCompatRuntime.ts 的拼装处）。
+ *   JSON.stringify(BUNDLED_ST_PLUGIN_CSS)
+ *   = [批次E2b 2026-10-21] 构建期插件 CSS 表（debugger.css 内联用），
+ *     内容来自 bundled-plugin-css.generated.ts，不是运行时用户数据。
  */
 const ALLOWED_INTERPOLATIONS = [
   DOLLAR + '{bootHeader}',
   DOLLAR + '{IDB_NS_RUNTIME_SOURCE}',
   DOLLAR + '{VARIABLES_COMPAT_SOURCE}',
+  DOLLAR + '{JSON.stringify(BUNDLED_ST_PLUGIN_CSS)}',
 ];
 
 /** 正则字母：紧跟在反斜杠后面时，反斜杠一旦被模板求值吞掉，正则就换了含义。 */

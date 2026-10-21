@@ -25,25 +25,74 @@ const LEGACY_EXT_PREFIX = 'ext_settings_';
 const MIGRATION_FLAG = '__palink_ext_settings_migrated_v1';
 
 /**
- * ST 1.18.0 预置命名空间名单（批次E2，2026-10-21）。
+ * ST 1.18.0 预置命名空间名单（批次E2，2026-10-21；批次E2b 按类型拆分）。
  *
  * 为什么要有：ST 扩展的 init/loadSettings 直接读 extension_settings.<ns> 的子对象
  * （translate 的 Object.hasOwn(settings, ...)、memory 的 Object.keys(settings)），
  * 不先判空；宿主 extension_settings 里没有这个键时它们拿到 undefined 直接抛
  * TypeError，插件 init 整条死掉（真机：Chat Translation / Memory）。
  *
+ * ⚠️ 2026-10-21 批次E2b：E2 把五个命名空间**一律**补成 {}，其中 regex 被补坏 ——
+ * ST 的 regex 扩展要求 extension_settings.regex 是**脚本数组**
+ * （st-plugins/regex/engine.js:108 `return extension_settings.regex ?? []`，调用方
+ * 直接 `.forEach`）。补成对象后真机报 `getScriptsByType(...).forEach is not a function`。
+ * 故名单按类型拆分：四个扩展设置对象用 {}，regex 用 []。
+ *
  * ⚠️ 这份名单在帧内还有一份（智能卡 runtime-body/part-01.ts 的
- * applyStPluginRuntimeConfigCompat，模板字符串里不能 import），两处必须逐键一致；
+ * applyStPluginRuntimeConfigCompat，模板字符串里不能 import），两处必须逐键、逐类型一致；
  * 守卫测试 extension-settings-preset-namespaces.test.ts 断言两份相等。
  * 新增命名空间时**两边同改**，否则守卫红。
  */
-export const ST_EXTENSION_SETTINGS_PRESET_NAMESPACES = [
+export const ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES = [
   'quickReply',
   'quickReplyV2',
   'translate',
   'memory',
-  'regex',
 ] as const;
+
+/** 数组型预置命名空间：regex 存的是正则脚本列表（engine.js getScriptsByType 直接返回）。 */
+export const ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES = ['regex'] as const;
+
+/** 旧口径的合并名单（键名，不含类型）。保留给只关心「有哪些预置键」的调用方。 */
+export const ST_EXTENSION_SETTINGS_PRESET_NAMESPACES: readonly string[] = [
+  ...ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES,
+  ...ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES,
+];
+
+/**
+ * 被归一掉的原值备份键（localStorage）。
+ *
+ * 为什么选 localStorage 而不是塞回 extension_settings：后者对插件可见，
+ * `Object.keys(extension_settings)` 的消费方会看到一条假命名空间；而备份是给排障人看的，
+ * 不该参与插件语义。localStorage 与 extension_settings 持久化同一环境，刷新后仍可查。
+ */
+export const NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY =
+  '__palink_extension_settings_normalized_backup';
+
+/** 记录一次「脏形状被归一」：原值落 localStorage，并在 console 明确点名，不静默丢弃。 */
+function preserveNormalizedPresetValue(key: string, original: unknown): void {
+  try {
+    const raw = localStorage.getItem(NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const bucket = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    (bucket as Record<string, unknown>)[key] = {
+      original,
+      originalType: Array.isArray(original) ? 'array' : typeof original,
+      normalizedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY, JSON.stringify(bucket));
+  } catch {
+    // localStorage 不可用/写满时仍走下面的 console.warn，保证至少不静默
+  }
+  try {
+    console.warn(
+      `[extension-settings-store] extension_settings.${key} 形状不符合 ST 契约，已归一；` +
+      `原值备份在 localStorage['${NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY}'].${key}`,
+    );
+  } catch {
+    // ignore
+  }
+}
 
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -70,10 +119,16 @@ function loadFromStorage(): Record<string, any> {
 export const globalExtensionSettings: Record<string, any> = loadFromStorage();
 
 /**
- * 补齐 ST 预置命名空间与两个契约数组（批次E2）。
+ * 补齐 ST 预置命名空间与两个契约数组（批次E2，2026-10-21；E2b 按类型拆分）。
  *
- * 只补「缺失 / 不是对象 / 该是数组却不是数组」的键；已有数据原样保留，绝不覆盖。
+ * 只补「缺失 / 类型不符」的键；已有数据原样保留，绝不覆盖。
  * 只写名单内的键 —— 名单外的未知键仍由沙箱 Proxy 返回 undefined（ST 1.18.0 语义）。
+ *
+ * 类型规则：
+ *   - quickReply / quickReplyV2 / translate / memory：普通对象 {}（扩展自建设置命名空间）；
+ *   - regex：**数组** []（正则脚本列表）。非数组脏值（对象/字符串/null）归一为 []，
+ *     原值备份到 localStorage[NORMALIZED_EXTENSION_SETTINGS_BACKUP_KEY] 并 console.warn，
+ *     不静默丢弃。
  *
  * 调用时机：宿主沙箱 createSandboxGlobal 里 migrateLegacyExtensionSettings() **之后**
  * （先迁移旧隔离存储，再补空壳，否则预置的空对象会把待迁移的同名命名空间挡掉）。
@@ -82,9 +137,18 @@ export function ensureStExtensionSettingsPresets(
   target: Record<string, any> = globalExtensionSettings,
 ): void {
   if (!Array.isArray(target.disabledExtensions)) target.disabledExtensions = [];
-  for (const key of ST_EXTENSION_SETTINGS_PRESET_NAMESPACES) {
+  for (const key of ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES) {
     const current = target[key];
-    if (!current || typeof current !== 'object' || Array.isArray(current)) target[key] = {};
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      if (current !== undefined && current !== null) preserveNormalizedPresetValue(key, current);
+      target[key] = {};
+    }
+  }
+  for (const key of ST_EXTENSION_SETTINGS_PRESET_ARRAY_NAMESPACES) {
+    const current = target[key];
+    if (Array.isArray(current)) continue;
+    if (current !== undefined && current !== null) preserveNormalizedPresetValue(key, current);
+    target[key] = [];
   }
   if (!Array.isArray(target.regex_presets)) target.regex_presets = [];
 }

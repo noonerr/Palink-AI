@@ -8,6 +8,9 @@ import type { PluginContextWithHooks } from './context';
 import { PluginStatus } from './types';
 import { promptInjection } from '@/services/prompt-injection';
 import { substituteParamsExtended } from '@/lib/sillytavern/macros';
+// [批次E2b 2026-10-21] macros/macro-system.js 的真实现：把插件注册的宏接进
+// substituteParamsExtended 同一张宏注册表（此前是空对象，macros.register not a function）。
+import { MacroRegistry, MacroCategory } from '@/lib/macro-engine';
 import { popupManager, PopupType, PopupResult } from '@/lib/popup-system';
 import DOMPurify from 'dompurify';
 import {
@@ -41,6 +44,9 @@ import {
   migrateLegacyExtensionSettings,
   ensureStExtensionSettingsPresets,
 } from '../sillytavern/extension-settings-store';
+// [批次E2b 2026-10-21] 插件 CSS 的相对 @import 内联（debugger.css 在插件资产里不存在，
+// 改 URL 已被实机否证；内容来自构建期生成的 bundled-plugin-css.generated.ts）。
+import { inlineBundledStPluginCssImports } from '../sillytavern/bundled-plugin-css';
 // ST 兼容库：真实库注入沙箱，使依赖 jQuery/Handlebars/toastr/select2/marked 的插件可用
 import jQuery from 'jquery';
 import Handlebars from 'handlebars';
@@ -219,12 +225,18 @@ function sanitizeHtml(html: string): string {
  * @import/@charset/@namespace、url() 中的 javascript:/data:（data:image/* 保留）、
  * expression()/-moz-binding/behavior（旧式代码执行）、内嵌 script 标签。
  * 不改变插件常规样式（选择器/属性/值），仅移除危险片段。
+ *
+ * [批次E2b 2026-10-21] 消毒前先把能解析到构建期资源的相对 @import 内联
+ * （目前是 regex 插件的 debugger.css）。此前 @import 一律剥掉，宿主轨的
+ * debugger 面板样式静默丢失；而帧内轨改 URL 又因子文件不存在被实机否证。
+ * pluginHint 由 injectPluginCSS 传入插件名，用于查 BUNDLED_ST_PLUGIN_CSS。
  */
-export function sanitizePluginCss(css: string): string {
+export function sanitizePluginCss(css: string, pluginHint = ''): string {
   const input = String(css || '');
   try {
-    let s = input;
-    // @import/@charset/@namespace：可加载外部资源或改变解析上下文
+    let s = pluginHint ? inlineBundledStPluginCssImports(input, pluginHint) : input;
+    // @import/@charset/@namespace：可加载外部资源或改变解析上下文。
+    // 能内联的已在上面替换掉；剩下的外链/无法解析项仍按原安全口径剥离。
     s = s.replace(/@import\b[^;]*;?/gi, '');
     s = s.replace(/@charset\b[^;]*;?/gi, '');
     s = s.replace(/@namespace\b[^;]*;?/gi, '');
@@ -5397,23 +5409,37 @@ export class PluginSandbox {
 
       // macros/macro-system.js
       // N16 修复（批次 F）: MacroCategory 对齐 ST macros/macro-system.js 全枚举
-      'macros/macro-system.js': {
-        macros: {},
-        MacroCategory: {
-          GLOBAL: 'global',
-          CHARACTER: 'character',
-          CHAT: 'chat',
-          PERSONA: 'persona',
-          STATE: 'state',
-          TIME: 'time',
-          VARIABLE: 'variable',
-          INSTRUCT: 'instruct',
-          LOGIC: 'logic',
-          LEGACY: 'legacy',
-          CONSTANT: 'constant',
-          CUSTOM: 'custom',
-        },
-      },
+      // [批次E2b 2026-10-21] 此前 macros 是空对象 → 真机 `macros.register is not a function`
+      // （Summarize init；memory/stable-diffusion 的新宏引擎分支都走 macros.register）。
+      // 按实际调用面实现：register(name, { category, description, handler }) /
+      // unregister / registerAlias / registry（真 MacroRegistry）。注册进同一张
+      // MacroRegistry ⇒ 真的参与 substituteParamsExtended 求值，不是假接通。
+      // MacroCategory 用真枚举（旧 shim 的 GLOBAL/PERSONA/INSTRUCT 等键在 ST 1.18 不存在，
+      // stable-diffusion 用的 PROMPTS 反而缺失）。
+      'macros/macro-system.js': (() => {
+        const registeredMacroNames = new Set<string>();
+        const macrosCompat = {
+          registry: MacroRegistry,
+          category: MacroCategory,
+          register: (name: string, options: any) => {
+            const definition = MacroRegistry.registerMacro(name, options);
+            if (definition) registeredMacroNames.add(name);
+            return definition;
+          },
+          unregister: (name: string) => {
+            registeredMacroNames.delete(name);
+            return MacroRegistry.unregisterMacro(name);
+          },
+          registerAlias: (targetName: string, aliasName: string, options?: { visible?: boolean }) =>
+            MacroRegistry.registerMacroAlias(targetName, aliasName, options),
+        };
+        // 插件卸载时撤回它注册的宏，避免重载后旧 handler 残留。
+        this.registerCleanup(pluginId, () => {
+          registeredMacroNames.forEach((name) => MacroRegistry.unregisterMacro(name));
+          registeredMacroNames.clear();
+        });
+        return { macros: macrosCompat, MacroCategory };
+      })(),
 
       // shared.js (extensions/shared.js)
       // P-6: ConnectionManagerRequestService（connection-manager 顶层 import，缺失 → TypeError）
@@ -5628,7 +5654,8 @@ export class PluginSandbox {
     const styleEl = document.createElement('style');
     styleEl.setAttribute('data-plugin-id', pluginId);
     // S-1: CSS 消毒（移除 @import/javascript:url/expression 等危险构造）
-    styleEl.textContent = sanitizePluginCss(css);
+    // [批次E2b] 传入插件名，让构建期已有的 debugger.css 先内联再消毒。
+    styleEl.textContent = sanitizePluginCss(css, pluginId);
     document.head.appendChild(styleEl);
 
     this.injectedStyles.set(pluginId, styleEl);

@@ -12,6 +12,7 @@
  */
 
 import { IDB_NS_RUNTIME_SOURCE } from '../../../../../lib/sillytavern/card-idb-namespace';
+import { BUNDLED_ST_PLUGIN_CSS } from '../../../../../lib/sillytavern/bundled-plugin-css';
 
 export function runtimeBodyPart01(bootHeader: string): string {
   return `(() => {
@@ -748,9 +749,37 @@ ${IDB_NS_RUNTIME_SOURCE}
     // Object.hasOwn(undefined) / memory loadSettings 的 Object.keys(undefined) 全抛。
     // 键名 = 各扩展实际读取的 extension_settings.<key>（见 st-plugins 各 index.js loadSettings），
     // 新增扩展时按同名单补。regex_presets 是数组型（305 行有 .map）。
-    ['quickReply', 'quickReplyV2', 'translate', 'memory', 'regex'].forEach((key) => {
+    // [批次E2b 2026-10-21] E2 曾把五个命名空间一律补成 {}，其中 regex 被补坏：
+    // st-plugins/regex/engine.js getScriptsByType 对 GLOBAL 返回
+    // extension_settings.regex ?? []，调用方 loadRegexScripts 直接 .forEach =>
+    // 对象上 forEach 不是函数（真机 getScriptsByType(...).forEach is not a function）。
+    // 故按类型补：四个设置命名空间用 {}，regex 用 []。
+    const ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT = ['quickReply', 'quickReplyV2', 'translate', 'memory'];
+    const ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT = ['regex'];
+    ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT.forEach((key) => {
       const current = window.extension_settings[key];
       if (!current || typeof current !== 'object' || Array.isArray(current)) window.extension_settings[key] = {};
+    });
+    ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT.forEach((key) => {
+      const current = window.extension_settings[key];
+      if (Array.isArray(current)) return;
+      if (current !== undefined && current !== null) {
+        // 脏值不静默丢：留一份内存快照 + 一条 info 诊断（宿主 toast 闸门只放行非 info）。
+        // 快照放 window 而不是 extension_settings，避免 Object.keys 的消费方看见假命名空间。
+        window.__palinkExtensionSettingsNormalized =
+          window.__palinkExtensionSettingsNormalized && typeof window.__palinkExtensionSettingsNormalized === 'object'
+            ? window.__palinkExtensionSettingsNormalized
+            : {};
+        window.__palinkExtensionSettingsNormalized[key] = { value: current, normalizedAt: Date.now() };
+        reportDiagnostic({
+          severity: 'info',
+          code: 'st_extension_settings_preset_normalized',
+          apiName: key,
+          message: 'extension_settings.' + key + ' 不是数组，已归一为 []（regex 插件要求脚本数组）',
+          detail: '原值已存 window.__palinkExtensionSettingsNormalized["' + key + '"]，type=' + (current === null ? 'null' : typeof current),
+        });
+      }
+      window.extension_settings[key] = [];
     });
     if (!Array.isArray(window.extension_settings.regex_presets)) window.extension_settings.regex_presets = [];
     const runtimeConfig = ctx.stPluginRuntimeConfig && typeof ctx.stPluginRuntimeConfig === 'object'
@@ -975,23 +1004,61 @@ ${IDB_NS_RUNTIME_SOURCE}
     return found ? { plugin, resource: found } : null;
   };
   const stLocalModuleCacheCompat = new Map();
-  // [批次E2 2026-10-21] @import 也要重写：st-plugins/regex/style.css 首行是
-  // @import "debugger.css"。此前只重写 url()，@import 的相对路径按帧文档 base
-  // （继承父页 /characters/<cid>）解析 → GET /characters/debugger.css → nginx SPA
-  // fallback 返回 text/html → strict MIME 拒绝（批次Q1 放开 same-origin 后每轮 14 条）。
-  // 与 url() 同源解析：相对路径改指插件资产端点（后端 resources.assets 已收 debugger.css，
-  // /api/plugins/<id>/asset/... 返回 text/css）；外链/data:/blob:/根路径原样保留。
-  // 重写后仍是 @import 且位于样式表首部，后面的 url() 规则不会二次改写绝对路径。
+  // [批次E2b 2026-10-21] debugger.css 的 @import：E2 方案是把相对路径改写成
+  // /api/plugins/<id>/asset/debugger.css，但实机否证 —— 该插件 source_data 里没有
+  // debugger.css，资产端点 404 text/html，浏览器仍报 MIME。目标文件不在可服务位置时，
+  // 改形式没有意义。现改为：构建期把仓内 st-plugins/regex/debugger.css 生成为字符串
+  // 模块（lib/sillytavern/bundled-plugin-css.generated.ts），注入插件 CSS 时把能解析到的
+  // 相对 @import 直接内联进 <style>。解析不到的相对 @import 剥掉并报 info 诊断
+  // （不静默消音）；外链/data:/blob:/根路径 @import 原样保留，不越权改写。
+  const PALINK_BUNDLED_ST_PLUGIN_CSS_COMPAT = ${JSON.stringify(BUNDLED_ST_PLUGIN_CSS)};
+  const getStPluginCssBundleHintsCompat = (plugin) => [
+    plugin?.name,
+    plugin?.manifest?.name,
+    plugin?.runtime?.namespace,
+  ].filter(Boolean).map((value) => String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, '-'));
+  const getBundledStPluginCssCompat = (plugin, assetPath) => {
+    const normalizedPath = normalizeStPluginPathCompat(assetPath).toLowerCase();
+    const hints = getStPluginCssBundleHintsCompat(plugin);
+    for (let i = 0; i < hints.length; i += 1) {
+      const key = hints[i] + '/' + normalizedPath;
+      if (typeof PALINK_BUNDLED_ST_PLUGIN_CSS_COMPAT[key] === 'string') return PALINK_BUNDLED_ST_PLUGIN_CSS_COMPAT[key];
+    }
+    return '';
+  };
+  const wrapStPluginInlinedCssCompat = (content, conditions) => {
+    const tail = String(conditions || '').trim().replace(/;$/, '').trim();
+    if (!tail) return content;
+    const layerMatch = tail.match(/^layer\\(\\s*([^)]*)\\s*\\)$/i);
+    if (layerMatch) {
+      const layerName = String(layerMatch[1] || '').trim();
+      return '@layer' + (layerName ? ' ' + layerName : '') + ' {\\n' + content + '\\n}';
+    }
+    return '@media ' + tail + ' {\\n' + content + '\\n}';
+  };
+  const inlineStPluginCssImportCompat = (plugin, rawValue, conditions, basePath) => {
+    const value = String(rawValue || '').trim();
+    if (!value || /^(?:data:|blob:|https?:|\\/\\/|\\/|#)/i.test(value)) return null;
+    const resolved = resolveStPluginAssetPathCompat(plugin, value, basePath);
+    const content = getBundledStPluginCssCompat(plugin, resolved);
+    if (content) return wrapStPluginInlinedCssCompat(content, conditions);
+    reportDiagnostic({
+      severity: 'info',
+      code: 'st_plugin_css_import_unresolved',
+      apiName: resolved,
+      message: '插件 CSS @import 的目标不在构建期资源表，已剥离以避免 strict MIME 报错',
+      detail: String(plugin?.name || plugin?.id || '') + ': ' + resolved,
+    });
+    return '/* [palink] removed unresolved @import: ' + resolved + ' */';
+  };
   const rewriteStPluginCssUrlsCompat = (css, plugin, basePath = '') => String(css || '')
-    .replace(/@import\\s+url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)/gi, (match, quote, raw) => {
-      const value = String(raw || '').trim();
-      if (!value || /^(?:data:|blob:|https?:|\\/\\/|\\/|#)/i.test(value)) return match;
-      return '@import url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
+    .replace(/@import\\s+url\\(\\s*(['"]?)([^'")]+)\\1\\s*\\)\\s*([^;]*);?/gi, (match, quote, raw, conditions) => {
+      const inlined = inlineStPluginCssImportCompat(plugin, raw, conditions, basePath);
+      return inlined === null ? match : inlined;
     })
-    .replace(/@import\\s+(['"])([^'"]+)\\1/gi, (match, quote, raw) => {
-      const value = String(raw || '').trim();
-      if (!value || /^(?:data:|blob:|https?:|\\/\\/|\\/|#)/i.test(value)) return match;
-      return '@import url("' + stPluginAssetUrlCompat(plugin?.id, resolveStPluginAssetPathCompat(plugin, value, basePath)) + '")';
+    .replace(/@import\\s+(['"])([^'"]+)\\1\\s*([^;]*);?/gi, (match, quote, raw, conditions) => {
+      const inlined = inlineStPluginCssImportCompat(plugin, raw, conditions, basePath);
+      return inlined === null ? match : inlined;
     })
     .replace(/url\\(\\s*(['"]?)([^)'"]+)\\1\\s*\\)/gi, (match, quote, url) => {
       const value = String(url || '').trim();
