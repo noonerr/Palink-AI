@@ -138,9 +138,21 @@ export async function runPalinkSlashCommands(
       const floorId = Number(branchCreateMatch[1]);
       const branchName = branchCreateMatch[2] ? String(branchCreateMatch[2]).trim() : undefined;
       const anchor = await resolveAnchor(floorId);
-      const payload: any = { session_id: sessionId, same_level: false };
-      if (anchor?.branchId) payload.parent_branch_id = anchor.branchId;
-      if (anchor?.messageId) payload.parent_message_id = anchor.messageId;
+      // [MS-3 2026-10-22] 取不到该楼层的锚点 ⇒ **不建分支**。
+      // 旧行为是照建不误，只是 `parent_branch_id/parent_message_id` 双双为空 ——
+      // 库里 32 行分支父指针全空就是这么来的：这条新故事线从此"不知道自己从第几楼分出去"，
+      // 变量取值只能把它当从零开始的新故事（见
+      // docs/_active/report/REPORT_变量清理与故事线回跳_取证_2026-10-22.md §3 病因 3、§9 缺口 1）。
+      // 宁可不执行，也不要造一条谱系丢失的分支。
+      if (!anchor?.branchId || anchor?.messageId == null) {
+        return `未找到第 ${floorId} 条消息的位置，未创建分支`;
+      }
+      const payload: any = {
+        session_id: sessionId,
+        same_level: false,
+        parent_branch_id: anchor.branchId,
+        parent_message_id: anchor.messageId,
+      };
       if (branchName) payload.branch_name = branchName;
       await api.post(`/api/character-sessions/${sessionId}/branches`, payload);
       window.dispatchEvent(new CustomEvent('palink:switchBranch', { detail: { sessionId } }));
