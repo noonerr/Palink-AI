@@ -103,6 +103,19 @@
   5. **[P2] quick-reply 未通** —— `SettingsUi.render()` 内 iframe 侧 `Failed to fetch`；即便修好其 UI 也落在离屏容器（见第 1 条）。用户 2026-10-16 再次确认口径 c：维持阻塞，投入不值。
   6. ✅ **[已关闭] `triggerSlash` 返回值复验** —— 大堂 `sillyTavernPluginRuntime.ts:711` 的 `String(result)` 实产 `"[object Object]"`（bug）；该文件已于 S5 整文件删除（`f5c1a86`），bug 对象不存在；新共享实现本就取 `result.output`，e2e B 组 9 命令实跑返回值形状全部正确。
   7. **5 个测试插件：保留**（用户 2026-10-15 拍板；作后续适配复测靶子，删除路径见 `REPORT_s3-acceptance-gap_2026-10-14.md` §2.4）。e2e A 组复测确认 init 4/5 + 7 条斜杠命令与基线一致。
+     > ⚠️ **订正（2026-10-22，老板裁定覆盖上面这条 10-15 决定）**：**8 个插件已全部删除，只留酒馆助手**。
+     > 新规矩：**今后插件复测一律用真实第三方插件按需重新导入**（`POST /api/plugins/import-url`），
+     > 不再长期囤测试插件；例外只有一种——为验证"某接口/键位缺失"才临时造插件。
+     > 删除名册（`GET /api/plugins` 实测）：Smart Memory `3bdb0b2a…` / ComfyInject `0108b6a2…` /
+     > Kimi Thinking Prefill `e7f62410…` / Regex `db0c6324…` / Summarize `ffb782eb…` /
+     > Token Counter `6a8725df…` / Chat Translation `ff625696…` / Quick Replies `228185ea…`；
+     > 保留 酒馆助手 `eb1d50e9-9f19-43ea-a362-75e4266b4991`（2 条脚本 / 4.28MB，`enabled=true`）。
+     > 后果如实记：**上面那句 "init 4/5 + 7 条斜杠命令" 的 e2e 基线随之作废**（载具没了，不是回归）；
+     > `[P2-14]` 验收① 由"等 Smart Memory 打开"改为"等重新导入"；卡片里的快捷回复/正则扩展/摘要/翻译/
+     > token 计数五个**扩展功能面板同时消失**（第一方正则引擎与 `st-plugins/` 目录不受影响，⛔ 那是红线）。
+     > 库侧实况：`plugin_scripts` 走**真外键** `ON DELETE CASCADE` 自动清（`confdeltype=c`，
+     > 曾有误记称"库里没外键"，实测否证）；`character_plugin_state` 无外键，10 行孤儿已显式清掉，现 24 行全属酒馆助手。
+     > 回退：`_BACKUPS/2026-10-22_插件清理前DB快照/plugins_three_tables.sql`（7,315,642 B）。
   （消息窗口化不在此列，已另有独立条目。）
 
 ### [未开工·建议] 消息窗口化（抄 ST 的 `chat_truncation`）—— 长会话劣化的根治方案

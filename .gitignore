@@ -339,3 +339,6 @@ _reference/
 
 # 真机探针临时目录（playwright 脚本 + 截图），不入库
 .tmp_probe/
+
+# 审计 agent 的临时取证目录（只读探针脚本 + dump），审计报告自述"不入库"
+.tmp_audit/
