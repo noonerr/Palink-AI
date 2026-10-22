@@ -27,6 +27,7 @@ from fastapi import HTTPException
 
 from ..memory_module.service import MemoryService
 from ..memory_module.config import memory_config as _memory_config
+from ..core.silent_failure import record as _record_silent_failure
 from ..models import Character, GroupChat, GroupChatSession, CharacterChatSession, User, UserSetting, ContextTemplate, Persona, InstructTemplate, PromptPreset
 from ..models.character import CharacterChatMessage
 from .inference_dispatcher import complete_text_completion
@@ -5027,14 +5028,31 @@ def _append_worldbook_context(
         nested.commit()
     except Exception as exc:
         logger.warning("World book context injection failed: %s", exc)
+        # [SILENT-FAIL 2026-10-22] 世界书整段没注入是最难查的一类：卡"不认设定"，
+        # 而日志里只有一行没有 request_id 的 WARNING。
+        _record_silent_failure(
+            "prompt_assembly.worldbook",
+            exc,
+            session_id=getattr(req, "session_id", None),
+            character_id=getattr(getattr(req, "char", None), "id", None),
+        )
         if nested is not None:
             try:
                 nested.rollback()
-            except Exception:
+            except Exception as _rb_exc:
+                _record_silent_failure(
+                    "prompt_assembly.worldbook.savepoint_rollback",
+                    _rb_exc,
+                    session_id=getattr(req, "session_id", None),
+                )
                 try:
                     req.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _outer_exc:
+                    _record_silent_failure(
+                        "prompt_assembly.worldbook.session_rollback",
+                        _outer_exc,
+                        session_id=getattr(req, "session_id", None),
+                    )
         report.append(PromptAssemblyReportItem("worldbook", "error", str(exc)))
 
 
@@ -5068,14 +5086,29 @@ def _append_plotline_context(
         nested.commit()
     except Exception as exc:
         logger.warning("Plot line context injection failed: %s", exc)
+        # [SILENT-FAIL 2026-10-22] 剧情线整段没进提示词，用户只会觉得"AI 不按剧情走"。
+        _record_silent_failure(
+            "prompt_assembly.plotline",
+            exc,
+            session_id=getattr(req, "session_id", None),
+        )
         if nested is not None:
             try:
                 nested.rollback()
-            except Exception:
+            except Exception as _rb_exc:
+                _record_silent_failure(
+                    "prompt_assembly.plotline.savepoint_rollback",
+                    _rb_exc,
+                    session_id=getattr(req, "session_id", None),
+                )
                 try:
                     req.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _outer_exc:
+                    _record_silent_failure(
+                        "prompt_assembly.plotline.session_rollback",
+                        _outer_exc,
+                        session_id=getattr(req, "session_id", None),
+                    )
         report.append(PromptAssemblyReportItem("plotline", "error", str(exc)))
 
 
@@ -5111,8 +5144,15 @@ def _st_vector_data_active(db, user_id: int) -> bool:
             {"user_id": user_id},
         ).first()
         active = row is not None
-    except Exception:
-        # 探测失败不阻塞正常记忆流程
+    except Exception as _vec_probe_exc:
+        # 探测失败不阻塞正常记忆流程 —— 但**必须留记录**：探测失败 = 判定为"没在用
+        # ST 向量插件" ⇒ Palink 记忆照常注入 ⇒ 双记忆系统同时注入、内容重复。
+        # 这条以前静默，用户只会看到"记忆里出现两遍同样的内容"。
+        _record_silent_failure(
+            "prompt_assembly.st_vector_yield_probe",
+            _vec_probe_exc,
+            user_id=user_id,
+        )
         active = False
     _ST_VEC_YIELD_CACHE[user_id] = (now, active)
     return active
@@ -5668,13 +5708,25 @@ async def _append_memory_context(
         if _card_probe is not None:
             try:
                 _card_probe.rollback()
-            except Exception:
+            except Exception as _rb_exc:
                 # SAVEPOINT 回滚失败（极小概率叠加）：外层回滚兜底保 session 干净——
                 # 装配路径无未提交写（消息 persist 已在装配前 commit）
+                # [SILENT-FAIL 2026-10-22] 此处曾静默 pass。两级回滚都失败意味着
+                # **事务状态未知**，后续查询会报 "This transaction is closed" 一类
+                # 无从归因的错。必须留下记录（带 request_id）。
+                _record_silent_failure(
+                    "prompt_assembly.memory_entity_card.savepoint_rollback",
+                    _rb_exc,
+                    session_id=getattr(req, "session_id", None),
+                )
                 try:
                     req.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _outer_exc:
+                    _record_silent_failure(
+                        "prompt_assembly.memory_entity_card.session_rollback",
+                        _outer_exc,
+                        session_id=getattr(req, "session_id", None),
+                    )
         logger.debug("memory entity card injection failed: %s", _card_exc)
         report.append(
             PromptAssemblyReportItem("memory_entity_card", "skipped", str(_card_exc)[:80])
@@ -5735,11 +5787,21 @@ async def _append_memory_context(
             if _gate_probe is not None:
                 try:
                     _gate_probe.rollback()
-                except Exception:
+                except Exception as _rb_exc:
+                    # [SILENT-FAIL 2026-10-22] 同上：两级回滚都失败必须留记录。
+                    _record_silent_failure(
+                        "prompt_assembly.memory_gate.savepoint_rollback",
+                        _rb_exc,
+                        session_id=getattr(req, "session_id", None),
+                    )
                     try:
                         req.db.rollback()
-                    except Exception:
-                        pass
+                    except Exception as _outer_exc:
+                        _record_silent_failure(
+                            "prompt_assembly.memory_gate.session_rollback",
+                            _outer_exc,
+                            session_id=getattr(req, "session_id", None),
+                        )
             logger.debug("memory gate history estimate failed: %s", _gate_err)
         if _hist_chars >= 0:
             _injected_tokens = sum(_estimate_tokens(_p) for _p in dynamic_context_parts)
@@ -5874,14 +5936,31 @@ async def _append_memory_context(
         nested.commit()
     except Exception as exc:
         logger.warning("Memory context retrieval failed: %s", exc)
+        # [SILENT-FAIL 2026-10-22] 这条 WARNING 没有 request_id，用户报"这次回复不记得
+        # 之前的事"时无法对到具体请求。补一条带 request_id 的结构化记录。
+        _record_silent_failure(
+            "prompt_assembly.memory_context",
+            exc,
+            session_id=getattr(req, "session_id", None),
+            memory_mode=locals().get("memory_mode"),
+        )
         if nested is not None:
             try:
                 nested.rollback()
-            except Exception:
+            except Exception as _rb_exc:
+                _record_silent_failure(
+                    "prompt_assembly.memory.savepoint_rollback",
+                    _rb_exc,
+                    session_id=getattr(req, "session_id", None),
+                )
                 try:
                     req.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _outer_exc:
+                    _record_silent_failure(
+                        "prompt_assembly.memory.session_rollback",
+                        _outer_exc,
+                        session_id=getattr(req, "session_id", None),
+                    )
         report.append(PromptAssemblyReportItem("memory", "error", str(exc)))
 
 

@@ -30,6 +30,10 @@ from .api.dependencies import (
 )
 from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
+from .core.silent_failure import (
+    bind_request_id as bind_silent_failure_request_id,
+    reset_request_id as reset_silent_failure_request_id,
+)
 
 # S-8 修复: 启用日志脱敏组件（替换裸 basicConfig）。setup_sanitized_logging
 # 挂载 SanitizingFormatter，自动对 JWT/密钥/手机号/邮箱/身份证等敏感信息
@@ -606,7 +610,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 async def request_id_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:16])
     request.state.request_id = request_id
-    response = await call_next(request)
+    # [SILENT-FAIL 2026-10-22] 把 request_id 绑进 contextvar，让
+    # `app.core.silent_failure.record()` 写出的每条记录都带得上它 ——
+    # 用户报错时手里的 request_id 与容器日志里的静默失败记录可直接对上。
+    _silent_failure_token = bind_silent_failure_request_id(request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        reset_silent_failure_request_id(_silent_failure_token)
     response.headers["X-Request-ID"] = request_id
     return response
 
@@ -617,6 +628,41 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/api/diagnostics/silent-failures")
+async def silent_failures_diagnostics(
+    user: User = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """[SILENT-FAIL 2026-10-22] 读取进程内的静默失败账本。
+
+    背景：本仓 `backend/app` 里 549 处 `except` 分支曾「吞掉异常且不留记录」
+    （审计基线，见 `tests/silent_failure_baseline.json`），用户侧表现是
+    「点了没反应」，日志里一行都没有。
+
+    这个端点把 `app.core.silent_failure` 记下的计数与最近样本吐出来，
+    让「刚才那次失败到底吞了什么」不必翻容器日志就能查到。
+    `request_id` 与用户看到的错误响应里的那个是同一个。
+
+    ⚠️ 账本是**进程内**的：重启即清零；多 worker 时每个 worker 各有一份
+    （响应里的 `worker_pid` 用来说明你看的是哪个进程）。
+    """
+    from .core.silent_failure import snapshot
+
+    snap = snapshot()
+    counts = snap.get("counts") or {}
+    items = list(counts.items())[:limit]
+    return {
+        "worker_pid": os.getpid(),
+        "total": snap.get("total", 0),
+        "distinct_scopes": snap.get("distinct_scopes", 0),
+        "scopes": [
+            {"scope": scope, "count": count, **(snap.get("last_seen") or {}).get(scope, {})}
+            for scope, count in items
+        ],
+        "hint": "scope 的含义见 backend/app/core/silent_failure.py；request_id 可与容器日志/错误响应互查",
+    }
 
 @app.get("/ready")
 async def readiness_check():
