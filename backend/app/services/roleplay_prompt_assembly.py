@@ -5615,14 +5615,29 @@ async def _append_memory_context(
         _card_probe = req.db.begin_nested()
         from ..services.status_bar_detector import _card_has_mvu_scripts
         if req.char is not None and _card_has_mvu_scripts(req.char):
-            # 取值优先级：消息级 extra.variables（swipe/分支回退）> 群组变量
-            # > 会话变量；脏形态全部由 helper 静默兜底。见 _load_effective_stat_data。
-            _stat = _load_effective_stat_data(
-                req.db,
-                req.session_id,
-                getattr(req, "group_id", None),
-                getattr(req, "branch_id", None),
-            )
+            # [MVU-AS-OF 2026-10-22 批次MS-1] 单聊轨改走**带视点**的新出口：
+            # 取「这条故事线、到这一楼」的 stat_data；取不到就是 None，
+            # **不得**回落 `chat_metadata.variables` —— 旧回落正是老板反例
+            # 「回跳第 2 条显示的却是第 100 条的变量数据」的直接来源
+            # （取证：docs/_active/report/REPORT_变量清理与故事线回跳_取证_2026-10-22.md §3 病因 1/2/3）。
+            # 群组轨保持原路径（变量源不同，本批不动，避免顺手改一片）。
+            if getattr(req, "group_id", None):
+                _stat = _load_effective_stat_data(
+                    req.db,
+                    req.session_id,
+                    getattr(req, "group_id", None),
+                    getattr(req, "branch_id", None),
+                )
+            else:
+                from ..services.mvu_state import resolve_stat_data_as_of
+
+                _resolved_state = resolve_stat_data_as_of(
+                    req.db,
+                    req.session_id,
+                    getattr(req, "branch_id", None),
+                    as_of_message_id=getattr(req, "as_of_message_id", None),
+                )
+                _stat = _resolved_state.stat_data
             _flat = _flatten_stat_data(_stat)
             if _flat:
                 _kept: list[str] = []

@@ -44,16 +44,46 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+function hasNonEmptyStatData(v: unknown): boolean {
+  return (
+    isPlainObject(v) &&
+    isPlainObject((v as Record<string, unknown>).stat_data) &&
+    Object.keys((v as Record<string, unknown>).stat_data as object).length > 0
+  );
+}
+
 /**
- * 解析卡片上下文用的变量，**会话级实时值优先**，该楼快照兜底。
+ * 解析卡片上下文用的变量。
+ *
+ * **两种语义必须分开**（[MVU-AS-OF 2026-10-22 批次MS-2]，老板验收线：切换故事线或看不同
+ * 楼层时，显示必须是那条故事线那一楼层的状态）：
+ *
+ * - `isViewpoint = true`（默认，也是旧行为）：这是**当前视点那一楼**（列表最后一条）。
+ *   走「会话级实时值优先」——上游 MVU 的变量本就是 chat 级单一 store，且只有实时值
+ *   会让 context 签名变化，进而触发 `VARIABLE_UPDATE_ENDED`、卡片才会重画。
+ *   这条优先级由 `card-variables-live-preference.test.ts` 钉着，本批**未改判**。
+ * - `isViewpoint = false`：这是**历史楼层**。必须用该楼层自己的明细
+ *   （后端 `character_ext._materialize_floor_variables_for_display` 已把被自动清理摘掉的
+ *   明细按 `mvu_patch` 重演补回 `extra.variables`）；补不出来的**如实给空 + 标记**，
+ *   绝不退回会话级 —— 旧行为正是「回跳第 2 条显示的却是第 100 条的变量数据」的直接来源。
  *
  * @param sessionVariables      会话级实时变量（生成后由事件更新；页面加载时拉取）
- * @param messageExtraVariables 该楼落库时的冻结快照
+ * @param messageExtraVariables 该楼落库时的冻结快照（或被后端重演补回后的版本）
+ * @param isViewpoint           该消息是否就是当前视点（列表最后一条）。默认 true 保持旧调用点行为
  */
 export function resolveCardVariables(
   sessionVariables: unknown,
   messageExtraVariables: unknown,
+  isViewpoint: boolean = true,
 ): CardVariables {
+  if (!isViewpoint) {
+    if (hasNonEmptyStatData(messageExtraVariables)) {
+      return messageExtraVariables as CardVariables;
+    }
+    // 该楼取不到 ⇒ 空状态 + 显式标记。返回 null 会让卡片脚本读崩，故给空对象。
+    return { stat_data: {}, mvu_state_unavailable: true };
+  }
+
   if (isPlainObject(sessionVariables)) {
     return sessionVariables as CardVariables;
   }

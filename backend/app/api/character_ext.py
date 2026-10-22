@@ -2880,6 +2880,65 @@ async def delete_character_session(
     return {"status": "ok"}
 
 
+def _materialize_floor_variables_for_display(
+    db: Session,
+    session_id: str,
+    branch_id: Optional[str],
+    messages: list,
+) -> None:
+    """[MVU-AS-OF 2026-10-22 批次MS-2] 给「卡片逐楼状态栏」补上该楼自己的变量。
+
+    自动清理会摘掉超出「保留最近 20 楼」窗口的明细（上游默认值，老板裁定不动）。
+    摘掉后前端拿不到该楼的值，就退回页面级那份 ⇒ 老板的反例
+    「回跳第 2 条显示的却是第 100 条的变量数据」。
+
+    这里**只改本次响应的载荷，绝不写库**：对缺明细的楼层，用每楼落库时留存的
+    `extra["mvu_patch"]` 重演出该楼的值补进去；重演也不齐的挂 `mvu_state_source=unavailable`，
+    由前端显示"这一楼不可还原"，而不是喂一份别处的值。
+    """
+    from ..services.mvu_state import resolve_stat_data_by_message_ids
+
+    if not isinstance(messages, list) or not messages:
+        return
+
+    need: list = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        extra = item.get("extra")
+        extra = extra if isinstance(extra, dict) else {}
+        variables = extra.get("variables")
+        stat = variables.get("stat_data") if isinstance(variables, dict) else None
+        if isinstance(stat, dict) and stat:
+            continue
+        mid = item.get("id") or item.get("message_id")
+        if mid is not None:
+            need.append(int(mid))
+
+    if not need:
+        return
+
+    resolved = resolve_stat_data_by_message_ids(db, session_id, branch_id, need)
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id") or item.get("message_id")
+        state = resolved.get(int(mid)) if mid is not None else None
+        if state is None:
+            continue
+        extra = item.get("extra")
+        extra = dict(extra) if isinstance(extra, dict) else {}
+        variables = extra.get("variables")
+        variables = dict(variables) if isinstance(variables, dict) else {}
+        if state.available:
+            variables["stat_data"] = state.stat_data
+            extra["mvu_state_source"] = state.reason
+        else:
+            extra["mvu_state_source"] = "unavailable"
+        extra["variables"] = variables
+        item["extra"] = extra
+
+
 @router_sessions.get("/{session_id}/messages")
 async def get_character_session_messages(
     session_id: str,
@@ -2916,9 +2975,39 @@ async def get_character_session_messages(
     except (json.JSONDecodeError, TypeError):
         pass
 
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 页面级那份"实时值"改由带视点的解析器给：
+    # 单分支会话 + 视点=最新楼 ⇒ 解析器内部允许沿用会话级实时 store（上游同义）；
+    # 一旦会话有多条故事线，那份与任何楼层都对不上的孤立值不再下发（取证报告 §3 病因 3）。
+    try:
+        from ..services.mvu_state import resolve_stat_data_as_of
+
+        _tip_state = resolve_stat_data_as_of(
+            db, session_id, target_branch.id if target_branch else None
+        )
+        if _tip_state.available:
+            _merged = dict(session_variables) if isinstance(session_variables, dict) else {}
+            _merged["stat_data"] = _tip_state.stat_data
+            _merged["mvu_state_source"] = _tip_state.reason
+            session_variables = _merged
+        else:
+            # [P0-1 2026-10-22 采纳审计] 只覆盖 stat_data，**不得整份替换** ——
+            # `session_variables` 来自 chat_metadata.variables，是任意 dict，
+            # 整份替换会把卡/插件写进去的自定义键一起丢掉。
+            session_variables = {
+                **(session_variables if isinstance(session_variables, dict) else {}),
+                "stat_data": {},
+                "mvu_state_source": "unavailable",
+            }
+    except Exception:  # noqa: BLE001 - 变量补给失败不得拖垮整页历史，退回原会话级值并留痕
+        logger.warning("[MVU-STATE-UNAVAILABLE] 页面级变量解析失败，退回原值 session_id=%s", session_id, exc_info=True)
+
     if target_branch:
         result = _get_full_branch_history_paged(db, session_id, target_branch.id, limit=limit, before_id=before_id)
         if isinstance(result, dict):
+            # [MVU-AS-OF 2026-10-22 批次MS-2] 逐楼补回该楼自己的变量（清理摘掉的用重演值补，不写库）
+            _materialize_floor_variables_for_display(
+                db, session_id, target_branch.id, result.get("messages") or []
+            )
             result["variables"] = session_variables
         return result
 
@@ -2950,12 +3039,16 @@ async def get_character_session_messages(
     has_more = total > limit
     page = visible_msgs[-limit:] if total > limit else visible_msgs
 
+    _page_msgs = _serialize_character_messages(
+        page,
+        char_name=session.character.name if session.character else "Character",
+        user_name=user.username or "User",
+    )
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 主干轨同样逐楼补回该楼变量
+    _materialize_floor_variables_for_display(db, session_id, None, _page_msgs)
+
     return {
-        "messages": _serialize_character_messages(
-            page,
-            char_name=session.character.name if session.character else "Character",
-            user_name=user.username or "User",
-        ),
+        "messages": _page_msgs,
         "has_more": has_more,
         "variables": session_variables,
     }

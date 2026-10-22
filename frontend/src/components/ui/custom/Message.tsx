@@ -1697,7 +1697,13 @@ function MessageInner({
                       // context 不变 → postContextToFrame 按签名去重不发 → iframe 收不到
                       // context-update → VARIABLE_UPDATE_ENDED 不 emit → 卡片状态栏的
                       // eventOn 回调永不执行 → 面板停在首帧。详见 cardVariables.ts 文件头。
-                      variables: resolveCardVariables(_sessionVariables, message.extra?.variables),
+                      variables: resolveCardVariables(
+                        _sessionVariables,
+                        message.extra?.variables,
+                        // [MVU-AS-OF 2026-10-22 批次MS-2] 只有当前视点那楼用实时值；
+                        // 历史楼层一律用该楼自己的（后端已按补丁重演补回），取不到就空
+                        isLast,
+                      ),
                     }}
                   />
                 </SmartCardDormancyGate>
