@@ -195,25 +195,6 @@ describe('D-③④ 事前确认弹窗', () => {
 // ============================================================
 // 5 接线：内联分支真的有入口（真机可发现性的回归线）
 // ============================================================
-describe('D-⑤⑥ 渲染器接线', () => {
-  it('可见性判定改走 shouldShowSmartCardTrustControl(effectiveMode)', () => {
-    expect(rendererSource).toContain('shouldShowSmartCardTrustControl(effectiveMode)');
-    // 旧门（沉浸式 && 模式）不回潮：非 launcher 卡恒 explicitInline ⇒ prefersImmersive 恒 false
-    // ⇒ 入口又变成"代码写好了但没人能按到"。本行只认赋值语句本身，
-    // 免得被"解释旧门为什么错"的注释文字误伤（第一版踩过）。
-    expect(rendererSource).not.toMatch(/showTrustedControl\s*=\s*prefersImmersive/);
-  });
-
-  it('内联分支与沉浸式分支都挂了按钮与确认弹窗', () => {
-    expect(rendererSource).toContain('<SmartCardTrustButton');
-    expect(rendererSource).toContain('<SmartCardTrustConfirmDialog');
-    // 两处按钮（沉浸式 + 内联）、两处弹窗（沉浸式 + 内联）
-    expect((rendererSource.match(/<SmartCardTrustButton/g) || []).length).toBe(2);
-    expect((rendererSource.match(/<SmartCardTrustConfirmDialog/g) || []).length).toBe(2);
-  });
-
-  it('授权落地仍走 writeSmartCardTrustGrant + setTrustedNative（入口只发起，判定没被改）', () => {
-    expect(rendererSource).toContain('writeSmartCardTrustGrant(context.characterId, sourceFingerprint, nextTrusted)');
-    expect(rendererSource).toContain("const nextTrusted = pendingTrustAction === 'enable';");
-  });
-});
+// [2026-10-22 老板裁定] 卡片头部的信任入口已整体移除：信任在上传卡片时勾选决定，
+// 卡片内不再提供任何信任开关。原 D-⑤⑥ 两条渲染器接线用例测的正是被移除的入口，
+// 随功能一并删除；组件层（盾牌按钮/确认弹窗）用例保留。

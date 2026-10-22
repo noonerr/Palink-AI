@@ -51,10 +51,8 @@ import { installCardStyleGuard, type CardStyleGuardHandle } from './smart-card-r
 // [包D D-2 2026-10-18] 「信任此卡」入口抽出为可测组件：判定与写授权仍在本文件，
 // 这里只接管"按钮 + 事前确认弹窗"的呈现，并把入口从仅沉浸式扩到内联卡操作角。
 import {
-  SmartCardTrustButton,
   SmartCardTrustConfirmDialog,
   nextSmartCardTrustAction,
-  shouldShowSmartCardTrustControl,
 } from './smart-card-runtime/trust-control';
 import type { IframeRenderMode, SmartCardImmersiveTheme, SmartCardViewportContext, SmartCardResourcePlan, SmartCardAction } from './smart-card-runtime/shared';
 
@@ -1516,7 +1514,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // ⇒ **内联卡在真机上根本没有信任入口**（实测：全页 86 个可点元素，搜「信任/native」零命中）。
   // 现在按"这帧会不会跑脚本"判定：iframe-js / trusted-native 给入口，static-html 不给（无脚本可信任）。
   // ⚠️ 这只加**入口**，sandbox 字符串与授权读写逻辑一行没动 —— 未授信卡仍是 opaque origin。
-  const showTrustedControl = shouldShowSmartCardTrustControl(effectiveMode);
+  // [2026-10-22 老板裁定] 信任在**上传卡片时**勾选决定，卡片头部不再提供任何信任开关。
+  // 两个入口（沉浸式工具栏 / 内联右上角）已删除；信任判定与授权写入逻辑保持原样。
   const immersiveStableViewportHeight = Math.max(
     IFRAME_AVAILABLE_MIN_HEIGHT,
     Math.round(stableViewportSizeRef.current.height || viewportContext.height || getLayoutViewportHeight()),
@@ -1599,21 +1598,6 @@ const IframeRenderer = React.memo(function IframeRenderer({
           className="pointer-events-none absolute left-2 z-[4] flex flex-col items-center gap-2 opacity-55 transition-opacity hover:opacity-100 focus-within:opacity-100"
           style={{ top: isIOSDevice ? `calc(${immersiveTopInsetPx} + 12px)` : '50%', transform: isIOSDevice ? 'none' : 'translateY(-50%)' }}
         >
-          {showTrustedControl && (
-            <SmartCardTrustButton
-              trusted={trustedNative}
-              text={smartCardText}
-              onToggle={toggleTrustedNative}
-              className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                color: immersiveToolbarTextColor,
-                background: immersiveToolbarButtonBackground,
-                border: `1px solid ${immersiveToolbarButtonBorder}`,
-                backdropFilter: immersiveToolbarBackdrop,
-                WebkitBackdropFilter: immersiveToolbarBackdrop,
-              }}
-            />
-          )}
           <button
             type="button"
             className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2"
@@ -1663,21 +1647,10 @@ const IframeRenderer = React.memo(function IframeRenderer({
 
   return (
     <div ref={wrapperRef} className="relative w-full" data-palink-smart-card-frame={frameIdRef.current}>
-      {/* [包D D-2 2026-10-18] 内联卡操作角：把「信任此卡」入口补到非沉浸式分支
-          （此前入口只在沉浸式覆盖层里渲染，而 Message.tsx 给非 launcher 卡一律
-          传 presentationMode:'inline'，真机上永远走不到 ⇒ 能力写完却没人能按）。
-          沿用本分支既有的右上角悬浮按钮位（收起 X 同一簇），不改 sandbox、不改授权逻辑。 */}
-      {(showTrustedControl || supportsOuterCollapse) && (
+      {/* 内联卡右上角悬浮按钮位（收起 X）。[2026-10-22 老板裁定] 信任开关已从此处移除：
+          信任在上传卡片时勾选决定，卡片内不再提供任何信任入口/开关。 */}
+      {supportsOuterCollapse && (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-2">
-          {showTrustedControl && (
-            <SmartCardTrustButton
-              trusted={trustedNative}
-              text={smartCardText}
-              onToggle={toggleTrustedNative}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-black/35 text-white shadow-lg backdrop-blur transition-opacity hover:bg-black/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
-              style={{ opacity: trustedNative ? 1 : 0.7 }}
-            />
-          )}
           {supportsOuterCollapse && (
             <button
               type="button"
