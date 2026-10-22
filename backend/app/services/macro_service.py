@@ -15,6 +15,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session as DBSession
 
 from ..models.chat_variable import ChatVariable, UserVariable, GlobalVariable
+from ..core.silent_failure import record as _record_silent_failure
 from ..models.character import CharacterChatSession
 from .st_seedrandom import st_get_string_hash, st_pick_index
 
@@ -492,8 +493,13 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
                 )
                 if persona and persona.description:
                     return persona.description
-            except Exception:
-                pass
+            except Exception as _persona_exc:
+                # [SILENT-FAIL 2026-10-22] 吞掉 = `{{persona}}` 求值失败 ⇒ 宏原样
+                # 漏进提示词（模型看到字面量 "{{persona}}"），且完全无记录。
+                _record_silent_failure(
+                    "macro.resolve_persona_description", _persona_exc,
+                    session_id=getattr(env, "session_id", None),
+                )
         return None
     if name_lower in ("persona_name", "personaname"):
         # 从 user_setting 的活跃 persona 读取名称
@@ -507,8 +513,12 @@ def _resolve_simple_macro(name: str, env: MacroEnv) -> Optional[str]:
                 )
                 if persona and persona.name:
                     return persona.name
-            except Exception:
-                pass
+            except Exception as _persona_exc:
+                # [SILENT-FAIL 2026-10-22] 同上：`{{persona_name}}` 漏成字面量。
+                _record_silent_failure(
+                    "macro.resolve_persona_name", _persona_exc,
+                    session_id=getattr(env, "session_id", None),
+                )
         return None
 
     # Phase C 修复: ST 1.18.0 缺失宏补齐 (macros.js:653-656, 721-739)
@@ -593,8 +603,13 @@ def _resolve_complex_macro(parts: list[str], env: MacroEnv) -> Optional[str]:
                 variables = (meta or {}).get("variables") or {}
                 sd = variables.get("stat_data") or {}
                 return json.dumps(sd, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as _stat_exc:
+            # [SILENT-FAIL 2026-10-22] 吞掉 = `{{getvar::stat_data}}` 一类宏返回 "{}"，
+            # 模型拿到的是空变量而不是真值，且无任何记录。
+            _record_silent_failure(
+                "macro.resolve_session_stat_data", _stat_exc,
+                session_id=getattr(env, "session_id", None),
+            )
         return "{}"
 
     # Phase C 修复: {{banned "word"}} (ST macros.js:443) — 副作用宏，加入禁词列表，返回空串。

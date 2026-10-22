@@ -85,6 +85,7 @@ _MAX_SAMPLES_PER_SCOPE = 3
 _lock = threading.Lock()
 _counts: Counter = Counter()
 _last_seen: dict[str, dict] = {}
+_logged_once: set[str] = set()
 _total = 0
 
 
@@ -93,6 +94,7 @@ def record(
     exc: Optional[BaseException] = None,
     *,
     level: int = logging.ERROR,
+    once: bool = False,
     **context: Any,
 ) -> None:
     """记录一次静默失败。**永不抛异常。**
@@ -101,12 +103,21 @@ def record(
         scope: 点分小写标识，如 ``"worldbook.bind_probe"``。
         exc: 被吞掉的异常；为 None 时表示"没有异常但这是一条失败路径"。
         level: 日志级别，默认 ERROR（要进容器日志就必须 >= INFO）。
+        once: 只写**第一次**日志，后续仍计数但不刷屏。给热路径用
+            （如逐 token 调用的估算函数）——那里失败一次就会失败一万次。
         **context: 附加字段（session_id / character_id 等），会拼进日志正文。
     """
     global _total
     try:
         scope = str(scope or "unknown")[:120]
         rid = current_request_id()
+        emit_log = True
+        if once:
+            with _lock:
+                if scope in _logged_once:
+                    emit_log = False
+                else:
+                    _logged_once.add(scope)
         extra_txt = ""
         if context:
             try:
@@ -118,22 +129,24 @@ def record(
         rid_txt = " request_id=%s" % rid if rid else ""
 
         if exc is None:
-            logger.log(level, "[SILENT-FAIL] scope=%s%s%s", scope, rid_txt, extra_txt)
+            if emit_log:
+                logger.log(level, "[SILENT-FAIL] scope=%s%s%s", scope, rid_txt, extra_txt)
             exc_type = ""
             exc_msg = ""
         else:
             exc_type = type(exc).__name__
             exc_msg = str(exc)[:500]
-            logger.log(
-                level,
-                "[SILENT-FAIL] scope=%s%s%s exc=%s: %s",
-                scope,
-                rid_txt,
-                extra_txt,
-                exc_type,
-                exc_msg,
-                exc_info=(type(exc), exc, exc.__traceback__) if level >= logging.ERROR else None,
-            )
+            if emit_log:
+                logger.log(
+                    level,
+                    "[SILENT-FAIL] scope=%s%s%s exc=%s: %s",
+                    scope,
+                    rid_txt,
+                    extra_txt,
+                    exc_type,
+                    exc_msg,
+                    exc_info=(type(exc), exc, exc.__traceback__) if level >= logging.ERROR else None,
+                )
 
         with _lock:
             _total += 1
@@ -187,6 +200,7 @@ def reset() -> None:
     with _lock:
         _counts.clear()
         _last_seen.clear()
+        _logged_once.clear()
         _total = 0
 
 

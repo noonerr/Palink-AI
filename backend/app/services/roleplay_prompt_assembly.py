@@ -558,8 +558,12 @@ def _estimate_tokens(text: str) -> int:
         model = get_current_model()
         if model:
             return _cached_st_token_count(value, model)
-    except Exception:  # pragma: no cover - 极端情况下回退到旧逻辑
-        pass
+    except Exception as _tok_exc:  # pragma: no cover - 极端情况下回退到旧逻辑
+        # [SILENT-FAIL 2026-10-22] 这是**逐消息/逐 token 调用**的热路径，失败一次就会
+        # 失败一万次 ⇒ 用 once=True 只写第一条日志、后续只计数，避免刷屏。
+        # 但它必须留痕：tokenizer 挂掉意味着所有预算判断（记忆门控 / 裁剪）都退化，
+        # 而装配链会照常出结果 —— 没人知道预算是错的。
+        _record_silent_failure("prompt_assembly.estimate_tokens.st_tokenizer", _tok_exc, once=True)
     # 无模型时回退到原有行为（tiktoken cl100k_base 或启发式估算）
     #
     # ⚠️ [TOK-ZH 2026-10-12] cl100k_base 是 OpenAI 的 BPE，对中文几乎一字一 token，
@@ -1767,8 +1771,11 @@ def _has_bubble_render_support(db, user_id, char_extensions_raw) -> bool:
                 continue
             if _regex_script_mentions_bubble(script):
                 return True
-    except Exception:
-        pass
+    except Exception as _bubble_exc:
+        # [SILENT-FAIL 2026-10-22] 这里吞掉 = 判定「这张卡没有气泡渲染支持」⇒
+        # 装配层会把 @bubble 段落从格式规范里摘掉。用户看到的是"卡片渲染格式突然
+        # 不对了"，日志里什么也没有。必须留痕。
+        _record_silent_failure("prompt_assembly.bubble_render_support_probe", _bubble_exc)
     return False
 
 
@@ -5223,8 +5230,15 @@ def _resolve_memory_max_tokens(user_setting: Optional[Any]) -> int:
         lvl = getattr(user_setting, "memory_budget_level", None)
         if isinstance(lvl, int) and 0 <= lvl < len(_MEMORY_BUDGET_LEVEL_INTERNAL_UNITS):
             return _MEMORY_BUDGET_LEVEL_INTERNAL_UNITS[lvl]
-    except Exception:
-        pass
+    except Exception as _budget_exc:
+        # [SILENT-FAIL 2026-10-22] 吞掉 = 用户设的档位被静默忽略、退回标准档，
+        # 表现为"我明明调了记忆档位却没变化"。低severity但必须可见，用 WARNING。
+        _record_silent_failure(
+            "prompt_assembly.memory_budget_level_resolve",
+            _budget_exc,
+            level=logging.WARNING,
+            user_setting_type=type(user_setting).__name__,
+        )
     return _MEMORY_BUDGET_LEVEL_INTERNAL_UNITS[1]
 
 

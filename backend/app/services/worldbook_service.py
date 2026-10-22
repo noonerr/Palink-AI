@@ -50,6 +50,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session as DBSession
 
+from ..core.silent_failure import record as _record_silent_failure
+
 from ..models.worldbook import (
     WorldBook,
     WorldBookStage,
@@ -118,8 +120,11 @@ def _estimate_tokens(text: str) -> int:
         model = get_current_model()
         if model:
             return get_token_count(str(text or ""), model)
-    except Exception:  # pragma: no cover - 极端情况下回退到旧逻辑
-        pass
+    except Exception as _tok_exc:  # pragma: no cover - 极端情况下回退到旧逻辑
+        # [SILENT-FAIL 2026-10-22] 热路径（逐条目估算），用 once=True 只写第一条日志。
+        # 必须留痕：世界书的 token 预算与扫描深度判断全建立在这个估算上，
+        # tokenizer 挂掉时预算会按 CJK 启发式算，命中条数会悄悄变少。
+        _record_silent_failure("worldbook.estimate_tokens.st_tokenizer", _tok_exc, once=True)
     value = str(text or "")
     chinese_chars = len([ch for ch in value if "\u4e00" <= ch <= "\u9fff"])
     english_words = len([w for w in value.split() if any(c.isascii() and c.isalpha() for c in w)])

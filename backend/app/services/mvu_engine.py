@@ -25,6 +25,8 @@ import copy
 import logging
 from typing import Any
 
+from ..core.silent_failure import record as _record_silent_failure
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -319,8 +321,15 @@ def extract_update_variable_blocks(text: str) -> list[list[dict]]:
                 if parsed is not None:
                     blocks.append(parsed)
                     break
-        except Exception:
-            pass
+        except Exception as _mvu_exc:
+            # [SILENT-FAIL 2026-10-22] 这里是**裸数组兜底扫描**：吞掉 = 这一楼明明
+            # 输出了变量补丁却没被采纳 ⇒ stat_data 不更新 ⇒ 面板恒 0 / 数值不动，
+            # 而日志里一行都没有。这是"MVU 面板不动"最难查的一类根因。
+            _record_silent_failure(
+                "mvu.extract_bare_patch_fallback",
+                _mvu_exc,
+                text_len=len(text or ""),
+            )
     return blocks
 
 
@@ -359,8 +368,14 @@ def strip_update_variable_blocks(text: str) -> str:
     try:
         for _s, _e, _p in reversed(_find_stat_data_patch_spans(cleaned)):
             cleaned = cleaned[:_s] + cleaned[_e:]
-    except Exception:
-        pass
+    except Exception as _strip_exc:
+        # [SILENT-FAIL 2026-10-22] 吞掉 = 变量块没剥干净 ⇒ 用户正文里会看到
+        # `<UpdateVariable>` / 裸 JSON Patch 原文。这条以前完全无声。
+        _record_silent_failure(
+            "mvu.strip_bare_patch_blocks",
+            _strip_exc,
+            text_len=len(cleaned or ""),
+        )
     # 清理块移除后可能留下的孤立空行（相邻块之间留一行即可）
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()

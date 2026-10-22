@@ -6,6 +6,7 @@
 from typing import List, Optional, Tuple, Dict, Any, Set
 from sqlalchemy.orm import Session
 from sqlalchemy import text, desc, bindparam
+from ..core.silent_failure import record as _record_silent_failure
 from datetime import datetime, timedelta
 import numpy as np
 import asyncio
@@ -305,10 +306,11 @@ class MemoryStorage:
             row = result.first()
             if row and 'PostgreSQL' in str(row[0]):
                 return True
-        except Exception:
-            # 探测查询是本会话第一条语句、无副作用，静默视为 SQLite；
-            # 此处不可 rollback——同连接上可能承载其他会话的在途数据。
-            pass
+        except Exception as _pg_exc:
+            # 探测查询是本会话第一条语句、无副作用，**不 rollback**（同连接上可能
+            # 承载其他会话的在途数据）。但"探测失败就当成 SQLite"会静默切掉 pgvector
+            # 检索路径，必须留痕 —— once=True，避免每次建连刷一条。
+            _record_silent_failure("memory.storage.detect_postgres", _pg_exc, once=True)
         return False
     
     def _init_tables(self):
@@ -498,8 +500,9 @@ class MemoryStorage:
         except Exception as exc:
             try:
                 nested.rollback()
-            except Exception:
-                pass
+            except Exception as _rb_exc:
+                # [SILENT-FAIL 2026-10-22] 迁移失败 + 回滚失败 ⇒ 事务状态未知。
+                _record_silent_failure("memory.storage.migrate_embedding_rollback", _rb_exc)
             _vector_column_cached = False
             logger.error(
                 "[VEC-PG] embedding 列转 vector 失败（本轮检索自动退回 Python 余弦路径）: %s",

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .storage import MemoryStorage
 from .models import MemoryEntry, UserProfile
 from .compression_service import MemoryCompressionService
+from ..core.silent_failure import record as _record_silent_failure
 from .ai_summary_service import AISummaryMemoryService
 
 logger = logging.getLogger("MemoryLifecycle")
@@ -235,8 +236,10 @@ async def maybe_auto_compress(
 
         if not getattr(settings, "AUTO_MEMORY_COMPRESS", True):
             return None
-    except Exception:  # pragma: no cover - 配置不可用时按开启处理
-        pass
+    except Exception as _cfg_exc:  # pragma: no cover - 配置不可用时按开启处理
+        # [SILENT-FAIL 2026-10-22] 读不到配置就"按开启处理"，等于替用户决定了要跑
+        # 自动封存。行为本身保留（宁可不丢记忆），但必须留痕。
+        _record_silent_failure("memory.lifecycle.read_auto_compress_setting", _cfg_exc, once=True)
 
     try:
         svc = MemoryLifecycleService(db)

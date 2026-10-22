@@ -9,6 +9,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session, selectinload
 
+from ..core.silent_failure import record as _record_silent_failure
+
 from ..core import get_db
 from ..core.cache import cached, invalidate_user_cache
 from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
@@ -56,8 +58,10 @@ def _vector_sync_worker(world_book_id: str) -> None:
     finally:
         try:
             svc.db.close()
-        except Exception:
-            pass
+        except Exception as _close_exc:
+            # [SILENT-FAIL 2026-10-22] 后台向量任务里关会话失败 = 连接可能没归还池，
+            # 长跑会把连接池耗干。以前完全无声。
+            _record_silent_failure("worldbook.vector_worker_db_close", _close_exc, once=True)
 
 
 def _fire_vector_sync(world_book_id: str) -> None:
@@ -87,8 +91,10 @@ def _vector_delete_worker(world_book_id: str) -> None:
     finally:
         try:
             svc.db.close()
-        except Exception:
-            pass
+        except Exception as _close_exc:
+            # [SILENT-FAIL 2026-10-22] 后台向量任务里关会话失败 = 连接可能没归还池，
+            # 长跑会把连接池耗干。以前完全无声。
+            _record_silent_failure("worldbook.vector_worker_db_close", _close_exc, once=True)
 
 
 def _fire_vector_delete(world_book_id: str) -> None:

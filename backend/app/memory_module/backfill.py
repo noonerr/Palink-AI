@@ -133,8 +133,12 @@ def run_backfill_cycle(db: Session, batch_size: int = None,
     _is_vec = storage_mod._detect_vector_column(db)
     try:
         storage_mod._vector_column_cached = _is_vec
-    except Exception:
-        pass
+    except Exception as _cache_exc:
+        # [SILENT-FAIL 2026-10-22] 缓存写不进去本身无害，但它意味着每轮都要重探列型。
+        # 用 once=True 只留一条，避免回填循环里刷屏。
+        from ..core.silent_failure import record as _record_silent_failure
+
+        _record_silent_failure("memory.backfill.vector_column_cache", _cache_exc, once=True)
     # 配方与 storage._update_embedding_in_db 一致：vector 列显式 CAST，
     # json 文本两种列型都能吃（_parse_vector_cell 读侧兼容）。
     _emb_ph = "CAST(:embedding AS vector)" if _is_vec else ":embedding"

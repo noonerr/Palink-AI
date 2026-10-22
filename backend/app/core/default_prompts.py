@@ -283,8 +283,13 @@ def build_default_character_prompt(
                         "exempt from the XML-tag prohibition above; it MUST be output in full at "
                         "the very end of every reply as instructed by the variable update directive"
                     )
-        except Exception:
-            pass
+        except Exception as _mvu_note_exc:
+            # [SILENT-FAIL 2026-10-22] 这段决定要不要给模型加「<UpdateVariable> 豁免
+            # XML 禁令」的说明。吞掉 = 提示词悄悄少一句 ⇒ 模型可能因此不输出变量块，
+            # 表现为面板不动，而日志里什么都没有。
+            from .silent_failure import record as _record_silent_failure
+
+            _record_silent_failure("default_prompts.mvu_exemption_note", _mvu_note_exc)
 
     # 组装整体结构（B-4 A 方案：角色自定义 system_prompt 在 main 槽最前；
     # character_attributes 空则整段缺席）

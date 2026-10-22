@@ -115,3 +115,24 @@ def test_format_exc_brief_points_at_the_raise_site():
         line = sf.format_exc_brief(exc)
     assert line.startswith("KeyError")
     assert ".py:" in line
+
+
+def test_once_logs_only_first_but_still_counts(caplog):
+    """热路径用 once=True：日志只写一次，计数照涨（否则会刷屏）。"""
+    caplog.set_level(logging.ERROR, logger="PalinkAI.silent_failure")
+    for _ in range(5):
+        sf.record("hot.path", ValueError("x"), once=True)
+
+    snap = sf.snapshot()
+    assert snap["counts"]["hot.path"] == 5, "计数必须每次都涨"
+    hits = [r for r in caplog.records if "hot.path" in r.getMessage()]
+    assert len(hits) == 1, "日志只应写一次，实际 %d 次" % len(hits)
+
+
+def test_once_is_per_scope_not_global(caplog):
+    caplog.set_level(logging.ERROR, logger="PalinkAI.silent_failure")
+    sf.record("hot.a", ValueError(), once=True)
+    sf.record("hot.b", ValueError(), once=True)
+    scopes = [r.getMessage() for r in caplog.records]
+    assert any("hot.a" in s for s in scopes)
+    assert any("hot.b" in s for s in scopes)

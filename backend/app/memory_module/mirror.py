@@ -32,6 +32,7 @@ from sqlalchemy import text
 
 from ..core.database import SessionLocal
 from ..utils import clean_memory_content
+from ..core.silent_failure import record as _record_silent_failure
 from .service import MemoryService
 from .storage import delete_by_message_id
 
@@ -145,8 +146,10 @@ def sync_message_memory(
     except Exception as e:
         try:
             db.rollback()
-        except Exception:
-            pass
+        except Exception as _rb_exc:
+            # [SILENT-FAIL 2026-10-22] 镜像写入失败后连回滚都失败 ⇒ 事务状态未知，
+            # 后续查询会报 "This transaction is closed" 一类无从归因的错。
+            _record_silent_failure("memory.mirror.rollback", _rb_exc, message_id=message_id)
         logger.warning("[MEM-MIRROR] sync failed (message=%s): %s", message_id, e)
     finally:
         db.close()
