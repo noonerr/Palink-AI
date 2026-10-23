@@ -116,6 +116,9 @@ WSL **不是**可用选项：本机只有 `docker-desktop` 一个发行版（`ws
    `backend/app/api/silly_tavern.py` = **6521 行**（这条仍对，只是长大了）。
    ⇒ **禁止**因为"找不到 6961 行的文件"就以为兼容层被删过；**禁止**按旧路径改动。
    改模板串分段后必须跑 `scripts/verify-shim-identity.mjs`（字节快照守卫，在场实测）。
+   ⚠️ 2026-10-23 订正：真身是 `frontend/scripts/verify-shim-identity.mjs`；它不是一键门禁——
+   裸跑只打印用法（退出码 2），需 `snapshot <tsx> <基线.txt>` + `compare <基线> <当前>` 两步，
+   且仓库内没有已提交的基线 txt。
    已删除的是 **st-native（iframe 嵌入完整 ST）** 与 **st-compat（服务端 ST 1.18 装配）**
    两个**模式**；但 **"Palink 原生模式"的卡片渲染底座，本身就是一个 SillyTavern 兼容运行时**，
    后端仍在提供卡片 runtime 所需的 ST 风格端点。这些是**在用的生产代码，不是残留**。

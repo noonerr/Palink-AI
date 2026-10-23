@@ -17,6 +17,26 @@
 
 ## 待办任务（进行中 / 未完成）
 
+### [已施工·未提交·未上线] 项目减重批次 L2-3 / L2-4（2026-10-23 · 与「分支选择单一出口」并行）
+
+- **权威文档**：[`HANDOFF_2026-10-23_减重与流式改造.md`](./docs/_active/HANDOFF_2026-10-23_减重与流式改造.md)（含 §0.5 复核订正）、
+  [`PLAN_项目减重_2026-10-23.md`](./docs/_active/PLAN_项目减重_2026-10-23.md)、[`IMPL_项目减重_2026-10-23.md`](./docs/_active/IMPL_项目减重_2026-10-23.md)。
+- **已上线（后端）**：L1 后端部分、L2-1 默认模型对齐、L2-5 token 估算、L2-2 ST 面滑动续期。
+  L1 的前端部分（`lib/worldbook` 合并）**未进 dist**，随下次前端重建上线（行为等价）。
+- **L2-3 SSE 收口（已完整改完·未提交）**：`WorkspaceView.tsx` 与 `CharacterView.tsx` 都改调 `consumeSseStream`
+  （+4 条契约用例，tsc 绿）；CharacterView 是等「分支选择单一出口」提交 `bdbc97f` 后才动的。详见 `OPEN_ISSUES.md` [P2-17]。
+- **L2-4 错误模型合并（已按拍板改完·未提交）**：文案基准=`lib/errorHandler.ts`；`AppError` 变薄层，
+  删掉零引用的第二套 `analyzeError`/`useErrorHandler`/枚举，补 429→`rate_limit`（+4 条契约用例）。详见 [P2-18]。
+- ⚠️ **上线红线**：并行 agent 的在制品未提交前，**禁止 `docker compose build backend` 与前端 dist 重建**，
+  否则会把对方未完成的代码烤进生产镜像/产物。
+- ⚠️ 提交纪律：只按本批 pathspec 逐项提交，禁 `git add -A` / `commit -a`。
+- **合并剩余项**：「变量视点/分支不变量」批次的 R1–R7 与两条拍板项已并入
+  [`HANDOFF_2026-10-23_减重与流式改造.md`](./docs/_active/HANDOFF_2026-10-23_减重与流式改造.md) **§9**（含复核结论：R3 是真缺口、R5 实测 32/32 全 NULL）。
+- **R1 已测完**：卡片帧内 `replaceVariables` = v2 模板展开；MVU 式整体替换是静默 no-op，`chat_metadata.variables` 无写入口；
+  顺带发现 `{{getvar::x}}` 宏未展开（[P2-19]）。
+- **R3 已修完**：`switch_branch` 与 GET 共用 `_attach_mvu_state_for_display`，响应补 `variables`/`active_branch_id`；
+  前端 `switchBranch` 补 `setSessionVariables`；后端 +2 用例（11 passed）。
+
 ### [已收官·真机复验闭环] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0–S5 全部合入 · 2026-10-16 真机复验收官）
 
 - **权威方案**：[`docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md`](./docs/_active/report/REPORT_一次性并轨施工方案与回退计划_2026-10-12.md)

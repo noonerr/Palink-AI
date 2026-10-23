@@ -2943,6 +2943,71 @@ def _materialize_floor_variables_for_display(
         item["extra"] = extra
 
 
+def _attach_mvu_state_for_display(
+    db: Session,
+    session: CharacterChatSession,
+    session_id: str,
+    branch_id: Optional[str],
+    result: dict,
+    active_branch_id: Optional[str] = None,
+) -> dict:
+    """[MVU-AS-OF 2026-10-22 批次MS-2] 给一次「读历史」响应补上页面级与逐楼变量。
+
+    `GET /{session_id}/messages` 与 `POST /{session_id}/branches/{branch_id}/switch`
+    共用这一段：切换分支的响应此前只换 `messages`、不带变量，前端于是继续用
+    上一条故事线的页面级 `stat_data`（"切了分支，状态栏还是旧的"）。
+
+    **只改本次响应的载荷，绝不写库**：页面级基线取 `chat_metadata.variables`
+    （可能是任意 dict，含卡/插件自定义键），`stat_data` 由带视点的
+    `resolve_stat_data_as_of` 覆盖；逐楼则交给
+    `_materialize_floor_variables_for_display` 补该楼自己的值。
+    """
+    # MVU 变量：从 chat_metadata 提取会话级 stat_data 下发前端
+    session_variables: dict = {"stat_data": {}}
+    try:
+        if session.chat_metadata:
+            meta = json.loads(session.chat_metadata)
+            if isinstance(meta, dict) and isinstance(meta.get("variables"), dict):
+                session_variables = meta["variables"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 页面级那份"实时值"改由带视点的解析器给：
+    # 单分支会话 + 视点=最新楼 ⇒ 解析器内部允许沿用会话级实时 store（上游同义）；
+    # 一旦会话有多条故事线，那份与任何楼层都对不上的孤立值不再下发（取证报告 §3 病因 3）。
+    try:
+        from ..services.mvu_state import resolve_stat_data_as_of
+
+        _tip_state = resolve_stat_data_as_of(db, session_id, branch_id)
+        if _tip_state.available:
+            _merged = dict(session_variables) if isinstance(session_variables, dict) else {}
+            _merged["stat_data"] = _tip_state.stat_data
+            _merged["mvu_state_source"] = _tip_state.reason
+            session_variables = _merged
+        else:
+            # [P0-1 2026-10-22 采纳审计] 只覆盖 stat_data，**不得整份替换** ——
+            # `session_variables` 来自 chat_metadata.variables，是任意 dict，
+            # 整份替换会把卡/插件写进去的自定义键一起丢掉。
+            session_variables = {
+                **(session_variables if isinstance(session_variables, dict) else {}),
+                "stat_data": {},
+                "mvu_state_source": "unavailable",
+            }
+    except Exception:  # noqa: BLE001 - 变量补给失败不得拖垮整页历史，退回原会话级值并留痕
+        logger.warning("[MVU-STATE-UNAVAILABLE] 页面级变量解析失败，退回原值 session_id=%s", session_id, exc_info=True)
+
+    if not isinstance(result, dict):
+        return result
+
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 逐楼补回该楼自己的变量（清理摘掉的用重演值补，不写库）
+    _materialize_floor_variables_for_display(
+        db, session_id, branch_id, result.get("messages") or []
+    )
+    result["variables"] = session_variables
+    result["active_branch_id"] = active_branch_id
+    return result
+
+
 @router_sessions.get("/{session_id}/messages")
 async def get_character_session_messages(
     session_id: str,
@@ -2963,51 +3028,14 @@ async def get_character_session_messages(
     _resolution = resolve_active_branch_detail(db, session_id)
     target_branch = _resolution.branch
 
-    # MVU 变量：从 chat_metadata 提取会话级 stat_data 下发前端
-    session_variables: dict = {"stat_data": {}}
-    try:
-        if session.chat_metadata:
-            meta = json.loads(session.chat_metadata)
-            if isinstance(meta, dict) and isinstance(meta.get("variables"), dict):
-                session_variables = meta["variables"]
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # [MVU-AS-OF 2026-10-22 批次MS-2] 页面级那份"实时值"改由带视点的解析器给：
-    # 单分支会话 + 视点=最新楼 ⇒ 解析器内部允许沿用会话级实时 store（上游同义）；
-    # 一旦会话有多条故事线，那份与任何楼层都对不上的孤立值不再下发（取证报告 §3 病因 3）。
-    try:
-        from ..services.mvu_state import resolve_stat_data_as_of
-
-        _tip_state = resolve_stat_data_as_of(
-            db, session_id, target_branch.id if target_branch else None
-        )
-        if _tip_state.available:
-            _merged = dict(session_variables) if isinstance(session_variables, dict) else {}
-            _merged["stat_data"] = _tip_state.stat_data
-            _merged["mvu_state_source"] = _tip_state.reason
-            session_variables = _merged
-        else:
-            # [P0-1 2026-10-22 采纳审计] 只覆盖 stat_data，**不得整份替换** ——
-            # `session_variables` 来自 chat_metadata.variables，是任意 dict，
-            # 整份替换会把卡/插件写进去的自定义键一起丢掉。
-            session_variables = {
-                **(session_variables if isinstance(session_variables, dict) else {}),
-                "stat_data": {},
-                "mvu_state_source": "unavailable",
-            }
-    except Exception:  # noqa: BLE001 - 变量补给失败不得拖垮整页历史，退回原会话级值并留痕
-        logger.warning("[MVU-STATE-UNAVAILABLE] 页面级变量解析失败，退回原值 session_id=%s", session_id, exc_info=True)
-
     if target_branch:
         result = _get_full_branch_history_paged(db, session_id, target_branch.id, limit=limit, before_id=before_id)
         if isinstance(result, dict):
-            # [MVU-AS-OF 2026-10-22 批次MS-2] 逐楼补回该楼自己的变量（清理摘掉的用重演值补，不写库）
-            _materialize_floor_variables_for_display(
-                db, session_id, target_branch.id, result.get("messages") or []
+            # [MVU-AS-OF 2026-10-22 批次MS-2] 页面级 + 逐楼变量统一由公共函数补（不写库）
+            _attach_mvu_state_for_display(
+                db, session, session_id, target_branch.id, result,
+                active_branch_id=_resolution.branch_id,
             )
-            result["variables"] = session_variables
-            result["active_branch_id"] = _resolution.branch_id
         return result
 
     query = db.query(CharacterChatMessage).filter(
@@ -3043,15 +3071,13 @@ async def get_character_session_messages(
         char_name=session.character.name if session.character else "Character",
         user_name=user.username or "User",
     )
-    # [MVU-AS-OF 2026-10-22 批次MS-2] 主干轨同样逐楼补回该楼变量
-    _materialize_floor_variables_for_display(db, session_id, None, _page_msgs)
-
-    return {
-        "messages": _page_msgs,
-        "has_more": has_more,
-        "variables": session_variables,
-        "active_branch_id": _resolution.branch_id,
-    }
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 主干轨同样补页面级变量 + 逐楼补回该楼变量
+    result = {"messages": _page_msgs, "has_more": has_more}
+    _attach_mvu_state_for_display(
+        db, session, session_id, None, result,
+        active_branch_id=_resolution.branch_id,
+    )
+    return result
 
 
 @router_sessions.delete("/{session_id}/messages/{message_id}")
@@ -3824,8 +3850,21 @@ async def switch_branch(
     db.commit()
 
     result = _get_full_branch_history_paged(db, session_id, branch_id, limit=limit, up_to_message_id=up_to_message_id)
+    # [MVU-AS-OF 2026-10-22 批次MS-2] 切换分支的响应同样要带页面级变量 + 逐楼补值，
+    # 否则前端切完分支仍留着上一条故事线的 stat_data（读侧"视点"护栏只修了 GET 一侧）。
+    _attach_mvu_state_for_display(
+        db, session, session_id, branch_id, result,
+        active_branch_id=branch_id,
+    )
 
-    return {"status": "ok", "messages": result["messages"], "up_to_message_id": up_to_message_id, "has_more": result["has_more"]}
+    return {
+        "status": "ok",
+        "messages": result["messages"],
+        "up_to_message_id": up_to_message_id,
+        "has_more": result["has_more"],
+        "variables": result.get("variables"),
+        "active_branch_id": result.get("active_branch_id"),
+    }
 
 
 @router_sessions.post("/{session_id}/branches/{branch_id}/favorite")

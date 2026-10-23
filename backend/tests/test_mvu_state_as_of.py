@@ -261,3 +261,87 @@ def test_missing_material_is_reported_not_guessed(db_session, test_user, caplog)
     assert got.reason == "replay_partial"
     assert 2 in got.missing_floors and 3 in got.missing_floors
     assert MARK_UNAVAILABLE in caplog.text, "静默失败必须可被 grep 到"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. 切换分支的响应也必须带变量（批次 MS-2 收尾：switch 与 GET 共用同一段接线）
+#
+# 修前 `switch_branch` 只回 `messages`，前端 `CharacterView.switchBranch` 也只
+# `setMessages` ⇒ 页面级变量仍是上一条故事线的那份，逐楼更是拿不到被清理楼层
+# 自己的值。下面两条钉住「接口真的接线了」，而不是内核能算出来而已。
+# ─────────────────────────────────────────────────────────────────────────────
+def _seed_two_storylines(db, user):
+    """两条故事线：br-a（另一条，值 50）+ br-main（目标，含一层明细被清理的楼）。
+
+    会话级 `chat_metadata` 放诱饵 -1：页面级变量若来自它而不是
+    `resolve_stat_data_as_of`，下面的断言立刻变红。
+    """
+    sess = _make_session(db, user, decoy=True)
+    br_a = _make_branch(db, sess, "br-a")
+    _msg(db, sess, br_a, role="assistant", extra=_vars(好感度=50))
+    br_main = _make_branch(db, sess, "br-main")
+    _msg(db, sess, br_main, role="assistant", extra=_vars(好感度=1))
+    f2 = _msg(
+        db, sess, br_main, role="assistant",
+        extra=_pruned([{"op": "replace", "path": "/好感度", "value": 2}]),
+    )
+    db.commit()
+    return sess, br_main, f2
+
+
+def _switch(client, session_id, branch_id):
+    r = client.post(f"/api/character-sessions/{session_id}/branches/{branch_id}/switch?limit=10")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_switch_branch_response_carries_floor_and_page_variables(client, db_session, test_user):
+    """★ switch 响应里：被清理楼层拿到自己的值，页面级拿到视点分支的值。"""
+    sess, br_main, f2 = _seed_two_storylines(db_session, test_user)
+
+    body = _switch(client, sess.id, br_main)
+
+    floor = next(
+        (m for m in body.get("messages", []) if int(m.get("id")) == int(f2.id)), None
+    )
+    assert floor is not None, f"第 {f2.id} 楼不在 switch 响应里"
+    assert (floor.get("extra") or {}).get("mvu_state_source") == "replay"
+    assert ((floor.get("extra") or {}).get("variables") or {}).get("stat_data") == {"好感度": 2}, (
+        "被清理摘掉明细的楼层没拿到该楼自己的 stat_data"
+    )
+
+    page = body.get("variables") or {}
+    assert page.get("mvu_state_source") == "replay", page
+    assert page.get("stat_data") == {"好感度": 2}, page
+    assert page.get("stat_data") != {"好感度": -1}, "页面级变量回落到了会话级诱饵"
+    assert page.get("stat_data") != {"好感度": 50}, "页面级变量串到了另一条故事线"
+    assert body.get("active_branch_id") == br_main
+
+
+def test_switch_branch_variable_backfill_does_not_write_db(client, db_session, test_user):
+    """★ 逐楼补值只改响应载荷：调用前后消息行逐字节一致，库里的被清理楼层仍是摘掉态。"""
+    sess, br_main, f2 = _seed_two_storylines(db_session, test_user)
+
+    def snapshot():
+        db_session.expire_all()
+        rows = (
+            db_session.query(CharacterChatMessage)
+            .filter(CharacterChatMessage.session_id == sess.id)
+            .order_by(CharacterChatMessage.id)
+            .all()
+        )
+        return [(m.id, m.extra, m.content, m.branch_id) for m in rows]
+
+    before = snapshot()
+    _switch(client, sess.id, br_main)
+    after = snapshot()
+    assert after == before, "switch 把逐楼补值写回了库"
+
+    db_session.expire_all()
+    stored = (
+        db_session.query(CharacterChatMessage)
+        .filter(CharacterChatMessage.id == f2.id)
+        .one()
+    )
+    stored_variables = (json.loads(stored.extra or "{}").get("variables")) or {}
+    assert "stat_data" not in stored_variables, "库里的被清理楼层被补写"

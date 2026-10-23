@@ -743,3 +743,36 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 ⇒ 两条路都要用户定：**搬上游语言文件**（AGPL 上游的翻译数据，按需懒加载、不进入口包）
 或 **删掉这 30 行死代码 + 别再声称支持 ST i18n**。主脑没擅自搬（版权与体积不是技术判断）。
 每次进页面吃一个 404，是控制台噪声源之一。
+
+---
+
+### [P2-17] L2-3 SSE 消费收口：两侧均已收口，待提交/上线（2026-10-23 · 减重批次）
+
+- **唯一解析器**：`frontend/src/lib/sseStream.ts::consumeSseStream`（认 `data:` 与 `data: ` 两种前缀，按 `\n\n` 分帧）。
+- **已改（均未提交、未上线）**：
+  - `WorkspaceView.tsx::handleStreamAnalyze` 改调它（删掉手抄的第三份）；
+  - `CharacterView.tsx` 新建会话的 SSE 读取改调它（原 `:1544-1595`，只手认带空格的 `'data: '`）。
+  - 新增 `src/lib/__tests__/sse-stream-contract.test.ts`（4 条，全绿）；`tsc --noEmit` rc=0。
+- **动工顺序**：`CharacterView.tsx` 先等「分支选择单一出口」提交（`bdbc97f`，17:03）后才改，避免同文件并发写。
+- **验收**：`npx tsc --noEmit`、`npx vitest run src/lib/__tests__/sse-stream-contract.test.ts`、真机发一条消息看分支选择器初始化。
+- ⚠️ **上线约束**：改 frontend 必须重建 dist；两个 agent 的在制品都落地前**不要重建**，否则会把对方未完成的代码烤进产物。
+
+### [P2-18] L2-4 两套错误模型合并：文案基准需用户拍板（2026-10-23 · 减重批次）
+
+- **两套并存**：`lib/errorHandler.ts`（98 行，`ErrorInfo` + `analyzeError`，类型含 `model_unavailable`）与
+  `lib/error-handler/index.ts`（276 行，`AppError` + 另一个同名 `analyzeError`，枚举含 `model`）。两边 `ErrorType` 互不兼容。
+- **实测两条轨都可见**（不是死码）：`services/api.ts:1` → `ErrorToast`；`hooks/useCharacterChat.ts` 的 `AppError`
+  → `buildSystemNoteContent()`（消息区渲染 "Error: 标题 / 描述 / 建议"）+ `ErrorToast`；`hooks/useChatView/index.ts:27` → `toUserMessage()`。
+- **顺带缺陷**：`errorHandler.analyzeError` 不识别 **429**（落到 `unknown` → 「联系技术支持」），而 `AppError.fromApiError` 识别 429。
+- **合并必然改用户可见措辞** ⇒ 先把两边文案逐条列给用户，选定基准再动（handoff §5.2）。
+- 参考规模：约 -200 行。
+
+### [P2-19] `{{getvar::x}}` 宏不展开（ST 语义缺口，2026-10-23 探针发现）
+
+- **事实**：卡片运行时 `substituteParamsCompat`（`runtime-body/part-03.ts:384`）只展开内建宏、`macroRegistry` 注册宏、
+  `{{x}}` 直接读 `chatVariableStore`/`globalVariableStore`；`{{getvar::x}}` 原样返回。
+- **对照**：`/getvar` **斜杠命令**是另一条、已实现（`runtime-body/part-07.ts:1435`）。
+- **影响**：卡/插件若在正文或提示词里用 ST 的 `{{getvar::…}}` 宏，会原样显示/原样进提示词。
+- **未证**：真实卡是否依赖该宏（R1 探针只跑运行时，未跑第三方插件）；插件也可能自己注册 `getvar` 宏（`macroRegistry`）。
+- **下一步**：真实卡冒烟一次，命中则补 `getvar/getglobalvar/getlocalvar` 宏展开（约 10 行，先定与 `{{x}}` 的优先级）。
+- 取证：`HANDOFF_2026-10-23_减重与流式改造.md` §9.4。

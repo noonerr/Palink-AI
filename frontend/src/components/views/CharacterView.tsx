@@ -7,6 +7,7 @@ import { useWorldBook } from '@/hooks/useWorldBook';
 import { usePlotLine } from '@/hooks/usePlotLine';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api, invalidateCache, getCsrfToken } from '@/services/api';
+import { consumeSseStream } from '@/lib/sseStream';
 import { toast } from 'sonner';
 import { personaManager } from '@/lib/personas/manager';
 
@@ -759,6 +760,7 @@ export function CharacterView({
       const data = await api.post(`/api/character-sessions/${selectedSession.id}/branches/${branch.id}/switch?limit=10`);
       setSelectedBranch(branch);
       setMessages(data.messages || []);
+      setSessionVariables(data.variables ?? undefined);
       setHasMoreMessages(data.has_more || false);
       setForkPoint(null);
       await Promise.all([
@@ -1541,52 +1543,33 @@ export function CharacterView({
           user_nickname: getDisplayName(selectedCharacter)
         }, { signal: controller.signal });
 
-        const reader = response.body?.getReader();
-        if (!reader) {
+        if (!response.body) {
           throw new Error('无法读取响应流');
         }
 
-        const decoder = new TextDecoder();
         let sessionId = '';
         let branchId = '';
-        let buffer = '';
 
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split('\n\n');
-            buffer = events.pop() || '';
-
-            for (const event of events) {
-              const lines = event.split('\n');
-              for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const data = line.slice(6).trim();
-                if (!data || data === '[DONE]') continue;
-                try {
-                  const json = JSON.parse(data);
-                  if (json.session_id) sessionId = json.session_id;
-                  if (json.branch_id) branchId = json.branch_id;
-                  if (json.branch_id) {
-                    setSelectedBranch({
-                      id: json.branch_id,
-                      branch_name: 'Main',
-                      is_active: true,
-                      session_id: sessionId,
-                      parent_branch_id: null,
-                      parent_message_id: null,
-                      created_at: new Date().toISOString(),
-                    });
-                  }
-                } catch {
-                  // Ignore malformed initialization events and continue reading.
-                }
-              }
+          // [L2-3] SSE 解析收口到 lib/sseStream。原实现只手认带空格的 `'data: '`，
+          // 若后端/代理发出 `data:{...}` 会静默丢掉全部事件（sessionId/branchId 拿不到，
+          // 分支选择器不初始化）；consumeSseStream 两种前缀都认。
+          const { cancelled } = await consumeSseStream(response, (json) => {
+            if (json.session_id) sessionId = json.session_id as string;
+            if (json.branch_id) branchId = json.branch_id as string;
+            if (json.branch_id) {
+              setSelectedBranch({
+                id: json.branch_id as string,
+                branch_name: 'Main',
+                is_active: true,
+                session_id: sessionId,
+                parent_branch_id: null,
+                parent_message_id: null,
+                created_at: new Date().toISOString(),
+              });
             }
-          }
+          });
+          if (cancelled) return null;
         } catch (readError: any) {
           if (readError?.name === 'AbortError') {
             return null;

@@ -25,6 +25,7 @@ import { MarkdownRenderer } from '@/components/ui/custom/MarkdownRenderer';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
 import { api, isAbortError } from '@/services/api';
+import { consumeSseStream } from '@/lib/sseStream';
 import { useMobileBottomPadding } from '@/hooks/useMobileBottomPadding';
 import { useIsMobile } from '@/hooks/use-mobile';
 import type { FileItem, Model, WorkspaceItems } from '@/types';
@@ -266,15 +267,12 @@ export function WorkspaceView({
         lang: currentLang,
       }, { signal: controller.signal });
 
-      const reader = res.body?.getReader();
-      if (!reader) {
+      if (!res.body) {
         setInsightAnalyzing(false);
         return;
       }
 
-      const decoder = new TextDecoder();
       let accumulated = '';
-      let buffered = '';
       const flushContent = () => {
         analyzeRafRef.current = null;
         if (controller.signal.aborted || analyzeRequestIdRef.current !== requestId) return;
@@ -285,34 +283,18 @@ export function WorkspaceView({
         analyzeRafRef.current = requestAnimationFrame(flushContent);
       };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (controller.signal.aborted || analyzeRequestIdRef.current !== requestId) break;
-
-        buffered += decoder.decode(value, { stream: true });
-        const lines = buffered.split('\n');
-        buffered = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            if (data === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.content) {
-                accumulated += parsed.content;
-                scheduleFlush();
-              }
-              if (parsed.error) {
-                console.error('Stream error:', parsed.error);
-              }
-            } catch {
-              // skip non-JSON lines
-            }
-          }
+      // [L2-3] SSE 解析收口到 lib/sseStream（原先是手抄的第三份）：
+      // 认 `data:` 与 `data: ` 两种前缀，按 '\n\n' 分帧；对当前后端（发 `data: …\n\n`）行为等价。
+      await consumeSseStream(res, (parsed) => {
+        if (controller.signal.aborted || analyzeRequestIdRef.current !== requestId) return;
+        if (parsed.content) {
+          accumulated += parsed.content as string;
+          scheduleFlush();
         }
-      }
+        if (parsed.error) {
+          console.error('Stream error:', parsed.error);
+        }
+      });
 
       if (analyzeRafRef.current !== null) {
         cancelAnimationFrame(analyzeRafRef.current);

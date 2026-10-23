@@ -5,6 +5,7 @@ export type ErrorType =
   | 'auth' 
   | 'validation' 
   | 'model_unavailable' 
+  | 'rate_limit'
   | 'unknown';
 
 export interface ErrorInfo {
@@ -15,7 +16,7 @@ export interface ErrorInfo {
   technicalDetails?: string;
 }
 
-const errorMessages: Record<ErrorType, Omit<ErrorInfo, 'technicalDetails'>> = {
+export const errorMessages: Record<ErrorType, Omit<ErrorInfo, 'technicalDetails'>> = {
   network: {
     type: 'network',
     title: '网络连接问题',
@@ -52,6 +53,12 @@ const errorMessages: Record<ErrorType, Omit<ErrorInfo, 'technicalDetails'>> = {
     description: '当前选择的AI模型暂时不可用。',
     suggestion: '请尝试切换到其他可用的模型。'
   },
+  rate_limit: {
+    type: 'rate_limit',
+    title: '请求过于频繁',
+    description: '请求频率超出限制，服务器暂时拒绝了这次请求。',
+    suggestion: '请稍等片刻后再试。'
+  },
   unknown: {
     type: 'unknown',
     title: '发生错误',
@@ -79,6 +86,8 @@ export function analyzeError(error: any): ErrorInfo {
 
   if (errorString.includes('timeout') || errorString.includes('504')) {
     errorType = 'timeout';
+  } else if (errorString.includes('429') || errorString.includes('rate limit') || errorString.includes('too many requests')) {
+    errorType = 'rate_limit';
   } else if (errorString.includes('network') || errorString.includes('fetch') || errorString.includes('cors')) {
     errorType = 'network';
   } else if (errorString.includes('500') || errorString.includes('502') || errorString.includes('503')) {

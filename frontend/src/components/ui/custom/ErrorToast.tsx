@@ -23,6 +23,7 @@ const errorIcons: Record<ErrorType, React.ReactNode> = {
   auth: <Key className="h-5 w-5 text-purple-500" />,
   validation: <XCircle className="h-5 w-5 text-red-500" />,
   model_unavailable: <HelpCircle className="h-5 w-5 text-blue-500" />,
+  rate_limit: <Clock className="h-5 w-5 text-yellow-500" />,
   unknown: <AlertCircle className="h-5 w-5 text-gray-500" />
 };
 
