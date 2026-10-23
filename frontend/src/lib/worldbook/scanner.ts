@@ -10,6 +10,7 @@ import type {
   ScanResult,
   WorldInfoLogic,
 } from './types';
+import { estimateEntriesTokens } from './budget';
 
 /**
  * 解析条目内容中的装饰器（ST 兼容）。
@@ -311,18 +312,10 @@ export class WorldBookScanner {
   }
 
   /**
-   * 估算token数
+   * 估算token数（收口到 budget.ts 的唯一实现，勿在此另写公式）
    */
   private estimateTokens(entries: WorldBookEntry[]): number {
-    let total = 0;
-    for (const entry of entries) {
-      // 粗略估算：1个中文字符约2个token，1个英文单词约1个token
-      const content = entry.content || '';
-      const chineseChars = (content.match(/[\u4e00-\u9fff]/g) || []).length;
-      const englishWords = (content.match(/[a-zA-Z]+/g) || []).length;
-      total += chineseChars * 2 + englishWords;
-    }
-    return total;
+    return estimateEntriesTokens(entries);
   }
 
   /**

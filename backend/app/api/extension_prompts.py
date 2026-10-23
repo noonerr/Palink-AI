@@ -1,7 +1,6 @@
 """Extension Prompts API routes — persistence for injected prompt entries."""
 import logging
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User, Character
 from ..models.extension_prompt import (
     ExtensionPrompt,
@@ -20,11 +20,6 @@ from ..models.extension_prompt import (
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/extension-prompts", tags=["extension-prompts"])
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 def _normalize_role(role_val) -> str:
     """ST extension_prompt_roles: 0=SYSTEM, 1=USER, 2=ASSISTANT。接受 int 或 str。"""

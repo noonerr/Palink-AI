@@ -1,6 +1,5 @@
 """Personas API routes — CRUD for user personas."""
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,15 +8,11 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User, UserSetting
 from ..models.persona import Persona
 
 router = APIRouter(prefix="/api/personas", tags=["personas"])
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 class PersonaCreateRequest(BaseModel):
     id: Optional[str] = None

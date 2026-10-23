@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..character_card import convert_character_to_chara_card
 from ..core import settings as app_settings
+from ..models.base import utc_now_iso as _utc_now_iso
 from ..models import (
     Character,
     CharacterChatMessage,
@@ -43,27 +44,7 @@ from ..models import (
 
 logger = logging.getLogger(__name__)
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _safe_json_loads(value: Any, default: Any) -> Any:
-    if value is None or value == "":
-        return default
-    if isinstance(value, (dict, list)):
-        return value
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
-def _safe_json_dumps(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return "null"
+from ..utils import safe_json_dumps as _safe_json_dumps, safe_json_loads as _safe_json_loads
 
 
 def _st_data_root_for_user(user: User) -> Optional[Path]:

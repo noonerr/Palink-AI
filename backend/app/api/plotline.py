@@ -2,13 +2,13 @@
 import json
 import uuid
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User
 from ..models.plotline import PlotLine, PlotStage, SessionPlotLine
 from ..models.character import CharacterChatSession
@@ -24,11 +24,6 @@ from ..schemas.plotline import (
 router = APIRouter(prefix="/api/plotlines", tags=["plotlines"])
 router_session_pl = APIRouter(prefix="/api/character-sessions", tags=["session-plotline"])
 logger = logging.getLogger(__name__)
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 def _verify_session_owner(session_id: str, user_id: int, db: Session):
     session = db.query(CharacterChatSession).filter(

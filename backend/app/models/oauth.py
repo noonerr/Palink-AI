@@ -1,12 +1,6 @@
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class OAuthAccount(Base):
     __tablename__ = "oauth_accounts"

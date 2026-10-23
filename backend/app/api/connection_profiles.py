@@ -3,7 +3,6 @@
 响应中绝不返回 api_key（即使是加密的），仅返回 has_api_key 布尔值。
 """
 import json
-from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,15 +11,11 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User, ConnectionProfile
 from ..services.crypto_service import encrypt_api_key
 
 router = APIRouter(prefix="/api/connection-profiles", tags=["connection-profiles"])
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 class ConnectionProfileCreateRequest(BaseModel):
     name: str = Field(..., max_length=200)

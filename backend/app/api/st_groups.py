@@ -12,33 +12,14 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from ..core import get_db
+from ..models.base import utc_now_iso as _utc_now_iso
 from ..models import Character, GroupChat, GroupChatSession, User
 from ..services.st_sync_service import convert_jsonl_to_group_chat
 from .silly_tavern import _user_from_request_token, get_st_current_user
 
 router = APIRouter(tags=["st-groups"])
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _safe_json_loads(value: Any, default: Any) -> Any:
-    if value is None or value == "":
-        return default
-    if isinstance(value, (dict, list)):
-        return value
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
-def _safe_json_dumps(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return "null"
+from ..utils import safe_json_dumps as _safe_json_dumps, safe_json_loads as _safe_json_loads
 
 
 def _group_avatar_key(group_id: str) -> str:

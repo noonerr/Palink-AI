@@ -1,12 +1,6 @@
 import uuid
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class Background(Base):
     """用户上传的聊天背景图。

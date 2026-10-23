@@ -22,11 +22,11 @@ ST 侧语义（一手核对，`_reference/sillytavern-1.18.0`）：
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from ..models.base import utc_now_iso as _utc_now_iso
 from ..models import CharacterChatSession, ChatSession, ChatVariable, GenerationPreset, UserSetting
 
 # [批次P3 P3-B 2026-10-21] 数据源**改指** `generation_presets`。
@@ -114,11 +114,6 @@ class PresetOverlayError(Exception):
         super().__init__(message or code)
         self.code = code
         self.message = message or code
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
 
 def _loads(raw: Optional[str]) -> Any:
     if not raw:

@@ -1,6 +1,5 @@
 """Regex Scripts API routes — CRUD + import for SillyTavern-compatible regex scripts."""
 import json
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,17 +8,13 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User
 from ..models.regex_script import RegexScript
 # 正则脚本写入时清除 character_ext 中的预编译缓存，避免使用过期模式
 from .character_ext import invalidate_regex_pattern_cache
 
 router = APIRouter(prefix="/api/regex-scripts", tags=["regex-scripts"])
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 def _parse_json_array(raw: Optional[str], default=None):
     if default is None:

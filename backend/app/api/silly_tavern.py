@@ -3667,21 +3667,19 @@ def _resolve_upload_field(file: UploadFile | None, avatar: UploadFile | None) ->
 
 
 async def _st_read_upload(file: UploadFile, max_size: int) -> bytes:
-    """读取上传文件，超过 max_size 抛 413。"""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_ST_UPLOAD_READ_CHUNK_SIZE)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_size:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Uploaded file too large (max {max_size // (1024 * 1024)}MB)",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """读取上传文件，超过 max_size 抛 413。
+
+    分块循环收口到 utils.read_upload_with_limit（与其余 7 个端点同一实现）；
+    此处只保留 ST 面的限额与 413 文案。
+    """
+    from ..utils import format_upload_limit_mb, read_upload_with_limit
+
+    return await read_upload_with_limit(
+        file,
+        max_size,
+        detail=f"Uploaded file too large (max {format_upload_limit_mb(max_size)}MB)",
+        chunk_size=_ST_UPLOAD_READ_CHUNK_SIZE,
+    )
 
 
 def _sanitize_relative_path(value: str) -> str:

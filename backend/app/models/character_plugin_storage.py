@@ -1,15 +1,9 @@
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class CharacterPluginStorage(Base):
     """角色卡脚本的键值对存档（2026-10-02 P2）。

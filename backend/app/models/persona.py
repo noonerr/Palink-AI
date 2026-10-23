@@ -1,12 +1,6 @@
 import uuid
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class Persona(Base):
     __tablename__ = "personas"

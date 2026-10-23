@@ -1,15 +1,9 @@
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class TTSVoiceBinding(Base):
     __tablename__ = "tts_voice_bindings"

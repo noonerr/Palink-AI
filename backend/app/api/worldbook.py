@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
@@ -15,6 +14,7 @@ from ..core import get_db
 from ..core.cache import cached, invalidate_user_cache
 from ..core.input_validation import sanitize_name, sanitize_text, sanitize_tags
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User
 from ..models.worldbook import WorldBook, WorldBookStage, SessionWorldBook
 from ..services.worldbook_import_utils import (
@@ -178,11 +178,6 @@ def _schedule_worldbook_vector_sync(db: Session, world_book_id: str) -> None:
         return
     if has_vectorized:
         _fire_vector_sync(world_book_id)
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 def _resolve_bindable_character_id(db: Session, user_id: int, character_id: Optional[str]) -> Optional[str]:
     """[WB-CHAR-BIND 2026-10-03] 校验世界书要绑的角色是否属于当前用户。

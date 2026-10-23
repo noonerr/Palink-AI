@@ -1,11 +1,7 @@
 import uuid
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
-from .base import Base
-
-def utc_now():
-    return datetime.now(timezone.utc)
+from .base import Base, utc_now
 
 class Character(Base):
     __tablename__ = "characters"

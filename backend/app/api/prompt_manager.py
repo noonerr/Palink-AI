@@ -1,6 +1,5 @@
 """Prompt Manager API routes — CRUD for prompt presets."""
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..core import get_db
 from ..api.dependencies import get_current_user
+from ..models.base import utc_now as _utc_now
 from ..models import User
 from ..models.prompt_preset import PromptPreset
 from ..services.preset_overlay import (
@@ -26,11 +26,6 @@ from ..services.preset_overlay import (
 )
 
 router = APIRouter(prefix="/api/prompt-manager", tags=["prompt-manager"])
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
 
 class PresetCreateRequest(BaseModel):
     name: str = Field(..., max_length=200)

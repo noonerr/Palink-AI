@@ -1,14 +1,8 @@
 import json
 import uuid
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
 from sqlalchemy.orm import validates
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 # ST 1.18.0 extension_prompt position 枚举（与 script.js:491-496 完全对齐）
 # -1 = NONE          不注入

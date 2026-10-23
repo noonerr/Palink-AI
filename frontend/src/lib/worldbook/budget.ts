@@ -6,6 +6,29 @@
 import type { WorldBookEntry, BudgetConfig, BudgetResult } from './types';
 
 /**
+ * 估算单个条目的 token 数。
+ *
+ * 唯一实现：此前 `scanner.ts` 里还有一份逐字相同的副本（2026-10-23 收口）。
+ * ⚠️ 公式（中文 2 / 英文词 1）与后端 `st_tokenizer_service` 的口径不同，
+ * 这是已知差异，改公式属于行为变更，需单独评估，勿在此顺手改。
+ */
+export function estimateEntryTokens(entry: WorldBookEntry): number {
+  const content = entry.content || '';
+  const chineseChars = (content.match(/[\u4e00-\u9fff]/g) || []).length;
+  const englishWords = (content.match(/[a-zA-Z]+/g) || []).length;
+  return chineseChars * 2 + englishWords;
+}
+
+/** 估算多个条目的总 token 数。 */
+export function estimateEntriesTokens(entries: WorldBookEntry[]): number {
+  let total = 0;
+  for (const entry of entries) {
+    total += estimateEntryTokens(entry);
+  }
+  return total;
+}
+
+/**
  * 默认预算配置
  */
 const DEFAULT_BUDGET_CONFIG: BudgetConfig = {
@@ -169,21 +192,14 @@ export class BudgetManager {
    * 估算单个条目的token数
    */
   private estimateEntryTokens(entry: WorldBookEntry): number {
-    const content = entry.content || '';
-    const chineseChars = (content.match(/[\u4e00-\u9fff]/g) || []).length;
-    const englishWords = (content.match(/[a-zA-Z]+/g) || []).length;
-    return chineseChars * 2 + englishWords;
+    return estimateEntryTokens(entry);
   }
 
   /**
    * 估算多个条目的总token数
    */
   estimateTokens(entries: WorldBookEntry[]): number {
-    let total = 0;
-    for (const entry of entries) {
-      total += this.estimateEntryTokens(entry);
-    }
-    return total;
+    return estimateEntriesTokens(entries);
   }
 
   /**

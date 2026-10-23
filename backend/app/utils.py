@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 
 from .core import settings
+from .core.silent_failure import record as _record_silent_failure
 
 logger = logging.getLogger(__name__)
 
@@ -579,6 +580,34 @@ async def read_upload_with_limit(
             raise HTTPException(status_code=413, detail=detail)
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+# ── JSON 容错读写（2026-10-23 收口）──────────────────────────────────────
+# 收口前 api/st_groups.py 与 services/st_sync_service.py 各有一份逐字相同的实现。
+# 未收口的另两份**语义不同**，故意保留，勿合并：
+#   - api/plugins.py::_safe_json_loads_local —— 只接受 dict，解析出 list/标量一律回退；
+#   - api/silly_tavern.py::_safe_json_loads —— 解析出 None（如字符串 "null"）时回退。
+def safe_json_loads(value, default):
+    """安全解析 JSON；None/空串/非字符串直接回退。返回任意 JSON 类型。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        # once=True：坏数据是热路径，只记第一次，避免刷屏（仍计数）
+        _record_silent_failure("utils.safe_json_loads", exc, once=True)
+        return default
+
+
+def safe_json_dumps(value) -> str:
+    """安全序列化；失败返回 "null"（与 ST 面历史行为一致）。"""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        _record_silent_failure("utils.safe_json_dumps", exc, once=True)
+        return "null"
 
 
 _DANGEROUS_EXTENSIONS = {

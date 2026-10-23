@@ -1,12 +1,6 @@
 import uuid
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
-from .base import Base
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
+from .base import Base, utc_now
 
 class RegexScript(Base):
     """正则脚本持久化模型，兼容 SillyTavern extensions/regex/engine.js 的 RegexScript 结构。
