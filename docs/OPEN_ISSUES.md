@@ -746,18 +746,18 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 
 ---
 
-### [P2-17] L2-3 SSE 消费收口：两侧均已收口，待提交/上线（2026-10-23 · 减重批次）
+### [P2-17] L2-3 SSE 消费收口：✅ 已上线（2026-10-23 · 减重批次）
 
 - **唯一解析器**：`frontend/src/lib/sseStream.ts::consumeSseStream`（认 `data:` 与 `data: ` 两种前缀，按 `\n\n` 分帧）。
-- **已改（均未提交、未上线）**：
+- **已改并上线（commit `a9d282b`，dist 入口 `index-hNul52Df.js`）**：
   - `WorkspaceView.tsx::handleStreamAnalyze` 改调它（删掉手抄的第三份）；
   - `CharacterView.tsx` 新建会话的 SSE 读取改调它（原 `:1544-1595`，只手认带空格的 `'data: '`）。
-  - 新增 `src/lib/__tests__/sse-stream-contract.test.ts`（4 条，全绿）；`tsc --noEmit` rc=0。
+  - 新增 `src/lib/__tests__/sse-stream-contract.test.ts`（4 条）；`tsc --noEmit` rc=0。
 - **动工顺序**：`CharacterView.tsx` 先等「分支选择单一出口」提交（`bdbc97f`，17:03）后才改，避免同文件并发写。
 - **验收**：`npx tsc --noEmit`、`npx vitest run src/lib/__tests__/sse-stream-contract.test.ts`、真机发一条消息看分支选择器初始化。
 - ⚠️ **上线约束**：改 frontend 必须重建 dist；两个 agent 的在制品都落地前**不要重建**，否则会把对方未完成的代码烤进产物。
 
-### [P2-18] L2-4 两套错误模型合并：文案基准需用户拍板（2026-10-23 · 减重批次）
+### [P2-18] L2-4 两套错误模型合并：✅ 已按拍板上线（2026-10-23 · 减重批次）
 
 - **两套并存**：`lib/errorHandler.ts`（98 行，`ErrorInfo` + `analyzeError`，类型含 `model_unavailable`）与
   `lib/error-handler/index.ts`（276 行，`AppError` + 另一个同名 `analyzeError`，枚举含 `model`）。两边 `ErrorType` 互不兼容。
@@ -767,12 +767,20 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 - **合并必然改用户可见措辞** ⇒ 先把两边文案逐条列给用户，选定基准再动（handoff §5.2）。
 - 参考规模：约 -200 行。
 
-### [P2-19] `{{getvar::x}}` 宏不展开（ST 语义缺口，2026-10-23 探针发现）
+> **2026-10-23 已按拍板实施并上线**（commit `a9d282b`）：用户选「以 `lib/errorHandler.ts` 为唯一文案基准」。
+> `AppError` 收成薄层（276 → 103 行），title/suggestion 读 `errorMessages`、描述保留具体错误；
+> 工厂类型改用规范联合（`model` → `model_unavailable`），删除零引用的第二套 `analyzeError`/`useErrorHandler`/枚举；
+> 补 **429 → `rate_limit`**。新增 `app-error-copy-contract.test.ts` 4 例。
+
+### [P2-19] `{{getvar::x}}` 宏不展开 · ✅ 已修（2026-10-23，未上线）
 
 - **事实**：卡片运行时 `substituteParamsCompat`（`runtime-body/part-03.ts:384`）只展开内建宏、`macroRegistry` 注册宏、
   `{{x}}` 直接读 `chatVariableStore`/`globalVariableStore`；`{{getvar::x}}` 原样返回。
 - **对照**：`/getvar` **斜杠命令**是另一条、已实现（`runtime-body/part-07.ts:1435`）。
 - **影响**：卡/插件若在正文或提示词里用 ST 的 `{{getvar::…}}` 宏，会原样显示/原样进提示词。
-- **未证**：真实卡是否依赖该宏（R1 探针只跑运行时，未跑第三方插件）；插件也可能自己注册 `getvar` 宏（`macroRegistry`）。
-- **下一步**：真实卡冒烟一次，命中则补 `getvar/getglobalvar/getlocalvar` 宏展开（约 10 行，先定与 `{{x}}` 的优先级）。
-- 取证：`HANDOFF_2026-10-23_减重与流式改造.md` §9.4。
+- **使用证据（2026-10-23）**：DB 全库 `LIKE '%getvar::%'` **0 命中**（基数：characters 28 / messages 233 /
+  plugin_scripts 2 / world_book_stages 328 行）⇒ 现有数据零依赖，属兼容性补齐。
+- **已修（未上线）**：`part-03.ts` 宏回调新增 `getvar` / `getglobalvar`（`::` 与空格两种；getvar 先 chat 后 global；
+  缺失返回空串；不加 `getlocalvar`——上游没有该宏）。新增 14 例契约测试。
+- **残余风险**：故意展示字面 `{{getvar::x}}` 的文本会被吞成空串（DB 0 命中）；不递归展开变量值内的宏（与现状一致）。
+- 取证：`HANDOFF_2026-10-23_减重与流式改造.md` §9.4 / §10.2。

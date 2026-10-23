@@ -38,6 +38,13 @@
   前端 `switchBranch` 补 `setSessionVariables`；后端 +2 用例（11 passed）。
 - **上线记录（2026-10-23）**：commit `a9d282b`；后端已换镜像且 healthy；前端入口 `index-hNul52Df.js`（HTTP 200）；
   dist 617MB→17MB，9,704 个孤儿 chunk 已隔离到 `_BACKUPS/_QUARANTINE_2026-10-23_dist孤儿chunk/`。
+- **R2 已修（已提交、未上线）**：根因是沙箱 `script.js` 缺 `extension_prompts` 导出（不是 settings）；
+  新增实时 Proxy 视图 `buildExtensionPromptsView()`，4 例测试走真实 `PluginSandbox.executePluginCode`。
+  真机验证需临时导入 Smart Memory 1.8.3（待用户点头）。
+- **P2-19 已修（已提交、未上线）**：`{{getvar::}}` / `{{getglobalvar::}}` 宏展开（DB 全库 0 命中，属兼容性补齐）；
+  14 例契约测试。详见 `OPEN_ISSUES.md` [P2-19]。
+- **R4 查完：暂不改**：群消息 0 含 variables、群生成不传 `group_id`，证据不足；要动先补群组 as_of 数据通道。
+- **R5 查完：待拍板**：32 条 NULL 里 30 个会话只有 1 条分支；推荐拆「从当前进度分叉 / 从零开新故事」两个显式动作。
 
 ### [已收官·真机复验闭环] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0–S5 全部合入 · 2026-10-16 真机复验收官）
 

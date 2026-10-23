@@ -368,3 +368,118 @@ export const promptInjection = {
     this._detached = {};
   },
 };
+
+// ============================================================
+// ST 兼容：extension_prompts 的**实时视图**（供插件沙箱 / script.js 导出）
+// ============================================================
+
+/**
+ * 读当前角色的聚合条目，并为每条补 `value` 别名（ST 原生用 value，Palink 内部用 content）。
+ *
+ * 取用口径与 `getContext.ts` 的 extension_prompts 完全一致：
+ * `promptInjection.getPromptsForGeneration(getActivePromptCharacter())`。
+ * 任何异常都退化为空表 —— 调用方是第三方插件，读失败不能让插件崩。
+ */
+function readLiveExtensionPrompts(): Record<string, any> {
+  try {
+    const raw = promptInjection.getPromptsForGeneration(getActivePromptCharacter()) ?? {};
+    const out: Record<string, any> = {};
+    for (const [key, entry] of Object.entries(raw)) {
+      out[key] = { ...(entry as any), value: (entry as any)?.content ?? '' };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * [EXT-PROMPTS-VIEW] 构造 `extension_prompts` 的**实时 Proxy 视图**。
+ *
+ * 为什么必须是 Proxy 而不是快照：ST 插件的典型写法是顶层
+ * `import { extension_prompts } from '../../../../script.js'`（转译后
+ * `var { extension_prompts } = require('script.js')`），拿到引用**之后**才在
+ * `jQuery(async () => { setExtensionPrompt(...) })` 里注册自己的 prompt。
+ * 一次性快照会让这些后注册的键永远读不到（Smart Memory 1.8.3 的
+ * `updateTokenDisplay` 正因此抛 `Cannot read properties of undefined`）。
+ *
+ * 读写语义：
+ *   - 读（get / has / ownKeys / getOwnPropertyDescriptor）：实时查
+ *     `promptInjection.getPromptsForGeneration(getActivePromptCharacter())`，
+ *     每条补 `value = content ?? ''`；
+ *   - 写（set）：只写进**本地 overlay**，不猜 position/depth 去调
+ *     setExtensionPrompt（避免把插件的赋值意图变成错误的注入位置）；
+ *   - 删（deleteProperty）：只删 overlay。**源条目删不掉** —— 要移除请走
+ *     `setExtensionPrompt` / `removeExtensionPrompt`，删除后源值会重新显现；
+ *   - symbol 键与任何读异常都有兜底，读失败返回「无此键」，绝不抛。
+ *
+ * @param overlay 本地写入覆盖层（不传则每次调用新建一份，便于按插件隔离）
+ */
+export function buildExtensionPromptsView(
+  overlay: Record<string, any> = {},
+): Record<string, any> {
+  const hasOwn = (obj: object, key: PropertyKey): boolean =>
+    Object.prototype.hasOwnProperty.call(obj, key);
+
+  return new Proxy(overlay, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') {
+        try {
+          return (target as any)[prop];
+        } catch {
+          return undefined;
+        }
+      }
+      if (hasOwn(target, prop)) return (target as any)[prop];
+      return readLiveExtensionPrompts()[prop];
+    },
+    has(target, prop) {
+      if (typeof prop === 'symbol') return prop in target;
+      if (hasOwn(target, prop)) return true;
+      return hasOwn(readLiveExtensionPrompts(), prop);
+    },
+    ownKeys(target) {
+      const keys = new Set<string>(Object.keys(target));
+      try {
+        for (const key of Object.keys(readLiveExtensionPrompts())) keys.add(key);
+      } catch {
+        // 读失败就只报 overlay 的键
+      }
+      return Array.from(keys);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      // Proxy 不变量：目标对象上不存在的键只能报 configurable: true 的描述符
+      // （目标 extensible 时合法），故不使用真实的 writable/enumerable 语义。
+      if (hasOwn(target, prop)) {
+        return {
+          value: (target as any)[prop],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        };
+      }
+      const live = readLiveExtensionPrompts();
+      if (hasOwn(live, prop)) {
+        return { value: live[prop], writable: true, enumerable: true, configurable: true };
+      }
+      return undefined;
+    },
+    set(target, prop, value) {
+      try {
+        (target as any)[prop] = value;
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    deleteProperty(target, prop) {
+      try {
+        delete (target as any)[prop];
+      } catch {
+        // ignore
+      }
+      return true;
+    },
+  }) as Record<string, any>;
+}

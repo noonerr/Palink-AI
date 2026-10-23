@@ -422,6 +422,21 @@ export const RUNTIME_BODY_PART_03 = `                    message: 'Activate hook
       if (dynamicValue !== undefined) return String(dynamicValue ?? '');
       if (macroRegistryCompat.has(macroName)) return String(getMacroValueCompat(macroRegistryCompat.get(macroName), macroName, rawMatch) ?? '');
       if (macroRegistryCompat.has(lower)) return String(getMacroValueCompat(macroRegistryCompat.get(lower), macroName, rawMatch) ?? '');
+      // [P2-19] 作用域取变量宏：{{getvar::name}} 先 chat 再 global（上游 ST 1.18 语义），
+      // {{getglobalvar::name}} 只认 global；两种分隔（:: 与空格）都认；取不到返回空串。
+      // 上游没有 getlocalvar 宏（只有斜杠命令），这里不提供。
+      const scopedVarMatch = /^(getglobalvar|getvar)(?:::|\\s+)(.*)$/i.exec(macroName);
+      if (scopedVarMatch) {
+        const scopedVarName = String(scopedVarMatch[2] || '').trim();
+        // 空名 / 只有点号：getByPath 会把整个 store 回退出来（[object Object]），必须挡掉
+        if (!scopedVarName || !/[^.]/.test(scopedVarName)) return '';
+        if (scopedVarMatch[1].toLowerCase() === 'getvar') {
+          const chatScopedValue = getByPath(chatVariableStore, scopedVarName, undefined);
+          if (chatScopedValue !== undefined) return String(chatScopedValue ?? '');
+        }
+        const globalScopedValue = getByPath(globalVariableStore, scopedVarName, undefined);
+        return globalScopedValue === undefined ? '' : String(globalScopedValue ?? '');
+      }
       if (Object.prototype.hasOwnProperty.call(builtIns, lower)) return String(builtIns[lower] ?? '');
       const messageValue = getMessageMacroValueCompat(lower);
       if (messageValue !== undefined) return String(messageValue ?? '');

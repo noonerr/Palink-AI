@@ -6,7 +6,7 @@
 import type { PluginManifest, PluginContext } from './types';
 import type { PluginContextWithHooks } from './context';
 import { PluginStatus } from './types';
-import { promptInjection } from '@/services/prompt-injection';
+import { promptInjection, buildExtensionPromptsView } from '@/services/prompt-injection';
 import { substituteParamsExtended } from '@/lib/sillytavern/macros';
 // [批次E2b 2026-10-21] macros/macro-system.js 的真实现：把插件注册的宏接进
 // substituteParamsExtended 同一张宏注册表（此前是空对象，macros.register not a function）。
@@ -4720,6 +4720,13 @@ export class PluginSandbox {
       enumTypes: { command: 'command', enum: 'enum', variable: 'variable', name: 'name' },
     };
 
+    // [EXT-PROMPTS-VIEW 2026-10-23] script.js 导出的 extension_prompts 必须是
+    // **实时 Proxy**：插件通常 `import { extension_prompts } from '../../../../script.js'`
+    // 之后再 setExtensionPrompt 注册自己的条目，一次快照会让后注册的键永远读不到
+    // （Smart Memory 1.8.3 的 updateTokenDisplay 因此抛 Cannot read properties of undefined）。
+    // 取用口径与 getContext.ts 同源（services/prompt-injection 的 buildExtensionPromptsView）。
+    const extensionPromptsView = buildExtensionPromptsView();
+
     const moduleMap: Record<string, Record<string, unknown>> = {
       // script.js — ST 主脚本（最常被导入的模块）
       'script.js': {
@@ -4832,6 +4839,13 @@ export class PluginSandbox {
           ? stContext.generateRaw
           : async () => '',
         setExtensionPrompt: sandbox.setExtensionPrompt,
+        // [EXT-PROMPTS-VIEW 2026-10-23] ST script.js:8904 导出的 extension_prompts。
+        // 此前缺失 ⇒ 插件 `var { extension_prompts } = require('script.js')` 拿到
+        // undefined ⇒ `extension_prompts[t.key]?.value` 抛 Cannot read properties of undefined。
+        // getter 返回同一个实时 Proxy（每会话/每插件一份 overlay），不随 import 时点固化。
+        get extension_prompts() {
+          return extensionPromptsView;
+        },
         extension_prompt_types: { NONE: -1, IN_PROMPT: 0, IN_CHAT: 1, BEFORE_PROMPT: 2 },
         extension_prompt_roles: { SYSTEM: 0, USER: 1, ASSISTANT: 2 },
         getMaxPromptTokens: () => 4096,
