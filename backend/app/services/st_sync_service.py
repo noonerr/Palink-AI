@@ -295,15 +295,14 @@ def _chat_header(session: CharacterChatSession, character: Character, user: User
 
 
 def _active_branch(db: Session, session: CharacterChatSession) -> Optional[CharacterChatSessionBranch]:
-    return (
-        db.query(CharacterChatSessionBranch)
-        .filter(
-            CharacterChatSessionBranch.session_id == session.id,
-            CharacterChatSessionBranch.is_active.is_(True),
-        )
-        .order_by(CharacterChatSessionBranch.created_at.desc())
-        .first()
-    )
+    """与在线接口共用同一条「该用哪条分支」规则（`services.branch_resolution`）。
+
+    本函数原先只认 `is_active`，没人标时返回 None ⇒ 同步出去的聊天只有
+    `branch_id IS NULL` 的楼层，与页面显示的故事线不是同一条。
+    """
+    from .branch_resolution import resolve_active_branch
+
+    return resolve_active_branch(db, session.id)
 
 
 def _chat_messages(db: Session, session: CharacterChatSession, branch: Optional[CharacterChatSessionBranch]) -> list[CharacterChatMessage]:

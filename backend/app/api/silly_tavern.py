@@ -49,6 +49,10 @@ from ..models import (
     WorldBookStage,
 )
 from ..services.character_import_service import CharacterImportService
+from ..services.branch_resolution import (
+    ensure_branch as _ensure_branch,
+    resolve_active_branch_detail,
+)
 # [批次P2 P2-1 2026-10-21] 内部簿记键前缀的**唯一来源**。此前这里是手写的前缀字符串，
 # 与 services/preset_overlay.py 的常量各写一份 ⇒ 改一处漏一处。
 from ..services.preset_overlay import INTERNAL_KEY_PREFIX
@@ -1072,36 +1076,34 @@ def _ensure_session(
     return session
 
 
-def _active_branch(db: Session, session: CharacterChatSession) -> Optional[CharacterChatSessionBranch]:
-    branch = db.query(CharacterChatSessionBranch).filter(
-        CharacterChatSessionBranch.session_id == session.id,
-        CharacterChatSessionBranch.is_active == True,
-    ).first()
-    if branch:
-        return branch
-    branch = db.query(CharacterChatSessionBranch).filter(
-        CharacterChatSessionBranch.session_id == session.id,
-    ).order_by(CharacterChatSessionBranch.created_at.desc()).first()
-    if branch:
-        branch.is_active = True
-        db.flush()
-        return branch
-    branch = CharacterChatSessionBranch(
-        session_id=session.id,
-        branch_name="Branch 1",
-        is_active=True,
-        created_at=datetime.now(timezone.utc),
-        last_message_at=datetime.now(timezone.utc),
-    )
-    db.add(branch)
-    db.flush()
-    return branch
+def _active_branch(
+    db: Session,
+    session: CharacterChatSession,
+    *,
+    ensure: bool = False,
+) -> Optional[CharacterChatSessionBranch]:
+    """「该用哪条分支」——**纯读**，唯一规则在 `services.branch_resolution`。
+
+    历史病灶：旧实现没人标 active 时会把**最新建的**分支 `is_active = True` 并
+    `flush()`。`get_db` 平时不 commit 所以改动蒸发，但 `POST /api/chats/save`
+    自带 `db.commit()` ⇒ 存一次盘就把用户切到另一条故事线。现在判定不再写库；
+    建分支只发生在显式写路径（`ensure=True`，仅 `chats/save` 传）。
+    """
+    resolution = resolve_active_branch_detail(db, session.id)
+    if resolution.branch is not None:
+        return resolution.branch
+    if not ensure:
+        return None
+    return _ensure_branch(db, session.id)
 
 
 def _branch_for_context(
     db: Session,
     session: CharacterChatSession,
     branch_id: Optional[str] = None,
+    *,
+    ensure: bool = False,
+    switch: bool = True,
 ) -> Optional[CharacterChatSessionBranch]:
     resolved_branch_id = str(branch_id or "").strip()
     if resolved_branch_id:
@@ -1111,7 +1113,9 @@ def _branch_for_context(
         ).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found")
-        if not branch.is_active:
+        # 显式点了某条分支（X-Palink-Branch-Id）= 用户请求的切换，不是兜底推断。
+        # `switch=False` 给读形状的调用方（导出/取聊天）：只按这条分支读，不动标记。
+        if switch and not branch.is_active:
             db.query(CharacterChatSessionBranch).filter(
                 CharacterChatSessionBranch.session_id == session.id,
                 CharacterChatSessionBranch.is_active == True,
@@ -1119,7 +1123,7 @@ def _branch_for_context(
             branch.is_active = True
             db.flush()
         return branch
-    return _active_branch(db, session)
+    return _active_branch(db, session, ensure=ensure)
 
 
 def _message_swipes(message: CharacterChatMessage) -> list[str]:
@@ -2925,7 +2929,9 @@ async def st_save_chat(
     character = _character_for_avatar(db, user, _request_avatar(req))
     file_name = _request_file_name(req)
     session = _ensure_session(db, user, character, file_name, request.headers.get("X-Palink-Session-Id"))
-    branch = _branch_for_context(db, session, request.headers.get("X-Palink-Branch-Id"))
+    # ensure=True：存档是显式写路径，会话连分支行都没有时要能建出第一条
+    # （插件下一枪不能打空）。但「建」只发生在零分支时，绝不改写既有 is_active。
+    branch = _branch_for_context(db, session, request.headers.get("X-Palink-Branch-Id"), ensure=True)
     if not branch:
         raise HTTPException(status_code=500, detail="Unable to create branch")
 
@@ -4102,7 +4108,10 @@ async def st_export_chat(
     session = _session_for_file(db, user, character, file_name, req.chat_id)
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found")
-    branch = _branch_for_context(db, session, request.headers.get("X-Palink-Branch-Id"))
+    # 导出是读形状：带了 X-Palink-Branch-Id 就按那条分支导出，但**不**写 is_active。
+    branch = _branch_for_context(
+        db, session, request.headers.get("X-Palink-Branch-Id"), switch=False
+    )
     header = _chat_header(db, session, character, user, branch)
     messages = _chat_messages(db, session, branch)
     # 构建 ST 消息列表 (header + messages)
@@ -5851,7 +5860,12 @@ def _resolve_session_from_target(
     if session is None:
         return None, None
     branch_id = request.headers.get("X-Palink-Branch-Id") if request else None
-    branch = _branch_for_context(db, session, branch_id) if branch_id else _active_branch(db, session)
+    # 取聊天上下文是读形状：按指定分支读，但不写 is_active（读路径禁写红线）。
+    branch = (
+        _branch_for_context(db, session, branch_id, switch=False)
+        if branch_id
+        else _active_branch(db, session)
+    )
     return session, branch
 
 

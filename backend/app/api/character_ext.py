@@ -35,6 +35,10 @@ from ..models import User, Character, CharacterChatSession, CharacterChatMessage
 from ..models.system import UserSetting, GenerationPreset
 from ..character_card import create_png_with_chara_card, convert_character_to_chara_card
 from ..services.character_import_service import CharacterImportService, PngCharacterCardParser
+from ..services.branch_resolution import (
+    list_session_branches_deterministic,
+    resolve_active_branch_detail,
+)
 from ..memory_module.service import MemoryService
 from ..memory_module.storage import delete_by_message_id
 from ..memory_module.mirror import sync_message_memory
@@ -2954,16 +2958,10 @@ async def get_character_session_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    active_branch = db.query(CharacterChatSessionBranch).filter(
-        CharacterChatSessionBranch.session_id == session_id,
-        CharacterChatSessionBranch.is_active == True
-    ).first()
-
-    target_branch = active_branch
-    if not target_branch:
-        target_branch = db.query(CharacterChatSessionBranch).filter(
-            CharacterChatSessionBranch.session_id == session_id
-        ).order_by(CharacterChatSessionBranch.created_at.desc()).first()
+    # 唯一规则（有 active 用它；否则用装着最新消息的那条）由 branch_resolution 拥有。
+    # 旧实现此处 created_at.desc() 兜底，与前端/分支树给出不同答案。
+    _resolution = resolve_active_branch_detail(db, session_id)
+    target_branch = _resolution.branch
 
     # MVU 变量：从 chat_metadata 提取会话级 stat_data 下发前端
     session_variables: dict = {"stat_data": {}}
@@ -3009,6 +3007,7 @@ async def get_character_session_messages(
                 db, session_id, target_branch.id, result.get("messages") or []
             )
             result["variables"] = session_variables
+            result["active_branch_id"] = _resolution.branch_id
         return result
 
     query = db.query(CharacterChatMessage).filter(
@@ -3051,6 +3050,7 @@ async def get_character_session_messages(
         "messages": _page_msgs,
         "has_more": has_more,
         "variables": session_variables,
+        "active_branch_id": _resolution.branch_id,
     }
 
 
@@ -3164,14 +3164,8 @@ async def append_character_message(
     if not content.strip():
         raise HTTPException(status_code=422, detail="Message content is empty")
 
-    active_branch = db.query(CharacterChatSessionBranch).filter(
-        CharacterChatSessionBranch.session_id == session_id,
-        CharacterChatSessionBranch.is_active == True,
-    ).first()
-    if not active_branch:
-        active_branch = db.query(CharacterChatSessionBranch).filter(
-            CharacterChatSessionBranch.session_id == session_id,
-        ).order_by(CharacterChatSessionBranch.created_at.desc()).first()
+    # 唯一规则同 /messages：有 active 用它，否则装着最新消息的那条。不再本地发明兜底。
+    active_branch = resolve_active_branch_detail(db, session_id).branch
 
     role = (req.role or "assistant").strip().lower()
     if role not in {"assistant", "user", "system"}:
@@ -3581,9 +3575,7 @@ async def get_branches(
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    branches = db.query(CharacterChatSessionBranch).filter(
-        CharacterChatSessionBranch.session_id == session_id
-    ).all()
+    branches = list_session_branches_deterministic(db, session_id)
     if not branches:
         # Auto-create main branch (re-check after commit to prevent race condition)
         existing = db.query(CharacterChatSessionBranch).filter(
@@ -3601,21 +3593,29 @@ async def get_branches(
             db.commit()
             db.refresh(main_branch)
             branches = [main_branch]
-    return [
-        {
-            "id": b.id,
-            "session_id": b.session_id,
-            "branch_name": b.branch_name,
-            "is_active": b.is_active,
-            "parent_branch_id": b.parent_branch_id,
-            "parent_message_id": b.parent_message_id,
-            "is_frozen": b.is_frozen,
-            "is_favorited": b.is_favorited,
-            "last_message_at": b.last_message_at,
-            "created_at": b.created_at,
-        }
-        for b in branches
-    ]
+    # 唯一规则由 services.branch_resolution 拥有；响应显式下发结论，
+    # 前端不再自己用 max(last_message_at||created_at) 推一遍。
+    resolution = resolve_active_branch_detail(db, session_id)
+    return {
+        "branches": [
+            {
+                "id": b.id,
+                "session_id": b.session_id,
+                "branch_name": b.branch_name,
+                "is_active": b.is_active,
+                "parent_branch_id": b.parent_branch_id,
+                "parent_message_id": b.parent_message_id,
+                "is_frozen": b.is_frozen,
+                "is_favorited": b.is_favorited,
+                "last_message_at": b.last_message_at,
+                "created_at": b.created_at,
+            }
+            for b in branches
+        ],
+        "active_branch_id": resolution.branch_id,
+        "active_branch_source": resolution.source,
+        "total": len(branches),
+    }
 
 
 @router_sessions.post("/{session_id}/branches")
@@ -3994,7 +3994,10 @@ async def get_branch_tree(
 
     branches = db.query(CharacterChatSessionBranch).filter(
         CharacterChatSessionBranch.session_id == session_id
-    ).order_by(CharacterChatSessionBranch.created_at).all()
+    ).order_by(
+        CharacterChatSessionBranch.created_at.asc().nulls_last(),
+        CharacterChatSessionBranch.id.asc(),
+    ).all()
 
     if not branches:
         existing = db.query(CharacterChatSessionBranch).filter(
@@ -4095,7 +4098,8 @@ async def get_branch_tree(
             "nodes": pairs,
         })
 
-    active_branch = next((b for b in branches if b.is_active), None)
+    # 无人标 active 时旧实现返回 None，与 /messages、/branches 互相矛盾。走同一规则。
+    active_branch_id = resolve_active_branch_detail(db, session_id).branch_id
 
     character_info = None
     if session.character_id:
@@ -4112,7 +4116,7 @@ async def get_branch_tree(
 
     return {
         "branches": result_branches,
-        "active_branch_id": active_branch.id if active_branch else None,
+        "active_branch_id": active_branch_id,
         "character_info": character_info,
     }
 
@@ -4243,16 +4247,23 @@ async def delete_branch(
         CharacterChatSessionBranch.id.in_(branch_ids_to_delete)
     ).delete(synchronize_session=False)
 
-    # 如果删除了活动分支，自动切换到剩余的第一个分支
+    # 删掉活动分支后由**同一规则**决定接管者：剩下的分支里装着最新消息的那条
+    # （没有消息则最新建的那条）。旧实现是无 ORDER BY 的 first()，结果由数据库决定。
+    activated_branch_id = None
     if was_active:
-        remaining = db.query(CharacterChatSessionBranch).filter(
-            CharacterChatSessionBranch.session_id == session_id
-        ).first()
-        if remaining:
-            remaining.is_active = True
+        remaining = resolve_active_branch_detail(db, session_id).branch
+        if remaining is not None:
+            if not remaining.is_active:
+                remaining.is_active = True
+            activated_branch_id = remaining.id
 
     db.commit()
-    return {"status": "ok", "deleted_branches": branch_ids_to_delete, "was_active": was_active}
+    return {
+        "status": "ok",
+        "deleted_branches": branch_ids_to_delete,
+        "was_active": was_active,
+        "activated_branch_id": activated_branch_id,
+    }
 
 
 # ───────────────────────────────────────────────

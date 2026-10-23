@@ -23,6 +23,7 @@ import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
 import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
+import { normalizeBranchListResponse, pickSelectedBranch } from '@/lib/branch-selection';
 import { RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { fetchPresetSelection } from '@/lib/promptPresetSelection';
@@ -692,20 +693,13 @@ export function CharacterView({
   const loadBranches = useCallback(async (sessionId: string) => {
     try {
       const data = await api.get(`/api/character-sessions/${sessionId}/branches`);
-      setBranches(data);
-      
-      // 优先选择 is_active 的分支
-      const active = data.find((b: CharacterChatSessionBranch) => b.is_active);
+      // 后端下发 { branches, active_branch_id, active_branch_source }，
+      // 判定规则在后端唯一拥有；前端只消费，不再自己按 last_message_at 排序。
+      const payload = normalizeBranchListResponse(data);
+      setBranches(payload.branches);
+      const active = pickSelectedBranch(payload);
       if (active) {
         setSelectedBranch(active);
-      } else if (data.length > 0) {
-        // 如果没有 is_active 的分支，选择最新的分支（按 created_at 或 last_message_at 排序）
-        const sortedBranches = [...data].sort((a, b) => {
-          const timeA = a.last_message_at || a.created_at || '';
-          const timeB = b.last_message_at || b.created_at || '';
-          return new Date(timeB).getTime() - new Date(timeA).getTime();
-        });
-        setSelectedBranch(sortedBranches[0]);
       }
     } catch (e) {
       console.error('Failed to load branches:', e);
@@ -832,8 +826,9 @@ export function CharacterView({
       }
 
       const branchesData = await api.get(`/api/character-sessions/${selectedSession.id}/branches`);
-      setBranches(branchesData);
-      const activeBranch = branchesData.find((b: CharacterChatSessionBranch) => b.is_active);
+      const branchPayload = normalizeBranchListResponse(branchesData);
+      setBranches(branchPayload.branches);
+      const activeBranch = pickSelectedBranch(branchPayload);
       if (activeBranch) {
         setSelectedBranch(activeBranch);
       }
