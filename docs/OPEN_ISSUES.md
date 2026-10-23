@@ -784,3 +784,22 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
   缺失返回空串；不加 `getlocalvar`——上游没有该宏）。新增 14 例契约测试。
 - **残余风险**：故意展示字面 `{{getvar::x}}` 的文本会被吞成空串（DB 0 命中）；不递归展开变量值内的宏（与现状一致）。
 - 取证：`HANDOFF_2026-10-23_减重与流式改造.md` §9.4 / §10.2。
+
+### [P2-20] 插件写回 `chatMetadata` 的通道被吞：Smart Memory 的 `lastActive` 报错（2026-10-23 · 真机实测）
+
+- **现象（真机，Smart Memory 1.8.3）**：R2 修完 `extension_prompts` 后，原
+  `Cannot read properties of undefined (reading 'smart_memory_long')` 消失，但立刻出现
+  `TypeError: Cannot set properties of undefined (setting 'lastActive')` at `updateLastActive`。
+- **插件侧代码**（`recap.js`）：
+  ```js
+  const context = getContext();
+  if (!context.chatMetadata) context.chatMetadata = {};
+  if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+  context.chatMetadata[META_KEY].lastActive = Date.now();
+  ```
+  报错说明前两层守卫的写入**没有在下一行读回来**（`context.chatMetadata[META_KEY]` 仍为空）。
+- **可疑点（待定位）**：沙箱 `getContext()` 是只带 `get` 陷阱的 Proxy；`chatMetadata` 可能来自
+  每次重建的上下文/只读视图，或写入落到副本。需要一次最小探针确认是「set 被丢」还是「每次 get 返回新对象」。
+- **影响**：所有需要往 `chatMetadata` 写扩展状态的 ST 插件（Smart Memory、状态栏类）都会静默失败或抛错。
+- **下一步**：给 `getContext()` 的 ST 字段做**稳定可写**的 `chatMetadata`（同一引用、写入可见、`saveMetadata()` 能持久化），
+  用同一行快照重导 Smart Memory 复验「lastActive 不再抛错 + 元数据落库」。
