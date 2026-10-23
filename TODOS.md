@@ -38,15 +38,17 @@
   前端 `switchBranch` 补 `setSessionVariables`；后端 +2 用例（11 passed）。
 - **上线记录（2026-10-23）**：commit `a9d282b`；后端已换镜像且 healthy；前端入口 `index-hNul52Df.js`（HTTP 200）；
   dist 617MB→17MB，9,704 个孤儿 chunk 已隔离到 `_BACKUPS/_QUARANTINE_2026-10-23_dist孤儿chunk/`。
-- **R2 已修（已提交、未上线）**：根因是沙箱 `script.js` 缺 `extension_prompts` 导出（不是 settings）；
+- **R2 已修并上线**：根因是沙箱 `script.js` 缺 `extension_prompts` 导出（不是 settings）；
   新增实时 Proxy 视图 `buildExtensionPromptsView()`，4 例测试走真实 `PluginSandbox.executePluginCode`。
-  真机验证需临时导入 Smart Memory 1.8.3（待用户点头）。
-- **P2-19 已修（已提交、未上线）**：`{{getvar::}}` / `{{getglobalvar::}}` 宏展开（DB 全库 0 命中，属兼容性补齐）；
+  真机验证仍需临时导入 Smart Memory 1.8.3（未做）。
+- **P2-19 已修并上线**：`{{getvar::}}` / `{{getglobalvar::}}` 宏展开（DB 全库 0 命中，属兼容性补齐）；
   14 例契约测试。详见 `OPEN_ISSUES.md` [P2-19]。
 - **R4 查完：暂不改**：群消息 0 含 variables、群生成不传 `group_id`，证据不足；要动先补群组 as_of 数据通道。
-- **R5 已按 A 修（已提交、未上线）**：用户拍板「新分支 = 从当前进度分叉」；侧栏按钮改锚
+- **R5 已按 A 修并上线**：用户拍板「新分支 = 从当前进度分叉」；侧栏按钮改锚
   当前分支最后一条 assistant（`resolveBranchCreateAnchor`，5 例测试）；32 条旧根分支不回填。
-  此前只有故事线地图点节点那条是 A，侧栏按钮是"同级/从零"。
+  真机实测：新分支父指针 `30251f44…/2796`、历史随分支、7 帧正常；测试分支已删。
+- **本轮上线（2026-10-23 22:0x）**：commit `5ccd75e` + `fab610b`；前端入口 `index-De2OhDRe.js`（200）；
+  dist 17MB；旧 142 个 chunk 隔离在 `_BACKUPS/_QUARANTINE_2026-10-23_dist孤儿chunk_round2/`。
 
 ### [已收官·真机复验闭环] 三轨并一轨：一次性并轨（2026-10-12 立项 · S0–S5 全部合入 · 2026-10-16 真机复验收官）
 

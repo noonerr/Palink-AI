@@ -772,7 +772,7 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 > 工厂类型改用规范联合（`model` → `model_unavailable`），删除零引用的第二套 `analyzeError`/`useErrorHandler`/枚举；
 > 补 **429 → `rate_limit`**。新增 `app-error-copy-contract.test.ts` 4 例。
 
-### [P2-19] `{{getvar::x}}` 宏不展开 · ✅ 已修（2026-10-23，未上线）
+### [P2-19] `{{getvar::x}}` 宏不展开 · ✅ 已修并上线（2026-10-23）
 
 - **事实**：卡片运行时 `substituteParamsCompat`（`runtime-body/part-03.ts:384`）只展开内建宏、`macroRegistry` 注册宏、
   `{{x}}` 直接读 `chatVariableStore`/`globalVariableStore`；`{{getvar::x}}` 原样返回。
@@ -780,7 +780,7 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 - **影响**：卡/插件若在正文或提示词里用 ST 的 `{{getvar::…}}` 宏，会原样显示/原样进提示词。
 - **使用证据（2026-10-23）**：DB 全库 `LIKE '%getvar::%'` **0 命中**（基数：characters 28 / messages 233 /
   plugin_scripts 2 / world_book_stages 328 行）⇒ 现有数据零依赖，属兼容性补齐。
-- **已修（未上线）**：`part-03.ts` 宏回调新增 `getvar` / `getglobalvar`（`::` 与空格两种；getvar 先 chat 后 global；
+- **已修并上线（2026-10-23，dist 入口 `index-De2OhDRe.js`）**：`part-03.ts` 宏回调新增 `getvar` / `getglobalvar`（`::` 与空格两种；getvar 先 chat 后 global；
   缺失返回空串；不加 `getlocalvar`——上游没有该宏）。新增 14 例契约测试。
 - **残余风险**：故意展示字面 `{{getvar::x}}` 的文本会被吞成空串（DB 0 命中）；不递归展开变量值内的宏（与现状一致）。
 - 取证：`HANDOFF_2026-10-23_减重与流式改造.md` §9.4 / §10.2。
