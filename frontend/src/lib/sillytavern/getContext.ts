@@ -694,6 +694,40 @@ function getFallbackEventSource(): StEventSource {
 // ============================================================
 
 /**
+ * 解析本次上下文要使用的 `chatMetadata` —— 必须是**稳定引用**。
+ *
+ * [P2-20 2026-10-23] 旧实现在 runtime 的 chatMetadata 为空时回退成 `{}` 字面量：
+ * 每次 `getContext()` 都拿到新对象，插件里「先建空对象、下一行写入」的写法会写进
+ * 临时对象（Smart Memory 的 `updateLastActive` 因此抛
+ * `Cannot set properties of undefined (setting 'lastActive')`）。
+ * 现在统一回退到 `window.chat_metadata` 这一个引用，并在缺失时就地创建；
+ * `saveMetadata()`（`_persistChatMetadata`）读的也是它，写回才能真正落库。
+ */
+export function resolveStableChatMetadata(
+  ctx?: { chatMetadata?: unknown } | null,
+): Record<string, any> {
+  const fromCtx = ctx?.chatMetadata;
+  if (
+    fromCtx
+    && typeof fromCtx === 'object'
+    && !Array.isArray(fromCtx)
+    && Object.keys(fromCtx as Record<string, unknown>).length > 0
+  ) {
+    return fromCtx as Record<string, any>;
+  }
+  if (typeof window !== 'undefined') {
+    const w = window as any;
+    if (!w.chat_metadata || typeof w.chat_metadata !== 'object' || Array.isArray(w.chat_metadata)) {
+      w.chat_metadata = {};
+    }
+    return w.chat_metadata as Record<string, any>;
+  }
+  return fromCtx && typeof fromCtx === 'object'
+    ? (fromCtx as Record<string, any>)
+    : {};
+}
+
+/**
  * chat_metadata_updated 事件的来源类型。
  * - load: chat_metadata 加载完成（_chat_header 返回后 / chat 切换）
  * - variable: 变量系统更新（set / delete）
@@ -723,11 +757,7 @@ export function emitChatMetadataUpdated(
       currentMetadata = metadata;
     } else {
       const ctx = runtime?.getContext();
-      currentMetadata = (ctx?.chatMetadata && typeof ctx.chatMetadata === 'object' && Object.keys(ctx.chatMetadata).length > 0)
-        ? ctx.chatMetadata
-        : (typeof window !== 'undefined' && (window as any).chat_metadata
-            ? (window as any).chat_metadata as Record<string, any>
-            : {});
+      currentMetadata = resolveStableChatMetadata(ctx);
     }
     eventSource.emit('chat_metadata_updated', { metadata: currentMetadata, source });
   } catch {
@@ -1772,13 +1802,8 @@ export function getContext(): StGetContext {
   // ST 1.18.0 chat_metadata: prefer runtime ctx, fall back to window.chat_metadata
   // (which CharacterCardRenderer persists to localStorage __palink_chat_metadata
   // so note_prompt / variables / hidden_bots survive reloads before backend sync).
-  const chatMetadata: Record<string, any> = ctx?.chatMetadata
-    && typeof ctx.chatMetadata === 'object'
-    && Object.keys(ctx.chatMetadata).length > 0
-    ? ctx.chatMetadata
-    : ((typeof window !== 'undefined' && (window as any).chat_metadata)
-        ? ((window as any).chat_metadata as Record<string, any>)
-        : {});
+  // [P2-20] 回退必须是稳定引用，否则插件的「先建再写」会落到临时对象上（见 helper 注释）。
+  const chatMetadata: Record<string, any> = resolveStableChatMetadata(ctx);
   const character = ctx?.character ?? { name: '', description: '' };
   const characters: StCharacter[] = ctx?.characters ?? [];
   const name1 = ctx?.name || 'User';

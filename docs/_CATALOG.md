@@ -5,7 +5,7 @@
 >
 > 重新生成：`python scripts/docs/gen_docs_catalog.py`　｜　校验是否过期：`--check`
 >
-> **生成时间：2026-10-23 23:41**　｜　扫描到 **440** 份 markdown
+> **生成时间：2026-10-24 00:45**　｜　扫描到 **440** 份 markdown
 
 ---
 
@@ -121,7 +121,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 | [`HANDOFF_项目全面体检_2026-09-03.md`](./HANDOFF_项目全面体检_2026-09-03.md) | `HANDOFF_` | 2026-09 | 2026-09-01 | 口径已作废 | 2026-10-03 |
 | [`HOTFIX完工报告_安全批次六项_2026-08-24.md`](./HOTFIX完工报告_安全批次六项_2026-08-24.md) | `其他` | 2026-08 | 2026-08-01 | — | 2026-08-24 |
 | [`MOBILE_ST_COMPAT_VERIFY_2026-08-12.md`](./MOBILE_ST_COMPAT_VERIFY_2026-08-12.md) | `其他` | 2026-08 | 2026-10-01 | 已作废 | 2026-10-08 |
-| [`OPEN_ISSUES.md`](./OPEN_ISSUES.md) | `OPEN_` | — | 2026-10-01 | 已完成 | 2026-10-23 |
+| [`OPEN_ISSUES.md`](./OPEN_ISSUES.md) | `OPEN_` | — | 2026-10-01 | 已完成 | 2026-10-24 |
 | [`OPEN_ISSUES_窄屏卡片三修已上线_首屏入口包未解决_2026-10-05.md`](./OPEN_ISSUES_窄屏卡片三修已上线_首屏入口包未解决_2026-10-05.md) | `OPEN_` | 2026-10 | 2026-10-01 | — | 2026-10-05 |
 | [`PALINK_ST_AGENT_TODO.md`](./PALINK_ST_AGENT_TODO.md) | `PALINK_` | — | — | — | 2026-07-23 |
 | [`PALINK_ST_COMPAT_EXECUTION_SPEC.md`](./PALINK_ST_COMPAT_EXECUTION_SPEC.md) | `PALINK_` | — | 2026-06-01 | — | 2026-07-07 |
@@ -238,7 +238,7 @@ find docs -name "*关键词*.md"        # 跨所有子目录
 
 | 文件 | 前缀 | 文件名日期 | 内容首现 | 状态标记 | mtime |
 |---|---|---|---|---|---|
-| [`HANDOFF_2026-10-23_减重与流式改造.md`](./_active/HANDOFF_2026-10-23_减重与流式改造.md) | `HANDOFF_` | 2026-10 | 2026-10-01 | — | 2026-10-23 |
+| [`HANDOFF_2026-10-23_减重与流式改造.md`](./_active/HANDOFF_2026-10-23_减重与流式改造.md) | `HANDOFF_` | 2026-10 | 2026-10-01 | — | 2026-10-24 |
 | [`HANDOFF_2026-10-23_变量与分支批次_交给减重流式agent.md`](./_active/HANDOFF_2026-10-23_变量与分支批次_交给减重流式agent.md) | `HANDOFF_` | 2026-10 | 2026-10-01 | — | 2026-10-23 |
 | [`HANDOFF_S1开工_补功能与iframe生命周期_2026-10-13.md`](./_active/HANDOFF_S1开工_补功能与iframe生命周期_2026-10-13.md) | `HANDOFF_` | 2026-10 | 2026-10-01 | — | 2026-10-13 |
 | [`HANDOFF_S3合并提示词_2026-10-14.md`](./_active/HANDOFF_S3合并提示词_2026-10-14.md) | `HANDOFF_` | 2026-10 | — | — | 2026-10-14 |

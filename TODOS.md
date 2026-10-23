@@ -40,8 +40,9 @@
   dist 617MB→17MB，9,704 个孤儿 chunk 已隔离到 `_BACKUPS/_QUARANTINE_2026-10-23_dist孤儿chunk/`。
 - **R2 已修并上线，真机已验**：根因是沙箱 `script.js` 缺 `extension_prompts` 导出（不是 settings）；
   新增实时 Proxy 视图 `buildExtensionPromptsView()`。2026-10-23 从快照临时恢复 Smart Memory 1.8.3 实测，
-  原 `smart_memory_long` 报错**消失**；但暴露第二个问题——写回 `chatMetadata` 的通道被吞
-  （`lastActive` 抛错），已登记 `OPEN_ISSUES [P2-20]`。测完插件已删，无残留。
+  原 `smart_memory_long` 报错**消失**；同时暴露并修好了第二个问题——写回 `chatMetadata` 的通道被吞
+  （`lastActive` 抛错）：`resolveStableChatMetadata()` 回退到 `window.chat_metadata` 单例，
+  复验不抛错且已落库（[P2-20]）。测完插件已删，测试键已清理。
 - **P2-19 已修并上线**：`{{getvar::}}` / `{{getglobalvar::}}` 宏展开（DB 全库 0 命中，属兼容性补齐）；
   14 例契约测试。详见 `OPEN_ISSUES.md` [P2-19]。
 - **R4 查完：暂不改**：群消息 0 含 variables、群生成不传 `group_id`，证据不足；要动先补群组 as_of 数据通道。
