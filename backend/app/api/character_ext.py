@@ -3665,14 +3665,15 @@ async def create_branch(
 
     branch_name = req.branch_name
     if not branch_name:
-        # 计算同级分支数量（同一父节点下的分支编号）
-        sibling_branches = [
-            b for b in existing_branches
-            if b.parent_branch_id == req.parent_branch_id
-            and b.parent_message_id == req.parent_message_id
-        ]
-        branch_num = len(sibling_branches) + 1
-        branch_name = f"分支 {branch_num}"
+        # [R5 命名 2026-10-23] 会话内全局序号，不再按「同一父节点下的第几个」算：
+        # 改成「从当前进度分叉」后每个分叉点都可能是新节点，按父节点计数会让列表里
+        # 出现多个「分支 1」。取已有「分支 N」的最大 N + 1，删除后也不复用编号。
+        max_branch_num = 0
+        for existing in existing_branches:
+            matched = re.match(r"^分支\s+(\d+)$", (existing.branch_name or "").strip())
+            if matched:
+                max_branch_num = max(max_branch_num, int(matched.group(1)))
+        branch_name = f"分支 {max_branch_num + 1}"
 
     effective_parent_branch_id = req.parent_branch_id
     effective_parent_message_id = req.parent_message_id
