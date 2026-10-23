@@ -178,3 +178,26 @@ F-5 装配结构重构、(b) 单间轨面板可见、乙类小子系统三件（
 - 三面"现状百分比"是**分级估算**（按已对齐判据 / 总判据的档位比例），不是精确测量；引用时按档理解。
 - 15 天交付读数属二手，但其流程带反证与主脑复验，且本日抽查（门禁/部署/挂账 grep）全部吻合，未发现"报告绿、实际红"的样本。
 - 事件行为面（P-2）与 61 项 BLOCKED 判据**本报告同样没有补验**——这本身是结论的一部分，不是遗漏。
+
+---
+
+## 9. 复验记录（2026-10-24 开工前主脑复验 · 逐条对源码/参照树）
+
+> 复验范围：本报告全部承重结论。方法：ST 参照树锚点逐行比对 + Palink 源码实读 + 守卫测试实跑。
+> **结论：主干成立，订正 4 处**（按"只进不出"规矩原文保留，以本节为准）。
+
+### 9.1 成立项（抽验锚点）
+
+- ST 参照锚点**全部属实**：`script.js:5572` `messages.reverse()` / `:5606-5607` `injectIdx = Math.min(depth + totalInsertedMessages, messages.length)`；`openai.js:1367` worldInfoBefore/After 以带 identifier 的 system 进 systemPrompts 数组；`PromptManager.js:1723` isSystemPrompt 判定式。两棵参照树（`/d/SillyTavern-release`、`_reference/sillytavern-1.18.0`）均在场。
+- `character_message_builder.py:304` 尾部 system 追加（`dynamic_parts` join 后 append）属实。
+- 前端世界书公式属实：`budget.ts:15-20` `chineseChars * 2 + englishWords`（减重 L1 合并后仍是该公式）；`getWorldInfoPrompt` 帧内可达（`getContext.ts:2380`）。
+- `extension_settings` 仅命名空间级默认（OBJECT/ARRAY/STRING/BOOLEAN 四组常量，无按扩展子键）属实；`recordStubHitOnce` 在场（`getContext.ts:38/1778`）。
+- TH 83/134（D 51）由守卫测试钉住：`st-gap-ledger-guard`（17 passed）+ `h-tavernhelper-134-contract`（47 passed）本日实跑全绿。
+- 帧内 libs 垫片属实（见 9.2-4，严重度上调）。
+
+### 9.2 订正 4 处
+
+1. **DEC-1 / A-3 的成因描述不准**。depth 0→1 不是"平台适配偏好"，是 `[INJ-CLOSE-TAG-GUARD]`（`roleplay_prompt_assembly.py:2218-2243` 实读）：2026-08-19 实证 deepseek 类推理模型在"最后一条消息是 depth=0 system 注入"时高概率空响应（5 采样 3 空；注入以裸闭合标签结尾则 100% 停止），防护是**双重**的——① depth 0→1 + ② 剥离结尾裸闭合标签行。⇒ **ASM-5 不能简单"撤改写"**：正确做法是保留 ②、A/B 撤 ① 后五轮真机采样；若空响应复现，DEC-1 维持原裁定并把该差异列入 VER-1 白名单（"有实证的平台差异"）。风险等级从"S 级小改"上调为"S 级改动 + 真机采样硬门槛"。
+2. **P-1 secrets 端点数：7 → 8**。实数 `settings/write/read/view/find/delete/rotate/rename`（`silly_tavern.py:6373-6439` 逐行数出）。
+3. **D-1 离屏容器数：统一为 13 个**（不是"9+"或"11"）：9 个插件容器（qr/regex/tts/vectors/caption/translation/summarize/sd/expressions）+ 2 个浮标 wand（translate/token_counter）+ 2 个设置容器（extensions_settings/2），出处 `st-plugins/ADAPTATION.md:184-188`。
+4. **P-7 严重度上调**：帧内 DOMPurify 兜底是**零消毒透传**——`part-02.ts:59` `window.DOMPurify || { sanitize: (value) => String(value ?? '') }`。opaque 帧内大概率没有真 DOMPurify ⇒ 卡若经 `SillyTavern.libs.DOMPurify` 消毒不可信 HTML，得到的是**零保护**。从"取证项"升为**安全敏感优先项**（注意：宿主轨 getContext.ts:42 用的是真 dompurify 包，此条仅指帧内）。
