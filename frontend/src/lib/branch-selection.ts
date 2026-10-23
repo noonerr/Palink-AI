@@ -61,3 +61,34 @@ export function pickSelectedBranch(
     return String(b.id).localeCompare(String(a.id));
   })[0];
 }
+
+/**
+ * 「新分支」主按钮的分叉锚点（2026-10-23 R5 · 用户裁定 A：从当前进度分叉）。
+ *
+ * 侧栏按钮此前只发 `same_level=true`，后端会照抄**活动分支自己的父指针** ⇒
+ * 当前是根分支时新分支也成了根（重新发开场白，等于从零开始）。这里给出 A 语义
+ * 所需的锚点：**当前分支 + 最后一条 assistant 消息**。
+ *
+ * 规则：
+ *   - 系统提示（`extra.ignore === true`，错误占位楼）不算锚点；
+ *   - 没有分支、或整条分支没有任何 assistant 楼 ⇒ 返回 null，
+ *     调用方退回旧的「同级分支」语义（等价于从零）。
+ */
+export function resolveBranchCreateAnchor(
+  branchId: string | null | undefined,
+  messages: ReadonlyArray<{
+    id?: number | string | null;
+    role?: string;
+    extra?: Record<string, unknown>;
+  }>,
+): { parent_branch_id: string; parent_message_id: number | string } | null {
+  if (!branchId) return null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (!msg || msg.role !== 'assistant') continue;
+    if (msg.id === undefined || msg.id === null || msg.id === '') continue;
+    if (msg.extra && msg.extra.ignore === true) continue;
+    return { parent_branch_id: branchId, parent_message_id: msg.id };
+  }
+  return null;
+}

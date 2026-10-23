@@ -24,7 +24,7 @@ import { WorldBookManager } from '@/components/ui/custom/WorldBookManager';
 import { PlotLineManager } from '@/components/ui/custom/PlotLineManager';
 import type { BranchTree } from '@/components/ui/custom/StorylineMap';
 import type { Character, Model, User as UserType, CharacterChatSession, CharacterChatMessage, CharacterChatSessionBranch, GenerationPreset } from '@/types';
-import { normalizeBranchListResponse, pickSelectedBranch } from '@/lib/branch-selection';
+import { normalizeBranchListResponse, pickSelectedBranch, resolveBranchCreateAnchor } from '@/lib/branch-selection';
 import { RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { fetchPresetSelection } from '@/lib/promptPresetSelection';
@@ -724,8 +724,16 @@ export function CharacterView({
         payload.parent_message_id = forkPoint.messageId;
         payload.same_level = false;
       } else {
-        // 创建同级分支
-      payload.same_level = true;
+      // [R5 2026-10-23] 主按钮 = 从当前进度分叉（用户拍板 A）：锚到本分支最后一条 assistant 消息。
+      // 空分支/没有 AI 楼时退回旧的「同级」语义（等价从零）。
+      const anchor = resolveBranchCreateAnchor(selectedBranch?.id, messages);
+      if (anchor) {
+        payload.parent_branch_id = anchor.parent_branch_id;
+        payload.parent_message_id = anchor.parent_message_id;
+        payload.same_level = false;
+      } else {
+        payload.same_level = true;
+      }
       }
 
       const resp = await api.post(`/api/character-sessions/${selectedSession.id}/branches`, payload);
@@ -734,6 +742,8 @@ export function CharacterView({
       if (forkPoint) {
         toast.success(`从节点创建分支 "${branchName}"`);
         setForkPoint(null); // 清除 forkPoint
+      } else if (payload.parent_message_id) {
+        toast.success(`从当前进度创建分支 "${branchName}"`);
       } else {
         toast.success(`分支 "${branchName}" 已创建`);
       }
@@ -746,6 +756,10 @@ export function CharacterView({
       }
       if (resp?.messages?.length > 0) {
         setMessages(resp.messages);
+      } else if (!forkPoint && payload.parent_message_id) {
+        // [R5] 从当前进度分叉后以服务端历史为准：若原分支尾部有"还没被 AI 接住"的用户楼，
+        // 它不在新分支里，不能继续显示（否则下一轮上下文与屏幕不一致）。
+        await loadMessages(selectedSession.id).catch(() => undefined);
       }
     } catch (e: any) {
       console.error('Failed to create branch:', e);
