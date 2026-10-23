@@ -1,11 +1,13 @@
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import hashlib
 import hmac
+import time
 import uuid
 import jwt
 import bcrypt
 from .config import settings
+from .token_blacklist import is_blacklisted
 
 ALGORITHM = "HS256"
 
@@ -65,6 +67,70 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return payload
     except jwt.PyJWTError:
         return None
+
+
+# ── [L2-2 2026-10-23] 认证内核收口 ────────────────────────────────────────
+# 此前 api/dependencies.py::get_current_user 与 api/silly_tavern.py::
+# _user_from_request_token 各自手写一遍「JWT 解码 + jti 黑名单 + sub→User +
+# is_active」，且 ST 面那一份漏了滑动续期。现在逻辑只此一份，各调用方只保留
+# 自己的错误文案（ST 面与原生面的历史 401/400 措辞不同，客户端可能依赖）。
+
+def resolve_user_from_payload(payload: Optional[Dict[str, Any]], db) -> Tuple[Optional[Any], str]:
+    """把 JWT payload 解析成 User。
+
+    Returns:
+        ``(user, reason)``。reason 取值：
+        ``ok`` / ``no_username`` / ``revoked`` / ``no_user`` / ``inactive``。
+        user 仅在 ``ok`` 时非 None。
+
+    刻意**不抛** HTTPException：两套调用方的错误文案不同，由它们各自翻译。
+    """
+    from ..models import User  # 延迟导入：models 不依赖 core，避免启动期环
+
+    if not payload:
+        return None, "no_username"
+    username = payload.get("sub")
+    if not username:
+        return None, "no_username"
+    jti = payload.get("jti")
+    if jti and is_blacklisted(jti):
+        return None, "revoked"
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        return None, "no_user"
+    if not user.is_active:
+        return None, "inactive"
+    return user, "ok"
+
+
+def maybe_refresh_token(
+    request,
+    token: str,
+    payload: Dict[str, Any],
+    *,
+    from_cookie: bool = False,
+) -> None:
+    """[N8-a] 滑动续期：满足条件时把新 token 挂到 ``request.state.token_refresh``。
+
+    由 ``main.py::token_refresh_header_middleware`` 统一读取，写
+    ``X-Palink-Token-Refresh`` 响应头并重设 ``palink_session`` Cookie。
+
+    条件与历史 ``get_current_user`` 完全一致：
+      - 只对显式 Bearer 通道生效（Cookie 通道跳过）；
+      - 带 ``scope`` 的 upload 短时效令牌绝不续期；
+      - 剩余寿命 < ``ACCESS_TOKEN_EXPIRE_MINUTES/3`` 才续。
+
+    永不抛异常（续期是优化，不能影响鉴权结果）。
+    """
+    if request is None or from_cookie or payload.get("scope"):
+        return
+    exp = payload.get("exp")
+    remaining = None
+    if isinstance(exp, (int, float)):
+        remaining = float(exp) - time.time()
+    threshold_seconds = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 / 3.0
+    if remaining is not None and remaining < threshold_seconds:
+        request.state.token_refresh = create_access_token({"sub": payload.get("sub")})
 
 
 def sign_service_user_id(uid: int) -> str:

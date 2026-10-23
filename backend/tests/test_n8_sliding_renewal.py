@@ -52,6 +52,8 @@ class _FakeState:
 class _FakeRequest:
     def __init__(self):
         self.state = _FakeState()
+        self.cookies = {}
+        self.headers = {}
 
 
 def _call_get_current_user(db_session, token: str):
@@ -169,3 +171,191 @@ class TestThresholdContract:
         threshold_seconds = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 / 3.0
         assert threshold_seconds == pytest.approx(240 * 60), \
             "12h 默认下续期阈值应为 4h（spec §2 一步到位定稿）"
+
+
+# ---------------------------------------------------------------------------
+# [L2-2 2026-10-23] ST 兼容面（_user_from_request_token）续期与错误文案
+#
+# 背景：ST 面此前手抄了一份「JWT 解码 + 黑名单 + sub→User」，唯独漏了滑动续期
+# ⇒ 只走 ST 端点（X-Palink-Token / Bearer）的卡插件与外部工具到点就被踢。
+# 现在与原生面共用 core/security 的解码/解析/续期，401 文案逐字保持不变。
+# 这些用例的作用：以后谁再把 ST 面改成另一套实现，下面就会红。
+# ---------------------------------------------------------------------------
+class _FakeStRequest:
+    """带 headers/cookies 的假请求，供直接调 _user_from_request_token。"""
+
+    def __init__(self, *, headers=None, cookies=None):
+        self.state = _FakeState()
+        self.headers = headers or {}
+        self.cookies = cookies or {}
+
+
+def _call_st_user(db_session, token=None, *, headers=None, cookies=None):
+    from app.api.silly_tavern import _user_from_request_token
+
+    req = _FakeStRequest(headers=headers, cookies=cookies)
+    user = _user_from_request_token(req, db_session, token)
+    return user, req
+
+
+class TestStChannelRenewal:
+    """ST 面三种取票通道的续期行为。"""
+
+    def test_st_bearer_low_remaining_renews(self, db_session, test_user):
+        token = _mk_token(test_user.username, minutes=60)
+        _, req = _call_st_user(db_session, headers={"Authorization": f"Bearer {token}"})
+        assert hasattr(req.state, "token_refresh"), "ST Bearer 低寿命令牌必须续期"
+        new_decoded = _decode(req.state.token_refresh)
+        assert new_decoded.get("sub") == test_user.username
+        assert "scope" not in new_decoded
+
+    def test_st_x_palink_token_channel_renews(self, db_session, test_user):
+        """卡插件/外部工具的主通道：X-Palink-Token 头。"""
+        token = _mk_token(test_user.username, minutes=60)
+        _, req = _call_st_user(db_session, headers={"X-Palink-Token": token})
+        assert hasattr(req.state, "token_refresh"), \
+            "X-Palink-Token 通道此前漏续期，必须补上"
+
+    def test_st_bearer_fresh_token_no_renewal(self, db_session, test_user):
+        token = create_access_token({"sub": test_user.username})
+        _, req = _call_st_user(db_session, headers={"Authorization": f"Bearer {token}"})
+        assert not hasattr(req.state, "token_refresh")
+
+    def test_st_cookie_channel_does_not_renew(self, db_session, test_user):
+        """Cookie 通道的续期由 Set-Cookie 覆盖完成，业务层不重复签发。"""
+        token = _mk_token(test_user.username, minutes=60)
+        _, req = _call_st_user(db_session, cookies={"palink_session": token})
+        assert not hasattr(req.state, "token_refresh")
+
+    def test_st_upload_scope_never_renews(self, db_session, test_user):
+        token = _mk_token(test_user.username, minutes=1, scope="upload", with_jti=False)
+        user, req = _call_st_user(db_session, headers={"Authorization": f"Bearer {token}"})
+        assert user.username == test_user.username
+        assert not hasattr(req.state, "token_refresh")
+
+
+class TestStErrorMessagesPreserved:
+    """ST 面 401 文案必须逐字不变（外部客户端可能依赖）。"""
+
+    def test_no_token_is_authentication_required(self, db_session):
+        from fastapi import HTTPException
+        from app.api.silly_tavern import _user_from_request_token
+
+        with pytest.raises(HTTPException) as ei:
+            _user_from_request_token(_FakeStRequest(), db_session)
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Authentication required"
+
+    def test_garbage_token_is_invalid_or_expired(self, db_session):
+        from fastapi import HTTPException
+        from app.api.silly_tavern import _user_from_request_token
+
+        with pytest.raises(HTTPException) as ei:
+            _user_from_request_token(
+                _FakeStRequest(headers={"Authorization": "Bearer not-a-jwt"}), db_session,
+            )
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Invalid or expired token"
+
+    def test_revoked_jti_is_token_revoked(self, db_session, test_user):
+        from fastapi import HTTPException
+        from app.api.silly_tavern import _user_from_request_token
+        from app.core.token_blacklist import add_to_blacklist
+
+        token = _mk_token(test_user.username, minutes=60)
+        jti = _decode(token).get("jti")
+        add_to_blacklist(jti, time.time() + 3600)
+        try:
+            with pytest.raises(HTTPException) as ei:
+                _user_from_request_token(
+                    _FakeStRequest(headers={"Authorization": f"Bearer {token}"}), db_session,
+                )
+            assert ei.value.status_code == 401
+            assert ei.value.detail == "Token has been revoked"
+        finally:
+            from app.core import token_blacklist as tb
+            tb._BLACKLIST.pop(jti, None)
+
+    def test_token_without_sub_is_invalid_token(self, db_session):
+        from fastapi import HTTPException
+        from app.api.silly_tavern import _user_from_request_token
+
+        token = pyjwt.encode(
+            {"jti": uuid.uuid4().hex, "exp": datetime.now(timezone.utc) + timedelta(minutes=60)},
+            settings.SECRET_KEY, algorithm="HS256",
+        )
+        with pytest.raises(HTTPException) as ei:
+            _user_from_request_token(
+                _FakeStRequest(headers={"Authorization": f"Bearer {token}"}), db_session,
+            )
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Invalid token"
+
+    def test_unknown_user_is_invalid_credentials(self, db_session):
+        from fastapi import HTTPException
+        from app.api.silly_tavern import _user_from_request_token
+
+        token = _mk_token("no-such-user-xyz", minutes=60)
+        with pytest.raises(HTTPException) as ei:
+            _user_from_request_token(
+                _FakeStRequest(headers={"Authorization": f"Bearer {token}"}), db_session,
+            )
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Invalid credentials"
+
+
+class TestNativeMessagesPreserved:
+    """原生面 get_current_user 的 401/400 文案同样不得漂移。"""
+
+    def test_no_token_is_could_not_validate(self, db_session):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(get_current_user(token=None, db=db_session, request=_FakeRequest()))
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Could not validate credentials"
+
+    def test_garbage_token_is_could_not_validate(self, db_session):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(get_current_user(token="not-a-jwt", db=db_session, request=_FakeRequest()))
+        assert ei.value.status_code == 401
+        assert ei.value.detail == "Could not validate credentials"
+
+    def test_inactive_user_is_400(self, db_session, test_user):
+        from fastapi import HTTPException
+
+        test_user.is_active = False
+        db_session.add(test_user)
+        db_session.commit()
+        try:
+            token = create_access_token({"sub": test_user.username})
+            with pytest.raises(HTTPException) as ei:
+                asyncio.run(get_current_user(token=token, db=db_session, request=_FakeRequest()))
+            assert ei.value.status_code == 400
+            assert ei.value.detail == "Inactive user"
+        finally:
+            test_user.is_active = True
+            db_session.add(test_user)
+            db_session.commit()
+
+
+class TestStRenewalEndToEnd:
+    """中间件把 ST 面的 request.state.token_refresh 写进响应头。"""
+
+    ENDPOINT = "/api/st/thumbnail?type=svg"  # 先过鉴权，再直接返回 SVG，无副作用
+
+    def test_st_x_palink_token_low_remaining_gets_header(self, client, test_user):
+        token = _mk_token(test_user.username, minutes=60)
+        resp = client.get(self.ENDPOINT, headers={"X-Palink-Token": token})
+        assert resp.status_code == 200, resp.text
+        header_value = resp.headers.get("X-Palink-Token-Refresh")
+        assert header_value, "ST 通道低寿命令牌必须收到续期头（此前漏）"
+        assert _decode(header_value).get("sub") == test_user.username
+
+    def test_st_fresh_token_no_header(self, client, test_user):
+        token = create_access_token({"sub": test_user.username})
+        resp = client.get(self.ENDPOINT, headers={"X-Palink-Token": token})
+        assert resp.status_code == 200, resp.text
+        assert resp.headers.get("X-Palink-Token-Refresh") is None

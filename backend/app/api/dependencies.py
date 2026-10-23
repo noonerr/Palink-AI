@@ -1,13 +1,11 @@
-import time
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-import jwt
 
 from ..core import get_db, settings
-from ..core.token_blacklist import is_blacklisted
+from ..core.security import decode_access_token, maybe_refresh_token, resolve_user_from_payload
 from ..models import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token", auto_error=False)
@@ -52,26 +50,22 @@ async def get_current_user(
     if not token:
         raise credentials_exception
 
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"], options={"verify_signature": True})
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except jwt.PyJWTError:
+    # [L2-2 2026-10-23] 解码 + 用户解析 + 续期收口到 core/security（ST 面共用同一份）。
+    # 错误码与文案逐字保持不变：下面每个分支对应原来的抛点。
+    payload = decode_access_token(token)
+    if payload is None:
         raise credentials_exception
 
-    jti = payload.get("jti")
-    if jti and is_blacklisted(jti):
+    user, reason = resolve_user_from_payload(payload, db)
+    if reason == "revoked":
         raise HTTPException(status_code=401, detail="Token has been revoked")
-
-    user = db.query(User).filter(User.username == username).first()
-    if user is None:
-        raise credentials_exception
-    if not user.is_active:
+    if reason == "inactive":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user"
         )
+    if user is None:  # no_username / no_user
+        raise credentials_exception
 
     # [S-1 N-8 止血] 滑动续期：鉴权成功且剩余寿命 < ACCESS_TOKEN_EXPIRE_MINUTES/3 时，
     # 以同一身份签发新 token（同 sub、全新 jti/exp，不带 scope），挂在
@@ -81,16 +75,7 @@ async def get_current_user(
     # [N8-a] 续期仅对 Bearer 通道生效（token 来自 Cookie 时跳过——Cookie 的更新
     # 由续期响应的 Set-Cookie 覆盖完成）；携带 scope 的 upload 短时效令牌绝不续期
     # （通道隔离不变）。request 为 None（直接调用）或无 Request 上下文时跳过。
-    if request is not None and not token_from_cookie and not payload.get("scope"):
-        exp = payload.get("exp")
-        remaining: Optional[float] = None
-        if isinstance(exp, (int, float)):
-            remaining = float(exp) - time.time()
-        threshold_seconds = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 / 3.0
-        if remaining is not None and remaining < threshold_seconds:
-            from ..core.security import create_access_token
-
-            request.state.token_refresh = create_access_token({"sub": username})
+    maybe_refresh_token(request, token, payload, from_cookie=token_from_cookie)
 
     return user
 

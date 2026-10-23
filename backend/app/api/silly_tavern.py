@@ -26,7 +26,7 @@ from ..core.cache import invalidate_user_cache
 # [PLUGIN-ON-DEMAND] 角色卡导入后的插件识别（实现在 api/plugins.py）
 from .plugins import detect_required_plugins
 from ..core.security import sign_service_user_id
-from ..core.token_blacklist import is_blacklisted
+from ..core.security import decode_access_token, maybe_refresh_token, resolve_user_from_payload
 from ..character_card import (
     convert_character_to_chara_card,
     create_png_with_chara_card,
@@ -601,41 +601,54 @@ def _json_dumps(value: Any) -> str:
 # silly_tavern_mode 已于 2026-09-04 A1 全链删除（模型列/补列行/schema/API，alembic 0062）。
 
 
-def _token_from_request(request: Request, token: Optional[str] = None) -> Optional[str]:
+def _st_token_channel(request: Request, token: Optional[str] = None) -> tuple[Optional[str], bool]:
+    """取 token，并告诉调用方它是否来自 Cookie。
+
+    第二返回值决定能否滑动续期（Cookie 通道的续期由 Set-Cookie 覆盖完成，
+    不需要在业务层重复签发）。``_token_from_request`` 保留为薄封装，
+    60+ 个 ST 端点的调用点不变。
+    """
     if token:
-        return token
+        return token, False
     proxy_token = request.headers.get("X-Palink-Token") or request.headers.get("X-Palink-Auth-Token")
     if proxy_token:
-        return proxy_token.strip()
+        return proxy_token.strip(), False
     auth_header = request.headers.get("Authorization") or ""
     if auth_header.lower().startswith("bearer "):
-        return auth_header.split(" ", 1)[1].strip()
+        return auth_header.split(" ", 1)[1].strip(), False
     # [N8-c 终态适配] Bearer 退役后 Palink 前端为纯 Cookie 认证——加
     # palink_session Cookie 兜底（N8-a 登录时下发，sub=username 与本函数
     # 解码语义一致，jti 黑名单检查在 _user_from_request_token 内生效）。
     # 显式携带但无效的 Bearer 仍不回退（凭据语义明确失败），与主依赖
     # get_current_user 的双轨语义对齐。覆盖 get_st_current_user 全部
     # 60+ 端点（导入/导出/tokenizer/merge-attributes 等）。
-    return request.cookies.get("palink_session") or None
+    return request.cookies.get("palink_session") or None, True
+
+
+def _token_from_request(request: Request, token: Optional[str] = None) -> Optional[str]:
+    return _st_token_channel(request, token)[0]
 
 
 def _user_from_request_token(request: Request, db: Session, token: Optional[str] = None) -> User:
-    auth_token = _token_from_request(request, token)
+    auth_token, from_cookie = _st_token_channel(request, token)
     if not auth_token:
         raise HTTPException(status_code=401, detail="Authentication required")
-    try:
-        payload = jwt.decode(auth_token, app_settings.SECRET_KEY, algorithms=["HS256"], options={"verify_signature": True})
-        username = payload.get("sub")
-    except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
-    jti = payload.get("jti")
-    if jti and is_blacklisted(jti):
-        raise HTTPException(status_code=401, detail="Token has been revoked")
-    if not username:
+    # [L2-2 2026-10-23] 解码 + 用户解析 + 续期收口到 core/security，与原生面
+    # get_current_user 共用同一份逻辑（此前这里手抄一份，且漏了滑动续期）。
+    # 401 文案逐字保持原样，避免破坏 ST 客户端。
+    payload = decode_access_token(auth_token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user, reason = resolve_user_from_payload(payload, db)
+    if reason == "no_username":
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = db.query(User).filter(User.username == username).first()
-    if not user or not user.is_active:
+    if reason == "revoked":
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+    if user is None:  # no_user / inactive
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # 滑动续期：显式 Bearer / X-Palink-Token 通道与原生面同一条件。
+    # 到点前自动换票，走 ST 端点的卡插件与外部工具不再被踢下线。
+    maybe_refresh_token(request, auth_token, payload, from_cookie=from_cookie)
     return user
 
 
