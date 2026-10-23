@@ -56,6 +56,7 @@ from ..services.preset_overlay import INTERNAL_KEY_PREFIX
 from ..services.st_power_user_defaults import build_st_power_user_defaults
 from ..services.inference_dispatcher import ensure_model_available, stream_text_completion
 from ..services.local_model_registry import list_enabled_chat_models
+from ..services.model_listing import list_provider_models
 from ..services.provider_registry import get_providers
 from ..services.stream_builder import StreamResult, stream_chat_deltas
 from ..services.image_generation_service import generate_image, image_result_to_dict
@@ -66,6 +67,7 @@ from ..services.worldbook_import_utils import (
 )
 from ..services.tts_service import clean_text_for_tts, tts_service, audio_mime_ext
 from ..services.websocket_manager import ws_manager
+from ..utils import get_default_ai_model
 
 router = APIRouter(tags=["silly-tavern"])
 
@@ -724,52 +726,12 @@ def _avatar_response(character: Character, token: Optional[str] = None) -> Respo
 
 
 def _public_models() -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for provider in get_providers():
-        if provider.get("is_active") is not None and not provider.get("is_active"):
-            continue
-        for model in provider.get("models", []):
-            if isinstance(model, dict):
-                model_id = str(model.get("id") or "")
-                display_name = model.get("name") or model.get("alias") or model_id
-                context_length = model.get("context_length") or 4096
-            else:
-                model_id = str(model or "")
-                display_name = model_id
-                context_length = 4096
-            if not model_id or model_id in seen:
-                continue
-            seen.add(model_id)
-            result.append({
-                "id": model_id,
-                "name": display_name,
-                "context_length": context_length,
-            })
-    for model in list_enabled_chat_models():
-        model_id = str(model.get("id") or "")
-        if not model_id or model_id in seen:
-            continue
-        seen.add(model_id)
-        result.append({
-            "id": model_id,
-            "name": model.get("name") or model_id,
-            "context_length": model.get("context_length") or 4096,
-        })
-    return result
+    """providers + 本地启用模型的朴素投影。
 
-
-def _system_default_character_chat_model(db: Session) -> str:
-    setting = db.query(SystemSetting).filter(SystemSetting.key == "default_model_config").first()
-    if not setting or not setting.value:
-        return ""
-    try:
-        payload = json.loads(setting.value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    return str(payload.get("default_character_chat_model") or "").strip()
+    实现已搬到 ``services/model_listing.list_provider_models``（2026-10-23 收口），
+    此处只保留函数名以维持 60+ 个 ST 端点的调用点不变。
+    """
+    return list_provider_models()
 
 
 def _default_model_id() -> str:
@@ -777,13 +739,17 @@ def _default_model_id() -> str:
 
 
 def _default_model_id_for_db(db: Optional[Session]) -> str:
-    preferred = _system_default_character_chat_model(db) if db is not None else ""
-    models = _public_models()
-    available_ids = {str(model.get("id") or "") for model in models}
-    if preferred and preferred in available_ids:
-        return preferred
-    models = _public_models()
-    return str(models[0]["id"]) if models else "palink-default"
+    """ST 面的默认模型：与原生链路走同一解析（2026-10-23 L2-1 对齐）。
+
+    原实现自己扫一遍 ``_public_models`` 并优先读系统设置，与
+    ``utils.get_default_ai_model`` 各自算一份 ⇒ 同一用户可能拿到两个默认模型。
+    现在统一委托给 utils；唯一差异是兜底值：原生链路无可用模型时抛 400，
+    ST 面历史上返回 ``"palink-default"``，此处保留以不破坏 ST 客户端。
+    """
+    try:
+        return get_default_ai_model(db)
+    except HTTPException:
+        return "palink-default"
 
 
 def _model_from_request(request: Request, payload: Optional[dict[str, Any]] = None, db: Optional[Session] = None) -> str:

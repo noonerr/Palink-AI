@@ -16,15 +16,10 @@ from ..core.config import settings
 from ..core.database import SessionLocal
 from ..models import User
 
+# [L2-5 2026-10-23] 与 stream_builder 同一口径（原为手写 中文*1.5+其他*0.25）。
+from .st_tokenizer_service import smart_guesstimate as _estimate_tokens
+
 logger = logging.getLogger(__name__)
-
-
-def _estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    other_chars = len(text) - chinese_chars
-    return int(chinese_chars * 1.5 + other_chars * 0.25)
 
 
 def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:

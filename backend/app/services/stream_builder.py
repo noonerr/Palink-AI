@@ -3,6 +3,11 @@ import json
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
+# [L2-5 2026-10-23] 供应商未上报 usage 时的补全侧估算。
+# 原实现手写 `中文*1.5 + 其他*0.25`，与实测校准口径（中文 0.70 / 非中文 0.38）
+# 相差约 2 倍；统一改用 st_tokenizer_service 的 zh_aware_guesstimate。
+from .st_tokenizer_service import smart_guesstimate as _estimate_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,14 +116,6 @@ class StreamResult:
         if self.completion_tokens > 0:
             return self.completion_tokens - self.effective_reasoning_tokens()
         return _estimate_tokens(self.full_content)
-
-
-def _estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    other_chars = len(text) - chinese_chars
-    return int(chinese_chars * 1.5 + other_chars * 0.25)
 
 
 async def stream_chat_deltas(

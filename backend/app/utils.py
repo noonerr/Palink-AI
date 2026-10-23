@@ -653,10 +653,39 @@ def _is_mime_compatible(detected: str, declared: str) -> bool:
     return False
 
 
+def system_default_character_chat_model(db) -> str:
+    """读取系统设置里的 ``default_character_chat_model``（无则空串）。
+
+    原在 ``api/silly_tavern.py``，2026-10-23 搬到 utils，供原生与 ST 两条链路共用
+    （此前只有 ST 面读它，原生链路忽略它 ⇒ 同一用户两个默认模型）。
+    """
+    from .models.system import SystemSetting
+
+    setting = db.query(SystemSetting).filter(SystemSetting.key == "default_model_config").first()
+    if not setting or not setting.value:
+        return ""
+    try:
+        payload = json.loads(setting.value)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        _record_silent_failure("utils.system_default_character_chat_model", exc, once=True)
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("default_character_chat_model") or "").strip()
+
+
 def get_default_ai_model(db=None) -> str:
     from .services.provider_registry import get_runtime_providers
     from .services.local_model_registry import list_enabled_chat_models
+    from .services.model_listing import list_provider_models
     from fastapi import HTTPException
+
+    # [L2-1 2026-10-23] 先尊重管理员设置的默认模型 —— 与 ST 面同一解析。
+    # 未设置（或设置已失效/模型已删）时走原有回退链，行为与改动前一致。
+    if db is not None:
+        preferred = system_default_character_chat_model(db)
+        if preferred and any(str(m.get("id") or "") == preferred for m in list_provider_models()):
+            return preferred
 
     providers = get_runtime_providers()
     provider = next((p for p in providers if p.get("is_active") and p.get("models")), None)
