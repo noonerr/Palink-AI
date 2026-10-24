@@ -415,9 +415,26 @@ class TestSTChatsContract:
     """聊天端点契约"""
 
     def test_chats_get_returns_messages(self, client, auth_headers):
-        """POST /api/chats/get 返回消息数组（首项为 chat header）。"""
+        """POST /api/chats/get 返回消息数组（首项为 chat header）。
+
+        [F-7 2026-10-25 改判] 本用例原样写的是"建完角色直接 get"，那条路径
+        当时靠 chats/get **自己建会话**才拿到 200——而这正是 F-7 要修的
+        读接口写库。故先走显式写路径 /api/chats/save 建会话，再 get。
+        契约意图（返回 header + list）不变，改的只是前置状态的来源。
+        """
         created = _create_character_via_api(client, auth_headers, name="ChatGet Char")
         avatar = created["avatar"]
+        save_resp = client.post(
+            "/api/chats/save",
+            headers=auth_headers,
+            json={
+                "avatar_url": avatar,
+                "ch_name": "ChatGet Char",
+                "chat": [{"name": "User", "is_user": True, "is_system": False,
+                          "mes": "seed", "send_date": "2024-01-01T00:00:00"}],
+            },
+        )
+        assert save_resp.status_code == 200, save_resp.text
         resp = client.post(
             "/api/chats/get",
             headers=auth_headers,
@@ -431,6 +448,66 @@ class TestSTChatsContract:
         header = data[0]
         assert "chat_name" in header
         assert "file_name" in header
+
+    def test_chats_get_unknown_session_is_404_and_writes_nothing(
+        self, client, auth_headers,
+    ):
+        """F-7 契约：读接口查不到会话 ⇒ 404（detail 机器可读），且不落库。
+
+        旧行为：_ensure_session 建 session+branch 并 commit，返回一条只有
+        header 的数组 ⇒ 插件每敲一次 get 就在库里多一对空壳。
+        """
+        created = _create_character_via_api(client, auth_headers, name="ChatGet NoWrite")
+        avatar = created["avatar"]
+        before = client.post(
+            "/api/chats/get",
+            headers=auth_headers,
+            json={"avatar_url": avatar, "file_name": "does-not-exist.jsonl"},
+        )
+        assert before.status_code == 404, before.text
+        detail = before.json().get("detail")
+        # 机器可读：字符串 detail + request_id 由统一 handler 附带
+        assert isinstance(detail, str) and "not found" in detail.lower(), detail
+
+    def test_chats_get_does_not_create_session_on_miss(
+        self, client, auth_headers, db_session,
+    ):
+        """反证靶心：get 之后该角色的会话数不得变化（F-7 的实质判据）。
+
+        注意"未命中"的真实边界（读 `_session_for_file` 得出，不是猜的）：
+        file_name 解析不出 session id 时会**回落取该角色最近一条会话**
+        （silly_tavern.py:1046），所以"传一个不存在的 file_name"并不构成未命中；
+        能解析出 id 但库里没有 → 早就是 404（:1044，ST-SEC-01 既有行为）；
+        真正会触发 F-7 那条写库路径的，是**该角色一条会话都没有**。
+        本用例因此用全新角色、且断言前 0 后 0。
+
+        用 `db_session` 夹具而不是 `SessionLocal()`：client 夹具把 get_db
+        override 成同一个 db_session，另开会话会读到另一个库（本机宿主环境
+        没有库连接，gate.sh 后端段在宿主机跑通不代表连得到库）。
+        """
+        from app.models import CharacterChatSession
+
+        created = _create_character_via_api(client, auth_headers, name="ChatGet CountGuard")
+        char_id = created.get("character_id") or created.get("id")
+
+        def _count():
+            return db_session.query(CharacterChatSession).filter(
+                CharacterChatSession.character_id == char_id).count()
+
+        assert _count() == 0, "前置：新角色不该已有会话"
+
+        for _ in range(3):
+            resp = client.post(
+                "/api/chats/get",
+                headers=auth_headers,
+                json={"avatar_url": created["avatar"], "ch_name": "ChatGet CountGuard"},
+            )
+            assert resp.status_code == 404, resp.text
+
+        n_after = _count()
+        assert n_after == 0, (
+            f"chats/get 仍在建会话：0 → {n_after}（三次未命中的 get）"
+        )
 
     def test_chats_save_persists_messages(self, client, auth_headers):
         """POST /api/chats/save 持久化消息后再 GET 能取回。"""
@@ -1521,20 +1598,18 @@ class TestSTEndToEndScenario:
         avatar = char_data["avatar"]
         character_id = char_data["character_id"]
 
-        # Step 2: 拉取聊天（首次会触发 session 懒创建）
+        # Step 2: 首次拉取。
+        # [F-7 2026-10-25 改判] 原注释写的"触发懒创建 session"正是要修的缺陷：
+        # 读接口自己建会话+建分支并 commit。现按 ST-SEC-01 口径返回 404，
+        # 会话由 Step 3 的显式写路径（/api/chats/save）建立。
         get_resp = client.post(
             "/api/chats/get",
             headers=auth_headers,
             json={"avatar_url": avatar, "ch_name": "E2E Roleplay Char"},
         )
-        assert get_resp.status_code == 200, get_resp.text
-        chat_data = get_resp.json()
-        assert isinstance(chat_data, list)
-        assert len(chat_data) >= 1
-        header = chat_data[0]
-        # chat header 中应包含角色名相关字段
-        assert "chat_name" in header
-        assert "file_name" in header
+        assert get_resp.status_code == 404, (
+            f"新建角色尚无会话时 chats/get 不应再自己建：{get_resp.text}"
+        )
 
         # Step 3: 保存用户消息
         user_message = {

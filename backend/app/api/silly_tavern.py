@@ -24,6 +24,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
+# [F-3 2026-10-25] ST 端点族的限流（只挂烧钱那一条，见 st_generate_chat_completion）
+from ..core.rate_limit import enforce_rate_limit
 from ..core.cache import invalidate_user_cache
 from ..core.silent_failure import record as _record_silent_failure
 # [PLUGIN-ON-DEMAND] 角色卡导入后的插件识别（实现在 api/plugins.py）
@@ -194,16 +196,25 @@ def _extract_themes_from_settings(settings_data: dict[str, Any]) -> list:
     return themes if isinstance(themes, list) else []
 
 
-def _get_global_world_names(db: Session, user: User) -> list[str]:
-    """Fix-10: 从 Palink DB 读取全局世界书名称列表。
+def _get_world_names(db: Session, user: User) -> list[str]:
+    """从 Palink DB 读取该用户**全部**世界书名称列表（顶层 world_names）。
 
-    ST 1.18.0 期望 /api/settings/get 返回 world_names 数组，
+    Fix-10: ST 1.18.0 期望 /api/settings/get 返回 world_names 数组，
     之前硬编码为 []，导致 ST 世界书扩展无法加载全局世界书列表。
+
+    [F-1 2026-10-25] 去掉 `character_id.is_(None)` 过滤，并因此改名
+    （原名 _get_global_world_names 的 "global" 已不成立）：以前绑定到角色的
+    书在这个面上根本不存在。ST 侧列的是用户世界目录下的全部 jsonl，
+    不区分"全局/角色绑定"（它没有这个维度）。
+    ⚠️ 不去重：同名书在库里是两条独立记录（见 _find_worldbook 的
+    len(matches) > 1 分支），去重会把"确实存在两本"这件事藏掉——
+    与 /api/worldinfo/list 的全列口径保持一致。
+    越权口径不变：仍按 user_id 过滤。
     """
     try:
         worldbooks = (
             db.query(WorldBook)
-            .filter(WorldBook.user_id == user.id, WorldBook.character_id.is_(None))
+            .filter(WorldBook.user_id == user.id)
             .order_by(WorldBook.name)
             .all()
         )
@@ -1606,10 +1617,18 @@ def _character_to_st(character: Character, user: User, session: Optional[Charact
     }
 
 
-def _character_to_st_list_item(character: Character, session: Optional[CharacterChatSession]) -> dict[str, Any]:
+def _character_to_st_list_item(
+    character: Character,
+    session: Optional[CharacterChatSession],
+    world_book_names: Optional[list[str]] = None,
+) -> dict[str, Any]:
     chat_name = _session_file_name(session.id) if session else f"{character.name} - SillyTavern"
     created_at = character.created_at or datetime.now(timezone.utc)
     updated_at = character.updated_at or created_at
+    # [F-8 2026-10-25] shallow 的 `data` 此前只有 {name}，插件按 ST toShallow
+    # 取 character_version/creator/creator_notes/tags/extensions.world 全部拿到
+    # undefined。现对齐参照树 src/endpoints/characters.js:369-394 的 toShallow。
+    _world_names = [n for n in (world_book_names or []) if n]
     return {
         "name": character.name or "",
         "description": "",
@@ -1633,7 +1652,26 @@ def _character_to_st_list_item(character: Character, session: Optional[Character
         "create_date": int(created_at.timestamp() * 1000),
         "date_added": int(created_at.timestamp() * 1000),
         "date_last_chat": int((session.updated_at or session.created_at).timestamp() * 1000) if session else int(updated_at.timestamp() * 1000),
-        "data": {"name": character.name or ""},
+        "data": {
+            "name": character.name or "",
+            "character_version": character.character_version or "",
+            "creator": character.creator or "",
+            "creator_notes": character.creator_notes or "",
+            "tags": _safe_json_loads(character.tags, []) if character.tags else [],
+            "extensions": {
+                "fav": False,
+                # ⚠️ 类型裁定（与派单单据的字面描述不同，理由如下，别改回数组）：
+                # ST 侧 `data.extensions.world` 是**标量**——world-info.js:1128
+                # 直接 `books.push(character.data.extensions.world)`；Palink 自己的
+                # 导入契约也按标量读（character_import_service.py:420-425
+                # "world 为世界书名"，只认 str/dict 两种形态）。塞数组会让所有按名
+                # 比较的消费方静默失配。多本书的完整事实放在下面的 Palink 扩展键。
+                "world": _world_names[0] if _world_names else "",
+                # Palink 扩展键（ST 1.18 无此键，全仓 grep 确认）：一张卡可以绑多本
+                # 世界书，ST 的数据模型只能表达一本，这里如实给出全部（按名排序）。
+                "worlds": _world_names,
+            },
+        },
         "fav": False,
         "shallow": True,
         # ST 1.18.0 V3 chara card fields
@@ -1941,6 +1979,23 @@ async def st_generate_chat_completion(
     user: User = Depends(get_st_current_user),
     db: Session = Depends(get_db),
 ):
+    # [F-3 2026-10-25] ST 端点族此前零限流，而这条是**会烧钱**的那条
+    # （卡/插件经它直发上游模型，按 token 计费）。挂仓内既有
+    # `enforce_rate_limit`（同 auth.py:133 / character_ext.py:4429 的用法），
+    # 档位取既有档 CHARACTER_CHAT_*（20 次/60 秒，与第一方角色对话同额，
+    # 不新建设置项、不放宽也不收紧到影响正常单发的量）。
+    # scope 用独立键：不与第一方 chat:character 共享同一份配额，
+    # 否则插件生成会把用户自己的对话额度吃掉。
+    # 刻意放在**所有业务校验之前**：限流要计"请求"而不是"成功请求"，
+    # 否则刷错载荷就能绕过（400 不进账）。
+    # 其余 ST 端点本批不挂——按派单口径避免误伤插件的正常读类调用。
+    enforce_rate_limit(
+        request,
+        "st:chat-completions-generate",
+        app_settings.CHARACTER_CHAT_RATE_LIMIT_REQUESTS,
+        app_settings.CHARACTER_CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     messages = _normalize_generate_messages(payload.get("messages"))
     if not messages:
         prompt = str(payload.get("prompt") or "").strip()
@@ -2239,7 +2294,7 @@ async def st_get_settings(
         "textgenerationwebui_preset_names": [],
         "openai_settings": [],
         "openai_setting_names": [],
-        "world_names": _get_global_world_names(db, user),
+        "world_names": _get_world_names(db, user),
         # Fix-7: 从 extension_settings.themes 读取主题列表（非硬编码空数组）
         "themes": _extract_themes_from_settings(settings_data),
         "movingUIPresets": [],
@@ -2481,6 +2536,25 @@ async def st_all_characters(
         )
         latest_by_char = {s.character_id: s for s in latest_sessions}
 
+    # [F-8 2026-10-25] shallow 的 data.extensions.world 要有"这张卡绑了哪本书"。
+    # 一次 IN 查询批量取（与上面 E-6 的会话批取同构），按名排序保证多本书时
+    # `world` 取到的那一本是稳定的——否则同一份数据每次刷新可能给出不同的主书。
+    worlds_by_char: dict[str, list[str]] = {}
+    if character_ids:
+        _wb_rows = (
+            db.query(WorldBook.character_id, WorldBook.name)
+            .filter(
+                WorldBook.user_id == user.id,
+                WorldBook.character_id.in_(character_ids),
+            )
+            .order_by(WorldBook.name)
+            .all()
+        )
+        for _cid, _wname in _wb_rows:
+            if not _cid or not _wname:
+                continue
+            worlds_by_char.setdefault(str(_cid), []).append(_wname)
+
     return [
         _character_to_st_list_item(
             character,
@@ -2489,6 +2563,9 @@ async def st_all_characters(
                 if boot_character_id and character.id == boot_character_id
                 else latest_by_char.get(character.id)
             ),
+            # [F-8] 一次 IN 查询取全部绑定书，按名排序后分组——逐角色 1 次查询
+            # 就是上面 E-6 刚清掉的那种 N+1，别再犯。
+            worlds_by_char.get(character.id, []),
         )
         for character in characters
     ]
@@ -2912,9 +2989,20 @@ async def st_get_chat(
     branch_id = request.headers.get("X-Palink-Branch-Id")
     session = _session_for_file(db, user, character, file_name, session_id)
     if not session:
-        session = _ensure_session(db, user, character, file_name, session_id)
-        branch = _branch_for_context(db, session, branch_id)
-        return [_chat_header(db, session, character, user, branch)]
+        # [F-7 2026-10-25] 读接口不再建会话。旧实现走 _ensure_session()：
+        # db.add(session) + db.add(branch) + **db.commit()** —— 一个 GET 语义的
+        # 端点每次被插件敲一下就往库里落一对空会话/空分支（实测四项计数里
+        # sess 会被只读操作顶高）。改为按 ST-SEC-01 口径直接 404（detail 机器可读，
+        # request_id 由 main.py 的统一 handler 附加），建会话仍只发生在显式写路径
+        # （/api/chats/save 的 _ensure_session 调用点，语义不变）。
+        # ⚠️ 与上游的一处已知偏离（拍板点，见交付报告）：ST 参照树
+        #   _reference/sillytavern-1.18.0/src/endpoints/chats.js:527-534 在
+        #   "聊天目录不存在"时 mkdirSync 后 **return response.send({})**（200 空对象），
+        #   不是 404。本批按派单单据取 404（判据明写"→404"）；若要贴 ST 形状，
+        #   把本行换成 `return {}` 即可，前端两个消费点
+        #   （slash-commands-compat.ts:79 的 Array.isArray 兜底 + try/catch 降级）
+        #   对两种形状都不会炸。
+        raise HTTPException(status_code=404, detail="Session not found")
     branch = _branch_for_context(db, session, branch_id)
     messages = _chat_messages(db, session, branch)
     return [
@@ -4176,7 +4264,14 @@ async def st_list_worldinfo(
     user: User = Depends(get_st_current_user),
     db: Session = Depends(get_db),
 ):
-    """ST 世界书列表（仅全局世界书）。
+    """ST 世界书列表（该用户**全部**书，含绑定到角色的）。
+
+    [F-1 2026-10-25] 此前实现过滤 `character_id.is_(None)`，只列"未绑定"的书
+    ⇒ 绑定到角色的世界书在插件面（/api/worldinfo/list、顶层 world_names）
+    **完全不可见**。ST 侧无此区分（src/endpoints/worldinfo.js 列的是用户世界
+    目录下的全部 jsonl），故按"查不到才是异常"的口径改为全列，并在每条
+    world_entry 上带 `character_id`（None=全局书）供前端分辨。
+    越权口径不变：仍按 `user_id == user.id` 过滤。
 
     支持两种返回格式：
       - V3（默认）：``{world_id: {name, description, entries: {uid: entry}, order: [uid, ...], originalData: {...}}}``
@@ -4199,7 +4294,7 @@ async def st_list_worldinfo(
 
     worldbooks = (
         db.query(WorldBook)
-        .filter(WorldBook.user_id == user.id, WorldBook.character_id.is_(None))
+        .filter(WorldBook.user_id == user.id)
         .all()
     )
     result: dict[str, Any] = {}
@@ -4217,6 +4312,12 @@ async def st_list_worldinfo(
             "name": charbook.get("name", wb.name),
             "description": charbook.get("description", ""),
             "entries": entries_dict,
+            # [F-1 2026-10-25] 本行是新增键：以前只列"未绑定"的书，绑定到角色的
+            # 书对插件面完全不可见。现在全列，多带一个 character_id 供前端分辨
+            # （None = 全局书）。ST 侧没有这个维度（世界书就是全局勾选集），
+            # 故这是 Palink 扩展键，不写进 originalData（那一份要保持 V2 charbook
+            # 形状，供 ST 编辑器回查）。
+            "character_id": wb.character_id,
         }
         if not want_v2:
             # Task 1.10: V3 结构追加 order 与 originalData 字段
