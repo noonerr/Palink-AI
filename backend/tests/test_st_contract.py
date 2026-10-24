@@ -449,13 +449,15 @@ class TestSTChatsContract:
         assert "chat_name" in header
         assert "file_name" in header
 
-    def test_chats_get_unknown_session_is_404_and_writes_nothing(
+    def test_chats_get_unknown_session_returns_st_empty_shape_and_writes_nothing(
         self, client, auth_headers,
     ):
-        """F-7 契约：读接口查不到会话 ⇒ 404（detail 机器可读），且不落库。
+        """F-7 契约：读接口查不到会话 ⇒ ST 上游同款 200 空对象，且不落库。
 
         旧行为：_ensure_session 建 session+branch 并 commit，返回一条只有
         header 的数组 ⇒ 插件每敲一次 get 就在库里多一对空壳。
+        形状裁定（2026-10-25 主脑按用户「照 ST 补齐」总原则）：ST 参照树
+        chats.js:527-534 缺聊天目录时 response.send({}) —— 200 空对象。
         """
         created = _create_character_via_api(client, auth_headers, name="ChatGet NoWrite")
         avatar = created["avatar"]
@@ -464,10 +466,8 @@ class TestSTChatsContract:
             headers=auth_headers,
             json={"avatar_url": avatar, "file_name": "does-not-exist.jsonl"},
         )
-        assert before.status_code == 404, before.text
-        detail = before.json().get("detail")
-        # 机器可读：字符串 detail + request_id 由统一 handler 附带
-        assert isinstance(detail, str) and "not found" in detail.lower(), detail
+        assert before.status_code == 200, before.text
+        assert before.json() == {}, "ST 形状：空对象而非数组/错误体"
 
     def test_chats_get_does_not_create_session_on_miss(
         self, client, auth_headers, db_session,
@@ -502,7 +502,8 @@ class TestSTChatsContract:
                 headers=auth_headers,
                 json={"avatar_url": created["avatar"], "ch_name": "ChatGet CountGuard"},
             )
-            assert resp.status_code == 404, resp.text
+            # ST 形状（2026-10-25 主脑裁定对齐 chats.js:527-534）：200 空对象
+            assert resp.status_code == 200 and resp.json() == {}, resp.text
 
         n_after = _count()
         assert n_after == 0, (
@@ -1600,15 +1601,16 @@ class TestSTEndToEndScenario:
 
         # Step 2: 首次拉取。
         # [F-7 2026-10-25 改判] 原注释写的"触发懒创建 session"正是要修的缺陷：
-        # 读接口自己建会话+建分支并 commit。现按 ST-SEC-01 口径返回 404，
-        # 会话由 Step 3 的显式写路径（/api/chats/save）建立。
+        # 读接口自己建会话+建分支并 commit。现按 ST 上游形状返回 200 空对象
+        # （chats.js:527-534，主脑 2026-10-25 裁定），会话由 Step 3 的显式
+        # 写路径（/api/chats/save）建立。
         get_resp = client.post(
             "/api/chats/get",
             headers=auth_headers,
             json={"avatar_url": avatar, "ch_name": "E2E Roleplay Char"},
         )
-        assert get_resp.status_code == 404, (
-            f"新建角色尚无会话时 chats/get 不应再自己建：{get_resp.text}"
+        assert get_resp.status_code == 200 and get_resp.json() == {}, (
+            f"新建角色尚无会话时 chats/get 应为 ST 空对象且不应自己建：{get_resp.text}"
         )
 
         # Step 3: 保存用户消息

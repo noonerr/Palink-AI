@@ -2992,17 +2992,14 @@ async def st_get_chat(
         # [F-7 2026-10-25] 读接口不再建会话。旧实现走 _ensure_session()：
         # db.add(session) + db.add(branch) + **db.commit()** —— 一个 GET 语义的
         # 端点每次被插件敲一下就往库里落一对空会话/空分支（实测四项计数里
-        # sess 会被只读操作顶高）。改为按 ST-SEC-01 口径直接 404（detail 机器可读，
-        # request_id 由 main.py 的统一 handler 附加），建会话仍只发生在显式写路径
+        # sess 会被只读操作顶高）。建会话仍只发生在显式写路径
         # （/api/chats/save 的 _ensure_session 调用点，语义不变）。
-        # ⚠️ 与上游的一处已知偏离（拍板点，见交付报告）：ST 参照树
-        #   _reference/sillytavern-1.18.0/src/endpoints/chats.js:527-534 在
-        #   "聊天目录不存在"时 mkdirSync 后 **return response.send({})**（200 空对象），
-        #   不是 404。本批按派单单据取 404（判据明写"→404"）；若要贴 ST 形状，
-        #   把本行换成 `return {}` 即可，前端两个消费点
-        #   （slash-commands-compat.ts:79 的 Array.isArray 兜底 + try/catch 降级）
-        #   对两种形状都不会炸。
-        raise HTTPException(status_code=404, detail="Session not found")
+        # 缺席形状按 ST 上游对齐（用户 2026-10-24 总裁定「照 ST 补齐」）：
+        # _reference/sillytavern-1.18.0/src/endpoints/chats.js:527-534 在
+        # 「聊天目录不存在」时 mkdirSync 后 response.send({}) —— 200 空对象。
+        # 前端两个消费点（slash-commands-compat.ts:79 的 Array.isArray 兜底
+        # + try/catch 降级）对空对象形状不会炸。
+        return {}
     branch = _branch_for_context(db, session, branch_id)
     messages = _chat_messages(db, session, branch)
     return [

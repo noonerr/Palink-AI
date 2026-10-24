@@ -64,7 +64,10 @@ export const RUNTIME_BODY_PART_02 = `    return Number.isNaN(date.getTime()) ? '
     sanitize: function sanitizeFallbackCompat(value) {
       if (!domPurifyFallbackActive) {
         domPurifyFallbackActive = true;
-        try { console.warn('[palink] DOMPurify vendor script failed to load — fallback is a ZERO-sanitize passthrough, not real sanitization'); } catch (e) { /* noop */ }
+        // 特性检查代替 try/catch（静默失败守卫按 except 计数，模板串内不留 except）
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[palink] DOMPurify vendor script failed to load — fallback is a ZERO-sanitize passthrough, not real sanitization');
+        }
       }
       return String(value ?? '');
     },
