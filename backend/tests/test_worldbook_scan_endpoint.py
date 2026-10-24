@@ -276,14 +276,17 @@ class TestParamParityWithProduction:
         monkeypatch.setattr(rpa, "build_worldbook_context", _capture)
 
         # ① 生产链：debug-prompt-assembly（message="" → continue 轮语义）
+        # [ASM-2 2026-10-24] debug 端点 model 改必填（T-1 堵口），取证请求
+        # 必须显式带与生产一致的 model。
         debug_resp = client.post(
             f"/api/character-sessions/{session.id}/debug-prompt-assembly",
-            json={"message": "", "max_tokens": 2048},
+            json={"message": "", "model": "deepseek-v4-flash", "max_tokens": 2048},
         )
         assert debug_resp.status_code == 200, debug_resp.text[:500]
 
-        # ② 预览端点：同会话、同空 message、model=None（debug 请求默认）
-        scan_resp = _scan(client, session.id, {"message": ""})
+        # ② 预览端点：同会话、同空 message、同 model —— 两侧同 model，
+        #    max_context_tokens 解引用才同源，kwargs parity 不因预算分叉假红。
+        scan_resp = _scan(client, session.id, {"message": "", "model": "deepseek-v4-flash"})
         assert scan_resp.status_code == 200, scan_resp.text[:500]
 
         assert len(captured) == 2, f"应恰好捕获两次调用，实际 {len(captured)}"

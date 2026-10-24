@@ -5452,7 +5452,12 @@ async def _character_chat_impl(
 class PromptAssemblyDebugRequest(BaseModel):
     message: str = ""
     images: list[str] = []
-    model: Optional[str] = None
+    # [ASM-2 2026-10-24] model 必填（T-1 堵口）：此前 Optional[str]=None 时，
+    # 不传 model 会静默装配出另一份 prompt（max_context_tokens 走
+    # _get_model_context_window 的 8192 回落，预算塌到 5632），取证端点据此
+    # 得出假结论。缺省由 pydantic 原生返回 422（loc=["body","model"]），
+    # 不加自定义抛错。取证调用方必须显式带与生产一致的 model。
+    model: str
     user_nickname: Optional[str] = None
     response_length: Optional[str] = None
     max_tokens: int = 2048
