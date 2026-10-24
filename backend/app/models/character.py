@@ -1,5 +1,16 @@
 import uuid
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, ForeignKey, Text, Index
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Text,
+    Index,
+    CheckConstraint,
+)
 from sqlalchemy.orm import relationship
 from .base import Base, utc_now
 
@@ -102,11 +113,23 @@ class CharacterChatMessage(Base):
         Index('idx_message_role_lookup', 'session_id', 'branch_id', 'role', 'id'),
         # Standalone index for branch_id (used in check_frozen_branches, etc.)
         Index('idx_message_branch_only', 'branch_id'),
+        # [P2-23/NF-1 2026-10-24] 写侧硬不变量：role 只取三值。
+        # 与 alembic 0071（ck_character_chat_messages_role）双轨：fresh 库经
+        # create_all 从本声明获得约束（启动序是先 create_all 后 stamp head，
+        # 迁移链不会在 fresh 库重放）；存量库经 0071 补上。SQL 语义上拒 NULL
+        # 靠下方 nullable=False（CHECK 的 IN 对 NULL 求值 UNKNOWN、不拒 NULL）。
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')",
+            name="ck_character_chat_messages_role",
+        ),
     )
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, ForeignKey("character_chat_sessions.id"))
     branch_id = Column(String, ForeignKey("character_chat_session_branches.id"), nullable=True)
-    role = Column(String)
+    # [P2-23/NF-1 2026-10-24] NOT NULL（alembic 0071 同步）：历史唯一 NULL 行
+    # id=1297 已授权修复（UPDATE → 'assistant'，REPORT_NF1_role空值消息取证
+    # _2026-10-24.md §2.3 证实当前 15 个构造点 + 2 个更新点无一路径能写 NULL）。
+    role = Column(String, nullable=False)
     content = Column(Text)
     short_title = Column(String, nullable=True)
     model = Column(String, nullable=True)
