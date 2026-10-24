@@ -360,7 +360,8 @@ export function AdminPluginsTab() {
 
       {/*
         [批次WU 2026-10-21] 插件网络白名单。
-        判据在 sandbox.ts 的 isUrlAllowedByPluginWhitelist（同源恒放行，跨源只比 hostname），
+        判据在 sandbox.ts 的 isUrlAllowedByPluginWhitelist（同源恒放行，跨源只比 hostname；
+        [2026-10-24] 起 localhost / 127.0.0.1 / [::1] 默认放行），
         存储契约是 localStorage `palink_plugin_fetch_whitelist` 的**逗号分隔裸主机名**。
         这一栏存在的意义：机制早就通，但只有手工敲 localStorage 才能改 —— 对普通用户等于没有。
       */}
@@ -385,6 +386,11 @@ export function AdminPluginsTab() {
               ))}
             </div>
           </div>
+
+          <p data-testid="plugin-whitelist-loopback-note" className="text-xs text-muted-foreground leading-relaxed">
+            本机(localhost)地址默认放行：localhost / 127.0.0.1 / [::1] 的任意端口无需添加即可被插件访问；
+            私网（如 192.168.x.x）与公网地址仍需加入下方名单才会放行。
+          </p>
 
           <div className="flex flex-col sm:flex-row gap-2">
             <input
@@ -429,7 +435,7 @@ export function AdminPluginsTab() {
 
           {userHosts.length === 0 ? (
             <p data-testid="plugin-whitelist-empty" className="text-xs text-muted-foreground">
-              当前没有自定义放行主机 —— 插件只能请求本站与上面那五个 CDN。
+              当前没有自定义放行主机 —— 插件只能请求本站、上面那五个 CDN，以及默认放行的本机(localhost)地址。
             </p>
           ) : (
             <div data-testid="plugin-whitelist-user" className="flex flex-wrap gap-1.5">

@@ -13,6 +13,9 @@
  *   4. 粘贴完整 URL / host:port 也能用（会被收成裸主机名）；非法输入报错且不写盘；
  *   5. 删到空 ⇒ 键被删除（回到默认态）；
  *   6. 本批之前手工敲的值（带空格、大小写混杂）仍显示为可删的条目。
+ *   7. [批次 2026-10-24] 本机(localhost)地址默认放行的说明文案在场；
+ *      loopback（localhost / 127.0.0.1 / [::1]）无白名单也放行、清空名单关不掉；
+ *      私网 192.168.x 仍必须显式加名单才放行。
  *
  * 运行: npx vitest run src/components/views/settings-tabs/__tests__/wu-plugin-whitelist-ui.test.tsx
  */
@@ -114,14 +117,16 @@ describe('AdminPluginsTab 插件网络白名单', () => {
 
   it('添加 ⇒ 落盘逗号格式 ⇒ 沙箱判定立刻放行（这条是本批的全部意义）', async () => {
     await renderTab();
-    await typeHost('localhost');
+    // [批次 2026-10-24] 起 localhost 本来就默认放行，写它分不清放行来自哪里；
+    // 探针改用非 loopback 主机，让"写名单 ⇒ 放行"保持可判别。
+    await typeHost('ollama.internal');
     await clickAdd();
 
-    expect(rawStored()).toBe('localhost');
-    expect(maybe('plugin-whitelist-chip-localhost')).not.toBe(null);
+    expect(rawStored()).toBe('ollama.internal');
+    expect(maybe('plugin-whitelist-chip-ollama.internal')).not.toBe(null);
     expect(maybe('plugin-whitelist-empty')).toBe(null);
     // 用与页面不同端口的 URL：确保放行来自"主机名命中白名单"，不是同源兜底
-    expect(isUrlAllowedByPluginWhitelist(`http://localhost:${CROSS_PORT}/api/tags`)).toBe(true);
+    expect(isUrlAllowedByPluginWhitelist(`http://ollama.internal:${CROSS_PORT}/api/tags`)).toBe(true);
     // 输入框已清空，避免连点把同一条再敲一遍
     expect((q('plugin-whitelist-input') as HTMLInputElement).value).toBe('');
   });
@@ -132,6 +137,8 @@ describe('AdminPluginsTab 插件网络白名单', () => {
     await clickAdd();
 
     expect(rawStored()).toBe('127.0.0.1');
+    // [批次 2026-10-24] 起 127.0.0.1 属 loopback 默认放行，这两条放行断言主要钉
+    // "粘贴 URL 被收成裸主机名且不报错"；判别力在下面的 192.168.1.90 拦截与末尾的 ollama.internal。
     expect(isUrlAllowedByPluginWhitelist('http://127.0.0.1:11434/api/tags')).toBe(true);
     expect(isUrlAllowedByPluginWhitelist('http://127.0.0.1:7860/sdapi/v1/txt2img')).toBe(true);
     // 只放开这一台：别的主机仍被拦
@@ -178,18 +185,51 @@ describe('AdminPluginsTab 插件网络白名单', () => {
     expect(rawStored()).toBe('localhost,127.0.0.1');
   });
 
-  it('删除条目 ⇒ 删到空时键消失 ⇒ 判定回到拦截', async () => {
-    localStorage.setItem(PLUGIN_FETCH_WHITELIST_STORAGE_KEY, 'localhost');
+  it('删除条目 ⇒ 删到空时键消失 ⇒ 私网判定回到拦截；loopback 不受影响', async () => {
+    // [批次 2026-10-24] 起 localhost 清空名单后仍默认放行，"删掉 ⇒ 回到拦截"
+    // 改用私网条目钉住；loopback 的"关不掉"单独断言在后面。
+    localStorage.setItem(PLUGIN_FETCH_WHITELIST_STORAGE_KEY, '192.168.1.50');
     await renderTab();
-    expect(maybe('plugin-whitelist-chip-localhost')).not.toBe(null);
-    expect(isUrlAllowedByPluginWhitelist(`http://localhost:${CROSS_PORT}/api/tags`)).toBe(true);
+    expect(maybe('plugin-whitelist-chip-192.168.1.50')).not.toBe(null);
+    expect(isUrlAllowedByPluginWhitelist(`http://192.168.1.50:${CROSS_PORT}/api/tags`)).toBe(true);
 
     await act(async () => {
-      q('plugin-whitelist-remove-localhost').click();
+      q('plugin-whitelist-remove-192.168.1.50').click();
     });
     expect(rawStored()).toBe(null);
-    expect(maybe('plugin-whitelist-chip-localhost')).toBe(null);
-    expect(isUrlAllowedByPluginWhitelist(`http://localhost:${CROSS_PORT}/api/tags`)).toBe(false);
+    expect(maybe('plugin-whitelist-chip-192.168.1.50')).toBe(null);
+    expect(isUrlAllowedByPluginWhitelist(`http://192.168.1.50:${CROSS_PORT}/api/tags`)).toBe(false);
+    // loopback 是恒定生效项：用户名单清空也关不掉
+    expect(isUrlAllowedByPluginWhitelist(`http://localhost:${CROSS_PORT}/api/tags`)).toBe(true);
+  });
+
+  it('loopback 默认放行：说明文案在场，无白名单也放行、私网不放行（[批次 2026-10-24]）', async () => {
+    await renderTab();
+
+    // 说明文案在场（本批新增的那一行）
+    const note = q('plugin-whitelist-loopback-note');
+    expect(note.textContent).toContain('本机(localhost)地址默认放行');
+
+    // 空名单态：loopback 任意端口放行
+    expect(rawStored()).toBe(null);
+    expect(isUrlAllowedByPluginWhitelist(`http://localhost:${CROSS_PORT}/api/tags`)).toBe(true);
+    expect(isUrlAllowedByPluginWhitelist('http://127.0.0.1:11434/api/tags')).toBe(true);
+    expect(isUrlAllowedByPluginWhitelist('http://[::1]:11434/api/tags')).toBe(true);
+    // 私网与公网口径不变
+    expect(isUrlAllowedByPluginWhitelist('http://192.168.1.90:11434/api/tags')).toBe(false);
+    expect(isUrlAllowedByPluginWhitelist('http://evil.example.com/x.js')).toBe(false);
+  });
+
+  it('白名单显式加私网后放行：UI 落盘 ⇒ 沙箱立刻放行，邻居私网主机仍被拦', async () => {
+    await renderTab();
+    await typeHost('192.168.1.9');
+    await clickAdd();
+
+    expect(rawStored()).toBe('192.168.1.9');
+    expect(maybe('plugin-whitelist-chip-192.168.1.9')).not.toBe(null);
+    expect(isUrlAllowedByPluginWhitelist('http://192.168.1.9:11434/api/tags')).toBe(true);
+    expect(isUrlAllowedByPluginWhitelist('http://192.168.1.9:7860/sdapi/v1/txt2img')).toBe(true);
+    expect(isUrlAllowedByPluginWhitelist('http://192.168.1.10:11434/api/tags')).toBe(false);
   });
 
   it('本批之前手工敲的值（带空格/大小写）仍显示成可删条目；下次真正改动时被归一', async () => {
