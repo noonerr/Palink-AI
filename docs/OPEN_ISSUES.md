@@ -822,8 +822,10 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 
 - **事实**：`plugins.py:270` 的单资源 1MB 上限使 JsRunner / Lorebook-Studio / CSTT（+BlazeTracker 同因）干净 413，全部**未入库**。安装面失败率 15–20% 由我们自己的上限贡献。
 - **待拍板**：提高插件资源上限（如 4–8MB，配总量上限）vs 维持（安全口径）。属产品决策（上传面放大）。
+  ✅ **2026-10-24 用户拍板：放宽（8MB 级 + 总量兜底），随 Wave 3 施工。**
 
 ### [P2-23] NF-1 存量 role=NULL 行的数据修复与约束加固——代码已修，数据待点头（2026-10-24）
 
 - **代码侧已修**：装配循环开头归一化 assistant + 留痕（`character_message_builder.py`，测试 3 例）。
 - **待用户点头**（不可逆写库）：① 存量 1 行（id=1297）`UPDATE role='assistant'`；② `character_chat_messages.role` 加 `NOT NULL`/CHECK 约束（防复发）。取证：`REPORT_NF1_role空值消息取证_2026-10-24.md`（写入者是 2026-06-23 已消失的死代码，当前 15 个构造点均不可能再写 NULL）。
+  ✅ **2026-10-24 用户拍板：两项都做（备份先行；约束经 alembic 迁移，生产应用随镜像重建）。**
