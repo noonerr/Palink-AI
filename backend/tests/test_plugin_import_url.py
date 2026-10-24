@@ -94,6 +94,21 @@ def _make_extension_zip(manifest: dict | None = None) -> bytes:
     return buf.getvalue()
 
 
+def _make_extension_zip_with_big_js(js_size: int) -> bytes:
+    """构造带指定字节数 index.js 的最小合法 ST 扩展 ZIP（P2-22 单文本资源上限边界用）。"""
+    mf = {
+        "name": "url-install-big-js",
+        "display_name": "URL Install Big JS",
+        "version": "1.0.0",
+        "js": "index.js",
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(mf))
+        zf.writestr("index.js", "a" * js_size)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # import-url：SSRF 防线与权限
 # ---------------------------------------------------------------------------
@@ -177,6 +192,39 @@ class TestImportUrlDownload:
         )
         assert row is not None
 
+    def test_import_url_8mb_text_resource_accepted(self, admin_client, monkeypatch):
+        """P2-22（2026-10-24 拍板）：import-url 与 multipart 共用 _zip_read_text 常量——
+        恰好 8_000_000 字节的 js 资源在 import-url 路同样放行。"""
+        from app.api import plugins as plugins_module
+
+        monkeypatch.setattr(
+            plugins_module,
+            "_download_public_zip",
+            lambda url: _make_extension_zip_with_big_js(8_000_000),
+        )
+        resp = admin_client.post(
+            "/api/plugins/import-url",
+            json={"url": "https://github.com/x/y/releases/download/v1/big-js.zip"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["plugin"]["name"] == "URL Install Big JS"
+
+    def test_import_url_text_resource_over_8mb_rejected_413(self, admin_client, monkeypatch):
+        """P2-22：超过 8MB（8_000_000 + 1 字节）→ 413「扩展资源过大」。"""
+        from app.api import plugins as plugins_module
+
+        monkeypatch.setattr(
+            plugins_module,
+            "_download_public_zip",
+            lambda url: _make_extension_zip_with_big_js(8_000_000 + 1),
+        )
+        resp = admin_client.post(
+            "/api/plugins/import-url",
+            json={"url": "https://github.com/x/y/releases/download/v1/big-js.zip"},
+        )
+        assert resp.status_code == 413
+        assert "扩展资源过大" in resp.json()["detail"]
+
     def test_rejects_non_zip_content(self, admin_client, monkeypatch):
         from app.api import plugins as plugins_module
 
@@ -218,6 +266,115 @@ class TestImportUrlDownload:
         )
         assert resp.status_code == 400
         assert "non-public" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# import-url：[P2-21] 长下载不得占用 DB 会话连接
+# ---------------------------------------------------------------------------
+class TestImportUrlDbSessionTiming:
+    def test_download_runs_after_db_session_release(self, tmp_path, monkeypatch):
+        """下载发生在 DB 连接归还之后、落库重新 checkout 之前。
+
+        生产事故（OPEN_ISSUES [P2-21]）：鉴权链（get_current_user）与本端点经
+        FastAPI 依赖缓存共用同一 Session，鉴权 SELECT 已把连接 checkout 出来；
+        端点握着该连接下载 91-101s，连接被服务端 wait_timeout 掐断，落库
+        commit 报 "server closed" → 500。修复：下载前 db.close() 归还连接
+        （下载完成后导入管线首次触碰 DB 时会话自动重新 checkout，池层
+        pool_pre_ping 在 checkout 时兜底保证活连接）。
+
+        本用例自建 file-sqlite engine（默认连接池）+ checkout 事件监听，先在
+        会话上执行一次 SELECT 模拟生产入口的鉴权占用，再直呼端点函数，断言：
+        ① release（db.close）先于 download；
+        ② 落库侧的重新 checkout 发生在 download 之后（即下载窗口内该会话
+          不持有任何池连接）；
+        ③ 下载字节原样进入导入管线（修复仅挪时序，不改管线）。
+        把时序回退（去掉下载前的 db.close）→ ①② 皆红。
+        """
+        import asyncio
+
+        from sqlalchemy import create_engine, event, text
+        from sqlalchemy.orm import sessionmaker
+
+        from app.api import plugins as plugins_module
+        from app.api.plugins import PluginImportUrlPayload, import_plugin_from_url
+        from app.models import Plugin
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'p2_21.db'}")
+        try:
+            events: list[str] = []
+
+            @event.listens_for(engine, "checkout")
+            def _on_checkout(dbapi_conn, record, record2):
+                events.append("checkout")
+
+            maker = sessionmaker(
+                bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
+            )
+            db = maker()
+            try:
+                # 模拟生产入口状态：鉴权链已在共享 Session 上查过库
+                # （连接已 checkout、事务开着——旧实现正是握着它去下载的）
+                db.execute(text("SELECT 1"))
+                events.append("auth-done")
+
+                # 观测端点内部的 db.close()（Session 实例属性可安全覆盖）
+                orig_close = db.close
+
+                def _wrapped_close():
+                    events.append("release")
+                    orig_close()
+
+                db.close = _wrapped_close  # type: ignore[method-assign]
+
+                zip_bytes = _make_extension_zip()
+                seen_content: list[bytes] = []
+
+                def _fake_download(url):
+                    events.append("download")
+                    return zip_bytes
+
+                def _fake_import(db_arg, content, source_name):
+                    events.append("import-start")
+                    seen_content.append(content)
+                    # 模拟真实导入管线的首次落库触碰：此刻应重新 checkout
+                    db_arg.execute(text("SELECT 1"))
+                    events.append("import-db-touch")
+                    return Plugin(
+                        name="p2-21-timing",
+                        plugin_type="sillytavern_extension",
+                        enabled=True,
+                    )
+
+                monkeypatch.setattr(plugins_module, "_download_public_zip", _fake_download)
+                monkeypatch.setattr(
+                    plugins_module, "_import_sillytavern_extension_zip", _fake_import
+                )
+
+                asyncio.run(
+                    import_plugin_from_url(
+                        PluginImportUrlPayload(url="https://example.com/ext.zip"),
+                        user=None,
+                        db=db,
+                    )
+                )
+                events.append("done")
+
+                checkouts = [i for i, e in enumerate(events) if e == "checkout"]
+                # 鉴权模拟的第一次 checkout 必须在场（生产入口状态成立）
+                assert len(checkouts) >= 1, events
+                # ① 释放先于下载（旧时序：握着连接下载 → 无 release → 红）
+                assert "release" in events, events
+                assert events.index("release") < events.index("download"), events
+                # ② 落库的重新 checkout 发生在下载之后：下载窗口内无连接在握
+                #    （旧时序连接全程被握 → 第二次 checkout 不发生 → 红）
+                assert len(checkouts) == 2, events
+                assert events.index("download") < checkouts[1], events
+                # ③ 下载字节原样进入导入管线（仅挪时序，不改管线）
+                assert seen_content == [zip_bytes]
+            finally:
+                db.close()
+        finally:
+            engine.dispose()
 
 
 # ---------------------------------------------------------------------------

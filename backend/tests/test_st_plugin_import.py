@@ -74,6 +74,43 @@ def _import_zip(client, zip_bytes: bytes, filename: str = "ext.zip"):
     )
 
 
+def _zip_with_big_js(js_size: int) -> bytes:
+    """构造带指定字节数 index.js 的最小合法 ST 扩展 ZIP（P2-22 单文本资源上限边界用）。"""
+    mf = {
+        "name": "big-js-ext",
+        "display_name": "Big JS Ext",
+        "version": "1.0.0",
+        "js": "index.js",
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(mf))
+        zf.writestr("index.js", "a" * js_size)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# 1b. 单文本资源上限边界（P2-22：2026-10-24 拍板 1MB → 8MB，multipart 路）
+# ---------------------------------------------------------------------------
+def test_import_zip_8mb_text_resource_accepted(admin_client):
+    """恰好 8_000_000 字节的 js 资源 → 不超限，导入成功且内容完整入库。"""
+    resp = _import_zip(admin_client, _zip_with_big_js(8_000_000), "big-js.zip")
+    assert resp.status_code == 200, resp.text
+    plugin = resp.json()["plugin"]
+    assert plugin["plugin_type"] == "sillytavern_extension"
+    pid = plugin["id"]
+    detail = admin_client.get(f"/api/plugins/{pid}").json()
+    js_resources = (detail.get("config") or {}).get("resources", {}).get("js", [])
+    assert js_resources and js_resources[0]["content"] == "a" * 8_000_000
+
+
+def test_import_zip_text_resource_over_8mb_rejected_413(admin_client):
+    """8_000_000 + 1 字节 → 413「扩展资源过大」。"""
+    resp = _import_zip(admin_client, _zip_with_big_js(8_000_000 + 1), "big-js.zip")
+    assert resp.status_code == 413
+    assert "扩展资源过大" in resp.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # 1. 真实 ST 扩展 zip 导入 + 资源抽取
 # ---------------------------------------------------------------------------

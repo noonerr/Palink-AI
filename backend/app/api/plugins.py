@@ -267,7 +267,11 @@ def _resource_path_candidates(manifest_path: str, resource_path: str) -> list[st
     return list(dict.fromkeys(candidates))
 
 
-def _zip_read_text(zip_file: zipfile.ZipFile, path: str, max_bytes: int = 1_000_000) -> str:
+def _zip_read_text(zip_file: zipfile.ZipFile, path: str, max_bytes: int = 8_000_000) -> str:
+    # 单文本资源上限 8MB（2026-10-24 用户拍板 P2-22，原 1MB）。
+    # multipart /import 与 /import-url 两条路共用本函数（同一 _import_sillytavern_extension_zip 管线），
+    # 故改这一处默认值即同时覆盖两条路。总量兜底不变：单文件 50MB（_PLUGIN_IMPORT_MAX_FILE_BYTES）、
+    # 解压总量 100MB（_PLUGIN_IMPORT_MAX_UNCOMPRESSED）。
     info = zip_file.getinfo(path)
     if info.file_size > max_bytes:
         raise HTTPException(status_code=413, detail=f"扩展资源过大: {path}")
@@ -1852,6 +1856,15 @@ async def import_plugin_from_url(
     url = (payload.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="缺少扩展 ZIP URL")
+    # [P2-21] 长下载前先归还 DB 连接：鉴权链（get_current_user）与本端点经
+    # FastAPI 依赖缓存共用同一 Session，鉴权 SELECT 已把连接 checkout 出来并
+    # 开着事务。若握着连接下载 90s+，连接会被服务端 wait_timeout 掐断，落库
+    # commit 报 "server closed" → 500（Floating-MVU/BlazeTracker 两连败根因）。
+    # close() 在连接仍健康时干净回池，下载期间连接池零占用；下载完成后
+    # _import_sillytavern_extension_zip 首次触碰 DB 时会话自动重开事务并重新
+    # checkout，池层 pool_pre_ping（core/database.py）在 checkout 时保证拿到
+    # 活连接。仅挪时序，不改下载与导入管线本身。
+    db.close()
     try:
         # 阻塞下载 + DNS 解析放工作线程，避免阻塞事件循环
         content = await asyncio.to_thread(_download_public_zip, url)
