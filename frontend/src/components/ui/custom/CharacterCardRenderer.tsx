@@ -105,6 +105,12 @@ function randomFrameToken(): string {
   return `${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
 
+// [API-6 2026-10-24] 帧内真 DOMPurify：srcdoc 继承父页 CSP（script-src 含 'self'），
+// 在 shim 之前注入同域 vendor 脚本（经典 script 按文档序执行，先于 shim），
+// 使帧内 window.DOMPurify 为真库而非 part-02 的零消毒透传兜底。
+// 资产：public/dompurify.min.js（DOMPurify 3.4.14，随 katex.min.css 同款 vendor 惯例放根）。
+const FRAME_DOMPURIFY_SCRIPT_TAG = '<script src="/dompurify.min.js"></script>';
+
 function injectIntoFullDocument(
   html: string,
   shim: string,
@@ -121,7 +127,7 @@ function injectIntoFullDocument(
   // [SEC-2026-09-02 F-1] 帧内密钥必须排在 shim 之前：shim（紧接着注入）在 IIFE 顶部读取
   // 这两个 meta 后立即移除，其后才轮到卡片内容里的脚本执行，因此卡片拿不到密钥。
   const secretMeta = buildSmartCardFrameSecretMeta(frameSecret);
-  const headInject = `<meta charset="UTF-8">${resourceHints}${secretMeta}${shim}${immersiveBridge}`;
+  const headInject = `<meta charset="UTF-8">${resourceHints}${secretMeta}${FRAME_DOMPURIFY_SCRIPT_TAG}${shim}${immersiveBridge}`;
   let result = html;
   if (/<head[\s>]/i.test(result)) {
     result = result.replace(/<head([^>]*)>/i, (_match, attrs = '') => `<head${attrs}>${headInject}`);
@@ -171,7 +177,7 @@ function wrapHtmlFragment(
   const resourceHints = buildSmartCardResourceHints(resourcePlan);
   const immersiveBridge = includeImmersiveBridge ? buildSmartCardImmersiveBridge(frameId) : '';
   const secretMeta = buildSmartCardFrameSecretMeta(frameSecret);
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${secretMeta}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${hostColorSchemeStyle()}${css}</head><body>${fragment}${adapterCss}</body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">${resourceHints}${secretMeta}${FRAME_DOMPURIFY_SCRIPT_TAG}${shim}${immersiveBridge}<style>html,body{width:100%;margin:0;padding:0;background:transparent;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}body{box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}</style>${hostColorSchemeStyle()}${css}</head><body>${fragment}${adapterCss}</body></html>`;
 }
 
 interface IframeRendererProps {

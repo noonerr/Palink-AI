@@ -56,7 +56,19 @@ export const RUNTIME_BODY_PART_02 = `    return Number.isNaN(date.getTime()) ? '
     escape: escapeHtmlCompat,
   };
   window._ = lodashCompat;
-  const domPurifyCompat = window.DOMPurify || { sanitize: (value) => String(value ?? '') };
+  // [API-6 2026-10-24] 帧内已由父侧注入真 DOMPurify（/dompurify.min.js，见
+  // CharacterCardRenderer 的 FRAME_DOMPURIFY_SCRIPT_TAG，先于本 shim 执行）。
+  // 兜底仅在 vendor 脚本加载失败时激活：零消毒透传是危险形态，必须一次性留痕可见。
+  var domPurifyFallbackActive = false;
+  const domPurifyCompat = window.DOMPurify || {
+    sanitize: function sanitizeFallbackCompat(value) {
+      if (!domPurifyFallbackActive) {
+        domPurifyFallbackActive = true;
+        try { console.warn('[palink] DOMPurify vendor script failed to load — fallback is a ZERO-sanitize passthrough, not real sanitization'); } catch (e) { /* noop */ }
+      }
+      return String(value ?? '');
+    },
+  };
   window.DOMPurify = domPurifyCompat;
   const handlebarsCompat = window.Handlebars || {
     compile: (template) => (data = {}) => compileSimpleTemplateCompat(template, data),
