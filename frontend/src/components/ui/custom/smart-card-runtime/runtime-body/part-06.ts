@@ -691,23 +691,10 @@ export const RUNTIME_BODY_PART_06 = `    const numeric = Number(value);
       await window.saveSettings?.();
       return makeStApiJsonResponseCompat({ result: 'ok', ok: true });
     }
-    if (path.startsWith('/api/secrets')) {
-      // [MS-4 2026-10-22] 取消「假成功」：此前非 GET 一律回 {result:'ok', ok:true} 且不留痕，
-      // 插件以为密钥存上了、读回来恒空 —— 双层静默失败（外部审计 F-2b 实测）。
-      // 现改为：写类请求明确回失败 + palink_stub 标记，并统一留痕，让缺失可见。
-      // ⚠️ 模板串纪律：本段只能老式语法、禁反引号与花括号插值、反斜杠须成对。
-      // （本条注释本身也别写那两个符号的连写形态 —— 会真的开启插值。）
-      reportStubApi('fetch:/api/secrets');
-      if (method === 'GET') {
-        return makeStApiJsonResponseCompat({ value: '', entries: {}, secrets: {}, palink_stub: true });
-      }
-      return makeStApiJsonResponseCompat({
-        result: 'error',
-        ok: false,
-        palink_stub: true,
-        error: '密钥存储未接入：Palink 尚未实现 ST secrets 持久化',
-      });
-    }
+    // [API-1 2026-10-24] /api/secrets 八端点已在后端真实现（st_plugin_secrets 表 +
+    // Fernet，commit 75089dc），本垫片拦截整体撤除：GET 与写类都落回真实网络层。
+    // 此前 MS-4 的诚实失败垫片使命结束；若后端不可达，插件将拿到真实网络错误。
+    // ⚠️ 模板串纪律：本段只能老式语法、禁反引号与花括号插值、反斜杠须成对。
     if (path === '/api/characters' || path === '/api/characters/all' || path === '/api/characters/list') {
       return makeStApiJsonResponseCompat({ characters: getStApiCharactersCompat(), data: getStApiCharactersCompat() });
     }
