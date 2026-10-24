@@ -22,6 +22,7 @@ from functools import lru_cache
 from typing import Any, Callable, Optional
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import ResourceClosedError
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -5981,6 +5982,57 @@ def _build_memory_query(db, session_id, branch_id, current_message: str) -> str:
     return text
 
 
+def _release_memory_savepoint(nested: Any, req: PromptAssemblyRequest) -> None:
+    """[F-6 2026-10-25] 收尾释放 SAVEPOINT——**释放问题不得冒充检索失败**。
+
+    成因（实测定位，非推测）：``_tables_initialized`` 是进程级全局，
+    所以**每个进程的第一次**装配会走 ``MemoryStorage.__init__`` →
+    ``_init_tables()``，其结尾在**调用方同一条会话**上 ``self.db.commit()``
+    （建表/迁移落盘）。而本函数上游刚 ``begin_nested()`` 开了 SAVEPOINT ⇒
+    那次 commit 把 SAVEPOINT 连带释放，收尾裸 ``nested.commit()`` 必抛
+    ``ResourceClosedError("This transaction is closed")``，被外层 except
+    报成 ``memory error``。记忆正文此刻**已经注入成功**（实测 W1：
+    ``memory included tok=7127`` 排在 error 之前），所以坏的是那条**误导读数**
+    ——历史上它把排查一路带偏成"重启后第一次装配必丢记忆"。
+
+    两条已试过并**回退**的修法，别再走：
+    ① 给 ``_init_tables()`` 自建短会话：DDL 换到另一条会话会等本会话
+      SAVEPOINT 持有的 memory 表锁，实测把连接拖到服务端
+      ``idle_in_transaction_session_timeout``(本机=1min) 击杀，
+      症状从"一条误报"升级成"整次装配炸掉"。
+    ② 把 ``MemoryService(req.db)`` 构造挪到 ``begin_nested()`` 之前：
+      同样触发①那类时序，实测冷启动直接
+      ``server closed the connection unexpectedly``，比误报严重。
+    根治应是把记忆建表/迁移移到应用启动期（或复用 alembic 链），
+    属动启动语义，本批未授权 ⇒ 记入交付报告遗留项。
+
+    本守卫的边界：只放行"SAVEPOINT 已不在"这一种情况（``is_active`` 为假，
+    或 commit 抛 ResourceClosedError），其它异常照原样上抛给外层 except，
+    真·检索失败仍然会报 ``memory error``——不许顺手把真失败也一起咽掉。
+    """
+    if nested is None:
+        return
+    if not getattr(nested, "is_active", True):
+        _record_silent_failure(
+            "prompt_assembly.memory.savepoint_already_released",
+            None,
+            once=True,
+            level=logging.WARNING,
+            session_id=getattr(req, "session_id", None),
+        )
+        return
+    try:
+        nested.commit()
+    except ResourceClosedError as rel_exc:
+        _record_silent_failure(
+            "prompt_assembly.memory.savepoint_already_released",
+            rel_exc,
+            once=True,
+            level=logging.WARNING,
+            session_id=getattr(req, "session_id", None),
+        )
+
+
 async def _append_memory_context(
     req: PromptAssemblyRequest,
     deps: PromptAssemblyDeps,
@@ -6187,6 +6239,9 @@ async def _append_memory_context(
 
     nested = None
     try:
+        # [F-6 2026-10-25] 本行往下的 nested 会被冷启动的建表流程连带释放，
+        # 成因与修法见 _release_memory_savepoint 的 docstring——收尾必须走那个
+        # 守卫，不许回到裸 nested.commit()。
         nested = req.db.begin_nested()
         mem_svc = MemoryService(req.db)
         if mem_svc.is_available():
@@ -6297,7 +6352,10 @@ async def _append_memory_context(
                 report.append(PromptAssemblyReportItem("memory", "skipped", "no memories"))
         else:
             report.append(PromptAssemblyReportItem("memory", "skipped", "service unavailable"))
-        nested.commit()
+        # [F-6] 收尾交给专用释放路径：SAVEPOINT 已被检索链内部的外层 commit 释放时
+        # 只留痕，不进 except 分支 ⇒ 不再产生 "memory error / This transaction is closed"
+        # 这条误导性读数。
+        _release_memory_savepoint(nested, req)
     except Exception as exc:
         logger.warning("Memory context retrieval failed: %s", exc)
         # [SILENT-FAIL 2026-10-22] 这条 WARNING 没有 request_id，用户报"这次回复不记得

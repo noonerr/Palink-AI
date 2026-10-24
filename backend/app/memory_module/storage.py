@@ -514,8 +514,14 @@ class MemoryStorage:
         if self.is_postgres:
             try:
                 nested = self.db.begin_nested()
+                # [F-6 2026-10-25] 补 IF NOT EXISTS：本列上线已久（库里恒存在），
+                # 缺这个子句使这条 ALTER **每次冷启动必报一个 PG ERROR**
+                # （实测 pg 日志每进程一条 "column branch_id already exists"），
+                # 并连带走一次无意义的 savepoint rollback。下面两条同族迁移
+                # （message_id/character_id）本来就带 IF NOT EXISTS——这里只是
+                # 跟齐，不是新语义。
                 self.db.execute(text("""
-                    ALTER TABLE conversation_memories ADD COLUMN branch_id TEXT
+                    ALTER TABLE conversation_memories ADD COLUMN IF NOT EXISTS branch_id TEXT
                 """))
                 nested.commit()
                 logger.info("迁移: 添加 branch_id 列")
