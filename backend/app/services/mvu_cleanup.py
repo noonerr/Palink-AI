@@ -20,6 +20,12 @@
    天然不会碰到补丁。
 2. **楼层编号基准**：插件用 ``SillyTavern.chat`` 的数组下标（其 0 号位是伪消息头），
    我们用 1 起算的楼层号。锚点落点因此可能相差 1 楼 —— 功能上无差别（都是"每 interval 楼一个锚点"）。
+3. **默认值有意偏离插件 schema**（[MC-D 2026-10-25]，见下方 ``DEFAULT_ENABLED`` /
+   ``DEFAULT_KEEP_RECENT_FLOORS`` 的注释）：``启用`` 改 ``False``、
+   ``要保留变量的最近楼层数`` 改 ``50``。这不是行为等价的打折，是**行为更安全**：
+   插件那两个默认值组合起来（保留 20 < 回看窗口 30）会静默吃掉用户还看得见的
+   历史快照，而 SPEC §6 红线第 4 条要求破坏性操作不进默认路径。
+   用户在插件面板里的显式设置仍然优先且不受影响。
 
 ## 设置来源：与插件**同源**
 
@@ -27,7 +33,8 @@
 而 Palink 的 ``SillyTavern.extensionSettings`` 落在
 ``UserSetting.silly_tavern_settings.plugin_extension_settings_by_character[<卡>]``。
 本模块**直接读同一格** —— 也就是说，插件设置面板里改这几项，会直接驱动我们的清理，
-与在 ST 里改的行为一致。读不到时回落到插件默认值。
+与在 ST 里改的行为一致。读不到时回落到本模块的默认值（见上面"必要差异"第 3 条：
+其中两项已有意偏离插件默认）。
 """
 
 from __future__ import annotations
@@ -42,10 +49,19 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# ── 插件 zod schema 的默认值（实测原文，勿改） ──────────────────────────────
-DEFAULT_ENABLED = True
+# ── 清理参数默认值 ──────────────────────────────────────────────────────────
+# 注：这四项原本照抄插件 zod 的默认值。下面**两项被有意改掉**，不是笔误：
+#   出处 docs/SPEC_变量自动清理_MVU对齐_2026-10-05.md §6 红线
+#     - 第 4 条「不默认开启 —— 破坏性操作不进默认路径」⇒ DEFAULT_ENABLED=False
+#     - 第 1 条「不动最近 50 楼 —— 保证回看窗口与前端面板可用」⇒ 保留 50
+#   以及 [P1-2] 记录的实害：回看窗口 30 > 保留 20 ⇒ 第 21~30 楼的快照会被
+#   自动清理**静默吃掉**（用户往回翻就少一段，且没有任何告警）。
+# 偏离插件 schema 的后果已如实写进 test_defaults_match_plugin_schema 的改判注释；
+# 用户在插件面板里显式设置的值仍然优先（resolve_cleanup_settings 只在读不到时
+# 才落到这里的默认值）。
+DEFAULT_ENABLED = False
 DEFAULT_SNAPSHOT_INTERVAL = 50
-DEFAULT_KEEP_RECENT_FLOORS = 20
+DEFAULT_KEEP_RECENT_FLOORS = 50
 DEFAULT_RESTORE_FLOORS = 10
 
 # 插件 Za() 里 `_.omit(...)` 的字段清单（原文顺序，勿增勿减）

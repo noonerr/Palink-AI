@@ -145,6 +145,47 @@ class WorldBookStageResponse(BaseModel):
     group: Optional[str] = None
     extensions_json: Optional[str] = None
 
+    # ── [UI-1b 2026-10-25] 高级列只读暴露 ──────────────────────────────────
+    # 出处 docs/_active/report/REPORT_ST设置前端可达性盘点_2026-10-21.md D 段：
+    # `_stage_to_response` 是一张逐字段手抄的白名单，模型里 30 个高级列
+    # （含 created_at 共 31 个）既没进响应也没进本 schema ⇒ 前端**连读都读不到**，
+    # 于是"补控件"也无从谈起。本批**只开放读**：写通道（WorldBookStageUpdate /
+    # create/edit 处理函数）一字未动，所以这些值此刻仍只能由库里已有数据带出来。
+    # 每个字段的缺省兜底照模型的列默认值写，与上面 scan_depth/position 的既有
+    # 惯例一致——读的人看到的是 ST 语义下的合法值，而不是成片的 null。
+    created_at: Optional[str] = None
+    enabled: bool = True
+    case_sensitive: bool = False
+    match_whole_words: bool = False
+    selective_logic: int = 0
+    sticky: int = 0
+    cooldown: int = 0
+    delay: int = 0
+    depth: int = 4
+    order: int = 0
+    exclude_recursion: bool = False
+    prevent_recursion: bool = False
+    match_persona_description: bool = False
+    match_character_description: bool = False
+    match_character_personality: bool = False
+    match_character_depth_prompt: bool = False
+    match_scenario: bool = False
+    match_creator_notes: bool = False
+    group_override: bool = False
+    group_weight: int = 0
+    add_memo: bool = False
+    decorators: Optional[str] = None
+    character_filter: Optional[str] = None
+    min_activations: int = 0
+    delay_until_recursion: int = 0
+    triggers: Optional[str] = None
+    outlet_name: Optional[str] = None
+    ignore_budget: bool = False
+    role: int = 0
+    # 模型里这列本身就是 nullable 且无默认 ⇒ 保持 Optional（不替它编一个默认）
+    use_group_scoring: Optional[bool] = None
+    automation_id: Optional[str] = None
+
     class Config:
         from_attributes = True
 

@@ -264,6 +264,45 @@ def _stage_to_response(s: WorldBookStage) -> dict:
         "vectorized": bool(s.vectorized),
         "group": s.group,
         "extensions_json": s.extensions_json,
+        # ── [UI-1b 2026-10-25] 高级列只读暴露（写通道一字未动）──────────────
+        # 本 dict 是真白名单：模型里有、这里没有 ⇒ 前端读不到。
+        # 30 个高级列（+created_at 共 31 个）此前整体缺席，出处
+        # REPORT_ST设置前端可达性盘点_2026-10-21.md D 段。
+        # 兜底值照模型列默认值（与上面 scan_depth/position 同一惯例）。
+        "created_at": str(s.created_at) if s.created_at else None,
+        "enabled": bool(s.enabled) if s.enabled is not None else True,
+        "case_sensitive": bool(s.case_sensitive) if s.case_sensitive is not None else False,
+        "match_whole_words": bool(s.match_whole_words) if s.match_whole_words is not None else False,
+        "selective_logic": s.selective_logic if s.selective_logic is not None else 0,
+        "sticky": s.sticky if s.sticky is not None else 0,
+        "cooldown": s.cooldown if s.cooldown is not None else 0,
+        "delay": s.delay if s.delay is not None else 0,
+        "depth": s.depth if s.depth is not None else 4,
+        "order": s.order if s.order is not None else 0,
+        "exclude_recursion": bool(s.exclude_recursion) if s.exclude_recursion is not None else False,
+        "prevent_recursion": bool(s.prevent_recursion) if s.prevent_recursion is not None else False,
+        "match_persona_description": bool(s.match_persona_description) if s.match_persona_description is not None else False,
+        "match_character_description": bool(s.match_character_description) if s.match_character_description is not None else False,
+        "match_character_personality": bool(s.match_character_personality) if s.match_character_personality is not None else False,
+        "match_character_depth_prompt": bool(s.match_character_depth_prompt) if s.match_character_depth_prompt is not None else False,
+        "match_scenario": bool(s.match_scenario) if s.match_scenario is not None else False,
+        "match_creator_notes": bool(s.match_creator_notes) if s.match_creator_notes is not None else False,
+        "group_override": bool(s.group_override) if s.group_override is not None else False,
+        "group_weight": s.group_weight if s.group_weight is not None else 0,
+        "add_memo": bool(s.add_memo) if s.add_memo is not None else False,
+        "decorators": s.decorators,
+        "character_filter": s.character_filter,
+        "min_activations": s.min_activations if s.min_activations is not None else 0,
+        "delay_until_recursion": s.delay_until_recursion if s.delay_until_recursion is not None else 0,
+        "triggers": s.triggers,
+        "outlet_name": s.outlet_name,
+        "ignore_budget": bool(s.ignore_budget),
+        "role": s.role if s.role is not None else 0,
+        # 模型里 nullable 且无默认 ⇒ 原样给出，不替它编默认
+        "use_group_scoring": (
+            bool(s.use_group_scoring) if s.use_group_scoring is not None else None
+        ),
+        "automation_id": s.automation_id,
     }
 
 

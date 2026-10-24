@@ -248,13 +248,50 @@ class TestWindowSemantics:
 
 
 class TestSettingsSource:
-    def test_defaults_match_plugin_schema(self):
-        """插件 zod 默认值：启用 true / 间隔 50 / 保留 20 / 恢复 10。"""
+    def test_defaults_are_deliberate_deviation_from_plugin_schema(self):
+        """[MC-D 2026-10-25 改判] 原名 test_defaults_match_plugin_schema。
+
+        插件 zod 默认值（实测原文）：启用 true / 间隔 50 / 保留 20 / 恢复 10。
+        Palink **有意**偏离其中两项，依据 docs/SPEC_变量自动清理_MVU对齐_2026-10-05.md
+        §6 红线：
+          - 启用 → False（第 4 条「不默认开启——破坏性操作不进默认路径」）
+          - 保留楼层 → 50（第 1 条「不动最近 50 楼——保证回看窗口与前端面板可用」）
+
+        为什么原来那组默认值是危险的：回看窗口 30 > 保留 20 ⇒ 第 21~30 楼的变量
+        快照会被自动清理**静默吃掉**（用户往回翻少一段，且无任何告警）。
+        docs/OPEN_ISSUES.md [P1-2] 记的就是这一条。
+
+        本用例从"钉住与插件一致"改为"钉住这组安全默认 + 记下偏离的是哪两项"——
+        将来有人想把它们改回插件原值，必须同时撤掉 SPEC §6 那两条红线，
+        而不是"顺手对齐插件"。间隔与恢复楼层仍照插件原文，未偏离。
+        """
         s = CleanupSettings()
+        assert s.enabled is False, "清理不得默认开启（SPEC §6 红线 4）"
+        assert s.snapshot_interval == DEFAULT_SNAPSHOT_INTERVAL == 50  # 与插件一致
+        assert s.keep_recent_floors == DEFAULT_KEEP_RECENT_FLOORS == 50
+        assert s.restore_floors == DEFAULT_RESTORE_FLOORS == 10  # 与插件一致
+        # 偏离量本身也钉住：改回插件值时这里会红，逼人来读这段理由
+        from app.core.config import settings as _app_settings
+
+        assert DEFAULT_KEEP_RECENT_FLOORS > _app_settings.MVU_STAT_LOOKBACK_LIMIT, (
+            "保留楼层数必须大于回看窗口（MVU_STAT_LOOKBACK_LIMIT="
+            f"{_app_settings.MVU_STAT_LOOKBACK_LIMIT}），否则快照被静默清掉——[P1-2] 原病灶"
+        )
+
+    def test_explicit_plugin_setting_still_overrides_the_safe_default(self, db_session):
+        """安全默认只作用于"读不到"的情况：用户在面板里显式开/关，照旧生效。
+
+        这条是"偏离插件 schema"的代价边界——不许把用户的显式选择也一并关掉。
+        """
+        user, char, _session = _make_world(db_session)
+        _set_plugin_settings(
+            db_session, user.id,
+            {"启用": True, "要保留变量的最近楼层数": 8},
+            character_id=char.id,
+        )
+        s = resolve_cleanup_settings(db_session, user.id, char.id)
         assert s.enabled is True
-        assert s.snapshot_interval == DEFAULT_SNAPSHOT_INTERVAL == 50
-        assert s.keep_recent_floors == DEFAULT_KEEP_RECENT_FLOORS == 20
-        assert s.restore_floors == DEFAULT_RESTORE_FLOORS == 10
+        assert s.keep_recent_floors == 8
 
     def test_reads_from_plugin_same_namespace(self, db_session):
         user, char, _session = _make_world(db_session)

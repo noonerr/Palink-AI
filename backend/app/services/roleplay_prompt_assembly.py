@@ -4619,8 +4619,37 @@ async def _assemble_roleplay_prompt_impl(
         messages.append({"role": "system", "content": _palink_inj_text})
 
     if req.include_prompt_regex and messages:
+        # [S-1s 2026-10-25] 报告项此前**从不传 tokens_estimate** ⇒ 这一行恒 tok=0，
+        # 审计 S-1 就从"0 token"推出"卡内正则一条都没生效"，而实测该轮 6 条卡内
+        # 正则里 2 条真实命中、13 条消息 21 处替换（见 REPORT_ASM1 §1）。
+        # 补两个读数，各管一件事：
+        #   · changed_messages —— "有没有动过"。token 估算器是量化的，
+        #     改 1 个字符的净 token 就是 0；只有命中计数才能把"改了但没改变
+        #     token 量"与"一个字都没动"区分开（这才是"恒 0 误导审计"的真解）。
+        #   · tokens_estimate  —— "动了多少"，取净变化的绝对值。格式类正则常是
+        #     净删（剥标签），负数塞进这一列会让读报表的人以为出异常，
+        #     净增/净删由 detail 里带符号的 net_tokens 说明。
+        _pr_texts_before = [_message_content_to_text(m.get("content")) for m in messages]
+        _pr_before_chars = sum(len(t) for t in _pr_texts_before)
+        _pr_before_tokens = sum(_estimate_tokens(t) for t in _pr_texts_before)
         messages = deps.apply_prompt_regex_to_messages(messages, db, req.char, user_nickname, user_id=req.user.id if req.user else None)
-        report.append(PromptAssemblyReportItem("prompt_regex", "included"))
+        _pr_texts_after = [_message_content_to_text(m.get("content")) for m in messages]
+        _pr_after_chars = sum(len(t) for t in _pr_texts_after)
+        _pr_after_tokens = sum(_estimate_tokens(t) for t in _pr_texts_after)
+        _pr_changed = sum(
+            1 for a, b in zip(_pr_texts_before, _pr_texts_after) if a != b
+        )
+        _pr_net = _pr_after_tokens - _pr_before_tokens
+        report.append(PromptAssemblyReportItem(
+            "prompt_regex",
+            "included",
+            detail=(
+                f"changed_messages={_pr_changed};"
+                f" chars={_pr_before_chars}->{_pr_after_chars};"
+                f" net_tokens={_pr_net:+d}; touched_tokens={abs(_pr_net)}"
+            ),
+            tokens_estimate=abs(_pr_net),
+        ))
     else:
         report.append(PromptAssemblyReportItem("prompt_regex", "skipped"))
 

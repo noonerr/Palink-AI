@@ -321,7 +321,10 @@ class TestScopeIsolation:
         assert resolve_cleanup_settings(db_session, u1.id, c1.id) != CleanupSettings(enabled=False)
 
     def test_settings_are_per_character(self, db_session):
-        from app.services.mvu_cleanup import resolve_cleanup_settings
+        from app.services.mvu_cleanup import (
+            DEFAULT_KEEP_RECENT_FLOORS,
+            resolve_cleanup_settings,
+        )
 
         user, char, _session = _make_world(db_session)
         _enable(db_session, user.id, char.id, keep=7)
@@ -329,7 +332,14 @@ class TestScopeIsolation:
         assert resolve_cleanup_settings(db_session, user.id, "another-char-id") != (
             resolve_cleanup_settings(db_session, user.id, char.id)
         )
-        assert resolve_cleanup_settings(db_session, user.id, "another-char-id").keep_recent_floors == 20
+        # [MC-D 2026-10-25 改判] 这里原本写死 20（当时的"回落值"），本意是验
+        # "另一张卡走默认而不是隔壁卡的设置"——具体数字是副产物。默认保留楼层
+        # 现已有意从插件的 20 改为 50（SPEC_变量自动清理 §6 红线 1/4，
+        # 详见 test_mvu_cleanup.py::test_defaults_are_deliberate_deviation_from_plugin_schema），
+        # 所以改成引用常量：per-character 隔离这条判据不变，也不再把旧默认值钉死。
+        assert resolve_cleanup_settings(
+            db_session, user.id, "another-char-id"
+        ).keep_recent_floors == DEFAULT_KEEP_RECENT_FLOORS
 
 
 # ---------------------------------------------------------------------------
