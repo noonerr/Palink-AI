@@ -20,6 +20,7 @@ from .regex_script import RegexScript
 from .character_expression import CharacterExpression
 from .character_plugin_storage import CharacterPluginStorage
 from .background import Background
+from .st_plugin_secret import StPluginSecret
 
 __all__ = [
     'Base',
@@ -40,4 +41,5 @@ __all__ = [
     'CharacterExpression',
     'CharacterPluginStorage',
     'Background',
+    'StPluginSecret',
 ]

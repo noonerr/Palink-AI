@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import html
 import io
 import json
@@ -14,6 +15,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 import jwt
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -23,6 +25,7 @@ from sqlalchemy.orm import Session, aliased, selectinload
 
 from ..core import get_db, settings as app_settings
 from ..core.cache import invalidate_user_cache
+from ..core.silent_failure import record as _record_silent_failure
 # [PLUGIN-ON-DEMAND] 角色卡导入后的插件识别（实现在 api/plugins.py）
 from .plugins import detect_required_plugins
 from ..core.security import sign_service_user_id
@@ -42,6 +45,7 @@ from ..models import (
     GlobalVariable,
     GroupChat,
     GroupChatSession,
+    StPluginSecret,
     SystemSetting,
     User,
     UserSetting,
@@ -6245,14 +6249,387 @@ async def st_quick_replies_delete(
 
 
 # ===========================================================================
-# Task 37: /api/secrets/* 安全 stub
+# /api/secrets/* —— ST secrets 真实现（API-1，2026-10-24）
 #
-# SillyTavern 插件（如 Secret Manager）会调用 /api/secrets/* 系列端点管理
-# API key 等敏感信息。Palink 自身使用 ConnectionProfiles 体系托管连接配置与
-# 凭证，不需要也不应通过 ST 的 secrets 接口写入。这里返回 ST 兼容的安全空
-# 形状（HTTP 200），避免插件因 404/500 崩溃，同时通过 error 字段提示用户
-# 使用 Palink ConnectionProfiles API。
+# 取代 Task 37 时代的「安全 stub + Use Palink ConnectionProfiles API」占位：
+# 插件存/读 API key 的链路自本批起真实落库（表 st_plugin_secrets）。
+# 响应形状逐条对齐 ST 1.18.0 服务端
+# _reference/sillytavern-1.18.0/src/endpoints/secrets.js（下称 ST secrets.js，
+# 行号锚点见各端点 docstring）；客户端消费面（public/scripts/secrets.js）
+# 只看 response.ok + JSON 体，逐端点可对上。
+#
+# 存储口径（主脑钉死 + 最小增量，见模型 docstring）：
+#   * 新表 st_plugin_secrets，unique(user_id, key) —— 单槽位：每用户每
+#     secret key 只存当前值。ST 原生是「每 key 一条历史数组 + active 标记」，
+#     单槽位语义映射：write=覆盖当前值（行 id 稳定）、rotate=恒 204 确认、
+#     read 的 state 数组每 key 至多一条。差异已写进各端点 docstring。
+#   * value 永不明文落库：Fernet 对称加密，密钥由 SECRET_KEY 确定性派生
+#     （sha256 → urlsafe_b64）。代价：SECRET_KEY 轮换后旧值解不开（按空值
+#     处理并告警，插件重写即恢复）；开发模式未设 SECRET_KEY 时的随机
+#     fallback（core/config.py）每次重启都会触发同样的解不开。
+#   * 作用域：全部按 user 隔离（get_st_current_user 解析当前用户，所有查询
+#     强制 user_id 过滤）；CSRF 由 api/__init__.py 挂在本 router 上的
+#     csrf_guard 承担，本段不另加第二套门。
+#   * 暴露门（allowKeysExposure）——与 ST 的**有意偏差**：ST 用 403 守
+#     「服务器级 secrets.json 不被任意客户端读走」；Palink 的 secrets 本就是
+#     「该用户自己存的插件密钥」，请求方已过认证 + user_id 过滤，读自己的值
+#     正是本批要修活的链路（P-1），故 view/find 不设 403。/settings 仍按 ST
+#     默认口径回 allowKeysExposure=false，read(state) 里的值照 ST 默认口径
+#     打码（getMaskedValue 逐行对齐，EXPORTABLE 四键豁免）。
 # ===========================================================================
+
+# ST SECRET_KEYS 全表（1.18.0，ST secrets.js:9-73，键名→secret key 字符串）。
+# **有意不含** ST 的 _MIGRATED 迁移标记（getSecretState 跳过它）。
+# read 的 state map 按 ST getSecretState 语义**只枚举这份已知键**：存过的给
+# 单元素数组、没存的给 null。插件自定义键不在 state 里出现（ST 同款行为），
+# 但 view / find 照常可达。
+_SECRET_KEY_IDS: dict[str, str] = {
+    "HORDE": "api_key_horde",
+    "MANCER": "api_key_mancer",
+    "VLLM": "api_key_vllm",
+    "APHRODITE": "api_key_aphrodite",
+    "TABBY": "api_key_tabby",
+    "OPENAI": "api_key_openai",
+    "NOVEL": "api_key_novel",
+    "CLAUDE": "api_key_claude",
+    "DEEPL": "deepl",
+    "LIBRE": "libre",
+    "LIBRE_URL": "libre_url",
+    "LINGVA_URL": "lingva_url",
+    "OPENROUTER": "api_key_openrouter",
+    "AI21": "api_key_ai21",
+    "ONERING_URL": "oneringtranslator_url",
+    "DEEPLX_URL": "deeplx_url",
+    "MAKERSUITE": "api_key_makersuite",
+    "VERTEXAI": "api_key_vertexai",
+    "SERPAPI": "api_key_serpapi",
+    "TOGETHERAI": "api_key_togetherai",
+    "MISTRALAI": "api_key_mistralai",
+    "CUSTOM": "api_key_custom",
+    "OOBA": "api_key_ooba",
+    "INFERMATICAI": "api_key_infermaticai",
+    "DREAMGEN": "api_key_dreamgen",
+    "NOMICAI": "api_key_nomicai",
+    "KOBOLDCPP": "api_key_koboldcpp",
+    "LLAMACPP": "api_key_llamacpp",
+    "COHERE": "api_key_cohere",
+    "PERPLEXITY": "api_key_perplexity",
+    "GROQ": "api_key_groq",
+    "AZURE_TTS": "api_key_azure_tts",
+    "FEATHERLESS": "api_key_featherless",
+    "HUGGINGFACE": "api_key_huggingface",
+    "STABILITY": "api_key_stability",
+    "CUSTOM_OPENAI_TTS": "api_key_custom_openai_tts",
+    "TAVILY": "api_key_tavily",
+    "CHUTES": "api_key_chutes",
+    "ELECTRONHUB": "api_key_electronhub",
+    "NANOGPT": "api_key_nanogpt",
+    "BFL": "api_key_bfl",
+    "COMFY_RUNPOD": "api_key_comfy_runpod",
+    "FALAI": "api_key_falai",
+    "GENERIC": "api_key_generic",
+    "DEEPSEEK": "api_key_deepseek",
+    "SERPER": "api_key_serper",
+    "AIMLAPI": "api_key_aimlapi",
+    "XAI": "api_key_xai",
+    "FIREWORKS": "api_key_fireworks",
+    "VERTEXAI_SERVICE_ACCOUNT": "vertexai_service_account_json",
+    "MINIMAX": "api_key_minimax",
+    "MINIMAX_GROUP_ID": "minimax_group_id",
+    "MOONSHOT": "api_key_moonshot",
+    "COMETAPI": "api_key_cometapi",
+    "AZURE_OPENAI": "api_key_azure_openai",
+    "ZAI": "api_key_zai",
+    "SILICONFLOW": "api_key_siliconflow",
+    "ELEVENLABS": "api_key_elevenlabs",
+    "POLLINATIONS": "api_key_pollinations",
+    "VOLCENGINE_APP_ID": "volcengine_app_id",
+    "VOLCENGINE_ACCESS_KEY": "volcengine_access_key",
+    "WORKERS_AI": "api_key_workers_ai",
+}
+# 62 个真实 secret key（dict 保持 ST 声明序，state map 键序随 ST）。
+_SECRET_STATE_KEYS: list[str] = list(_SECRET_KEY_IDS.values())
+# ST EXPORTABLE_KEYS（ST secrets.js:101-106）：allowKeysExposure=false 时
+# state 打码的豁免名单（URL 类本就不敏感）。
+_SECRET_EXPORTABLE_KEYS = frozenset(
+    {"libre_url", "lingva_url", "oneringtranslator_url", "deeplx_url"}
+)
+
+_secrets_fernet_instance: Optional[Fernet] = None
+
+
+def _secrets_fernet() -> Fernet:
+    """由 SECRET_KEY 确定性派生 Fernet 密钥（进程内缓存一次）。
+
+    派生：sha256(SECRET_KEY.encode()) → urlsafe_b64encode → Fernet key。
+    确定性派生让重启后旧密文仍可解（重启安全）；代价是 **SECRET_KEY 一旦
+    轮换，旧值全部解不开**（_secret_decrypt 按空值兜底，插件重写即恢复）。
+    开发模式未设 SECRET_KEY 环境变量时 core/config.py 用随机 fallback，
+    每次重启等价于一次轮换 —— 生产必须固定 SECRET_KEY。
+    """
+    global _secrets_fernet_instance
+    if _secrets_fernet_instance is None:
+        digest = hashlib.sha256((app_settings.SECRET_KEY or "").encode("utf-8")).digest()
+        _secrets_fernet_instance = Fernet(base64.urlsafe_b64encode(digest))
+    return _secrets_fernet_instance
+
+
+def _secret_encrypt(value: str) -> str:
+    return _secrets_fernet().encrypt(value.encode("utf-8")).decode("ascii")
+
+
+def _secret_decrypt(token: str) -> str:
+    """解密；解不开（SECRET_KEY 已轮换/密文损坏）按空值兜底，不抛 500。"""
+    try:
+        return _secrets_fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError):
+        logging.getLogger(__name__).warning(
+            "st_plugin_secrets: value undecryptable (SECRET_KEY rotated?) — treating as empty"
+        )
+        return ""
+
+
+def _mask_secret_value(value: str, key: str) -> str:
+    """ST getMaskedValue（ST secrets.js:181-195）逐行对齐（allowKeysExposure=false 口径）。"""
+    if key in _SECRET_EXPORTABLE_KEYS:
+        return value
+    threshold = 10
+    exposed_chars = 3
+    if len(value) <= threshold:
+        return "*" * threshold
+    return "*" * (threshold - exposed_chars) + value[-exposed_chars:]
+
+
+def _get_user_secret_row(db: Session, user_id: int, key: str) -> Optional[StPluginSecret]:
+    """取当前用户某 secret key 的行；**必须**带 user_id 过滤（越权隔离的唯一屏障）。"""
+    return (
+        db.query(StPluginSecret)
+        .filter(StPluginSecret.user_id == user_id, StPluginSecret.key == key)
+        .first()
+    )
+
+
+@router.post("/api/secrets/settings")
+async def st_secrets_settings(
+    user: User = Depends(get_st_current_user),
+):
+    """ST /api/secrets/settings（ST secrets.js:642-644；客户端锚 public/scripts/secrets.js:291）。
+
+    恒回 allowKeysExposure=false（ST 默认口径）：客户端 canViewSecrets 据此走
+    保守 UI。view/find 不设 ST 的 403 门是有意偏差，见区块头注释。
+    """
+    return {"allowKeysExposure": False}
+
+
+@router.post("/api/secrets/write")
+async def st_secrets_write(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/write（ST secrets.js:511-527）。
+
+    ST 校验 ``!key || typeof value !== 'string'`` → 400 纯文本 'Invalid key or
+    value'（express res.send(string)，text/html）；成功回 ``{id}``。
+    单槽位映射：同 (user, key) 已有行则覆盖密文并保留行 id（ST 是追加新条目
+    停用旧条目；「最新写入即当前值」语义等价，旧 id 从此指向同一槽位）。
+    label 带了就更新；没带保留旧值（ST 会另开 'Unlabeled' 新条目，单槽位下
+    保旧标签更贴近用户意图；首次写入未带 label 记 NULL，state 显示 'Unlabeled'）。
+    """
+    invalid = Response("Invalid key or value", status_code=400, media_type="text/html")
+    if not isinstance(payload, dict):
+        return invalid
+    key = payload.get("key")
+    value = payload.get("value")
+    label = payload.get("label")
+    if not isinstance(key, str) or not key or not isinstance(value, str):
+        return invalid
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as _enc_exc:
+        # json \udXXX 逃逸可造出含孤代理的 str——不可编码值在此落 400，
+        # 不能让它走到 _secret_encrypt 的 value.encode 裸抛 500。
+        _record_silent_failure("st_secrets.write_unencodable_value", _enc_exc, once=True)
+        return invalid
+
+    row = _get_user_secret_row(db, user.id, key)
+    if row is None:
+        row = StPluginSecret(user_id=user.id, key=key)
+        db.add(row)
+    row.value_encrypted = _secret_encrypt(value)
+    if isinstance(label, str) and label:
+        row.label = label
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发首建竞态（unique(user_id, key) 撞车）：回读后改覆盖语义。
+        db.rollback()
+        row = _get_user_secret_row(db, user.id, key)
+        if row is None:
+            raise
+        row.value_encrypted = _secret_encrypt(value)
+        if isinstance(label, str) and label:
+            row.label = label
+        db.commit()
+    return {"id": row.id}
+
+
+@router.post("/api/secrets/read")
+async def st_secrets_read(
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/read（ST secrets.js:529-538）。
+
+    回**整个 state map**（不是 stub 时代的 {result:...} 信封——那是 Task 37
+    编的形状）：``{[secretKey]: [{id, value(打码), label, active}] | null}``。
+    只枚举 ST 已知 SECRET_KEYS（ST getSecretState 同口径；自定义键经
+    view/find 可达）。值按 ST getMaskedValue 打码；解不开的旧密文打码前
+    已按空值兜底（显示 10 个星，与 ST 短值打码一致）。
+    """
+    rows = db.query(StPluginSecret).filter(StPluginSecret.user_id == user.id).all()
+    by_key = {row.key: row for row in rows}
+    state: dict[str, Any] = {}
+    for sk in _SECRET_STATE_KEYS:
+        row = by_key.get(sk)
+        if row is None:
+            state[sk] = None
+        else:
+            state[sk] = [
+                {
+                    "id": row.id,
+                    "value": _mask_secret_value(_secret_decrypt(row.value_encrypted), sk),
+                    "label": row.label or "Unlabeled",
+                    "active": True,
+                }
+            ]
+    return state
+
+
+@router.post("/api/secrets/view")
+async def st_secrets_view(
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/view（ST secrets.js:540-558）。
+
+    ST 形状 = getAllSecrets()：``{[key]: 当前值}`` 扁平 map（不是 stub 时代的
+    ``{secrets: [], values: []}``——那是没有源码锚点的自创形状）。有意偏差：
+    不设 allowKeysExposure 403 门（用户作用域已由认证 + user_id 过滤承担）；
+    ST 的 404 分支（文件缺失）对应这里恒有表可查 → 空 map。
+    """
+    rows = db.query(StPluginSecret).filter(StPluginSecret.user_id == user.id).all()
+    return {
+        row.key: _secret_decrypt(row.value_encrypted)
+        for row in rows
+        if row.key != "_migrated"
+    }
+
+
+@router.post("/api/secrets/find")
+async def st_secrets_find(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/find（ST secrets.js:560-586）。
+
+    !key → 400 'Key is required'（纯文本）；该 key 无存 → 404 空体；有存 →
+    ``{value}``（不带 id 取当前槽位；id 匹配同值；id 对不上回 ``{value: ''}``，
+    ST readSecret 的 find-miss 语义）。403 暴露门为有意偏差（见区块头）。
+    """
+    if not isinstance(payload, dict):
+        return Response("Key is required", status_code=400, media_type="text/html")
+    key = payload.get("key")
+    secret_id = payload.get("id")
+    if not isinstance(key, str) or not key:
+        return Response("Key is required", status_code=400, media_type="text/html")
+    row = _get_user_secret_row(db, user.id, key)
+    if row is None:
+        return Response(status_code=404)
+    if secret_id is not None and secret_id != row.id:
+        return {"value": ""}
+    return {"value": _secret_decrypt(row.value_encrypted)}
+
+
+@router.post("/api/secrets/delete")
+async def st_secrets_delete(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/delete（ST secrets.js:588-604）。
+
+    !key → 400 'Key and ID are required'（ST 文案原文，纯文本）；删除命中
+    （不带 id = 删当前槽位，对应 ST 的 active 兜底；带 id = id 匹配才删）
+    → 204 空体；没命中也 204（ST deleteSecret 对 key/id 不存在一律静默返回，
+    端点恒 sendStatus(204)）。
+    """
+    if not isinstance(payload, dict):
+        return Response("Key and ID are required", status_code=400, media_type="text/html")
+    key = payload.get("key")
+    if not isinstance(key, str) or not key:
+        return Response("Key and ID are required", status_code=400, media_type="text/html")
+    secret_id = payload.get("id")
+    row = _get_user_secret_row(db, user.id, key)
+    if row is not None and (secret_id is None or secret_id == row.id):
+        db.delete(row)
+        db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/api/secrets/rotate")
+async def st_secrets_rotate(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+):
+    """ST /api/secrets/rotate（ST secrets.js:606-622）。
+
+    ST 语义 = 把指定 id 的条目置为 active。单槽位下当前值恒 active：id 匹配
+    即成功（204，状态不变）；id 不匹配/无存照 ST 一样静默回 204（rotateSecret
+    对找不到的 id 只 console.warn 后返回）；!key || !id → 400
+    'Key and ID are required'。响应与 ST 逐字一致：恒 204 空体。
+    """
+    if not isinstance(payload, dict):
+        return Response("Key and ID are required", status_code=400, media_type="text/html")
+    key = payload.get("key")
+    secret_id = payload.get("id")
+    if not isinstance(key, str) or not key or not secret_id:
+        return Response("Key and ID are required", status_code=400, media_type="text/html")
+    return Response(status_code=204)
+
+
+@router.post("/api/secrets/rename")
+async def st_secrets_rename(
+    payload: Any = Body(None),
+    user: User = Depends(get_st_current_user),
+    db: Session = Depends(get_db),
+):
+    """ST /api/secrets/rename（ST secrets.js:624-640）。
+
+    !key || !id || !label → 400 'Key, ID, and label are required'（原文）；
+    id 匹配当前槽位 → 更新 label 落库，204；不匹配/无存静默 204（ST 同款：
+    warn + return）。label 列是最初钉死列清单之外的最小增量（模型 docstring
+    有记），没有它 rename 语义无处落。
+    """
+    if not isinstance(payload, dict):
+        return Response("Key, ID, and label are required", status_code=400, media_type="text/html")
+    key = payload.get("key")
+    secret_id = payload.get("id")
+    label = payload.get("label")
+    if (
+        not isinstance(key, str)
+        or not key
+        or not secret_id
+        or not isinstance(label, str)
+        or not label
+    ):
+        return Response("Key, ID, and label are required", status_code=400, media_type="text/html")
+    row = _get_user_secret_row(db, user.id, key)
+    if row is not None and secret_id == row.id:
+        row.label = label
+        db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/api/themes/save")
@@ -6368,81 +6745,6 @@ async def st_stats_get(
         if last_at:
             entry["date_last_chat"] = int(last_at.timestamp() * 1000)
     return char_stats
-
-
-@router.post("/api/secrets/settings")
-async def st_secrets_settings(
-    user: User = Depends(get_st_current_user),
-):
-    """C-6 修复: ST /api/secrets/settings（secrets.js:291）。
-
-    返回 allowKeysExposure=false（Palink 不通过 ST secrets 暴露密钥，
-    凭证由 ConnectionProfiles 管理），避免 ST 前端读取到 undefined。
-    """
-    return {"allowKeysExposure": False}
-
-
-@router.post("/api/secrets/write")
-async def st_secrets_write(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets write stub。Palink 凭证由 ConnectionProfiles 管理。"""
-    return {"result": False, "error": "Secret management is handled by Palink ConnectionProfiles"}
-
-
-@router.post("/api/secrets/read")
-async def st_secrets_read(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets read stub。返回空值，提示使用 ConnectionProfiles API。"""
-    return {"result": "", "error": "Use Palink ConnectionProfiles API"}
-
-
-@router.post("/api/secrets/view")
-async def st_secrets_view(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets view stub。返回空列表避免泄露任何已存凭证。"""
-    return {"secrets": [], "values": []}
-
-
-@router.post("/api/secrets/find")
-async def st_secrets_find(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets find stub。始终返回空值。"""
-    return {"value": ""}
-
-
-@router.post("/api/secrets/delete")
-async def st_secrets_delete(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets delete stub。Palink 凭证由 ConnectionProfiles 管理。"""
-    return {"result": False, "error": "Use Palink ConnectionProfiles API"}
-
-
-@router.post("/api/secrets/rotate")
-async def st_secrets_rotate(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets rotate stub。Palink 凭证轮换由 ConnectionProfiles 管理。"""
-    return {"result": False, "error": "Use Palink ConnectionProfiles API"}
-
-
-@router.post("/api/secrets/rename")
-async def st_secrets_rename(
-    payload: Any = Body(None),
-    user: User = Depends(get_st_current_user),
-):
-    """ST secrets rename stub。Palink 凭证由 ConnectionProfiles 管理。"""
-    return {"result": False, "error": "Use Palink ConnectionProfiles API"}
 
 
 # ===========================================================================
