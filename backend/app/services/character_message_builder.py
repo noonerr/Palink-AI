@@ -240,6 +240,20 @@ def build_character_chat_messages(
 
     legacy_smart_card_contexts = set()
     for m in history:
+        # [NF-1 2026-10-24] role 空值归一化（必须在循环开头、先于下方 user/assistant 分支）：
+        # 存量库存在 role=NULL 孤立行（2026-06-23 已消失的早期写入路径遗留，当前全部构造点
+        # 均不可能再产生；取证见 REPORT_NF1_role空值消息取证_2026-10-24.md）。NULL 若透传
+        # 会以 "role":null 直发上游（预期 400），且漏过 assistant 清洗分支——归一为
+        # assistant（与该行 is_user=False 的显示侧归属一致）并一次性留痕。
+        if not m.role:
+            from ..core.silent_failure import record as _nf1_record
+            _nf1_record(
+                "assembly.history_role_normalized",
+                None,
+                once=True,
+                message_id=str(getattr(m, "id", "")),
+            )
+        m_role = m.role or "assistant"
         # ST 1.18.0 IGNORE_SYMBOL 对齐: 跳过 extra.ignore=true 的消息
         # Palink 用 boolean 字段 extra.ignore 替代 Symbol.for('ignore')
         # 参考 ST 1.18.0 prepareOpenAIMessages/history 滤除 isIgnore 标记
@@ -252,7 +266,7 @@ def build_character_chat_messages(
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
         msg_content = m.content
-        if m.role == "user" and is_smart_card_trigger_message(msg_content):
+        if m_role == "user" and is_smart_card_trigger_message(msg_content):
             legacy_context = clean_smart_card_trigger_context(msg_content)
             if legacy_context and legacy_context not in legacy_smart_card_contexts:
                 legacy_smart_card_contexts.add(legacy_context)
@@ -261,18 +275,18 @@ def build_character_chat_messages(
                     "content": "[Smart card selected start context]\n" + legacy_context,
                 })
             continue
-        if m.role == "assistant":
+        if m_role == "assistant":
             msg_content = strip_inline_think(msg_content).strip()
             msg_content = clean_display_markup_for_prompt(msg_content)
             if not msg_content:
                 msg_content = m.content
         # D2 修复: 群聊历史消息按发言者名归属（"Name: content"），与 st-compat
         # DEFAULT names_behavior 对齐；用户消息（msg_name==user_name）不加前缀。
-        if is_group and m.role != "user":
+        if is_group and m_role != "user":
             _m_name = getattr(m, "name", None) or ""
             if _m_name and _m_name != user_name:
                 msg_content = f"{_m_name}: {msg_content}"
-        messages.append({"role": m.role, "content": msg_content})
+        messages.append({"role": m_role, "content": msg_content})
 
     if char.post_history_instructions and char.post_history_instructions.strip():
         phi_text = _replace_placeholders(char.post_history_instructions, user_nickname, _char_name_for_sub)
