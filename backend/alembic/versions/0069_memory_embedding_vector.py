@@ -38,12 +38,16 @@ branch_labels = None
 depends_on = None
 
 _COLUMN_TYPE_SQL = """
-    SELECT a.atttypid::regtype::text AS type_text
+    SELECT format_type(a.atttypid, a.atttypmod) AS type_text
     FROM pg_attribute a
     JOIN pg_class r ON r.oid = a.attrelid
     WHERE r.relname = 'conversation_memories'
       AND a.attname = 'embedding' AND a.attnum > 0
 """
+# [0069 修 2026-10-24] 原 `a.atttypid::regtype::text` 只回 "vector"（不带维度），
+# startswith("vector(") 永不命中 ⇒ 列已是 vector 的库（如生产，曾于 2026-10-07
+# 经 alembic 之外路径转换）落入 TEXT 分支调 length() 报 UndefinedFunction。
+# format_type(atttypid, atttypmod) 返回 "vector(1024)"，早退分支恢复判定。
 
 
 def _target_dim() -> int:
