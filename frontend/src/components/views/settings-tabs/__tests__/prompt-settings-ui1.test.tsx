@@ -166,5 +166,39 @@ describe('PromptSettings 作者注 / 破甲控件', () => {
   it('删掉"显示角色状态"的误导文案（UI1-4：不补假开关）', async () => {
     await renderSettings();
     expect(container.textContent || '').not.toContain('显示角色状态');
+    // 中英文键名一并钉死：设置页任何位置不得出现该假开关的字样或键名
+    expect(container.textContent || '').not.toContain('show_character_status');
+  });
+
+  it('三条保存路径（保存设置/作者注/破甲）的 PUT 载荷均不含 show_character_status 键（UI-1 前半 2026-10-24）', async () => {
+    await renderSettings();
+
+    // 1) 保存设置（自定义提示词 handleSave）
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === '保存设置',
+    );
+    expect(saveBtn).toBeTruthy();
+    await act(async () => {
+      saveBtn!.click();
+    });
+    await act(async () => {});
+
+    // 2) 作者注保存 handleSaveAuthorNote
+    await act(async () => {
+      q('author-note-save').click();
+    });
+    await act(async () => {});
+
+    // 3) 破甲保存 handleSaveJailbreak
+    await act(async () => {
+      q('jailbreak-save').click();
+    });
+    await act(async () => {});
+
+    expect(mockedPut).toHaveBeenCalledTimes(3);
+    for (const call of mockedPut.mock.calls) {
+      const payload = call[1] as Record<string, unknown>;
+      expect(Object.keys(payload)).not.toContain('show_character_status');
+    }
   });
 });
