@@ -149,11 +149,26 @@ def build_character_chat_messages(
     # P0-3: ST generate_interceptor 消息排除同步。前端拦截器 splice 掉的消息 ID，
     # 装配时从 history 中排除（仅影响本次 prompt，不改动 DB）。
     excluded_message_ids: Optional[List[str]] = None,
+    # [ASM-4 2026-10-24] 前部 ST 分立消息插槽（VER-1 §7.2 D-1/D-2/D-3/D-5/D-12）。
+    # 由装配层预构好的独立消息 dict（含 _palink_prompt_id 标记），分别插在
+    # 主提示词（main，M0）之前/之后——对齐 ST 前部分立体系：
+    # worldInfoBefore → main → worldInfoAfter → charDescription/… → 相对扩展提示
+    # （openai.js:1203-1209、:1256-1275 injectToMain）。
+    front_before_main: Optional[List[Dict[str, Any]]] = None,
+    front_after_main: Optional[List[Dict[str, Any]]] = None,
+    # [ASM-4 2026-10-24] D-7 newMainChat 历史区头（P-DEC-6 默认开；开关在装配层
+    # 读取）。非空且存在历史消息时，作为独立 system 消息插在首条历史消息之前——
+    # 对齐 ST populateChatHistory 的 chatCompletion.insertAtStart(newChatMessage)
+    # （openai.js:884-886 + :1069-1070；区头在注入数组之外，不参与 depth 锚定）。
+    new_main_chat_prompt: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     构建角色聊天消息列表。
 
-    顺序：稳定角色提示词 -> 示例 -> 历史 -> 历史后指令 -> 动态上下文 -> 用户系统指令 -> 当前用户消息。
+    顺序：[ASM-4 前部插槽: worldInfoBefore] -> 稳定角色提示词(main) ->
+    [ASM-4 前部插槽: worldInfoAfter/记忆/实体卡/IN_PROMPT 等独立消息] ->
+    示例 -> [newMainChat 历史区头] -> 历史 -> 历史后指令 -> 动态上下文（各 part
+    独立 system 消息，不再合并单条）-> 用户系统指令 -> 当前用户消息。
     尾部不再追加 system（2026-09-27 身份层 ST 化：final_reminder 已删，末条必为 user 轮）。
 
     当传入 context_template（ST 1.18.0 上下文模板）且模板名称不为 "Default" 时，
@@ -177,7 +192,22 @@ def build_character_chat_messages(
         else settings.CHARACTER_CHAT_HISTORY_LIMIT
     )
 
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    # [ASM-4 2026-10-24] 前部 ST 分立体系（VER-1 §3.1 应然模型 1-8 槽）：
+    # worldInfoBefore → main → worldInfoAfter/相对扩展提示。装配层把拆桶结果
+    # 以完整消息 dict 传入，这里按给定顺序逐条落位（每条已带 _palink_prompt_id）。
+    # main 消息显式打上 "main" 标识：标题指令与 instruct 模板注入从此按标记定位，
+    # 不再依赖 messages[0] 位置启发（前部插槽存在时 messages[0] 已不是 main）。
+    messages: List[Dict[str, Any]] = []
+    for _fb_msg in (front_before_main or []):
+        messages.append(dict(_fb_msg))
+    messages.append({
+        "role": "system",
+        "content": system_prompt,
+        "_palink_prompt_id": "main",
+    })
+    _main_prompt_idx = len(messages) - 1
+    for _fa_msg in (front_after_main or []):
+        messages.append(dict(_fa_msg))
 
     # D3 修复: 群聊时 {{char}} 绑定到当前发言者
     _char_name_for_sub = (speaker_char.name if (is_group and speaker_char is not None) else char.name) or ""
@@ -238,6 +268,26 @@ def build_character_chat_messages(
         _order_index = {str(mid): i for i, mid in enumerate(message_order)}
         history.sort(key=lambda m: _order_index.get(str(getattr(m, "id", "")), len(_order_index)))
 
+    # [ASM-4 2026-10-24] D-7 newMainChat 历史区头：插在首条历史消息之前（仅在
+    # 过滤后仍有历史时）。ST 中它经 insertAtStart 进入 chatHistory 容器、在
+    # populationInjectionPrompts 之后合并（openai.js:1336 vs :1069），因此不参与
+    # depth 锚定计数——depth 钳制下限（_palink_history_start）打在首条真实历史
+    # 消息上，注入不会越过区头。
+    if new_main_chat_prompt and history:
+        messages.append({
+            "role": "system",
+            "content": new_main_chat_prompt,
+            "_palink_prompt_id": "chatHistory",
+            "_palink_in_chat_injection": True,
+        })
+
+    # [ASM-4 2026-10-24] D-9 纯聊天历史锚点标记：装配层 _insert_depth_prompt 按
+    # 这两个私有标记定位历史区（ST populationInjectionPrompts 只操作聊天数组，
+    # openai.js:801-866），不再按数组总长倒数（旧算式把尾部动态块当成历史槽，
+    # 即 VER-1 D-9 的偏移根因）。标记在装配出栈前由 _palink_ 私有键剥离统一剥掉。
+    _history_start_marked = False
+    _last_history_msg: Optional[Dict[str, Any]] = None
+
     legacy_smart_card_contexts = set()
     for m in history:
         # [NF-1 2026-10-24] role 空值归一化（必须在循环开头、先于下方 user/assistant 分支）：
@@ -270,10 +320,15 @@ def build_character_chat_messages(
             legacy_context = clean_smart_card_trigger_context(msg_content)
             if legacy_context and legacy_context not in legacy_smart_card_contexts:
                 legacy_smart_card_contexts.add(legacy_context)
-                messages.append({
+                _sc_msg = {
                     "role": "system",
                     "content": "[Smart card selected start context]\n" + legacy_context,
-                })
+                }
+                if not _history_start_marked:
+                    _sc_msg["_palink_history_start"] = True
+                    _history_start_marked = True
+                _last_history_msg = _sc_msg
+                messages.append(_sc_msg)
             continue
         if m_role == "assistant":
             msg_content = strip_inline_think(msg_content).strip()
@@ -286,7 +341,12 @@ def build_character_chat_messages(
             _m_name = getattr(m, "name", None) or ""
             if _m_name and _m_name != user_name:
                 msg_content = f"{_m_name}: {msg_content}"
-        messages.append({"role": m_role, "content": msg_content})
+        _h_msg = {"role": m_role, "content": msg_content}
+        if not _history_start_marked:
+            _h_msg["_palink_history_start"] = True
+            _history_start_marked = True
+        _last_history_msg = _h_msg
+        messages.append(_h_msg)
 
     if char.post_history_instructions and char.post_history_instructions.strip():
         phi_text = _replace_placeholders(char.post_history_instructions, user_nickname, _char_name_for_sub)
@@ -307,15 +367,19 @@ def build_character_chat_messages(
     is_zh = prompt_lang == "zh" or (prompt_lang == "auto" and _contains_chinese((char.name or "") + (char.description or "")))
     personality_summary = (char.personality or "").strip()[:200]
 
+    # [ASM-4 2026-10-24] 尾部动态块拆分（VER-1 §7.2 D-2/D-3/D-4 + §5.1 同判）：
+    # 旧实现把全部动态 part + 角色校准 join 成**单条**混合 system（实测 25KB，
+    # 世界书/实体卡/记忆/校准互相粘连不可定位）。现每个 part 一条独立 system
+    # 消息，角色校准（P-DEC-5 保留）也单独成条——内容与相对顺序不变，只改消息边界。
     dynamic_parts = [part for part in dynamic_context_parts if part]
+    for _part in dynamic_parts:
+        messages.append({"role": "system", "content": _part})
     if personality_summary:
         if is_zh:
-            dynamic_parts.append(f"【角色校准】你是{char.name or '角色'}。将当前局势融入回复，但语气、价值观和反应方式必须持续贴合角色性格：{personality_summary}")
+            calib_text = f"【角色校准】你是{char.name or '角色'}。将当前局势融入回复，但语气、价值观和反应方式必须持续贴合角色性格：{personality_summary}"
         else:
-            dynamic_parts.append(f"[Character Calibration] You are {char.name or 'the character'}. Integrate the current situation, but keep voice, values, and reactions aligned with this personality: {personality_summary}")
-
-    if dynamic_parts:
-        messages.append({"role": "system", "content": "\n\n".join(dynamic_parts)})
+            calib_text = f"[Character Calibration] You are {char.name or 'the character'}. Integrate the current situation, but keep voice, values, and reactions aligned with this personality: {personality_summary}"
+        messages.append({"role": "system", "content": calib_text})
 
     # 添加用户系统指令
     if system_commands:
@@ -327,7 +391,12 @@ def build_character_chat_messages(
                 messages.append({"role": "system", "content": f"[User System Instruction] {cmd}"})
 
     if include_user_message:
+        # [ASM-4] 历史区末梢锚点：当前 user 消息属于聊天历史（ST chat 数组含
+        # 本轮输入），depth=0 注入落它之后（openai.js:858 倒序 splice(0)）。
         messages.append(user_msg)
+        user_msg["_palink_history_end"] = True
+    elif _last_history_msg is not None:
+        _last_history_msg["_palink_history_end"] = True
 
     if include_title_instruction:
         # T2（2026-09-27 身份层 ST 化）：标题指令并入 auxiliary（system_prompt
@@ -337,7 +406,12 @@ def build_character_chat_messages(
             title_instruction = "请在回复末尾用 [标题: 11个字概括本次对话] 的格式输出一个简短的标题。"
         else:
             title_instruction = "Please include a brief title at the end of your response in the format [Title: 11-character summary of this conversation]."
-        if messages and messages[0].get("role") == "system":
+        # [ASM-4] 按显式 main 标记定位（前部插槽在场时 messages[0] 是
+        # worldInfoBefore，不再是 main——沿用 messages[0] 会把标题指令并错条）。
+        if 0 <= _main_prompt_idx < len(messages) and messages[_main_prompt_idx].get("role") == "system":
+            messages[_main_prompt_idx]["content"] = (messages[_main_prompt_idx]["content"] or "") + "\n\n" + title_instruction
+        elif messages and messages[0].get("role") == "system":
+            # 兜底：main 标记不在场时退回 messages[0]（旧行为）
             messages[0]["content"] = (messages[0]["content"] or "") + "\n\n" + title_instruction
         else:
             # 极端兜底：首条不是 system（正常装配不会发生）时退回独立 system 追加

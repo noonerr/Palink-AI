@@ -816,6 +816,47 @@ def _get_history_reserve(user_setting: Optional[Any]) -> int:
 _DEFAULT_HISTORY_RESERVE = 1024
 
 
+# ── [ASM-4 2026-10-24] 装配层设置开关（既有 silly_tavern_settings JSON 通道）──
+# 落点：UserSetting.silly_tavern_settings → extension_settings.palink_assembly 子键。
+# 选 extension_settings 而非顶层平铺键的原因：/api/settings/save 对顶层是整块
+# 替换（ST 前端 saveSettings 只回传它认识的字段，平铺键会被静默擦掉——P2-2 同源
+# 教训），对 extension_settings 做 namespace 级增量合并，开关值不会被前端保存冲掉。
+# 不加列、不迁移。
+def _read_palink_assembly_flags(user_setting: Optional[Any]) -> dict:
+    """读取装配层开关。当前键：
+    - ``new_main_chat``（D-7 newMainChat 历史区头，P-DEC-6 默认开）
+    解析失败/键缺席一律回落默认值（默认=与 ST 一致）。
+    """
+    flags: dict = {"new_main_chat": True}
+    if user_setting is None:
+        return flags
+    st_raw = getattr(user_setting, "silly_tavern_settings", None)
+    if not st_raw:
+        return flags
+    # [SILENT-FAIL 2026-10-22] 设置 blob 解析失败回落默认值（开关缺席=开）；
+    # 用 record 通道留痕，不走静默吞（test_silent_failure_guard 双棘轮）。
+    from ..core.silent_failure import swallow as _sf_swallow
+
+    with _sf_swallow(
+        "prompt_assembly.palink_assembly_flags_parse",
+        user_id=getattr(user_setting, "user_id", None),
+    ):
+        st = json.loads(st_raw) if isinstance(st_raw, str) else st_raw
+        ext = st.get("extension_settings") if isinstance(st, dict) else None
+        pa = ext.get("palink_assembly") if isinstance(ext, dict) else None
+        if isinstance(pa, dict) and "new_main_chat" in pa:
+            flags["new_main_chat"] = bool(pa.get("new_main_chat"))
+    return flags
+
+
+def _new_main_chat_prompt_text(is_zh: bool, is_group: bool) -> str:
+    """D-7 历史区头文案（自写：ST 默认 new_chat_prompt "[Start a new Chat]" 的
+    汉化等价表述与英文改写，不照抄 ST 英文原文；群聊对应 new_group_chat_prompt）。"""
+    if is_group:
+        return "[开始新的群聊对话]" if is_zh else "[Start of a new group conversation]"
+    return "[开始新的对话]" if is_zh else "[Start of a new conversation]"
+
+
 # ── Task 3.5.4: Prompt collection ─────────────────────────────────────
 # Standard prompt source identifiers. Mirrors the ST 1.18.0 prompt_order
 # identifier set (see openai.js prompt_order) extended with Palink-specific
@@ -3947,13 +3988,12 @@ async def _assemble_roleplay_prompt_impl(
                     tokens_estimate=_estimate_tokens(content),
                 ))
             elif pos == EXTENSION_PROMPT_POSITION_IN_PROMPT:
-                # 追加到 system prompt 末尾（不按 depth）
-                # 暂存到 ext_in_prompt_entries，等 system_prompt 构建完成后追加
+                # [ASM-4] 排队为独立消息（main 之后落位，见前部装配段 D-12 注释）
                 ext_in_prompt_entries.append((content, role))
                 report.append(PromptAssemblyReportItem(
                     "extension_prompt",
                     "included",
-                    detail=f"identifier={identifier}; position=0 (IN_PROMPT, end of system prompt); role={role}",
+                    detail=f"identifier={identifier}; position=0 (IN_PROMPT, independent message after main); role={role}",
                     tokens_estimate=_estimate_tokens(content),
                 ))
             elif pos == EXTENSION_PROMPT_POSITION_IN_CHAT:
@@ -4023,6 +4063,12 @@ async def _assemble_roleplay_prompt_impl(
     wb_em_top_entries: list[str] = []
     wb_em_bottom_entries: list[str] = []
     wb_outlet_entries: dict[str, list[str]] = {}
+    # [ASM-4 2026-10-24] D-1+NF-3 拆桶出参：before/after 前部两桶 + ANTop/ANBottom
+    # 作者注通道桶（世界书正文不再并入尾部 [World Lore] 混合块）。
+    wb_wi_before_parts: list[str] = []
+    wb_wi_after_parts: list[str] = []
+    wb_an_before_parts: list[str] = []
+    wb_an_after_parts: list[str] = []
     _part_count_before = len(dynamic_context_parts)
     # E-1 修复: 世界书扫描（N+1 查询 + token 编码）是纯同步重活，移入线程池，
     # 避免阻塞事件循环（与 persist_snapshot 的 to_thread 模式一致）。
@@ -4050,6 +4096,11 @@ async def _assemble_roleplay_prompt_impl(
         # D 批修复: 群聊世界书上下文（此前分支引用非作用域变量致群聊注入整体失效）
         group_chat=_g_mode,
         group_wi_strategy=group_wi_strategy,
+        # [ASM-4] D-1+NF-3：拆桶模式（position 0/1/2/3 不再并入尾块）
+        wi_before_parts=wb_wi_before_parts,
+        wi_after_parts=wb_wi_after_parts,
+        an_before_parts=wb_an_before_parts,
+        an_after_parts=wb_an_after_parts,
     )
     dynamic_context_part_keys.extend(["worldbook"] * (len(dynamic_context_parts) - _part_count_before))
 
@@ -4081,6 +4132,8 @@ async def _assemble_roleplay_prompt_impl(
         context_window_override=_get_openai_max_context_override(
             user_setting, req.model, req.char.id if req.char else None),
     )
+    # [ASM-4 2026-10-24] D-2/D-3 前部桶：实体卡 + 记忆文本（main 之后独立消息）。
+    memory_front_parts: list[str] = []
     _memory_budget = _resolve_memory_max_tokens(user_setting)
     # [MEM-BUDGET-CLAMP 2026-10-09] 档位预算不得吃掉 prompt 总预算。
     # 档位表上限 6000，而用户设置缺失时默认 1500；但 prompt 总预算
@@ -4108,6 +4161,9 @@ async def _assemble_roleplay_prompt_impl(
         token_budget=_memory_token_budget,
         system_prompt=system_prompt,
         history_reserve=_get_history_reserve(user_setting),
+        # [ASM-4] D-2/D-3：实体卡与记忆写入前部桶（main 之后独立消息），
+        # 不再进尾部混合块。
+        front_parts=memory_front_parts,
     )
     dynamic_context_part_keys.extend(["memory"] * (len(dynamic_context_parts) - _part_count_before))
 
@@ -4233,6 +4289,147 @@ async def _assemble_roleplay_prompt_impl(
         _ep_before_text = "\n\n".join(t for t, _ in ext_before_prompt_entries)
         system_prompt = _ep_before_text + "\n\n" + system_prompt
 
+    # ══ [ASM-4 2026-10-24] 前部 ST 分立体系装配（VER-1 §7.2 裁定表施工图）════
+    # 应然序列（ST openai.js:1203-1209 + :1256-1275 + :884-886）：
+    #   worldInfoBefore → main → worldInfoAfter → charDescription/…（并入 main，
+    #   B-4 既定 story_string 语义）→ 相对扩展提示（记忆/实体卡/AN/IN_PROMPT 插件，
+    #   各自独立消息）→ newMainChat 历史区头 → 聊天历史。
+    front_before_msgs: list[dict[str, Any]] = []
+    front_after_msgs: list[dict[str, Any]] = []
+
+    # D-1：世界书 before/after 前部两条（桶已各自变换完毕，每桶一条独立消息）。
+    if wb_wi_before_parts:
+        front_before_msgs.append({
+            "role": "system",
+            "content": "\n".join(wb_wi_before_parts),
+            "_palink_prompt_id": PROMPT_ID_WORLD_INFO_BEFORE,
+        })
+    if wb_wi_after_parts:
+        front_after_msgs.append({
+            "role": "system",
+            "content": "\n".join(wb_wi_after_parts),
+            "_palink_prompt_id": PROMPT_ID_WORLD_INFO_AFTER,
+        })
+
+    # D-2/D-3：记忆 + 实体卡（memory_front_parts 内相对序：实体卡在前）。
+    # ST 官方记忆/向量扩展默认 IN_PROMPT=前部相对 main 独立消息
+    # （memory/index.js:114、vectors/index.js:89-90），不再混尾部块。
+    for _mem_part in memory_front_parts:
+        if _mem_part:
+            front_after_msgs.append({
+                "role": "system",
+                "content": _mem_part,
+                "_palink_prompt_id": PROMPT_ID_MEMORY,
+            })
+
+    # NF-3：ANTop/ANBottom 并入作者注通道（ST world-info.js:5151-5152：
+    # ANWithWI = ANTopEntries + '\n' + originalAN + '\n' + ANBottomEntries，
+    # 整体替换 AN 扩展提示并按 AN 自身 position/depth 注入）。
+    if wb_an_before_parts or wb_an_after_parts:
+        _an_top_text = "\n".join(wb_an_before_parts)
+        _an_bottom_text = "\n".join(wb_an_after_parts)
+        if author_note_depth_entry is not None:
+            # AN 已按 IN_CHAT 排队：合并进同一条（ST 的 ANWithWI 整体替换语义）。
+            author_note_depth_entry.content = "\n".join([
+                _an_top_text,
+                author_note_depth_entry.content,
+                _an_bottom_text,
+            ]).strip("\n")
+            report.append(PromptAssemblyReportItem(
+                "author_note_worldinfo", "included",
+                detail=(
+                    f"ANTop/ANBottom merged into AN channel (top={len(wb_an_before_parts)},"
+                    f"bottom={len(wb_an_after_parts)}; position=IN_CHAT depth={author_note_depth_entry.depth})"
+                ),
+                tokens_estimate=_estimate_tokens(_an_top_text) + _estimate_tokens(_an_bottom_text),
+            ))
+        else:
+            # AN 文本缺席或 AN 走 system_prompt 拼接位（position 0/2）：WI-AN 条目
+            # 单独成条，落位对齐 AN 自身的 ST 位置语义——pos 1/缺省=IN_CHAT 深度
+            # 注入；pos 0=main 之后独立消息（injectToMain 'end'）；pos 2=main 之前
+            # （'start'）；pos -1=NONE 不注入（尊重显式关闭）。AN 文本在 pos 0/2 下
+            # 已字符串并入 system_prompt（既有行为，不在本批 8 项内），故 WI-AN
+            # 条目无法与其拼成一条，落位相邻即可，残余差异已记录。
+            _an_wi_text = "\n".join([_an_top_text, "", _an_bottom_text]).strip("\n")
+            if author_note_position_int == 1:
+                author_note_depth_entry = DepthInjection(
+                    depth=author_note_depth,
+                    content=_an_wi_text,
+                    role=_ROLE_NAME_TO_INT["system"],
+                    source="author_note",
+                    sort_key=_KEY_AN_DEPTH,
+                )
+                report.append(PromptAssemblyReportItem(
+                    "author_note_worldinfo", "included",
+                    detail=(
+                        f"ANTop/ANBottom → AN channel (author_note empty; "
+                        f"IN_CHAT depth={author_note_depth})"
+                    ),
+                    tokens_estimate=_estimate_tokens(_an_wi_text),
+                ))
+            elif author_note_position_int == 0:
+                front_after_msgs.append({"role": "system", "content": _an_wi_text})
+                report.append(PromptAssemblyReportItem(
+                    "author_note_worldinfo", "included",
+                    detail="ANTop/ANBottom → independent message after main (AN position=IN_PROMPT)",
+                    tokens_estimate=_estimate_tokens(_an_wi_text),
+                ))
+            elif author_note_position_int == 2:
+                front_before_msgs.append({"role": "system", "content": _an_wi_text})
+                report.append(PromptAssemblyReportItem(
+                    "author_note_worldinfo", "included",
+                    detail="ANTop/ANBottom → independent message before main (AN position=BEFORE_PROMPT)",
+                    tokens_estimate=_estimate_tokens(_an_wi_text),
+                ))
+            else:
+                report.append(PromptAssemblyReportItem(
+                    "author_note_worldinfo", "skipped",
+                    detail=f"AN position={author_note_position_int} (NONE/unknown) — WI-AN entries not injected",
+                ))
+
+    # D-12：IN_PROMPT(0) 插件条目改为 main 之后的**独立消息**（ST injectToMain
+    # position='end' 是独立 prompt 项，openai.js:1256-1275/:1445），不再字符串级
+    # append 进 main 全文末尾（VER-1 D-12 判例：+22 并入 M0）。空响应防护语义
+    # 不变：注入落前部 main 之后，远离 prompt 末尾（2026-08-19 事故的触发位是
+    # "messages 最末尾的 system"，前部落位与其无关）。
+    for _ep_content, _ep_role in ext_in_prompt_entries:
+        front_after_msgs.append({
+            "role": _ep_role or "system",
+            "content": _ep_content,
+        })
+        report.append(PromptAssemblyReportItem(
+            "extension_prompt_in_prompt",
+            "included",
+            detail=f"independent message after main (IN_PROMPT; role={_ep_role})",
+            tokens_estimate=_estimate_tokens(_ep_content),
+        ))
+
+    # D-7：newMainChat 历史区头（P-DEC-6 默认开）。开关走既有
+    # silly_tavern_settings JSON 通道（extension_settings.palink_assembly 子键，
+    # /api/settings/save 对 extension_settings 做 namespace 级增量合并，不会被
+    # ST 前端整块覆盖擦掉），不加列不迁移。文案自写（ST 默认 new_chat_prompt
+    # 的汉化等价表述，非英文原文照抄）。
+    _asm_flags = _read_palink_assembly_flags(user_setting)
+    _asm_is_zh = prompt_lang == "zh" or (
+        prompt_lang == "auto"
+        and deps.contains_chinese((req.char.name or "") + (req.char.description or ""))
+    )
+    new_main_chat_prompt: Optional[str] = None
+    if _asm_flags.get("new_main_chat", True):
+        new_main_chat_prompt = _new_main_chat_prompt_text(
+            _asm_is_zh, bool(getattr(req, "group_id", None)),
+        )
+        report.append(PromptAssemblyReportItem(
+            "new_main_chat", "included",
+            detail="history header enabled (default on; extension_settings.palink_assembly.new_main_chat)",
+            tokens_estimate=_estimate_tokens(new_main_chat_prompt),
+        ))
+    else:
+        report.append(PromptAssemblyReportItem(
+            "new_main_chat", "skipped",
+            "disabled (extension_settings.palink_assembly.new_main_chat=false)",
+        ))
+
     # E-1 修复: palink-native 消息组装（token 编码 + 历史加载）为纯同步重活，
     # 移入线程池避免阻塞事件循环（与 _append_worldbook_context 一致）。
     messages = await asyncio.to_thread(
@@ -4265,6 +4462,10 @@ async def _assemble_roleplay_prompt_impl(
         user_name=req.user.username if req.user else "",  # D2 修复: 群历史名归属
         message_order=req.message_order,  # Task 7: generate_interceptor 消息重排
         excluded_message_ids=req.excluded_message_ids,  # P0-3: interceptor 消息排除
+        # [ASM-4] 前部 ST 分立插槽 + D-7 历史区头
+        front_before_main=front_before_msgs,
+        front_after_main=front_after_msgs,
+        new_main_chat_prompt=new_main_chat_prompt,
     )
     report.append(PromptAssemblyReportItem("message_builder", "included", detail=f"messages={len(messages)}"))
 
@@ -4324,38 +4525,17 @@ async def _assemble_roleplay_prompt_impl(
             )
         )
 
-    # ── ST 1.18.0 extension_prompts IN_PROMPT(0) palink-native 注入 ──
-    # 对齐 ST openai.js position='end'（system prompt 末尾）语义：追加到
-    # messages[0]（system 消息）文本末尾，不会重复注入。
-    # [INJ-CLOSE-TAG-GUARD] 修复（2026-08-19 实证）：此前实现是"作为独立消息
-    # append 到 messages 末尾"，把 system 注入放到 prompt 最后一条（紧贴模型
-    # 续写位置）。前端插件（对话渲染系统 v7.1）经 setExtensionPrompt(position=0)
-    # 注入格式规则即走此路径，实测 deepseek-v4-flash 100% 空响应（立刻 EOS
-    # completion_tokens=1，或把剧情正文写进 reasoning 不写 content，用户侧表现
-    # 为第二轮对话 100% 思维链乱码且正文不输出）。对照实验（各 3 次）：
-    # append 末尾 0/3，追加到 system prompt 末尾 3/3 正常。
-    if ext_in_prompt_entries:
-        for _ep_content, _ep_role in ext_in_prompt_entries:
-            _inserted = False
-            if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
-                messages[0] = {
-                    **messages[0],
-                    "content": (messages[0].get("content") or "") + "\n\n" + _ep_content,
-                }
-                _inserted = True
-            if not _inserted:
-                # messages[0] 非 system 或 content 非 str（多模态）：插到最前，
-                # 仍避免落到 prompt 末尾（末尾 system 注入会诱发空响应）。
-                messages.insert(0, {"role": _ep_role, "content": _ep_content})
-            report.append(
-                PromptAssemblyReportItem(
-                    "extension_prompt_in_prompt",
-                    "included",
-                    detail=f"appended to system prompt (role={_ep_role})",
-                    tokens_estimate=_estimate_tokens(_ep_content),
-                )
-            )
-
+    # ── ST 1.18.0 extension_prompts IN_PROMPT(0) ──
+    # [ASM-4 2026-10-24] D-12 改制：IN_PROMPT 条目已在前部装配段改为 main 之后的
+    # **独立消息**（经 build_character_chat_messages 的 front_after_main 插槽落位），
+    # 此处旧的"字符串级 append 进 messages[0]"实现删除。
+    # 历史背景保留（空响应防护的成因证据）：2026-08-19 此前实现是"作为独立消息
+    # append 到 messages 末尾"，把 system 注入放到 prompt 最后一条（紧贴模型续写
+    # 位置）。前端插件（对话渲染系统 v7.1）经 setExtensionPrompt(position=0) 注入
+    # 格式规则即走此路径，实测 deepseek-v4-flash 100% 空响应（立刻 EOS
+    # completion_tokens=1，或把剧情正文写进 reasoning 不写 content）。当时的修复是
+    # 追加到 system prompt 末尾；本批按 ST injectToMain 'end' 语义进一步落位为
+    # main 之后的独立消息——仍在 prompt 前部、远离末尾续写位，防护语义不变。
     # Persona description position=2 (last in chat): append as the final
     # system message after depth insertion so it is the last chat entry.
     if persona_last_message is not None:
@@ -4599,12 +4779,23 @@ async def _assemble_roleplay_prompt_impl(
         # instruction. If the first message is already a system message, the
         # system_prompt is prepended to its content; otherwise a new system
         # message is inserted at position 0 (matching ST 1.18.0 behavior).
+        # [ASM-4] 前部插槽在场时 messages[0] 是 worldInfoBefore 而非 main——
+        # 按 builder 打的 "main" 标记定位，缺席时回退 messages[0]（旧行为）。
         sys_prompt = (instruct_template.system_prompt or "").strip()
         if sys_prompt:
-            if messages and messages[0].get("role") == "system":
-                existing = messages[0].get("content", "")
+            _main_insert_idx: Optional[int] = None
+            for _mi, _mm in enumerate(messages):
+                if _mm.get("_palink_prompt_id") == PROMPT_ID_SYSTEM_PROMPT:
+                    _main_insert_idx = _mi
+                    break
+            if _main_insert_idx is None and messages and messages[0].get("role") == "system":
+                _main_insert_idx = 0
+            if _main_insert_idx is not None:
+                existing = messages[_main_insert_idx].get("content", "")
                 if isinstance(existing, str):
-                    messages[0] = {**messages[0], "content": f"{sys_prompt}\n\n{existing}"}
+                    messages[_main_insert_idx] = {**messages[_main_insert_idx], "content": f"{sys_prompt}\n\n{existing}"}
+                else:
+                    messages.insert(_main_insert_idx, {"role": "system", "content": sys_prompt})
             else:
                 messages.insert(0, {"role": "system", "content": sys_prompt})
 
@@ -4713,11 +4904,24 @@ def _append_worldbook_context(
     # 群聊世界书注入整体失效）。缺省时按 req.group_id 现场解析兜底。
     group_chat: Optional["GroupChat"] = None,
     group_wi_strategy: str = "one",
+    # [ASM-4 2026-10-24] D-1+NF-3 拆桶出参（VER-1 §7.2 / VER1b 主脑裁定）。
+    # 四个列表任一传入（非 None）即进入拆桶模式：position 0/1（before/after）与
+    # position 2/3（ANTop/ANBottom）不再并入 [World Lore] 尾块，各自变换后写入
+    # 对应桶——对齐 ST world-info.js:5094-5152（before/after 前部两桶夹 main、
+    # ANTop/ANBottom 并入作者注扩展提示）。全部缺省（None）= 旧合并行为，
+    # 直接调用方（群聊修复组等既有测试）零改动。
+    wi_before_parts: Optional[list[str]] = None,
+    wi_after_parts: Optional[list[str]] = None,
+    an_before_parts: Optional[list[str]] = None,
+    an_after_parts: Optional[list[str]] = None,
 ) -> None:
     """注入世界书上下文到 prompt 中。
 
     ST 1.18.0 对齐: 把 wb_result 的 8 个 position 全部传出去:
-    - position 0-3 → dynamic_context_parts (wb_result.text)
+    - position 0/1 → wi_before_parts / wi_after_parts（拆桶模式）或
+      dynamic_context_parts（旧合并模式，与其他 position 一同进 [World Lore] 尾块）
+    - position 2/3（ANTop/ANBottom）→ an_before_parts / an_after_parts（拆桶模式，
+      由装配层并入作者注通道）或旧合并模式尾块
     - position 4 (atDepth) → depth_entries
     - position 5 (EMTop) → em_top_entries (经 {{mesExamples}} 宏注入)
     - position 6 (EMBottom) → em_bottom_entries (经 {{mesExamples}} 宏注入)
@@ -4921,6 +5125,9 @@ def _append_worldbook_context(
         # 该缺陷与具体卡无关：任何"只靠 at-depth 提供指令"的世界书都会整本失效。
         _wb_has_output = bool(
             wb_result.text
+            # [ASM-4] 拆桶模式下 bulk 内容以 entries_by_position 为准（text 只是
+            # 它的 join 形态，一并保留判断兼容旧结果对象）。
+            or wb_result.entries_by_position
             or wb_result.depth_entries
             or wb_result.em_top_entries
             or wb_result.em_bottom_entries
@@ -4951,10 +5158,11 @@ def _append_worldbook_context(
                     tokens_estimate=r.tokens_estimate,
                 )
             )
-        if wb_result.text:
-            wb_text = wb_result.text
-            wb_text = deps.apply_plugin_regex_scripts(
-                wb_text,
+        # [ASM-4 2026-10-24] WI 内容变换管线（拆桶/合并两模式共用，与旧实现逐参相同：
+        # 插件正则 → 卡正则 → 宏替换，placement=WORLD_INFO、is_prompt=True、depth=0）。
+        def _wb_transform(text: str) -> str:
+            transformed = deps.apply_plugin_regex_scripts(
+                text,
                 req.db,
                 placement=REGEX_PLACEMENT_WORLD_INFO,
                 is_markdown=False,
@@ -4968,8 +5176,8 @@ def _append_worldbook_context(
                 # P2-9 修复: 透传 user_id 以读取 extension_settings.regex_scripts
                 user_id=req.user.id if req.user else None,
             )
-            wb_text = deps.apply_regex_scripts(
-                wb_text,
+            transformed = deps.apply_regex_scripts(
+                transformed,
                 req.char.extensions,
                 placement=REGEX_PLACEMENT_WORLD_INFO,
                 is_markdown=False,
@@ -4979,7 +5187,68 @@ def _append_worldbook_context(
                 user_name=user_nickname,
                 char_name=char_name or (req.char.name or "Character"),
             )
-            wb_text = deps.replace_placeholders(wb_text, user_nickname, req.char.name or "")
+            return deps.replace_placeholders(transformed, user_nickname, req.char.name or "")
+
+        _split_mode = (
+            wi_before_parts is not None
+            or wi_after_parts is not None
+            or an_before_parts is not None
+            or an_after_parts is not None
+        )
+        if _split_mode:
+            # [ASM-4 2026-10-24] D-1+NF-3 拆桶：entries_by_position 已分位
+            # （worldbook_service :2149-2183），旧实现 sorted 全部 join 进一条
+            # "[World Lore]" 尾块——before/after 夹 main 的语义与 ANTop/ANBottom
+            # 的作者注通道语义都被压平（VER-1 D-1 判例 + VER1b NF-3 c795d62a 判例）。
+            # 桶内 join 用 "\n"（ST world-info.js:5146-5147 join('\n')；anBefore/anAfter
+            # 在 ST 侧也是数组 join('\n') 后并入作者注，:5151-5152）。
+            _ebp = wb_result.entries_by_position or {}
+            _bucket_raw = {
+                0: list(_ebp.get(0, []) or []),
+                1: list(_ebp.get(1, []) or []),
+                2: list(_ebp.get(2, []) or []),
+                3: list(_ebp.get(3, []) or []),
+            }
+            # 防御：位置枚举（0-3）外的残留 key——旧实现会把它并进尾块，这里归入
+            # after 桶保内容不丢（正常数据不会出现；出现即数据形状异常）。
+            _pos_extra = [
+                c for k in sorted(_ebp.keys()) if k not in (0, 1, 2, 3)
+                for c in (_ebp.get(k, []) or [])
+            ]
+            _bucket_targets = {
+                0: wi_before_parts, 1: wi_after_parts,
+                2: an_before_parts, 3: an_after_parts,
+            }
+            for _pos_key, _raw in _bucket_raw.items():
+                if not _raw:
+                    continue
+                _bucket_text = _wb_transform("\n".join(_raw))
+                if _bucket_text.strip():
+                    _target = _bucket_targets.get(_pos_key)
+                    if _target is not None:
+                        _target.append(_bucket_text)
+                    # 目标桶未传（调用方只要部分桶）时内容并入 after 桶兜底，
+                    # 不允许静默丢弃。
+                    elif wi_after_parts is not None:
+                        wi_after_parts.append(_bucket_text)
+            if _pos_extra and wi_after_parts is not None:
+                _extra_text = _wb_transform("\n\n".join(_pos_extra))
+                if _extra_text.strip():
+                    wi_after_parts.append(_extra_text)
+            report.append(
+                PromptAssemblyReportItem(
+                    "worldbook",
+                    "included" if _wb_has_output else "skipped",
+                    detail=(
+                        f"split=before({len(_bucket_raw[0])})/after({len(_bucket_raw[1])})"
+                        f"/anTop({len(_bucket_raw[2])})/anBottom({len(_bucket_raw[3])}); "
+                        + "; ".join(detail_parts)
+                    ),
+                    tokens_estimate=wb_result.total_tokens,
+                )
+            )
+        elif wb_result.text:
+            wb_text = _wb_transform(wb_result.text)
             dynamic_context_parts.append(wb_text)
             report.append(
                 PromptAssemblyReportItem(
@@ -5652,8 +5921,15 @@ async def _append_memory_context(
     token_budget: Optional[int] = None,
     system_prompt: str = "",
     history_reserve: Optional[int] = None,
+    # [ASM-4 2026-10-24] D-2/D-3 前部出参：传入（非 None）时实体卡与记忆文本写入
+    # 此桶（装配层将其落位为 main 之后的**独立消息**，ST 官方记忆扩展默认
+    # IN_PROMPT 相对 main 独立消息，memory/index.js:114）；None 时写入
+    # dynamic_context_parts（旧尾部合并行为，直接调用方兼容零改动）。
+    front_parts: Optional[list[str]] = None,
 ) -> None:
     user_nickname = req.user_nickname or req.user.username or "User"
+    # [ASM-4] D-2/D-3 落位桶：front_parts 在场 → main 之后独立消息；否则旧尾块。
+    _mem_sink = front_parts if front_parts is not None else dynamic_context_parts
     if memory_mode == "disabled" or req.is_init:
         report.append(PromptAssemblyReportItem("memory", "skipped", memory_mode))
         return
@@ -5708,7 +5984,7 @@ async def _append_memory_context(
                     "\n".join(_kept), user_nickname, req.char.name or ""
                 )
                 _card_text = balance_custom_tags(_card_text)
-                dynamic_context_parts.append(_card_text)
+                _mem_sink.append(_card_text)
                 report.append(
                     PromptAssemblyReportItem(
                         "memory_entity_card",
@@ -5818,7 +6094,11 @@ async def _append_memory_context(
                         )
             logger.debug("memory gate history estimate failed: %s", _gate_err)
         if _hist_chars >= 0:
+            # [ASM-4] 前部桶（实体卡/记忆落位 main 后）的已注入量同样计入门控，
+            # 防止重定向后 _injected_tokens 低估 → 误开检索（宁误开勿误关方向不变）。
             _injected_tokens = sum(_estimate_tokens(_p) for _p in dynamic_context_parts)
+            if front_parts is not None:
+                _injected_tokens += sum(_estimate_tokens(_p) for _p in front_parts)
             _reserve = history_reserve if history_reserve is not None else _DEFAULT_HISTORY_RESERVE
             # 计数失败时按"已裁剪"处理（宁误开勿误关）
             _history_limit = _resolve_history_window_limit(req)
@@ -5930,7 +6210,7 @@ async def _append_memory_context(
                 memory_text = build_memory_context(mem_ctx, max_tokens=_mem_render_tokens)
                 if memory_text:
                     memory_text = deps.replace_placeholders(memory_text, user_nickname, req.char.name or "")
-                    dynamic_context_parts.append(memory_text)
+                    _mem_sink.append(memory_text)
                     report.append(
                         PromptAssemblyReportItem(
                             "memory",
@@ -5990,15 +6270,45 @@ def _insert_depth_prompt(
     把角色卡 depth_prompt + 世界书 atDepth + AN(IN_CHAT) + persona(pos=0) +
     /inject + 插件 IN_CHAT 全部按三级确定序插入 chat history：
         depth 降序 → order 升序 → role(assistant→user→system) → key 字母序
-    同 (depth, order, role) 的多条合并为单条消息 join('\\n')。
+    同 (depth, order, role) 的多条合并为单条消息 join('\n')。
     语义对齐 ST openai.js populationInjectionPrompts / script.js doChatInject /
     getExtensionPrompt（详见 DepthInjection 处常量区注释）。
+
+    [ASM-4 2026-10-24] D-9：锚点改纯聊天历史口径——按 builder 打的
+    _palink_history_start/end 私有标记定位历史区，插入位 = 历史末梢 + 1 - depth；
+    标记缺席时回退旧的"数组总长倒数"算式（直调兼容）。
     """
     user_nickname = req.user_nickname or req.user.username or "User"
     next_messages = list(messages)
     inserted_any = False
 
     records: list[DepthInjection] = list(depth_entries or [])
+
+    # [ASM-4 2026-10-24] D-9：锚点改纯聊天历史口径（VER-1 §7.2 裁定：随尾块拆分
+    # 同步修正插入算式，禁止单独修）。ST populationInjectionPrompts 只在聊天数组
+    # 上 splice（openai.js:801-866，主提示词/世界书/扩展在另一容器，结构上不可能
+    # 被越过或计入）；旧算式 len(messages)-depth 把数组里所有消息（含尾部动态块/
+    # 前部扩展消息）都当历史槽，depth N ≈ ST depth N+1（VER-1 D-9 判例：24 楼
+    # 窗口偏移 1 槽）。
+    # 新口径按 **role ∈ (user, assistant) 的聊天消息** 计槽（ST 聊天数组的成员
+    # 恰为聊天消息；PHI/尾部块/区头等 system 件在 ST 中均在注入数组之外）：
+    # depth=0 → 最后一条聊天消息之后；depth=N → 从末往前第 N 条聊天消息之前；
+    # depth 超过聊天消息数 → 钳到历史区首条（对齐 ST 倒序 splice 越界的净效果）。
+    # builder 在历史区首条消息上打 _palink_history_start 私有标记（出栈前随
+    # _palink_ 键统一剥离）作钳制下限；标记缺席（直调旧形态）回退旧算式。
+    _anchor_start: Optional[int] = None
+    for _i, _m in enumerate(next_messages):
+        if isinstance(_m, dict) and _m.get("_palink_history_start"):
+            _anchor_start = _i
+            break
+
+    def _chat_slots(msgs: list[dict[str, Any]]) -> list[int]:
+        """当前数组中聊天消息（user/assistant）的下标升序表（每轮重扫，天然消化
+        前序注入造成的位移）。"""
+        return [
+            _i for _i, _m in enumerate(msgs)
+            if isinstance(_m, dict) and _m.get("role") in ("user", "assistant")
+        ]
 
     # Character depth prompt —— ST 中经 setExtensionPrompt('DEPTH_PROMPT') 进注册表
     # （script.js L4426），此处并入统一队列参与同一三级排序
@@ -6035,6 +6345,15 @@ def _insert_depth_prompt(
     #      Object.keys().sort()），并合并为单条消息 join('\n')（ST 扩展通道语义）
     if records:
         records.sort(key=lambda r: (-r.depth, r.order, _ROLE_MERGE_RANK.get(r.role, 2), r.sort_key))
+        # [ASM-4] D-9 钳制下限：有历史区标记时钳到历史区首条（newMainChat 区头
+        # 之后的真实历史起点——ST 中 newMainChat 在注入数组之外、insertAtStart
+        # 合并，注入不会越过它）；无标记回退旧下限（首条 system 之后）。
+        if _anchor_start is not None:
+            _floor = _anchor_start
+        elif next_messages and next_messages[0].get("role") == "system":
+            _floor = 1
+        else:
+            _floor = 0
         i = 0
         while i < len(records):
             head = records[i]
@@ -6064,10 +6383,26 @@ def _insert_depth_prompt(
             # chatCompletion 里，直到 populateChatHistory（:1331-1336）才合流，
             # 所以 ST 结构上不可能越过主提示词；历史比 depth 短时倒序 splice
             # 只会在末尾追加，转回正序 = 落到聊天历史第一条之前，仍在主提示词之后。
-            # 此处 next_messages 首条即主提示词，故锚点下限为 1（首条非 system 时
-            # 退化为 0，保住兜底分支）。只钳下限，不动 depth 算术。
-            _floor = 1 if next_messages and next_messages[0].get("role") == "system" else 0
-            insert_index = max(_floor, len(next_messages) - head.depth)
+            # [ASM-4] D-9 新算式（历史区标记在场时）：
+            #   depth=0 → 最后一条聊天消息之后（数组末尾，当前 user 消息之后，
+            #             与 ST script.js:5606 正常发送语义一致）；
+            #   depth=N → 从末往前第 N 条聊天消息之前（倒序数组 splice(N) 的
+            #             正序等价）；
+            #   depth > 聊天消息数 → 钳到首条聊天消息之前（= 旧注释描述的越界
+            #             净效果），再经 max(_floor, …) 保底不越过历史区首。
+            _chat_idx = _chat_slots(next_messages)
+            if _anchor_start is not None and _chat_idx:
+                _n_chat = len(_chat_idx)
+                if head.depth <= 0:
+                    insert_index = _chat_idx[-1] + 1
+                elif head.depth <= _n_chat:
+                    insert_index = _chat_idx[_n_chat - head.depth]
+                else:
+                    insert_index = max(_floor, _chat_idx[0])
+            else:
+                # 标记缺席（直调旧形态/纯 system 数组）：旧算式兜底，行为不变。
+                insert_index = max(_floor, len(next_messages) - head.depth)
+            insert_index = max(_floor, insert_index)
             # [IN-CHAT-NOT-TRIMMED 2026-10-05] 打标记，让 _collect_prompt_sources 认出
             # 这是 in-chat 注入而非世界书正文块（ST 见下方说明）。
             next_messages.insert(insert_index, {
