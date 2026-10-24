@@ -811,3 +811,19 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 > `saveMetadata()` 读的也是它。两处调用（事件 emit / 主上下文）统一走这个 helper。
 > 单测 4 条；真机复验：**`lastActive` 不再抛错**，`chat_metadata.smartMemory.lastActive = 1792773778668` 已落库；
 > 插件已删除、该测试键已从库中清理。
+
+### [P2-21] import-url 长下载打穿 DB 连接池——真实插件两连败 HTTP 500（2026-10-24 · VER-3 安装面实测）
+
+- **事实**：Floating-MVU（603KB 级 zip）经 `POST /api/plugins/import-url` 下载 91–101s 后，`plugins.py:416` 之后的落库 commit 报 `server closed`（`:686`）⇒ HTTP 500，两连败；BlazeTracker 同因（413 后回滚期二次异常掩盖成 500）。短小插件不受影响（15/20 ok）。
+- **定性**：后端缺陷——长下载期间持有的 DB 会话/连接过期，commit 时才发现。修法方向：下载阶段不占 DB 会话（先 fetch 到临时文件再开事务），或 commit 前 connection recycle。
+- 出处：`docs/_active/report/REPORT_VER3_插件兼容矩阵_安装面首版_2026-10-24.md`。
+
+### [P2-22] 插件单文本资源 1MB 上限挡掉 3–4/20 真实生态插件（413）——待拍板
+
+- **事实**：`plugins.py:270` 的单资源 1MB 上限使 JsRunner / Lorebook-Studio / CSTT（+BlazeTracker 同因）干净 413，全部**未入库**。安装面失败率 15–20% 由我们自己的上限贡献。
+- **待拍板**：提高插件资源上限（如 4–8MB，配总量上限）vs 维持（安全口径）。属产品决策（上传面放大）。
+
+### [P2-23] NF-1 存量 role=NULL 行的数据修复与约束加固——代码已修，数据待点头（2026-10-24）
+
+- **代码侧已修**：装配循环开头归一化 assistant + 留痕（`character_message_builder.py`，测试 3 例）。
+- **待用户点头**（不可逆写库）：① 存量 1 行（id=1297）`UPDATE role='assistant'`；② `character_chat_messages.role` 加 `NOT NULL`/CHECK 约束（防复发）。取证：`REPORT_NF1_role空值消息取证_2026-10-24.md`（写入者是 2026-06-23 已消失的死代码，当前 15 个构造点均不可能再写 NULL）。
