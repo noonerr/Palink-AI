@@ -51,7 +51,10 @@ from ..services.inference_dispatcher import (
 )
 from ..services.quota_service import ensure_quota, deduct_usage, compute_deduct_tokens, QuotaExceededError, QUOTA_EXCEEDED_MESSAGE
 from ..services.generation_service import _build_logit_bias
-from ..core.default_prompts import build_default_character_prompt
+from ..core.default_prompts import (
+    CharacterPromptSlots,
+    build_default_character_prompt_slots,
+)
 from ..services.character_message_builder import (
     _ST_DEFAULT_NEW_CHAT_PROMPT,
     build_character_chat_messages,
@@ -2072,7 +2075,7 @@ def _extract_preset_prompts(preset_data: dict, user_nickname: str = "用户", ch
     return result
 
 
-def _build_char_system_prompt(char: Character, user_nickname: str = "用户", prompt_lang: str = "auto", user_setting: Optional[UserSetting] = None) -> str:
+def _build_char_system_prompt(char: Character, user_nickname: str = "用户", prompt_lang: str = "auto", user_setting: Optional[UserSetting] = None) -> "CharacterPromptSlots":
     """Build character system prompt using config file.
 
     Args:
@@ -2080,6 +2083,14 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", pr
         user_nickname: User's nickname
         prompt_lang: 'auto', 'zh', or 'en'
         user_setting: User's settings (for custom prompts)
+
+    Returns:
+        [D-5b 2026-10-25] ``CharacterPromptSlots``——main 槽 + description/
+        personality/scenario 三段卡字段槽（ST openai.js:1203-1209 四卡分立形状）。
+        装配层识别该类型后把三段落成独立 system 消息（落位在
+        ``roleplay_prompt_assembly`` 的前部分立段）。
+        仍按单串消费的既有调用方（backend/scripts 探针族）用 ``str(返回值)``
+        或 ``.text`` 拿到拆分前的合并全文，逐字节不变。
     """
     # Auto-detect language if needed
     if prompt_lang == "auto":
@@ -2110,10 +2121,18 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", pr
                     custom_prompt += "\n\n" + character_card_block
             # 注入预设提示词
             custom_prompt = _inject_preset_into_prompt(char, custom_prompt, user_nickname)
-            return custom_prompt
+            # [D-5b 2026-10-25] 自定义提示词路径**不拆槽**：这条路径的卡字段是
+            # 用户自己在自定义提示词里定点放置的（{{description}}/{{personality}}/
+            # {{scenario}} 族宏，见 has_character_card_variable 分支），装配层再拆
+            # 一遍必然产生两份内容。main = 用户自定义全文，legacy_merged 同值 ⇒
+            # 该路径的提示词与拆分前逐字节一致（实测全库 22 个 user_settings 行
+            # use_custom_prompts 全为 False，此路径当前生产不可达，仅作兼容保留）。
+            return CharacterPromptSlots(
+                main=custom_prompt,
+                legacy_merged=custom_prompt,
+            )
 
     # Build system prompt using default config
-    from ..core.default_prompts import build_default_character_prompt
 
     # [B-4 A 方案对齐 ST] prefer_character_prompt（ST power_user.prefer_character_prompt，
     # 默认 true）决定角色卡 system_prompt 是否作为 main 槽头部 override：
@@ -2129,7 +2148,7 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", pr
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
     effective_char_prompt = char.system_prompt if prefer_char_prompt else ""
-    system_prompt = build_default_character_prompt(
+    slots = build_default_character_prompt_slots(
         char_name=char.name or "Character",
         user_nickname=user_nickname,
         lang=prompt_lang,
@@ -2144,9 +2163,17 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", pr
     )
 
     # 注入预设提示词
-    system_prompt = _inject_preset_into_prompt(char, system_prompt, user_nickname)
-
-    return system_prompt
+    # [D-5b] 预设注入是**纯尾部追加**（见 _inject_preset_into_prompt：
+    # system_prompt + "\n\n" + preset_text），main 与 legacy_merged 的尾部同为
+    # auxiliary 层，故分别注入后两者的相对形状一致，str(slots) 仍逐字节等于
+    # 拆分前的返回值。
+    return CharacterPromptSlots(
+        main=_inject_preset_into_prompt(char, slots.main, user_nickname),
+        char_description=slots.char_description,
+        char_personality=slots.char_personality,
+        scenario=slots.scenario,
+        legacy_merged=_inject_preset_into_prompt(char, slots.legacy_merged, user_nickname),
+    )
 
 
 def _inject_preset_into_prompt(char: Character, system_prompt: str, user_nickname: str) -> str:

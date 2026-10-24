@@ -166,7 +166,9 @@ def build_character_chat_messages(
     构建角色聊天消息列表。
 
     顺序：[ASM-4 前部插槽: worldInfoBefore] -> 稳定角色提示词(main) ->
-    [ASM-4 前部插槽: worldInfoAfter/记忆/实体卡/IN_PROMPT 等独立消息] ->
+    [ASM-4 前部插槽: worldInfoAfter → D-5b 三段卡字段（charDescription/
+    charPersonality/scenario，各自独立成条）→ 记忆/实体卡/AN/IN_PROMPT 等
+    相对扩展提示] ->
     示例 -> [newMainChat 历史区头] -> 历史 -> 历史后指令 -> 动态上下文（各 part
     独立 system 消息，不再合并单条）-> 用户系统指令 -> 当前用户消息。
     尾部不再追加 system（2026-09-27 身份层 ST 化：final_reminder 已删，末条必为 user 轮）。

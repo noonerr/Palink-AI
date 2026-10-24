@@ -4,7 +4,16 @@
 main 槽：ST 默认任务指令（第三人称视角，不做"你是谁"身份断言）
 story_string 槽：角色卡字段（逐项守卫，空则整段缺席）
 auxiliary 层：输出格式约定（仅 Palink 产品必需项与渲染扩展）
+
+[D-5b 2026-10-25] story_string 槽按 ST 四卡分立形状拆开：description /
+personality / scenario 三段不再内嵌进 main 文本，而是各自成槽由装配层落成
+独立 system 消息（ST openai.js:1203-1209 顺序：worldInfoBefore → main →
+worldInfoAfter → charDescription → charPersonality → scenario →
+personaDescription）。本模块只负责产出文本，不负责消息落位。
+ST 没有 background 槽 ⇒ 该字段属平台原生残留，仍留在 main 的字段块里。
 """
+
+from dataclasses import dataclass
 
 # 普通对话默认提示词
 DEFAULT_CHAT_PROMPT_ZH = """你是一个有帮助的AI助手。
@@ -189,7 +198,44 @@ def build_default_chat_prompt(lang: str = "zh") -> str:
         return DEFAULT_CHAT_PROMPT_EN
 
 
-def build_default_character_prompt(
+@dataclass(frozen=True)
+class CharacterPromptSlots:
+    """[D-5b 2026-10-25] 角色提示词分槽结果（ST openai.js:1203-1209 四卡分立形状）。
+
+    字段：
+    - ``main``：main 槽文本 = 角色卡 system_prompt override（B-4 charPrompt 语义）
+      + ST 默认任务指令 + background 字段块（平台原生残留，ST 无此槽）
+      + auxiliary 输出格式约定。**不含** description/personality/scenario 三段。
+    - ``char_description`` / ``char_personality`` / ``scenario``：三段槽文本
+      （沿用既有语言标签前缀，本批只改消息边界不改文案）。空字段为 ``""``，
+      装配层据此跳过该消息（ST 语义：charDescription 为空则不产生该消息）。
+    - ``legacy_merged``：D-5b 之前的合并形态全文（B-4 story_string 语义），
+      逐字节等于旧 ``build_default_character_prompt`` 的返回值。仍按 str 消费
+      本链路的既有调用方（探针脚本 / 归档工具）经 ``str(slots)`` 或 ``.text``
+      拿到它，行为零变化。
+
+    为什么用 dataclass 而不是让 ``_build_char_system_prompt`` 继续返回 str：
+    装配层的 ``build_system_prompt`` dep 有 ~20 个调用点（生产 6 处 + backend/scripts
+    探针族），逐个改传新函数会留下"探针与生产装配形状不一致"的坑（本项目已多次
+    因此得出假结论）。返回同一个对象、由装配层识别类型，则所有调用点自动与生产同形。
+    """
+
+    main: str = ""
+    char_description: str = ""
+    char_personality: str = ""
+    scenario: str = ""
+    legacy_merged: str = ""
+
+    def __str__(self) -> str:
+        return self.legacy_merged
+
+    @property
+    def text(self) -> str:
+        """旧合并形态全文（等价 ``str(self)``）。"""
+        return self.legacy_merged
+
+
+def build_default_character_prompt_slots(
     char_name: str,
     user_nickname: str,
     lang: str = "zh",
@@ -201,12 +247,13 @@ def build_default_character_prompt(
     show_character_status: bool = False,
     creator_notes: str = "",
     char=None
-) -> str:
+) -> CharacterPromptSlots:
     """
-    构建默认的角色扮演提示词（ST 1.18.0 对齐结构）
+    构建默认的角色扮演提示词（ST 1.18.0 对齐结构，[D-5b] 分槽产出）
 
-    组装顺序：角色卡 system_prompt override（若 prefer_character_prompt 且非空）
-    → main 槽（ST 默认任务指令）→ story_string（卡字段，空则整段缺席）→ auxiliary 层。
+    main 槽组装顺序：角色卡 system_prompt override（若 prefer_character_prompt
+    且非空）→ ST 默认任务指令 → background 字段块 → auxiliary 层。
+    description / personality / scenario 各自成槽（不进 main）。
     """
     # 选择语言
     if lang == "zh":
@@ -245,6 +292,22 @@ def build_default_character_prompt(
     character_attributes = (
         attr_template.format(attributes="\n".join(attributes_parts))
         if attributes_parts
+        else ""
+    )
+
+    # [D-5b 2026-10-25] 三段各自成槽（守卫与上面逐字段一致：空则槽为 ""，
+    # 装配层跳过该消息）。标签前缀沿用既有文案——本批只改消息边界，不改卡字段
+    # 的措辞，故 main 减少的字节数 = 三段槽字节数 + 被移走的行间分隔符，可逐段对账。
+    slot_description = (labels["description"] + description) if description else ""
+    slot_personality = (labels["personality"] + personality) if personality else ""
+    slot_scenario = (labels["scenario"] + scenario) if scenario else ""
+
+    # [D-5b] ST 无 background 槽（ST 卡模型没有该字段），故 background 属平台
+    # 原生残留，仍留在 main 的字段块内（全库 29 张卡中仅 1 张非空，实测 bg=796）。
+    # 若三段已全部移出且 background 为空，则整个字段块从 main 缺席（守卫同上）。
+    background_block = (
+        attr_template.format(attributes=labels["background"] + background)
+        if background
         else ""
     )
 
@@ -292,6 +355,59 @@ def build_default_character_prompt(
             _record_silent_failure("default_prompts.mvu_exemption_note", _mvu_note_exc)
 
     # 组装整体结构（B-4 A 方案：角色自定义 system_prompt 在 main 槽最前；
-    # character_attributes 空则整段缺席）
-    prompt_parts = [character_override, main_prompt, character_attributes, output_format]
-    return "\n\n".join(part for part in prompt_parts if part.strip())
+    # 字段块空则整段缺席）
+    # [D-5b] main 用 background-only 字段块；legacy_merged 用完整四字段块
+    # （= 拆分前的返回值，供 str 消费方逐字节不变）。
+    main_text = "\n\n".join(
+        part for part in [character_override, main_prompt, background_block, output_format]
+        if part.strip()
+    )
+    legacy_merged = "\n\n".join(
+        part for part in [character_override, main_prompt, character_attributes, output_format]
+        if part.strip()
+    )
+    return CharacterPromptSlots(
+        main=main_text,
+        char_description=slot_description,
+        char_personality=slot_personality,
+        scenario=slot_scenario,
+        legacy_merged=legacy_merged,
+    )
+
+
+def build_default_character_prompt(
+    char_name: str,
+    user_nickname: str,
+    lang: str = "zh",
+    personality: str = "",
+    background: str = "",
+    scenario: str = "",
+    description: str = "",
+    custom_prompt: str = "",
+    show_character_status: bool = False,
+    creator_notes: str = "",
+    char=None
+) -> str:
+    """
+    构建默认的角色扮演提示词（合并形态，[D-5b] 起为分槽产出的包装）
+
+    返回值逐字节等于 D-5b 之前的实现：角色卡 system_prompt override → main 槽
+    → story_string（全部卡字段）→ auxiliary 层。生产装配链已改走
+    ``build_default_character_prompt_slots``（三段各自成槽）；本函数保留给仍按
+    单串消费的调用方（既有回归锁 test_b4_main_slot_override /
+    test_batch_a_st_compat_debt 钉的就是这个形态）。
+    """
+    return build_default_character_prompt_slots(
+        char_name=char_name,
+        user_nickname=user_nickname,
+        lang=lang,
+        personality=personality,
+        background=background,
+        scenario=scenario,
+        description=description,
+        custom_prompt=custom_prompt,
+        show_character_status=show_character_status,
+        creator_notes=creator_notes,
+        char=char,
+    ).legacy_merged
+

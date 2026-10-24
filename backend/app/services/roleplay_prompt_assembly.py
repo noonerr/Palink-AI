@@ -44,6 +44,9 @@ from ..services.character_message_builder import build_character_chat_messages
 from ..services.plotline_service import build_plotline_context
 from ..services.worldbook_service import build_worldbook_context, WorldbookContextResult
 from ..services.macro_service import MacroEnv, evaluate_macros, evaluate_macros_in_messages
+# [D-5b 2026-10-25] main 槽与三段卡字段的分槽载体（core 叶子模块，无循环依赖：
+# default_prompts 只在函数体内惰性 import services）。
+from ..core.default_prompts import CharacterPromptSlots
 from ..utils import (
     build_memory_context,
     balance_custom_tags,
@@ -392,7 +395,12 @@ def _should_apply_instruct_wrapping(chat_completion_source: Optional[str]) -> bo
 
 ReplacePlaceholdersFn = Callable[[str, str, str], str]
 ContainsChineseFn = Callable[[str], bool]
-BuildSystemPromptFn = Callable[[Character, str, str, str, Optional[UserSetting]], str]
+# [D-5b 2026-10-25] 生产实现返回 CharacterPromptSlots（main + 三段卡字段槽）；
+# 仍返回 str 的调用方（测试替身 / 归档探针）走"合并形态、不拆槽"的兼容分支。
+BuildSystemPromptFn = Callable[
+    [Character, str, str, str, Optional[UserSetting]],
+    "str | CharacterPromptSlots",
+]
 GetFullBranchHistoryFn = Callable[..., list]
 GetAncestorBranchIdsFn = Callable[[Session, str, str], list]
 # [MEM-MIRROR 2026-10-05] 分支作用域 [(branch_id, up_to_message_id)]，含分叉点截断
@@ -1209,6 +1217,18 @@ def _collect_prompt_sources(
             priority = _TRIM_PRIORITY_SMART_CARD  # 复用较低优先级（30）
             trimmable = True
         elif identifier == PROMPT_ID_SYSTEM_PROMPT:
+            priority = _TRIM_PRIORITY_SYSTEM
+            trimmable = False
+        elif identifier in (
+            PROMPT_ID_CHAR_DESCRIPTION, PROMPT_ID_CHAR_PERSONALITY, PROMPT_ID_SCENARIO,
+        ):
+            # [D-5b 2026-10-25] 三槽分立后必须**继承 main 的裁剪地位**。
+            # 拆分前这三段在 main 文本内，随 main 一起 priority=100 / 不可裁；
+            # 若让它们落到本函数末尾的兜底（charDescription 等标识符没有专门
+            # 分支 ⇒ _TRIM_PRIORITY_LOW=0 且 trimmable=True），超预算时它们会
+            # **第一批被裁掉**——那就是"拆分导致丢内容"。
+            # （ST 侧这三项确实参与预算裁剪，但那是 ST 的既有行为；本批判据是
+            #   「拆分本身不加也不丢内容」，故取保守：位置改、待遇不变。）
             priority = _TRIM_PRIORITY_SYSTEM
             trimmable = False
         elif identifier == PROMPT_ID_USER_MESSAGE:
@@ -3458,12 +3478,22 @@ async def _assemble_roleplay_prompt_impl(
 
     prompt_lang = user_setting.prompt_language if user_setting else "auto"
     # T3（2026-09-27 身份层 ST 化）：dialogue_mode 整链删除，全关键字传参防位置错位。
-    system_prompt = deps.build_system_prompt(
+    _built_prompt = deps.build_system_prompt(
         char=req.char,
         user_nickname=user_nickname,
         prompt_lang=prompt_lang,
         user_setting=user_setting,
     )
+    # [D-5b 2026-10-25] 分槽识别：生产实现返回 CharacterPromptSlots
+    # （main 已不含 description/personality/scenario）；返回 str 的旧实现按
+    # "三段仍在 main 内"处理（_char_slots=None ⇒ 不产生独立消息，也不重复）。
+    # 判据用类型而不是内容嗅探——内容嗅探会在字段恰好等于某标签文本时误判。
+    if isinstance(_built_prompt, CharacterPromptSlots):
+        _char_slots: Optional[CharacterPromptSlots] = _built_prompt
+        system_prompt = _built_prompt.main
+    else:
+        _char_slots = None
+        system_prompt = _built_prompt
     report: list[PromptAssemblyReportItem] = [
         PromptAssemblyReportItem("base_system_prompt", "included", tokens_estimate=_estimate_tokens(system_prompt)),
     ]
@@ -4291,9 +4321,10 @@ async def _assemble_roleplay_prompt_impl(
 
     # ══ [ASM-4 2026-10-24] 前部 ST 分立体系装配（VER-1 §7.2 裁定表施工图）════
     # 应然序列（ST openai.js:1203-1209 + :1256-1275 + :884-886）：
-    #   worldInfoBefore → main → worldInfoAfter → charDescription/…（并入 main，
-    #   B-4 既定 story_string 语义）→ 相对扩展提示（记忆/实体卡/AN/IN_PROMPT 插件，
-    #   各自独立消息）→ newMainChat 历史区头 → 聊天历史。
+    #   worldInfoBefore → main → worldInfoAfter → charDescription →
+    #   charPersonality → scenario（[D-5b 2026-10-25] 三槽已分立，见下）→
+    #   相对扩展提示（记忆/实体卡/AN/IN_PROMPT 插件，各自独立消息）→
+    #   newMainChat 历史区头 → 聊天历史。
     front_before_msgs: list[dict[str, Any]] = []
     front_after_msgs: list[dict[str, Any]] = []
 
@@ -4310,6 +4341,38 @@ async def _assemble_roleplay_prompt_impl(
             "content": "\n".join(wb_wi_after_parts),
             "_palink_prompt_id": PROMPT_ID_WORLD_INFO_AFTER,
         })
+
+    # ══ [D-5b 2026-10-25] charDescription / charPersonality / scenario 三槽分立 ══
+    # ST 应然顺序（openai.js:1203-1209 加列 + :1367-1371 生成）：
+    #   worldInfoBefore → main → worldInfoAfter → charDescription
+    #   → charPersonality → scenario → personaDescription → 相对扩展提示。
+    # 文本由 core 层按槽产出（见 CharacterPromptSlots），这里只负责落位；
+    # 合并点已不再内嵌三段，故不存在重复（验收判据②逐段字节对账）。
+    # 空段跳过 = ST 语义（preparePromptsForChatCompletion 里空串不产生该消息）。
+    # personaDescription 维持现状（无激活 persona 不出现，ASM-4 已确认为既有一致项）。
+    if _char_slots is not None:
+        for _slot_id, _slot_text in (
+            (PROMPT_ID_CHAR_DESCRIPTION, _char_slots.char_description),
+            (PROMPT_ID_CHAR_PERSONALITY, _char_slots.char_personality),
+            (PROMPT_ID_SCENARIO, _char_slots.scenario),
+        ):
+            _slot_text = _slot_text or ""
+            if not _slot_text.strip():
+                report.append(PromptAssemblyReportItem(
+                    _slot_id, "skipped",
+                    detail="empty character card field (ST: no message produced)",
+                ))
+                continue
+            front_after_msgs.append({
+                "role": "system",
+                "content": _slot_text,
+                "_palink_prompt_id": _slot_id,
+            })
+            report.append(PromptAssemblyReportItem(
+                _slot_id, "included",
+                detail=f"independent system message (chars={len(_slot_text)})",
+                tokens_estimate=_estimate_tokens(_slot_text),
+            ))
 
     # D-2/D-3：记忆 + 实体卡（memory_front_parts 内相对序：实体卡在前）。
     # ST 官方记忆/向量扩展默认 IN_PROMPT=前部相对 main 独立消息
@@ -4473,8 +4536,15 @@ async def _assemble_roleplay_prompt_impl(
     # （charDescription/charPersonality/scenario）时，把这些字段抽取为独立
     # system 消息插入 messages 数组首位（紧跟 system_prompt 之后），使其可被
     # _apply_full_prompt_order 按 prompt_order 重排。
-    _char_field_msgs = _extract_char_field_messages_for_order(
-        req, prompt_preset, _macro_char_name,
+    # [D-5b 2026-10-25] 分槽通道在场时**整段跳过**：三段已经是带
+    # _palink_prompt_id 的独立消息（本来就可被 prompt_order 重排），再抽一次
+    # 就是第二份内容。P1-1 的代理消息机制本就是为"三段还在 main 里、无法重排"
+    # 而设的补丁，main 不再内嵌三段后它失去存在条件。
+    # （实测 prompt_presets 表 0 行 ⇒ 该分支当前生产不可达；仍按逻辑正确收口，
+    #   不留"哪天有人建了预设就双份"的地雷。）
+    _char_field_msgs = (
+        [] if _char_slots is not None
+        else _extract_char_field_messages_for_order(req, prompt_preset, _macro_char_name)
     )
     if _char_field_msgs:
         # 插入到第 0 条（system_prompt）之后；若 messages 为空则直接 append。
