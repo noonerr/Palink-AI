@@ -236,6 +236,59 @@ export interface StVariableScope {
 }
 
 /**
+ * [ASM-3 2026-10-24] ST 1.18.0 getWorldInfoPrompt 返回形状（WIPromptResult）。
+ *
+ * 契约依据（_reference/sillytavern-1.18.0 一手源码）：
+ * - public/scripts/world-info.js:892 `export async function getWorldInfoPrompt(chat, maxContext, isDryRun, globalScanData)`
+ *   —— **async**，返回对象；:893-920 构造 { worldInfoString, worldInfoBefore,
+ *   worldInfoAfter, worldInfoExamples, worldInfoDepth, anBefore, anAfter, outletEntries }。
+ * - public/script.js:4576 `const { worldInfoString, ... } = await getWorldInfoPrompt(...)` —— 消费侧 await 解构。
+ * - public/scripts/st-context.js:281 —— getContext() 裸导出该函数。
+ * - position→字段映射：world-info.js:5073-5145（before/after→worldInfoBefore/After，
+ *   ANTop/ANBottom→anBefore/anAfter（内容数组），atDepth→worldInfoDepth，
+ *   EMTop/EMBottom→worldInfoExamples，outlet→outletEntries）。
+ *
+ * Palink 数据来源：后端权威装配同源端点
+ * POST /api/character-sessions/{chatId}/worldbook-scan（backend/app/api/worldbook.py，
+ * 参数逐项复刻生产装配调用点 roleplay_prompt_assembly.py::_append_worldbook_context）。
+ * worldInfo* 标准字段之外，附 Palink 扩展字段（worldInfoEntries / worldInfoBudget /
+ * worldInfoBookSources）供插件与后端装配 report 逐项对账。
+ */
+export interface StWorldInfoPromptResult {
+  // ST 标准字段
+  worldInfoString: string;
+  worldInfoBefore: string;
+  worldInfoAfter: string;
+  worldInfoExamples: Array<{ position: string; content: string }>;
+  worldInfoDepth: Array<{ depth: number; entries: string[]; role: number }>;
+  anBefore: string[];
+  anAfter: string[];
+  outletEntries: Record<string, string[]>;
+  // Palink 扩展：后端 debug_report 逐条明细 / 预算读数 / 书来源
+  worldInfoEntries: Array<{
+    entry_id: string;
+    title: string;
+    status: string;
+    reason: string;
+    matched_keywords: string[];
+    tokens_estimate: number;
+    position: number | null;
+    recursion_depth: number;
+    world_book_id: string;
+    book_name: string;
+    lore_source: string;
+  }>;
+  worldInfoBudget: {
+    budget_used: number;
+    total_tokens: number;
+    world_info_budget: number | null;
+    world_info_budget_cap: number;
+    max_context_tokens: number;
+  } | null;
+  worldInfoBookSources: Record<string, { name?: string; source?: string; type?: string }>;
+}
+
+/**
  * ST getContext() 返回的完整上下文对象
  * 包含 P0 字段（插件最常用）
  */
@@ -371,7 +424,13 @@ export interface StGetContext {
   // 世界书字段
   loadWorldInfo: (name: string) => Promise<void>;
   saveWorldInfo: (name: string, data: any) => Promise<void>;
-  getWorldInfoPrompt: (worldInfoName?: string) => string;
+  /**
+   * [ASM-3 2026-10-24] ST 1.18.0 契约：async + 返回 WIPromptResult 对象
+   * （world-info.js:892，async；script.js:4576 await 解构；st-context.js:281 裸导出）。
+   * 数据来自后端权威装配同源端点（详见 StWorldInfoPromptResult 头注释）。
+   * 旧签名 `(worldInfoName?: string) => string` 是 Palink 历史偏差，已废。
+   */
+  getWorldInfoPrompt: (legacyWorldInfoName?: string) => Promise<StWorldInfoPromptResult>;
 
   // 群组字段
   openGroupChat: (groupId: string) => void;
@@ -1792,6 +1851,31 @@ export function applyStChatMessages(
  * 这是 ST 插件调用 getContext() 时返回的对象，包含所有 P0 字段。
  * 复用 Palink 现有服务，不引入新容器。
  */
+// ============================================================
+// [ASM-3 2026-10-24] getWorldInfoPrompt 后端同源接缝的模块级状态
+// ============================================================
+
+/** 上一次 worldbook-scan 的缓存（键 = 会话|消息数|末条消息|模型|群组）。
+ *  只存最近一条：会话状态一变（新消息/换模型/换群）键即失配，自动重扫。 */
+let _worldInfoPromptCache: { key: string; promise: Promise<StWorldInfoPromptResult> } | null = null;
+
+/** ST 空扫描结果形状（对齐 world-info.js:4638 的空返回先例）。 */
+function _emptyWorldInfoPromptResult(): StWorldInfoPromptResult {
+  return {
+    worldInfoString: '',
+    worldInfoBefore: '',
+    worldInfoAfter: '',
+    worldInfoExamples: [],
+    worldInfoDepth: [],
+    anBefore: [],
+    anAfter: [],
+    outletEntries: {},
+    worldInfoEntries: [],
+    worldInfoBudget: null,
+    worldInfoBookSources: {},
+  };
+}
+
 export function getContext(): StGetContext {
   const runtime = getGlobalSillyTavernRuntime();
   const ctx: StContext | null = runtime?.getContext() ?? null;
@@ -2377,54 +2461,91 @@ export function getContext(): StGetContext {
         console.warn('[ST saveWorldInfo] 保存世界书失败:', name, e);
       }
     },
-    getWorldInfoPrompt: (worldInfoName?: string) => {
-      // NOTE: This scan is for ST plugin display compatibility only.
-      // Actual prompt assembly uses backend worldbook_service.build_worldbook_context
-      // (called from roleplay_prompt_assembly.py). The frontend scanner may produce
-      // different activation results than the backend due to independent implementations.
-      // 若指定了名称且该世界书未加载，异步加载（本次调用返回当前已加载内容）
-      if (worldInfoName) {
-        const loaded = stWorldBookManager.getWorldBooks();
-        const exists = loaded.some(wb => wb.name === worldInfoName);
-        if (!exists) {
-          // 异步加载，不阻塞当前调用
-          _loadWorldBookByName(worldInfoName).catch(() => { /* ignore */ });
-        }
+    // [ASM-3 2026-10-24] getWorldInfoPrompt 后端同源改造。
+    //
+    // 契约（_reference/sillytavern-1.18.0 一手依据）：
+    // - world-info.js:892 `export async function getWorldInfoPrompt(...)` —— ST 本尊
+    //   就是 **async** 且返回对象（WIPromptResult），:893-920 / script.js:4576。
+    //   故此处直接 async 化 + 调后端端点，无需"缓存伪装同步"方案。
+    //
+    // 唯一真相源：数据来自只读端点 POST /api/character-sessions/{chatId}/worldbook-scan
+    // （backend/app/api/worldbook.py::scan_session_worldbook），该端点参数逐项
+    // 复刻生产装配调用点（roleplay_prompt_assembly.py::_append_worldbook_context，
+    // build_worldbook_context 实参清单），并由后端参数一致性测试守卫。
+    //
+    // 前端自算引擎（lib/worldbook 的 scanAndBuildContext / getActiveEntries，
+    // token 口径 = 中文字×2+英文词，与后端 smart_guesstimate 不一致）自本改动起
+    // **从插件可见路径断开**——引擎文件保留（第一方 useCharacterChat 等仍在用，
+    // 是否删除由主脑复验收口）。任何失败路径都不得回退到前端引擎，否则两个
+    // 真相源复活（REPORT_ST三面一致性差距评估 A-2 的病灶）。
+    getWorldInfoPrompt: (legacyWorldInfoName?: string): Promise<StWorldInfoPromptResult> => {
+      // 旧签名首参 worldInfoName 是 Palink 历史私货（ST 真实签名是
+      // (chat, maxContext, isDryRun, globalScanData)）；后端权威扫描不依赖
+      // 前端已加载哪些书，这里接受但忽略，保持旧调用不抛错。
+      void legacyWorldInfoName;
+
+      if (!chatId) {
+        return Promise.resolve(_emptyWorldInfoPromptResult());
       }
-      // Task 11.12: 先扫描当前聊天上下文，激活匹配的世界书条目
+
+      let model = '';
       try {
-        const messages = messageManager.messages;
-        if (messages.length > 0) {
-          const recentMessages = messages
-            .slice(-20)
-            .map(m => typeof m.mes === 'string' ? m.mes : '');
-          const character = ctx?.character;
-          const scanContext = {
-            messages: recentMessages,
-            personaDescription: ctx?.name || '',
-            characterDescription: (character as any)?.description || '',
-            characterPersonality: (character as any)?.personality || '',
-            characterDepthPrompt: (character as any)?.depth_prompt || '',
-            scenario: (character as any)?.scenario || '',
-            creatorNotes: (character as any)?.creatorcomment || (character as any)?.creator_notes || '',
-          };
-          // scanAndBuildContext 返回扫描后构建的注入文本
-          const scanned = stWorldBookManager.scanAndBuildContext(scanContext as any, messages.length - 1);
-          if (scanned) return scanned;
-        }
+        model = sessionStorage.getItem('palink-rp-last-model') || '';
       } catch {
-        // 扫描失败时回退到直接获取激活条目
+        model = '';
       }
-      // 回退：获取激活条目并组装提示词
-      const entries = stWorldBookManager.getActiveEntries();
-      if (entries.length === 0) return '';
-      const parts: string[] = [];
-      for (const entry of entries) {
-        if (entry.content) {
-          parts.push(entry.content);
+
+      // 轻缓存（去重并发 + 会话状态变化即失效）：键含会话 id / 消息数 / 末条消息 /
+      // 模型 / 群组。插件在渲染循环里反复调用时只打一次后端；新消息落地后自动重扫。
+      const msgs = messageManager.messages;
+      const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+      const cacheKey = [
+        chatId,
+        msgs.length,
+        String((lastMsg as any)?.id ?? ''),
+        model,
+        String(groupId ?? ''),
+      ].join('|');
+      if (_worldInfoPromptCache && _worldInfoPromptCache.key === cacheKey) {
+        return _worldInfoPromptCache.promise;
+      }
+
+      const promise = (async (): Promise<StWorldInfoPromptResult> => {
+        try {
+          const res = await api.post<any>(
+            `/api/character-sessions/${encodeURIComponent(chatId)}/worldbook-scan`,
+            {
+              message: '',
+              model: model || undefined,
+              group_id: groupId ?? undefined,
+            },
+          );
+          return {
+            worldInfoString: typeof res?.worldInfoString === 'string' ? res.worldInfoString : '',
+            worldInfoBefore: typeof res?.worldInfoBefore === 'string' ? res.worldInfoBefore : '',
+            worldInfoAfter: typeof res?.worldInfoAfter === 'string' ? res.worldInfoAfter : '',
+            worldInfoExamples: Array.isArray(res?.worldInfoExamples) ? res.worldInfoExamples : [],
+            worldInfoDepth: Array.isArray(res?.worldInfoDepth) ? res.worldInfoDepth : [],
+            anBefore: Array.isArray(res?.anBefore) ? res.anBefore : [],
+            anAfter: Array.isArray(res?.anAfter) ? res.anAfter : [],
+            outletEntries:
+              res?.outletEntries && typeof res.outletEntries === 'object' && !Array.isArray(res.outletEntries)
+                ? res.outletEntries
+                : {},
+            worldInfoEntries: Array.isArray(res?.entries) ? res.entries : [],
+            worldInfoBudget: res?.budget ?? null,
+            worldInfoBookSources: res?.book_sources ?? {},
+          };
+        } catch (e) {
+          // 失败回退 = ST 空结果形状（world-info.js:4638 空扫描先例）。
+          // ⚠️ 故意不回退前端引擎：见函数头注释。
+          console.warn('[ST getWorldInfoPrompt] 后端世界书扫描失败，返回空结果：', e);
+          return _emptyWorldInfoPromptResult();
         }
-      }
-      return parts.join('\n\n');
+      })();
+
+      _worldInfoPromptCache = { key: cacheKey, promise };
+      return promise;
     },
 
     // 群组字段

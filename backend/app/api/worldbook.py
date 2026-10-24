@@ -6,6 +6,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
 from ..core.silent_failure import record as _record_silent_failure
@@ -895,4 +896,375 @@ async def get_worldbook_status(
         "world_book_name": wb.name,
         "active_entries_count": entry_count,
         "entries_overview": entries_overview,
+    }
+
+
+# ───────────────────────────────────────────────────────────────
+# [ASM-3 2026-10-24] 世界书扫描预览（只读端点）
+#
+# 目的：让插件经 getContext().getWorldInfoPrompt() 看到的激活列表/预算
+# 与后端权威装配**同源**（唯一真相源 = build_worldbook_context）。
+# 替换掉前端自算引擎路径（frontend/src/lib/worldbook 的 scanAndBuildContext）。
+#
+# ⚠️ 参数一致性纪律（2026-10-05 教训：离线探针漏传 max_context_tokens →
+# 预算 16000 假阳性）：本端点的参数采集逻辑逐行复刻生产调用点
+# ``roleplay_prompt_assembly.py::_append_worldbook_context``（约 :4745-4909，
+# kwargs 见 :4879 的 build_worldbook_context 调用）。任何一处修改都必须
+# 先对照生产调用点，并由 backend/tests/test_worldbook_scan_endpoint.py 的
+# 参数一致性测试（monkeypatch 双向捕获 kwargs 对比）守卫。
+#
+# 只读性：build_worldbook_context(enable_timed_effects=True)（= 生产默认）
+# 会在扫描前执行 TimedEffectsManager.update_after_message()（sticky/cooldown
+# tick）并可能因 @@reset 删除状态行 —— 生产随后 commit（savepoint.commit()），
+# 本端点在拿到结果后统一 db.rollback() 丢弃这些写入：
+#   - 扫描结果本身在 rollback 前已算完（tick 发生在扫描判定之前，语义 =
+#     "下一次生产装配会激活什么"），rollback 不影响已返回的列表；
+#   - 状态不被预览消费，下一次真实生成的 tick 与没有这次预览时完全一致。
+# ───────────────────────────────────────────────────────────────
+
+class WorldbookScanRequest(BaseModel):
+    """世界书扫描预览请求体。
+
+    - ``message``：预览"带上这句新消息会激活什么"。空串 = 生产无新消息
+      分支（continue 轮语义，见 _append_worldbook_context 的 recent_msgs
+      构造：仅落库窗口，不 append）。
+    - ``model``：max_context_tokens 解引用（用户 openai_max_context 覆盖
+      优先，回退模型注册表 context_length）。前端传当前会话模型。
+    - ``group_id``：群聊上下文（生产 req.group_id 同义）。普通角色会话不传。
+    """
+
+    message: str = ""
+    model: Optional[str] = None
+    group_id: Optional[str] = None
+
+
+def _collect_worldbook_scan_params(
+    db: Session,
+    user: User,
+    session: "CharacterChatSession",
+    char,
+    message: str,
+    model: Optional[str],
+    group_id: Optional[str],
+) -> dict:
+    """按生产口径采集 build_worldbook_context 实参。
+
+    与 ``roleplay_prompt_assembly.py::_append_worldbook_context`` 的采集块
+    逐项对齐（该函数内联在装配主链里无法直接复用，此处为受测试守卫的
+    镜像副本）。返回 kwargs dict（不含 db/session_id/user_id/character，
+    由调用方补齐）。
+    """
+    from ..models import UserSetting
+    from ..models import Persona
+    from ..services.roleplay_prompt_assembly import (
+        _get_model_context_window,
+        _get_openai_max_context_override,
+        _load_members,
+    )
+    from ..models.group_chat import GroupChat
+
+    user_nickname = user.username or "用户"
+
+    # ── 生产块 ①：persona + world_info_settings（默认值与解析逐行同源） ──
+    persona_desc_text: Optional[str] = None
+    wi_min_activations = 0
+    wi_min_activations_depth_max = 0
+    wi_char_strategy = 1
+    wi_world_info_depth = 2
+    wi_recursive = False
+    wi_vectorized_enabled = False
+    wi_budget: Optional[float] = 25.0
+    wi_budget_cap = 0
+    wi_include_names = True
+    wi_case_sensitive = False
+    wi_match_whole_words = False
+    user_setting = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    if user_setting:
+        if user_setting.active_persona_id:
+            ap = db.query(Persona).filter(
+                Persona.id == user_setting.active_persona_id,
+                Persona.user_id == user.id,
+            ).first()
+            if ap and ap.description:
+                persona_desc_text = ap.description
+        if user_setting.silly_tavern_settings:
+            try:
+                _st_raw = (
+                    json.loads(user_setting.silly_tavern_settings)
+                    if isinstance(user_setting.silly_tavern_settings, str)
+                    else user_setting.silly_tavern_settings
+                )
+                if isinstance(_st_raw, dict):
+                    _wis = _st_raw.get("world_info_settings", {})
+                    if isinstance(_wis, dict):
+                        wi_min_activations = int(_wis.get("world_info_min_activations", 0) or 0)
+                        wi_min_activations_depth_max = int(_wis.get("world_info_min_activations_depth_max", 0) or 0)
+                        wi_char_strategy = int(_wis.get("world_info_character_strategy", 1) or 1)
+                        wi_world_info_depth = int(_wis.get("world_info_depth", 2) or 2)
+                        wi_recursive = bool(_wis.get("world_info_recursive", False))
+                        wi_vectorized_enabled = bool(_wis.get("vectorized_enabled", False))
+                        try:
+                            wi_budget = float(_wis.get("world_info_budget", 25))
+                        except (TypeError, ValueError) as _exc:
+                            _record_silent_failure("worldbook.scan.wi_budget_fallback", _exc, once=True)
+                            wi_budget = 25.0
+                        wi_budget_cap = int(_wis.get("world_info_budget_cap", 0) or 0)
+                        wi_include_names = bool(_wis.get("world_info_include_names", True))
+                        wi_case_sensitive = bool(_wis.get("world_info_case_sensitive", False))
+                        wi_match_whole_words = bool(_wis.get("world_info_match_whole_words", False))
+            except (json.JSONDecodeError, TypeError, ValueError) as _exc:
+                _record_silent_failure("worldbook.scan.settings_parse_fallback", _exc, once=True)
+
+    # ── 生产块 ②：消息窗口（Phase E 深度扩展）+ D-1 chat_length 绝对计数 ──
+    # 预览端点恒 is_init=False / smart_card_trigger=False / is_continue=False：
+    # message 非空走生产"普通轮"分支（append + persisted_count+1），
+    # message 为空走生产"continue 轮"分支（仅窗口 + max(count, len)）。
+    from ..models.character import CharacterChatMessage
+
+    _wb_msg_limit = 8
+    if wi_min_activations > 0:
+        if wi_min_activations_depth_max > 0:
+            _wb_msg_limit = wi_min_activations_depth_max + 8
+        else:
+            _wb_msg_limit = 100
+    recent_for_wb = (
+        db.query(CharacterChatMessage)
+        .filter(CharacterChatMessage.session_id == session.id)
+        .filter(CharacterChatMessage.is_hidden == False)  # noqa: E712 — 生产同式
+        .order_by(CharacterChatMessage.created_at.desc())
+        .limit(_wb_msg_limit)
+        .all()[::-1]
+    )
+    recent_msgs = [
+        {"role": m.role, "content": m.content, "name": m.name or ""}
+        for m in recent_for_wb
+    ]
+    if message:
+        recent_msgs.append({"role": "user", "content": message, "name": user_nickname})
+
+    try:
+        from sqlalchemy import func as _sa_func
+
+        _wb_persisted_count = (
+            db.query(_sa_func.count(CharacterChatMessage.id))
+            .filter(CharacterChatMessage.session_id == session.id)
+            .scalar()
+        ) or 0
+    except Exception as _exc:
+        _record_silent_failure("worldbook.scan.persisted_count_fallback", _exc, once=True)
+        _wb_persisted_count = len(recent_for_wb)
+    if message:
+        _wb_chat_length = _wb_persisted_count + 1
+    else:
+        _wb_chat_length = max(_wb_persisted_count, len(recent_msgs))
+
+    # ── 生产块 ③：群聊 per-member 世界书（E1/D 批） ──
+    group_chars_arg = None
+    if group_id:
+        _group = db.query(GroupChat).filter(
+            GroupChat.id == group_id, GroupChat.user_id == user.id
+        ).first()
+        if _group is not None:
+            _meta_raw = getattr(_group, "chat_metadata", None)
+            _meta: dict = {}
+            if _meta_raw:
+                try:
+                    _meta = json.loads(_meta_raw) if isinstance(_meta_raw, str) else _meta_raw
+                except (json.JSONDecodeError, TypeError) as _exc:
+                    _record_silent_failure("worldbook.scan.group_meta_fallback", _exc, once=True)
+                    _meta = {}
+            group_wi_strategy = str(_meta.get("world_info_character_strategy") or "one") if isinstance(_meta, dict) else "one"
+            if group_wi_strategy in ("all", "group"):
+                try:
+                    _enabled = _load_members(db, _group)
+                    _main_id = str(char.id) if getattr(char, "id", None) else None
+                    group_chars_arg = [c for c in _enabled if str(c.id) != _main_id]
+                except Exception as _exc:
+                    _record_silent_failure("worldbook.scan.group_members_fallback", _exc, once=True)
+                    group_chars_arg = None
+
+    # ── 生产块 ④：A5 修复 max_context_tokens（覆盖优先，回退注册表） ──
+    _wb_ctx_override = _get_openai_max_context_override(user_setting, model, char.id if char else None)
+    _wb_max_context_tokens = (
+        _wb_ctx_override
+        if isinstance(_wb_ctx_override, int) and _wb_ctx_override > 0
+        else _get_model_context_window(model)
+    )
+
+    return {
+        "recent_messages": recent_msgs,
+        "persona_description": persona_desc_text,
+        "group_chars": group_chars_arg,
+        "min_activations": wi_min_activations,
+        "min_activations_depth_max": wi_min_activations_depth_max,
+        "world_info_character_strategy": wi_char_strategy,
+        "chat_length": _wb_chat_length,
+        "world_info_depth": wi_world_info_depth,
+        "enable_recursive": wi_recursive,
+        "vectorized_enabled": wi_vectorized_enabled,
+        "world_info_budget": wi_budget,
+        "world_info_budget_cap": wi_budget_cap,
+        "include_names": wi_include_names,
+        "world_info_case_sensitive": wi_case_sensitive,
+        "world_info_match_whole_words": wi_match_whole_words,
+        "max_context_tokens": _wb_max_context_tokens,
+    }
+
+
+@router_session_wb.post("/{session_id}/worldbook-scan")
+async def scan_session_worldbook(
+    session_id: str,
+    req: WorldbookScanRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """[ASM-3] 只读世界书扫描预览 — 与生产装配同参同源。
+
+    返回 ST getWorldInfoPrompt 契约形状（world-info.js:892 返回的
+    WIPromptResult：worldInfoString/worldInfoBefore/worldInfoAfter/
+    worldInfoExamples/worldInfoDepth/anBefore/anAfter/outletEntries，
+    position→字段映射同 :5073-5145 的 checkWorldInfo 分类），外加 Palink
+    扩展字段（entries=后端 debug_report 逐条明细、budget=预算读数），
+    供插件显示"激活列表/预算"时与后端装配 report 逐项对账。
+    """
+    from ..models.character import Character, CharacterChatSession
+    from ..services.worldbook_service import build_worldbook_context
+    from ..services.worldbook_service import (
+        WI_POS_AFTER_AN,
+        WI_POS_AFTER_CHAR,
+        WI_POS_BEFORE_AN,
+        WI_POS_BEFORE_CHAR,
+    )
+
+    session = db.query(CharacterChatSession).filter(
+        CharacterChatSession.id == session_id,
+        CharacterChatSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    char = db.query(Character).filter(
+        Character.id == session.character_id,
+        Character.user_id == user.id,
+    ).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+
+    scan_kwargs = _collect_worldbook_scan_params(
+        db, user, session, char, req.message, req.model, req.group_id
+    )
+
+    # 只读性实现：SAVEPOINT 包住扫描，随后回滚保存点——只丢弃扫描期写入
+    # （timed-effects tick / record_activation / @@reset 删除），不影响本事务
+    # 里更早的任何数据。结果对象在 rollback 前已构造完，不受影响。
+    # ⚠️ 不用整事务 db.rollback()：在"session 绑定外部连接事务"的宿主形态
+    # （tests/conftest.py 的 db_session 模式）下，整事务回滚会把该事务里
+    # 更早的（未真正落盘的）提交一并卷走。SAVEPOINT 两种形态都只回滚本段。
+    nested = None
+    try:
+        nested = db.begin_nested()
+    except Exception as _exc:
+        _record_silent_failure("worldbook.scan.savepoint_unavailable", _exc, once=True)
+        nested = None
+    try:
+        result = build_worldbook_context(
+            db=db,
+            session_id=session_id,
+            user_id=user.id,
+            character=char,
+            # enable_timed_effects 不传 = 生产默认 True（tick 后扫描，见端点头注释）
+            **scan_kwargs,
+        )
+    finally:
+        if nested is not None:
+            try:
+                nested.rollback()
+            except Exception as _exc:
+                _record_silent_failure("worldbook.scan.nested_rollback_failed", _exc, once=True)
+                try:
+                    db.rollback()
+                except Exception as _exc2:
+                    _record_silent_failure("worldbook.scan.db_rollback_failed", _exc2, once=True)
+        else:
+            try:
+                db.rollback()
+            except Exception as _exc:
+                _record_silent_failure("worldbook.scan.db_rollback_failed", _exc, once=True)
+
+    ebp = result.entries_by_position or {}
+
+    def _join_pos(pos: int) -> str:
+        return "\n".join(ebp.get(pos, []) or [])
+
+    # ST world-info.js:5146-5147：before/after 各自 '\n' join（字符串）；
+    # :5162 anBefore=ANTopEntries / anAfter=ANBottomEntries 是**内容数组**。
+    world_info_before = _join_pos(WI_POS_BEFORE_CHAR)
+    world_info_after = _join_pos(WI_POS_AFTER_CHAR)
+    an_before = list(ebp.get(WI_POS_BEFORE_AN, []) or [])
+    an_after = list(ebp.get(WI_POS_AFTER_AN, []) or [])
+
+    # atDepth：生产 depth_entries 为 (depth, content, role) 三元组列表，
+    # ST WIDepthEntries 按 (depth, role) 分组（world-info.js:5125-5136）。
+    wi_depth: list[dict] = []
+    for depth, content, role in result.depth_entries or []:
+        role_int = role if isinstance(role, int) else 0
+        existing = next(
+            (d for d in wi_depth if d["depth"] == depth and d["role"] == role_int),
+            None,
+        )
+        if existing is not None:
+            existing["entries"].append(content)
+        else:
+            wi_depth.append({"depth": depth, "entries": [content], "role": role_int})
+
+    # EMTop/EMBottom → ST EMEntries 形状 {position: wi_anchor_position.before/after}
+    wi_examples = [
+        {"position": "before", "content": c} for c in result.em_top_entries or []
+    ] + [
+        {"position": "after", "content": c} for c in result.em_bottom_entries or []
+    ]
+
+    entries_report = [
+        {
+            "entry_id": r.entry_id,
+            "title": r.title,
+            "status": r.status,
+            "reason": r.reason,
+            "matched_keywords": list(r.matched_keywords or []),
+            "tokens_estimate": r.tokens_estimate,
+            "position": r.position,
+            "recursion_depth": r.recursion_depth,
+            "world_book_id": r.world_book_id,
+            "book_name": r.book_name,
+            "lore_source": r.lore_source,
+        }
+        for r in result.debug_report or []
+    ]
+
+    return {
+        "session_id": session_id,
+        # ST 契约字段（world-info.js:892-920）
+        "worldInfoString": result.text or "",
+        "worldInfoBefore": world_info_before,
+        "worldInfoAfter": world_info_after,
+        "worldInfoExamples": wi_examples,
+        "worldInfoDepth": wi_depth,
+        "anBefore": an_before,
+        "anAfter": an_after,
+        "outletEntries": result.outlet_entries or {},
+        # Palink 扩展：对账用逐条明细 + 预算读数（与后端装配 report 同源）
+        "entries": entries_report,
+        "activated_entry_ids": [
+            r["entry_id"] for r in entries_report if r["status"] == "activated"
+        ],
+        "budget": {
+            "budget_used": result.budget_used,
+            "total_tokens": result.total_tokens,
+            "world_info_budget": scan_kwargs["world_info_budget"],
+            "world_info_budget_cap": scan_kwargs["world_info_budget_cap"],
+            "max_context_tokens": scan_kwargs["max_context_tokens"],
+        },
+        "book_sources": result.book_sources or {},
+        "chat_length": scan_kwargs["chat_length"],
+        "read_only": True,
     }
