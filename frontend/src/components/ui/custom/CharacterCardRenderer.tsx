@@ -40,6 +40,7 @@ import {
 import { REMAINING_MARKDOWN_PLUGINS, REMAINING_REHYPE_PLUGINS, INLINE_MIN_HEIGHT, IFRAME_DEFAULT_HEIGHT, IFRAME_INLINE_MAX_HEIGHT, IFRAME_VIEWPORT_MIN_HEIGHT, IFRAME_AVAILABLE_MIN_HEIGHT, SMART_CARD_CSP_NONCE, SMART_CARD_CONTEXT_UPDATE_DELAY_MS, SMART_CARD_VIEWPORT_SETTLE_DELAYS_MS, SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
 import { resolveAvailableHeightCardResize } from './smart-card-runtime/avail-height-unlock';
 import { absorbFrameDiagnostic } from './smart-card-runtime/palink-diag';
+import { absorbStyleRemovalFrameError, isStyleRemovalForensicPayload } from './smart-card-runtime/style-removal-forensics-aggregate';
 import { smartCardRuntimeConfigFallback } from './smart-card-runtime/helpers';
 import { SMART_CARD_ASSET_MODE_CHANGED_EVENT } from './smart-card-runtime/asset-mode';
 import {
@@ -1021,6 +1022,20 @@ const IframeRenderer = React.memo(function IframeRenderer({
       // window.__palinkFrameErrors（调试用，上限 50 条）并 console.error 输出。
       if (data && data.source === 'palink-smart-card-frame' && frameIdRef.current && data.frameId === frameIdRef.current) {
         if (data.type === 'frame-error' || data.type === 'frame-csp') {
+          // [UI-2 2026-10-24 D-4] style_removal 取证改会话级聚合：真机每轮 ~168 条
+          // （帧内观察器每次安装上限 24 条，srcDoc 每轮重建 iframe ⇒ 帧内计数归零、同一批
+          // 节点身份反复全额上报，而样式实际健在——守护一直在恢复）。聚合必须在父侧做
+          // （唯一跨帧存活的位置）：同「kind+节点身份」首次照旧走下面的全量记录（取证字段
+          // 一个不少 + console.error 一次），后续只累加计数
+          // （window.__palinkStyleRemovalAgg / diag 导出 records[].count），不再逐条刷屏。
+          // ⛔ 只动「记录」，不动 STYLE-GUARD 恢复/守护；不弹任何 UI。
+          if (isStyleRemovalForensicPayload(data)) {
+            const verdict = absorbStyleRemovalFrameError(data, {
+              frameId: frameIdRef.current || '',
+              cardId: String(context.characterId || ''),
+            });
+            if (!verdict.first) return;
+          }
           // [P0 2026-09-30] filename/lineno 必须透传：shim 的 window.onerror 上报里
           // 带 e.filename（脚本级 parse error 时即出错资源的 sourceURL/URL），此前在
           // 这里被丢掉，__palinkFrameErrors 只剩 message，定位"HTML 冒充 JS"只能盲猜。
