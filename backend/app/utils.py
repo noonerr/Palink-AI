@@ -574,7 +574,9 @@ def build_memory_context(memory_ctx, max_tokens: Optional[int] = None) -> str:
             # [p224 2026-10-25] 读侧碎渣过滤（判据见 _strip_orphan_marker_lines）：
             # semantic 时代存量块的孤立 marker 行注入前剥离，只影响渲染不动存量。
             text = _strip_orphan_marker_lines(text)
-            if not text:
+            # 判空用 strip()：碎渣行删完后可能剩纯空白行（如 "*\n\n"），裸 not text
+            # 拦不住，会渲染成 "- Assistant: " 空条目（p224 上线导出实测 6 行）。
+            if not text.strip():
                 continue
             # ⚠️ [单位口径 2026-10-09，2026-10-10 正名] `len // 2` 是**内部口径**，
             # 不是真实 token。实测（p59，用上游 API 的 usage 对拍）：中文约

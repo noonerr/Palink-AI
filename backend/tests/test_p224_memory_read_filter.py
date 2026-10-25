@@ -129,6 +129,12 @@ class TestMicroLineDropped:
         )
         assert out == ""
 
+    def test_whitespace_only_residue_memory_skipped(self):
+        """碎渣行删完只剩空白行的条目（如 "*\\n\\n"）也跳过（p224 上线导出实测
+        "- Assistant: " 空条目残余——裸 not text 拦不住纯空白串）。"""
+        out = build_memory_context(_ctx(_mem("*\n\n")), max_tokens=None)
+        assert out == ""
+
     def test_normal_line_untouched(self):
         """正常行（≥10 字正文或带句末标点）一字不动。"""
         line = '露缇雅 | 依恋 | “……你说句话呀。”'
