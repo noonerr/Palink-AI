@@ -824,6 +824,24 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 - **待拍板**：提高插件资源上限（如 4–8MB，配总量上限）vs 维持（安全口径）。属产品决策（上传面放大）。
   ✅ **2026-10-24 用户拍板：放宽（8MB 级 + 总量兜底），随 Wave 3 施工。**
 
+### [P2-25] 事件枚举两张表不同步 + `CHAT_METADATA_UPDATED` 可发不可订（2026-10-25 · VER-2 探针）
+
+> 编号说明：`P2-24` 已被「提示词体检内容层四件」占用（见主脑交接书），本条从 P2-25 起编。
+
+- **实测**（`frontend/scripts/verify-event-roundtrip.mjs`，生产载体求值）：
+  - 帧内 `window.event_types` = ST 1.18 的 **104 条克隆**（键集合/事件值与 ST 零差异）；
+  - 宿主 `ST_EVENT_TYPES`（`getContext.ts:855`）= **117 条**；
+  - 两者差：帧内缺 41、宿主漏 28（如 `SECRET_*`、`ITEMIZED_PROMPTS_*`、`OAI_PRESET_*`）。
+- **后果**：插件的 `on(event_types.X)` 与卡片 iframe 看到的枚举不是同一份；按 ST 惯例写
+  `on(event_types.CHAT_METADATA_UPDATED)` 的订阅会落到字符串 `'undefined'`，永远收不到——
+  该事件帧内**开机即 emit**（探针实测），是唯一“可发不可订”的一条。
+- **117 条定性**：真发 25 / 宿主静态（未求值）17 / 名存实亡 41 / 未实现 34；`mag_command_parsed` 明确未实现（全仓零 emit）。
+- **修法（建议）**：把事件枚举收成一个权威源（宿主 117 与帧内 104 合并，补齐 28 + 帧内补 `CHAT_METADATA_UPDATED`），
+  帧内生成 `event_types` 时从同一清单派生；对仍未实现的 34 条保留诚实留痕，不假装。
+- **验收**：探针 `--quiet` 的 `frame_missing_from_st_types=0`、`emitted_but_unsubscribable=0`；
+  另跑 `runtime-source-carrier-fidelity` 与 shim 守卫。
+- 报告：`docs/_active/report/REPORT_VER2_事件往返对齐_2026-10-25.md`。
+
 ### [P2-23] NF-1 存量 role=NULL 行的数据修复与约束加固——代码已修，数据待点头（2026-10-24）
 
 - **代码侧已修**：装配循环开头归一化 assistant + 留痕（`character_message_builder.py`，测试 3 例）。

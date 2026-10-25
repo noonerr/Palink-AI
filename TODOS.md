@@ -25,6 +25,18 @@
   dist 57MB / 778 文件 → **17MB / 288 文件**，入口 `index-paiblS5D.js` 不变，HTTP 200。
 - 备注：2026-10-24~25 的重建未维护孤儿清理，本次用同一 HEAD 的确定性构建（入口 hash 与线上一致）做基准。
 
+### [已交付·已上线] API-7 第一批 15 条命令 + VER-2 事件对齐表（2026-10-25）
+
+- **API-7 第一批**（commit `dd93509`）：新增 `st-compat-commands-chat.ts`，15 条纯逻辑命令
+  （test/is-mobile/trimtokens/count/messages/message-role/message-name/addswipe/delswipe/delname/comment/sendas/inject/flushinject/listinjects），
+  +40 单测；宿主注册 116→131，权威名单未实现 218→203。**消息族写入仅内存态**（不派发重载事件，等 API-3 落库）。
+  上线入口 `index-D3gvEoM1.js`。
+- **VER-2**：`frontend/scripts/verify-event-roundtrip.mjs` + 报告；117 条全定性
+  （真发 25 / 宿主静态 17 / 名存实亡 41 / 未实现 34），发现两张事件表不同步 + `CHAT_METADATA_UPDATED` 可发不可订，
+  已开 `OPEN_ISSUES [P2-25]`；17 条宿主静态待宿主求值/真机转正。
+- **下一批建议**：getchatname / hide/unhide / persona-get / member-count / db-* 薄转发；
+  消息写入类等 API-3。剩余纯逻辑约 45–65 条，2–4 批。
+
 ### [已交付·已上线] 项目减重批次 L2-3 / L2-4 / R3（2026-10-23 · 与「分支选择单一出口」并行）
 
 - **权威文档**：[`HANDOFF_2026-10-23_减重与流式改造.md`](./docs/_active/HANDOFF_2026-10-23_减重与流式改造.md)（含 §0.5 复核订正）、
