@@ -291,6 +291,9 @@ def test_inject_budget_skips_whole_items(enabled):
 
 
 def test_inject_empty_content_skipped(enabled):
-    ctx = _Ctx([_entry(1, ""), _entry(2, "有效内容")])
+    # [p224 2026-10-25] 夹具由 4 字占位串改为足长正文：读侧碎渣过滤（p224 裁定②）
+    # 会丢弃「剥符号后 <10 字且无句末标点」的微型行，原占位串恰好落类；
+    # 本用例验证的是"空内容条目跳过、非空条目保留"，与行长度无关。
+    ctx = _Ctx([_entry(1, ""), _entry(2, "有效内容，足够长的一句正文。")])
     out = build_memory_context(ctx)
-    assert "有效内容" in out
+    assert "有效内容，足够长的一句正文。" in out

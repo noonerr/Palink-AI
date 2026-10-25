@@ -6302,9 +6302,15 @@ async def _append_memory_context(
                     # 主聊天（branch_id 为空）→ 只认 trunk（branch_id IS NULL），
                     # 不再把整会话所有分支的记忆召回来
                     branch_scopes = []
-            # D3 修复: ST protect 语义 —— 最近 5 条消息的记忆镜像不再重复注入
-            # （对话历史窗口已含原文，重复召回浪费 token）；查询失败静默回退
-            # 不排除（宁多勿缺）。分支内取当前分支消息，主聊天取 branch_id 为空的消息。
+            # D3 修复: ST protect 语义 —— 已逐字进历史窗口的消息，其记忆镜像不再
+            # 重复注入（对话历史窗口已含原文，重复召回浪费 token）；查询失败静默
+            # 回退不排除（宁多勿缺）。分支内取当前分支消息，主聊天取 branch_id 为
+            # 空的消息。
+            # [p224 2026-10-25] 排除窗原先硬编码 5 条，而历史窗口是
+            # ``_resolve_history_window_limit(req)``（单聊 24 / 群聊
+            # recent_messages_budget）——第 6~23 楼处在「原文已进历史、镜像却不被
+            # 排除」的缝隙里被重复注入（p224 实测：M27/M26 在第 6/7 楼、M20 在第
+            # 13 楼，全部落缝）。现改为复用历史窗口口径，使缝隙归零。
             exclude_message_ids: list = []
             try:
                 _mem_recent_q = req.db.query(CharacterChatMessage.id).filter(
@@ -6317,7 +6323,7 @@ async def _append_memory_context(
                 exclude_message_ids = [
                     row[0] for row in _mem_recent_q
                     .order_by(CharacterChatMessage.created_at.desc(), CharacterChatMessage.id.desc())
-                    .limit(5)
+                    .limit(_resolve_history_window_limit(req))
                     .all()
                 ]
             except Exception as mem_recent_err:

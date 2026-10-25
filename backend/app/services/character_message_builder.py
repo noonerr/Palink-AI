@@ -367,20 +367,23 @@ def build_character_chat_messages(
         user_msg = {"role": "user", "content": cleaned_message}
 
     is_zh = prompt_lang == "zh" or (prompt_lang == "auto" and _contains_chinese((char.name or "") + (char.description or "")))
-    personality_summary = (char.personality or "").strip()[:200]
+    has_personality = bool((char.personality or "").strip())
 
     # [ASM-4 2026-10-24] 尾部动态块拆分（VER-1 §7.2 D-2/D-3/D-4 + §5.1 同判）：
     # 旧实现把全部动态 part + 角色校准 join 成**单条**混合 system（实测 25KB，
     # 世界书/实体卡/记忆/校准互相粘连不可定位）。现每个 part 一条独立 system
-    # 消息，角色校准（P-DEC-5 保留）也单独成条——内容与相对顺序不变，只改消息边界。
+    # 消息，角色校准（P-DEC-5 保留）也单独成条——相对顺序不变，只改消息边界。
+    # [M33 2026-10-25] 校准段去重（P-DEC-5 再裁定）：不再复读 personality 正文
+    # （曾与 main 的 charPersonality 槽同列双消费，逐字重复且带截断旧值），只留
+    # 锚定头句；正文唯一消费点是 charPersonality 槽。非空门控保持不变。
     dynamic_parts = [part for part in dynamic_context_parts if part]
     for _part in dynamic_parts:
         messages.append({"role": "system", "content": _part})
-    if personality_summary:
+    if has_personality:
         if is_zh:
-            calib_text = f"【角色校准】你是{char.name or '角色'}。将当前局势融入回复，但语气、价值观和反应方式必须持续贴合角色性格：{personality_summary}"
+            calib_text = f"【角色校准】你是{char.name or '角色'}。将当前局势融入回复，但语气、价值观和反应方式必须持续贴合角色性格。"
         else:
-            calib_text = f"[Character Calibration] You are {char.name or 'the character'}. Integrate the current situation, but keep voice, values, and reactions aligned with this personality: {personality_summary}"
+            calib_text = f"[Character Calibration] You are {char.name or 'the character'}. Integrate the current situation, but keep voice, values, and reactions aligned with this personality."
         messages.append({"role": "system", "content": calib_text})
 
     # 添加用户系统指令

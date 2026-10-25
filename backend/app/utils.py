@@ -195,6 +195,43 @@ def _unwrap_html_tags(s: str) -> str:
     return _ANY_TAG_RE.sub("", s)
 
 
+# [p224 2026-10-25] 插图标签整行剥离：整行就是一个 <cg>…</cg>（可带前后空白）时
+# 整行删。此前只有"拆标签留文字"，"害羞"这类裸插图关键词以孤立行进入记忆
+# （p224 导出实测 11 行裸关键词行即此水源）。夹在正文中的 <cg> 标签不动，
+# 仍走"拆标签留文字"；未闭合/跨行的 <cg> 也不在此列，维持既有兜底行为。
+_CG_WHOLE_LINE_RE = re.compile(r"<cg\b[^>]*>.*</cg\s*>", re.IGNORECASE)
+
+
+def _strip_cg_whole_lines(s: str) -> str:
+    out = []
+    for line in s.split("\n"):
+        if _CG_WHOLE_LINE_RE.fullmatch(line.strip()):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+# [p224 2026-10-25] 碎渣行形状判据（semantic_chunker 的微尾并入判据同源）：
+# 把 *、弯引号、【…】段与空白剥掉后剩下的"正文"不足 10 字且无句末标点，
+# 视为 marker/关键词类微型行（"害羞"裸关键词、纯【声音】行、”|【声音…】| 类）。
+_MICRO_LINE_BRACKET_RE = re.compile(r"【[^】]*】")
+_SENTENCE_END_CHARS = "。！？!?…"
+
+
+def _micro_line_residual(line: str) -> str:
+    s = _MICRO_LINE_BRACKET_RE.sub("", line)
+    s = s.replace("*", "").replace("“", "").replace("”", "")
+    return re.sub(r"\s+", "", s)
+
+
+def is_micro_marker_line(line: str) -> bool:
+    """该行是否为 marker/关键词类微型行（读侧过滤与写侧微尾并入共用的判据）。"""
+    residual = _micro_line_residual(line)
+    if not residual:
+        return True
+    return len(residual) < 10 and not any(ch in _SENTENCE_END_CHARS for ch in residual)
+
+
 def _strip_table_scaffold(s: str) -> str:
     """清掉 markdown 表格的空壳符号，**不丢任何文字**。
 
@@ -255,6 +292,11 @@ def clean_memory_content(text: Optional[str]) -> str:
         s,
         flags=re.IGNORECASE,
     )
+
+    # 3.5) [p224 2026-10-25] 插图标签整行剥离（判据见 _CG_WHOLE_LINE_RE 注释）。
+    #    必须在第 4 步拆标签之前做，否则关键词先被留下、这里再删行就晚了。
+    if "<cg" in s.lower():
+        s = _strip_cg_whole_lines(s)
 
     # 4) HTML：style/script 无条件整块删；带 class|style 的块级元素整块删，
     #    但若删完几乎不剩内容（说明该条正文靠 HTML 承载）则退回"只拆标签"，
@@ -462,6 +504,45 @@ def _truncate_by_sentence(text: str, max_len: int) -> str:
     return head + "…"
 
 
+def _strip_orphan_marker_lines(text: str) -> str:
+    """[p224 2026-10-25] 读侧碎渣过滤：只影响注入渲染，不动存量数据。
+
+    semantic 时代（2026-10-05~10-07，epsilon 定标失误退化硬切）的存量块里有
+    两类形状碎渣（导出实测 9 行孤立星号头、12 行孤立右引号头、25/36 字微型行）：
+    ① 行首 1-2 个孤立 * / ” 前缀——斜体对/引号对被旧切点拦腰截断的残迹；
+    ② marker/【声音】/裸插图关键词微型行（判据 is_micro_marker_line）。
+    完整 *…* 包裹的斜体行不误伤：行内还有其他星号（即首符有可配对的闭符）时
+    同样不动。不做半句尾删除——那会破坏「记忆=消息镜像」不变式。
+    """
+    out = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        modified = False
+        # ① 行首孤立星号：仅当行内再无其他星号（没有可配对的闭合符）才剥
+        star_run = 0
+        while star_run < 2 and star_run < len(stripped) and stripped[star_run] == "*":
+            star_run += 1
+        if star_run and stripped.count("*") == star_run:
+            stripped = stripped[star_run:].lstrip()
+            modified = True
+        # 行首孤立弯引号闭合符（最多 2 个）：闭符不开启任何内容，剥离不损语义
+        quote_run = 0
+        while quote_run < 2 and quote_run < len(stripped) and stripped[quote_run] == "”":
+            quote_run += 1
+        if quote_run:
+            stripped = stripped[quote_run:].lstrip()
+            modified = True
+        if not stripped:
+            continue  # 整行就是孤立 marker
+        if is_micro_marker_line(stripped):
+            continue  # ② marker/关键词微型行整行丢弃
+        out.append(stripped if modified else line)
+    return "\n".join(out)
+
+
 def build_memory_context(memory_ctx, max_tokens: Optional[int] = None) -> str:
     """把检索到的记忆格式化为注入文本（方案 B，2026-08-22）。
 
@@ -490,6 +571,11 @@ def build_memory_context(memory_ctx, max_tokens: Optional[int] = None) -> str:
                 text = _truncate_by_sentence(text, max_chars)
             # [TAG-BALANCE-GUARD] 记忆块可能从标签中间切开，注入前修平
             text = balance_custom_tags(text)
+            # [p224 2026-10-25] 读侧碎渣过滤（判据见 _strip_orphan_marker_lines）：
+            # semantic 时代存量块的孤立 marker 行注入前剥离，只影响渲染不动存量。
+            text = _strip_orphan_marker_lines(text)
+            if not text:
+                continue
             # ⚠️ [单位口径 2026-10-09，2026-10-10 正名] `len // 2` 是**内部口径**，
             # 不是真实 token。实测（p59，用上游 API 的 usage 对拍）：中文约
             # **0.66 token/字**，而这里按 0.5 token/字算 ⇒ **低估约 1.37 倍**，

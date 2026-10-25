@@ -437,21 +437,23 @@ class TestAssemblyPlacement:
         for anchor in (DESC_TEXT, PERS_TEXT, SCEN_TEXT):
             assert anchor not in main_text, f"main 仍内嵌 {anchor!r}（拆分未生效）"
 
-    def test_no_new_duplicate_beyond_known_calibration_double_anchor(self):
-        """全数组计数：描述/场景各 1 份；性格 2 份——第 2 份在【角色校准】里，
-        那是 D-4/P-DEC-5 已裁定的既有双锚（保留内容只改消息边界），**不是**本批
-        造成的重复。写死这个数字，是为了让"拆分顺手多插一份"立刻可见。
+    def test_no_new_duplicate_calibration_header_only(self):
+        """全数组计数：描述/场景/性格各 1 份。【角色校准】仍在场（P-DEC-5 保留）
+        但只留锚定头句、不复读 personality 正文（M33 2026-10-25 去重，与 M4
+        charPersonality 槽的同列双消费已消除）。写死这个数字，是为了让
+        "拆分顺手多插一份"或"复读回归"立刻可见。
         """
         res = _run_assembly(_mk_char(), _slots_dep(_mk_char()))
         blob = "\n".join(_texts(res))
         assert blob.count(DESC_TEXT) == 1, "描述出现两份 = 拆分与内嵌同时生效"
         assert blob.count(SCEN_TEXT) == 1, "场景出现两份 = 拆分与内嵌同时生效"
-        assert blob.count(PERS_TEXT) == 2, (
-            f"性格计数漂到 {blob.count(PERS_TEXT)}（预期 2：charPersonality 槽 "
-            f"+ 【角色校准】摘要，后者属 P-DEC-5 既定保留）"
+        assert blob.count(PERS_TEXT) == 1, (
+            f"性格计数漂到 {blob.count(PERS_TEXT)}（预期 1：charPersonality 槽；"
+            f"【角色校准】不再复读正文）"
         )
         calib = [t for t in _texts(res) if t.startswith("【角色校准】")]
-        assert len(calib) == 1 and PERS_TEXT in calib[0]
+        assert len(calib) == 1
+        assert PERS_TEXT not in calib[0], "校准段不得复读 personality 正文（M33 去重）"
         slot = [t for t in _texts(res) if t == _LABEL_PERS + PERS_TEXT]
         assert len(slot) == 1, "charPersonality 槽必须独立成条且只有一条"
 

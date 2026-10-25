@@ -22,9 +22,11 @@ from .st_seedrandom import st_get_string_hash, st_pick_index
 
 MACRO_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
 
-# world book 的"当前变量状态"模板标签（ST MVU 扩展用），宏替换后需转成参考说明
+# world book 的"当前变量状态"模板标签（ST MVU 扩展用），宏替换后需转成参考说明。
+# 单复数写法均容（<status_current_variable> / <status_current_variables>，卡侧两种
+# 形态都在场；重写函数只取 body 捕获组，不依赖标签名单复数）。
 _STATUS_CURRENT_VAR_RE = re.compile(
-    r"<status_current_variable>([\s\S]*?)</status_current_variable>",
+    r"<status_current_variables?>([\s\S]*?)</status_current_variables?>",
     re.IGNORECASE,
 )
 

@@ -83,6 +83,32 @@ def strip_template_syntax(text) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
+# 装饰器样孤行：单 token 的 @name / @@name 行（如卡侧控制器条目首行的
+# @activate 残留标记）。平台装饰器语法是双 @@（见 _parse_decorators），
+# 单 @ 全仓无消费方，两者都不构成实质注入文本。
+_DECORATOR_LONE_LINE_RE = re.compile(r"^@{1,2}[A-Za-z_][A-Za-z0-9_]*$")
+# 纯标点/空白行：不含任何字母、数字或汉字。
+_PUNCT_ONLY_LINE_RE = re.compile(r"^[\W_]+$")
+
+
+def _is_decoration_only(text: str) -> bool:
+    """判断剥离模板后的条目内容是否已无实质文本。
+
+    所有非空行都只是装饰器样孤行（@name / @@name 单 token 行）或纯标点/空白
+    时视为空内容。口径刻意收窄：任何一行还带实质文本（哪怕 EJS 剥离后
+    遗留的静态残骨架）即不算空、照常注入。
+    """
+    for line in (text or "").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _DECORATOR_LONE_LINE_RE.match(stripped):
+            continue
+        if _PUNCT_ONLY_LINE_RE.match(stripped):
+            continue
+        return False
+    return True
+
 # WorldInfoLogic constants
 WI_LOGIC_AND_ANY = 0
 WI_LOGIC_NOT_ALL = 1
@@ -2162,6 +2188,14 @@ def build_worldbook_context(
         # P3 修复: 注入前剥离 EJS/underscore 模板语法（如 <%_ if (v('...')) { _%>）。
         # 扫描匹配仍使用原始 entry.content（上方 _parse_decorators 同理）。
         entry_content = strip_template_syntax(entry.content or '')
+        # 剥离后仅剩装饰器样孤行/纯标点（如卡侧控制器条目 = 首行 @activate +
+        # EJS 模板被剥成空）＝无实质内容，整条跳过注入，避免孤行残渣拼进
+        # 位置桶/深度列表（空内容条目跳过的自然延伸）。
+        if _is_decoration_only(entry_content):
+            for r in report:
+                if r.entry_id == entry.id and r.status == "activated":
+                    r.reason = (r.reason + ";stripped_empty" if r.reason else "stripped_empty")
+            continue
         pos = entry.position if entry.position is not None else WI_POS_AT_DEPTH
         if pos == WI_POS_AT_DEPTH:
             # G6 修复: 包含 role (0=system, 1=user, 2=assistant)

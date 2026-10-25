@@ -29,6 +29,7 @@ from typing import Callable, List, Optional
 import numpy as np
 
 from .config import memory_config
+from ..utils import is_micro_marker_line
 
 logger = logging.getLogger("MemoryModule")
 
@@ -99,22 +100,56 @@ def split_sentences(text: str) -> List[str]:
     return merged
 
 
+# [p224 2026-10-25] 切点配对守卫：切点落在未闭合的 *…* 斜体对或弯引号 “…” 对内时，
+# 把切点回退到最外层开符之前（配对整体归入后块）。否则前块尾部挂着开口符、
+# 后块头部是孤立标记/半句——p224 存量 9 行孤立星号头 + 12 行孤立右引号头皆源于
+# semantic 时代的退化硬切。直引号 " 不参与：语料里它兼作拟声强调（"轰"地），
+# 按开闭计数误判率高。
+def _unclosed_pair_start(head: str) -> int:
+    """head 内若存在未闭合的 *…* / “…” 对，返回最外层开符下标；否则 -1。"""
+    star_open = -1
+    quote_open: List[int] = []
+    for i, ch in enumerate(head):
+        if ch == "*":
+            star_open = i if star_open < 0 else -1
+        elif ch == "“":
+            quote_open.append(i)
+        elif ch == "”" and quote_open:
+            quote_open.pop()
+    openers = [p for p in (star_open, quote_open[0] if quote_open else -1) if p >= 0]
+    return min(openers) if openers else -1
+
+
+def _cut_outside_unclosed_pair(text: str, cut: int) -> int:
+    """切点落在未闭合对内时回退到开符之前；开符就在文首（无处可退）时维持原切点。"""
+    if cut <= 0 or cut > len(text):
+        return cut
+    start = _unclosed_pair_start(text[:cut])
+    if 0 < start < cut:
+        return start
+    return cut
+
+
 def _find_cut_index(text: str, max_len: int) -> int:
     """在 max_len 内找最靠后的边界作为切割点；实在找不到才硬切。
 
     三级降级：句终止符 → 分号/换行 → 逗号/顿号/引号/空格（须落在后半段）。
     返回切割下标（>0 才有效；返回 0 表示无法切，调用方应放弃再分）。
+    [p224 2026-10-25] 三级切点与硬切统一过配对守卫（_cut_outside_unclosed_pair）：
+    切点落在未闭合 *…*/“…” 对内时移到对外交界。对现有正常产物是恒等变换
+    （切点本就不在对内），只拦未来病态切点。
     """
     head = text[:max_len]
     for boundary in (_TERMINAL_BOUNDARY, _WEAK_BOUNDARY):
         idx = max(head.rfind(ch) for ch in boundary)
         if idx > 0:
-            return idx + 1
+            return _cut_outside_unclosed_pair(text, idx + 1)
     # 三级：弱标点/空白/成对引号右半（见 _SOFT_BOUNDARY 注释里的实测理由）
     idx = max(head.rfind(ch) for ch in _SOFT_BOUNDARY)
     if idx > 0 and (idx + 1) >= max_len * _SOFT_MIN_RATIO:
-        return idx + 1
-    return max_len if len(text) > max_len else 0
+        return _cut_outside_unclosed_pair(text, idx + 1)
+    cut = max_len if len(text) > max_len else 0
+    return _cut_outside_unclosed_pair(text, cut) if cut else 0
 
 
 def _normalize_rows(vectors: np.ndarray) -> np.ndarray:
@@ -224,6 +259,12 @@ def _shape_sizes(groups: List[List[str]]) -> List[List[str]]:
     return groups
 
 
+def _is_marker_block(block: str) -> bool:
+    """整块都是 marker/【声音】/裸关键词类微型行（判据与读侧过滤同源）。"""
+    lines = [ln for ln in block.split("\n") if ln.strip()]
+    return bool(lines) and all(is_micro_marker_line(ln) for ln in lines)
+
+
 def structural_split(text: str) -> List[str]:
     """[CHUNK-STRUCT] 结构性边界切分：只用文本里**客观存在**的分隔，不调嵌入。
 
@@ -270,15 +311,25 @@ def structural_split(text: str) -> List[str]:
     if cur.strip():
         blocks.append(cur)
 
+    stripped_blocks = [b.strip() for b in blocks if b.strip()]
+    last_idx = len(stripped_blocks) - 1
     merged: List[str] = []
-    for b in blocks:
-        b = b.strip()
-        if not b:
-            continue
-        if merged and len(b) < lo and len(merged[-1]) + len(b) <= hi:
-            merged[-1] = merged[-1] + "\n" + b
-        else:
-            merged.append(b)
+    for bi, b in enumerate(stripped_blocks):
+        if merged and len(b) < lo:
+            fits_hi = len(merged[-1]) + len(b) <= hi
+            # [p224 2026-10-25] 末尾纯 marker/【声音】类微型块的并入上限放宽到
+            # CHUNK_MAX_CHARS——这类碎尾（存量 25/36 字纯【声音】行）此前因前块
+            # 逼近 hi 而单独成块入库。只放宽"纯 marker 类"；真实剧情尾块仍按 hi
+            # 口径（structural 对现有消息的重切产物必须与存量字节一致的回归红线）。
+            fits_max = (
+                bi == last_idx
+                and _is_marker_block(b)
+                and len(merged[-1]) + len(b) <= memory_config.CHUNK_MAX_CHARS
+            )
+            if fits_hi or fits_max:
+                merged[-1] = merged[-1] + "\n" + b
+                continue
+        merged.append(b)
     return merged or [text]
 
 
@@ -399,4 +450,13 @@ def semantic_split(
             chunk = chunk[cut:]
         if chunk.strip():
             final.append(chunk.strip())
+    # [p224 2026-10-25] 末段强制再分之后没有 _shape_sizes 兜底，纯 marker/【声音】
+    # 微尾会直接存活入库（存量 25/36 字行即此水源）。并入前块，上限 CHUNK_MAX_CHARS。
+    if (
+        len(final) >= 2
+        and _is_marker_block(final[-1])
+        and len(final[-2]) + len(final[-1]) <= memory_config.CHUNK_MAX_CHARS
+    ):
+        final[-2] = final[-2] + final[-1]
+        final.pop()
     return final or [text]
