@@ -135,6 +135,14 @@ class TestMicroLineDropped:
         out = build_memory_context(_ctx(_mem("*\n\n")), max_tokens=None)
         assert out == ""
 
+    def test_leading_blank_after_debris_stripped(self):
+        """碎渣行是首行时，删完后剩余正文的首行空行要清掉——不许渲染成
+        "- Assistant: " 空前缀行后另起正文（p224 上线导出实测 6 行这种形态）。"""
+        out = build_memory_context(
+            _ctx(_mem("*\n她终于憋出一句，声音又小又闷。")), max_tokens=None
+        )
+        assert out == "[Relevant Memories]\n- Assistant: 她终于憋出一句，声音又小又闷。"
+
     def test_normal_line_untouched(self):
         """正常行（≥10 字正文或带句末标点）一字不动。"""
         line = '露缇雅 | 依恋 | “……你说句话呀。”'
