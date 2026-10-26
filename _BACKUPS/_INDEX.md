@@ -204,6 +204,10 @@
 | 2026-10-26 | [`2026-10-26_仓外备份_下午HEAD`](./2026-10-26_仓外备份_下午HEAD) | `.git`（`--all`） | **138M** bundle，`git bundle verify` = complete history，HEAD `32eae92`。起因：当日中午首推成功（远端建分支、731 笔），下午续推 3 笔时 github 443 连接被重置 ⇒ 远端落后 3 笔，本份为推送恢复前的唯一远端级保险。待办见该目录 `BACKUP_INFO.md` §④。 |
 | 2026-10-26 | [`2026-10-26_dist重建前_删引擎与降噪`](./2026-10-26_dist重建前_删引擎与降噪) | `frontend/dist` | 改前入口 `index-CeOdXquD.js`；上线 `be997e7`（删前端第二套世界书引擎，净 −1230 行）+ `52c1e32`（style_removal 降噪）。上线后入口 **`index-Bp_vFYvA.js`**，HTTP 200；真机开卡后控制台 **0 error / 15 warn**（改前同场景 133 条 style_removal 报错）。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_wbstyle`](./_QUARANTINE_2026-10-26_dist孤儿chunk_wbstyle) | `frontend/dist` | 本轮重建前 122 个历史孤儿；现行入口 `index-Bp_vFYvA.js`。 |
+| 2026-10-26 | [`2026-10-26_dist重建前_sysprompt与API3`](./2026-10-26_dist重建前_sysprompt与API3) | `frontend/dist` | 改前入口 `index-Bp_vFYvA.js`；上线 sysprompt 接入 P0（`47c576a`）+ API-3 落库（`86abaec`）。上线后入口 **`index-9I-6eW7T.js`**。 |
+| 2026-10-26 | [`2026-10-26_dist重建前_安全顺手批`](./2026-10-26_dist重建前_安全顺手批) | `frontend/dist` | 改前入口 `index-9I-6eW7T.js`；上线安全顺手批 `4a2330d`（帧侧 sessionId 两处 + postMessage 包装防御）。上线后入口 **`index-BuDVIE1n.js`**，HTTP 200。 |
+| 2026-10-26 | [`2026-10-26_插件矩阵残留清理前`](./2026-10-26_插件矩阵残留清理前) | `plugins` / `plugin_scripts` / `character_plugin_state` 三表 | **17.9M**（`pg_dump -t ... \| gzip`，`gzip -t` 通过）。删除依据：用户 2026-10-26「不是我关的」⇒ 查实 15 行系 10-24 VER-3 矩阵批次自导入并批量禁用；按 2026-10-22 裁定「除酒馆助手外全删」执行。删前核对 plugins=15 / scripts=0 / state=0，删后 **plugins=1（酒馆助手，enabled=t）**。回滚：`gunzip -c …sql.gz \| docker exec -i palink-ai-db-1 psql -U ai_user -d ai_hub`。 |
+| 2026-10-26 | [`2026-10-26_API7批3中断现场`](./2026-10-26_API7批3中断现场) | 未提交的 `frontend/src/lib/slash-engine/{st-compat-commands-chat.ts,bootstrap.ts}` | 子 agent 撞 150 轮上限，实现 +990 行但**零测试覆盖** ⇒ 按中断现场规程备份后回退（patch + 全文 + sha256 + 收尾清单）。⚠️ 产物按规范不入库，只在磁盘。 |
 
 ## 清理记录（非备份，仅留痕）
 
