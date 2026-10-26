@@ -1159,68 +1159,6 @@ async function _loadWorldBookByName(name: string): Promise<boolean> {
   }
 }
 
-/**
- * 加载角色关联的所有世界书到全局单例管理器。
- * 在 NativeRoleplayChat 挂载或角色变化时调用，确保生成管线与 getContext 共享同一实例。
- * 返回已加载的世界书 ID 列表。
- *
- * Task 11.5: 引入版本号防止并发竞态
- * Task 11.6: 加载前调用 reset() 重置时间效果
- * Task 11.7: 卸载旧世界书
- */
-let _loadWorldBooksVersion = 0;
-
-export async function loadCharacterWorldBooks(characterId: string): Promise<string[]> {
-  // Task 11.5: 版本号防止并发竞态
-  const currentVersion = ++_loadWorldBooksVersion;
-
-  try {
-    // Task 11.7: 卸载旧世界书
-    const currentBooks = stWorldBookManager.getWorldBooks();
-    currentBooks.forEach(wb => stWorldBookManager.unloadWorldBook(wb.id));
-
-    // Task 11.6: 重置时间效果，避免旧状态残留
-    stWorldBookManager.reset();
-
-    const list = await worldbookApi.list({ character_id: characterId });
-    if (!list || list.length === 0) {
-      // 版本检查：如有新请求则放弃本次结果
-      if (currentVersion !== _loadWorldBooksVersion) return [];
-      stWorldBookManager.setActiveWorldBooks([]);
-      return [];
-    }
-
-    const loadedIds: string[] = [];
-    for (const wb of list) {
-      try {
-        const detail = await worldbookApi.get(wb.id);
-        const entries: WorldBookEntry[] = (detail.stages || []).map(_stageToEntry);
-        stWorldBookManager.loadWorldBook({
-          id: detail.id,
-          name: detail.name,
-          description: detail.description || '',
-          entries,
-          tags: detail.tags || [],
-          createdAt: detail.created_at || '',
-          updatedAt: detail.updated_at || '',
-        });
-        loadedIds.push(detail.id);
-      } catch (e) {
-        console.warn(`[ST loadCharacterWorldBooks] 加载世界书 ${wb.id} 失败:`, e);
-      }
-    }
-
-    // Task 11.5: 版本检查 — 完成后检查版本，如有新请求则放弃本次结果
-    if (currentVersion !== _loadWorldBooksVersion) return [];
-
-    stWorldBookManager.setActiveWorldBooks(loadedIds);
-    return loadedIds;
-  } catch (e) {
-    console.warn('[ST loadCharacterWorldBooks] 加载角色世界书失败:', characterId, e);
-    return [];
-  }
-}
-
 // ============================================================
 // Popup 类型映射（Task 4）
 // ============================================================
@@ -2324,8 +2262,9 @@ export function getContext(): StGetContext {
     //
     // 前端自算引擎（lib/worldbook 的 scanAndBuildContext / getActiveEntries，
     // token 口径 = 中文字×2+英文词，与后端 smart_guesstimate 不一致）自本改动起
-    // **从插件可见路径断开**——引擎文件保留（第一方 useCharacterChat 等仍在用，
-    // 是否删除由主脑复验收口）。任何失败路径都不得回退到前端引擎，否则两个
+    // **从插件可见路径断开**；引擎本体（scanner/budget/recursive/timed-effects 及
+    // manager 的 scanAndBuildContext）已于 ASM-3 后续批次整批删除，manager.ts 仅存
+    // 数据面方法。任何失败路径都不得回退到前端引擎，否则两个
     // 真相源复活（REPORT_ST三面一致性差距评估 A-2 的病灶）。
     getWorldInfoPrompt: (legacyWorldInfoName?: string): Promise<StWorldInfoPromptResult> => {
       // 旧签名首参 worldInfoName 是 Palink 历史私货（ST 真实签名是

@@ -858,7 +858,8 @@ export class SillyTavernRuntime {
 
   /**
    * 触发世界书扫描完成事件（ST: worldinfo_scan_done + Palink: worldbook:scan-done）
-   * 集成点：worldbook/manager.ts 的 scanAndBuildContext 在构建完成后调用
+   * 历史集成点：worldbook/manager.ts 的 scanAndBuildContext（已随前端自算引擎删除，
+   * 本方法当前无第一方调用方，保留供插件事件面）
    */
   emitWorldInfoScanDone(args: any): void {
     this.eventSource.emit('worldinfo_scan_done', args);

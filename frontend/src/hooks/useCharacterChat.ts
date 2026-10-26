@@ -9,7 +9,7 @@ import { generateMessageId } from '@/lib/utils/messageUtils';
 import { useChatWebSocket } from '@/hooks/useChatWebSocket';
 import CatchUpAnimator from '@/lib/catchUpAnimator';
 import { variableManager } from '@/lib/variables/manager';
-import { getGlobalSillyTavernRuntime, stWorldBookManagerSingleton } from '@/lib/sillytavern/runtime';
+import { getGlobalSillyTavernRuntime } from '@/lib/sillytavern/runtime';
 import { regex_placement } from '@/lib/sillytavern/regex/engine';
 import { getRegexedStringForMessage } from '@/lib/sillytavern/regex/adapter';
 import { getCachedGlobalRegexScripts } from '@/utils/sillyTavernDisplayPipeline';
@@ -30,7 +30,6 @@ import { messageManager } from '@/services/message-manager';
 import { promptInjection } from '@/services/prompt-injection';
 import { noteSentExtensionPrompts } from '@/services/extensionPromptPersistence';
 import { functionToolRegistry } from '@/lib/plugin-system/sandbox';
-import type { ScanContext } from '@/lib/worldbook/types';
 import type { Attachment, Character, CharacterChatMessage, CharacterChatSession, CharacterChatSessionBranch, GenerationPreset } from '@/types';
 
 interface UseCharacterChatOptions {
@@ -140,35 +139,6 @@ function mergeSwipeInfoForCurrentDisplay(
   };
 
   return baseInfo;
-}
-
-/**
- * Task 7.4: 构建世界书上下文，扫描当前聊天内容并返回注入文本。
- * 与 generationEngine._buildWorldBookContext 逻辑一致，确保 useCharacterChat
- * 在保留 api.stream 路由的同时注入世界书上下文。
- */
-function buildWorldBookContextForChat(): string {
-  try {
-    const msgs = messageManager.messages;
-    if (msgs.length === 0) return '';
-    const recentMessages = msgs.slice(-20).map(m => typeof m.mes === 'string' ? m.mes : '');
-    const runtime = getGlobalSillyTavernRuntime();
-    const ctx = runtime?.getContext() ?? null;
-    const character = ctx?.character;
-    const scanContext: ScanContext = {
-      messages: recentMessages,
-      personaDescription: ctx?.name || '',
-      characterDescription: (character as any)?.description || '',
-      characterPersonality: (character as any)?.personality || '',
-      characterDepthPrompt: (character as any)?.depth_prompt || '',
-      scenario: (character as any)?.scenario || '',
-      creatorNotes: (character as any)?.creatorcomment || (character as any)?.creator_notes || '',
-    };
-    return stWorldBookManagerSingleton.scanAndBuildContext(scanContext, msgs.length - 1);
-  } catch (e) {
-    console.error('[useCharacterChat] 世界书上下文构建失败:', e);
-    return '';
-  }
 }
 
 /**
@@ -1337,7 +1307,7 @@ export function useCharacterChat({
       // Task 7.4: [D-9 修复] 不再在前端拼接世界书上下文——palink-native 后端
       // _append_worldbook_context 已是唯一权威注入点（WS/SSE 路径行为一致）。
       // 此前 SSE 降级路径会与后端扫描重复注入同批世界书，且污染落库的 user 消息。
-      // buildWorldBookContextForChat() 函数定义保留（供 UI 预览/调试），此处不调用。
+      // buildWorldBookContextForChat() 已随前端第二套自算引擎整批删除（ASM-3 后续批次）。
       const effectiveMessage = messageForApi;
 
       runtime?.emitGenerationStarted('normal', {
