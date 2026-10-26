@@ -199,6 +199,8 @@
 | 2026-10-26 | [`2026-10-26_预设库0072前`](./2026-10-26_预设库0072前) | `palink-ai-db-1` / 库 `ai_hub` | **34M**（`pg_dump \| gzip`，`gzip -t` 通过）；迁移前 alembic=0071、context 4 / instruct 5 / prompt_presets 0 / generation 27。用于 0072 `context_templates.user_id` 上线回滚。 |
 | 2026-10-26 | [`2026-10-26_dist重建前_预设库UI`](./2026-10-26_dist重建前_预设库UI) | `frontend/dist` | **7.1M**（tar.gz），改前入口 `index-B81qxQFs.js`；上线预设库 UI + TH 预设接口 + P2-26 预热。上线后入口 `index-CSqzhUI7.js`，HTTP 200；旧 126 个孤儿隔离在 `_QUARANTINE_2026-10-26_dist孤儿chunk_presetui/`。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_presetui`](./_QUARANTINE_2026-10-26_dist孤儿chunk_presetui) | `frontend/dist` | 本轮重建前 126 个历史孤儿；现行入口 `index-CSqzhUI7.js`，本区均不再被引用。 |
+| 2026-10-26 | [`2026-10-26_dist重建前_气泡P2-3`](./2026-10-26_dist重建前_气泡P2-3) | `frontend/dist` | **7.1M**（tar.gz），改前入口 `index-CSqzhUI7.js`；上线 P2-3 气泡 98%+自适应（`755e465`）与预设库 ST 等价默认（`05bea50`）。上线后入口 `index-CeOdXquD.js`，HTTP 200，真机窄屏 427px 实测气泡右边界与 `.mes` 齐平、短消息仅 48px、无横向溢出。 |
+| 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_p23`](./_QUARANTINE_2026-10-26_dist孤儿chunk_p23) | `frontend/dist` | 本轮重建前 124 个历史孤儿；现行入口 `index-CeOdXquD.js`。 |
 
 ## 清理记录（非备份，仅留痕）
 
@@ -208,3 +210,4 @@
 | 2026-10-26 | `frontend/dist_*` staging ×25 | 293M | 移入 `_QUARANTINE_2026-10-26_frontend_staging/` | 减负清单 §3.4；源码可重建，保鲜期后删。 |
 | 2026-10-26 | 根级 `_QUARANTINE_2026-10-18/19` | 42M + 35M | 归位到 `_BACKUPS/` 并补 `BACKUP_INFO` | 原位置违规；内容零改动。 |
 | 2026-10-26 | `.tmp_audit/` | 2.0M | 移入 `_QUARANTINE_2026-10-26_tmp_audit/` | 减负清单 §3.8。 |
+| 2026-10-26 | **推远端（非清理，登记里程碑）** | 731 笔提交 | `git push -u origin three-tracks-merge-20261012` 成功，远端新建同名分支 | 用户 2026-10-26「可以推送到github」。此前 `origin/master` 停在 2026-05-19，本机领先 731 笔，是唯一「磁盘一坏就全丢」的项；现已脱离单点。`2026-10-25_仓外备份_HEAD` 的 bundle 保留作为离线副本。 |

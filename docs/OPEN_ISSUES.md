@@ -367,6 +367,17 @@
   ② 去掉用户气泡的 90% 上限（两边都 98%，卡片保持 349px）。
 - ⚠️ `Message.tsx` 已被并行 agent 改动，动前需协调。
 
+> ✅ **2026-10-26 用户选定方案 B 并上线**（commit `755e465`，dist 入口 `index-CeOdXquD.js`）：
+> 用户气泡 `max-w-[90%]/75%/65%` → **`max-w-[98%]` + `w-fit`**，**AI 正文列与卡片 iframe 宽度逐字不动**；
+> 用户追加要求「短于一行显示宽度时按内容收缩」已实现——`width:fit-content` 且刻意不给任何 `min-width`，
+> 长消息被 98% 截住后照常换行（并补 `[overflow-wrap:anywhere]`：原 `overflow-wrap-anywhere` 在本仓无对应工具类，
+> fit-content 下 min-content 决定短消息宽度，长 URL/长单词必须能断；编辑态例外用 `w-full`）。
+> **真机读数**（Chrome 窄视口 427px）：`.mes` 消息列 371px/右边界 399，用户气泡右边界 **399（齐平）**，
+> 短消息气泡只占 **48px**（不再撑满 98%），`document.scrollWidth=427`＝视口，**无横向溢出**。
+> 新增 5 例契约测试；前端全量 151 文件 / 1934 passed / 3 skipped / failed=0。
+> 附带观察（**未改，仅备案**）：`index.css:2513-2517` 的 `.mes_block:has(.rp-mes-avatar){padding-right:9.2%}`
+> 按当前 DOM 结构（头像列是 `mes_block` 的前一兄弟）疑似永不命中。
+
 ---
 
 ### [P2-4] MVU 批次：SPEC 承诺但代码零对应的 4 项（无人认领"我没做"）
