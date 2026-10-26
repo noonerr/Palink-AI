@@ -1000,7 +1000,11 @@ export async function dispatchSmartCardPersonaAction(
 //     本仓预设行只有"提示词数组 + 生成参数"两格 ⇒
 //     prompts ← prompts_data（原样透传，**不补 enabled/role/position 假默认**）、
 //     settings ← 生成参数（原样透传）、prompts_unused ← []、extensions ← {}。
-//     所以 `isPresetSystemPrompt` 那三个判定键在本仓**仍然无判定依据**（保持 D 类）。
+//     所以 `isPresetSystemPrompt` 那三个判定键当时写了"本仓**仍然无判定依据**（保持 D 类）"。
+//     ⚠️ 2026-10-26 批次TH2 订正：该结论**错在口径**——TH 一手的判定式是纯 id 归属
+//     （preset.ts:107-124：['main','nsfw','jailbreak','enhanceDefinitions'] 与八个占位 id），
+//     与 prompts_data 有没有 marker/system_prompt/injection_position **无关**。
+//     三键已在 runtime-body/part-07.ts 落地（D→C）；本文件不参与，留此订正防旧结论复发。
 //
 // [批次P3 2026-10-21] 两处订正（上面旧注释保留不删，按本节为准）：
 //   · **数据源改指 `generation_presets`**（P3-B）：原先整条链读 `/api/prompt-manager/presets`

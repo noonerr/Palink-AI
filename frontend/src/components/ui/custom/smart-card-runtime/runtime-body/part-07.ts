@@ -253,16 +253,20 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   //     脚本按钮）**不在这里出现** —— proxy 的 has() 会如实报缺，好过注册一个恒真的假成功；
   //     [批次P2 2026-10-21] 预设族里**读类 3 键**（getPresetNames / getLoadedPresetName /
   //     getPreset）已落地，剩下的写类 9 键与 builtin/default_preset/importRawPreset
-  //     仍不注册；isPreset* 三键**保持不注册**（本仓预设行没有 marker/system_prompt/
-  //     injection_position 这些判定字段，补了只能恒 false —— 那正是本仓红线）。
+  //     仍不注册。
+  //     [批次TH2 2026-10-26] 旧注释里"本仓预设行没有 marker/system_prompt/
+  //     injection_position 这些判定字段，补了只能恒 false"这条**理由已被推翻**：
+  //     TH 一手是纯 id 归属判定（preset.ts:107-124），根本不需要那些字段。
+  //     ⇒ isPreset* 三键与 getProxyPresetNames 已按用户裁定 D→C 真落地（见下）。
   //     [批次R1 2026-10-21] 扩展族里**读类 5 键**（getExtensionStatus / getExtensionType /
   //     getTavernHelperExtensionId / isInstalledExtension / isAdmin）已落地；安装/卸载/
   //     重装/更新四键**继续不注册**（R2，且必须逐次用户确认 + 白名单源）。
   //     [批次TH 2026-10-26] 预设**写类 9 键**（loadPreset / createPreset / createOrReplacePreset /
   //     deletePreset / renamePreset / replacePreset / setPreset / updatePresetWith /
   //     importRawPreset）、**音频 8 键**（帧内双队列状态机，零父侧通道）与常量 3 键
-  //     （builtin 部分桥 / builtin_prompt_default_order / default_preset）已落地；
-  //     isPreset* 三键与 getProxyPresetNames **保持不注册**（本批裁定留 D 档）。
+  //     （builtin 部分桥 / builtin_prompt_default_order / default_preset）已落地。
+  //     [批次TH2 2026-10-26] isPreset* 三键与 getProxyPresetNames 已落地（D→C，
+  //     用户点头；判定照抄 preset.ts:107-124 的纯 id 归属，代理名单恒空 + 一次性 diag）。
   //  3) 桥接一律**调用时**再取 window 上的实现：本段之后 part-08 才注册 triggerSlash 等全局。
   const th134Warn = (message) => {
     post({ type: 'log', level: 'warn', message: 'TavernHelper: ' + String(message) });
@@ -1005,6 +1009,56 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     extensions: { tavern_helper: { scripts: [], variables: {} } },
   };
 
+  // ---- [批次TH2 2026-10-26] 预设提示词**类型判定** 3 键 + 代理预设名单 1 键（D→C，用户点头）。
+  // 一手（逐行照抄，不改语义）：st-plugins/third-party/JS-Slash-Runner-main/src/function/preset.ts:107-124
+  //   isPresetSystemPrompt(prompt)      = ['main','nsfw','jailbreak','enhanceDefinitions'].includes(prompt.id)
+  //   isPresetPlaceholderPrompt(prompt) = ['worldInfoBefore','personaDescription','charDescription',
+  //                                       'charPersonality','scenario','worldInfoAfter',
+  //                                       'dialogueExamples','chatHistory'].includes(prompt.id)
+  //   isPresetNormalPrompt(prompt)      = 两者都不是
+  // ⚠️ d.ts 注释里写的是 snake_case（world_info_before 等），**实现判的是 camelCase id**
+  //   —— 以实现为准（TH 自己的 default_preset 也是 camelCase，见上方常量段）；
+  //   卡手里 preset.prompts[i].id 就是 camelCase，判 snake_case 会恒 false。
+  // 唯一必要偏差（如实留痕）：ST 直取 prompt.id（传 null 会 TypeError）；本仓对
+  //   null / 非对象 / id 非字符串一律判 false —— 类型守卫语义下"不是预设提示词"就是 false，
+  //   不替卡制造崩溃。⛔ 不做内容猜测（不按 name / content 反推类型：那才是"形状对语义错"）。
+  const th134PresetSystemPromptIds = ['main', 'nsfw', 'jailbreak', 'enhanceDefinitions'];
+  const th134PresetPlaceholderPromptIds = [
+    'worldInfoBefore', 'personaDescription', 'charDescription', 'charPersonality',
+    'scenario', 'worldInfoAfter', 'dialogueExamples', 'chatHistory',
+  ];
+  const th134PresetPromptId = (prompt) => (
+    prompt && typeof prompt === 'object' && typeof prompt.id === 'string' ? prompt.id : ''
+  );
+  const th134PresetIdIn = (prompt, ids) => ids.indexOf(th134PresetPromptId(prompt)) >= 0;
+  const th134IsPresetSystemPrompt = (prompt) => th134PresetIdIn(prompt, th134PresetSystemPromptIds);
+  const th134IsPresetPlaceholderPrompt = (prompt) => th134PresetIdIn(prompt, th134PresetPlaceholderPromptIds);
+  const th134IsPresetNormalPrompt = (prompt) => (
+    !th134IsPresetSystemPrompt(prompt) && !th134IsPresetPlaceholderPrompt(prompt)
+  );
+  // getProxyPresetNames（preset.d.ts）：ST 一手是 proxies.map(p => p.name)
+  //   （src/function/generate/index.ts:39-41）。Palink **没有代理预设子系统**
+  //   （同口径注释见父侧 palink-diag.ts 的 preset_prompt 段与 SmartCardCompatController.ts 同段），
+  //   且没有 loadProxyPreset 的落点 ⇒ 返回**空数组**是唯一诚实答案。
+  // ⛔ 不返回假名字：假名字会让卡"选中一个不存在的代理预设"然后静默失效，比空数组坏得多。
+  // 一次性留痕（每帧只写一条；owner=frame_compat ⇒ 不进 host_capability 缺口排行，
+  //   与 retrieveDisplayedMessage 同口径：已实现、受限于子系统，不是宿主能力缺口）。
+  let th134ProxyPresetNamesWarned = false;
+  const th134GetProxyPresetNames = () => {
+    if (!th134ProxyPresetNamesWarned) {
+      th134ProxyPresetNamesWarned = true;
+      if (typeof palinkDiagRecord === 'function') {
+        palinkDiagRecord({
+          owner: 'frame_compat',
+          kind: 'missing_api',
+          name: 'getProxyPresetNames',
+          detail: '本仓无代理预设子系统（ST 的 proxies 表不存在）⇒ 恒返回空数组；本记录每帧只写一次',
+        });
+      }
+    }
+    return [];
+  };
+
   // ---- [批次TH 2026-10-26] builtin 部分桥（builtin.d.ts:1-85）。
   // 口径：有帧内真实现的成员桥到同一个实现（不复制第二份逻辑），没有的**缺席**
   // （不造假成员 —— 卡取 builtin.saveSettings 得 undefined 是可见的缺席，好过假成功）。
@@ -1329,6 +1383,13 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       }
       return found;
     },
+    // [批次TH2 2026-10-26] 预设提示词**类型判定** 3 键 + 代理预设名单 1 键（D→C，用户点头）。
+    // 判定语义与必要偏差见上方 th134Preset* 常量段；这里只做"纯 id 归属"，不碰父侧通道。
+    isPresetSystemPrompt: (prompt) => th134IsPresetSystemPrompt(prompt),
+    isPresetPlaceholderPrompt: (prompt) => th134IsPresetPlaceholderPrompt(prompt),
+    isPresetNormalPrompt: (prompt) => th134IsPresetNormalPrompt(prompt),
+    // ST 是 proxies.map(p => p.name)；本仓无代理预设子系统 ⇒ 空数组 + 一次性 diag（不造假名字）。
+    getProxyPresetNames: () => th134GetProxyPresetNames(),
     // [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 预设**写类** 9 键（契约逐条抄 preset.d.ts /
     // import_raw.d.ts:40；路由映射与同步/异步纪律见 th134WritePresetContent 上方注释）。
     // 失败语义分族（一手）：

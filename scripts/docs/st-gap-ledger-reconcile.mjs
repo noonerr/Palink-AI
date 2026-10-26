@@ -241,6 +241,27 @@ const MOVES = [
       'replacePreset', 'setPreset', 'updatePresetWith', 'importRawPreset',
       'builtin', 'builtin_prompt_default_order', 'default_preset'],
   },
+  {
+    // 批次TH2（2026-10-26）：预设提示词类型判定 3 键 + 代理预设名单 1 键。
+    // 依据变更：批次TH 留 D 的理由（"缺 marker/system_prompt/injection_position 判定字段"）
+    // 被一手核对推翻 —— TH 实现是**纯 id 归属判定**（src/function/preset.ts:107-124，
+    // camelCase id，非 d.ts 注释里的 snake_case）。getProxyPresetNames 因本仓无代理预设
+    // 子系统 ⇒ 恒返回 [] + 一次性 diag（⛔ 不造假名字）。订正段在报告 §13（追加在文末）。
+    id: '批次TH2：预设判定三键+代理名单 D→C',
+    cite: {
+      lines: [527, 574],
+      expect: [
+        '订正（2026-10-26，批次TH2）',
+        '四个键从 D 挪到 C',
+        'C = 99 → 103',
+        'D = 22 → 18',
+        '13 + 103 + 18 = 134',
+      ],
+    },
+    mode: 'keys', from: 'D', to: 'C',
+    keys: ['isPresetNormalPrompt', 'isPresetSystemPrompt', 'isPresetPlaceholderPrompt',
+      'getProxyPresetNames'],
+  },
 ];
 
 function verifyCite(move) {
@@ -252,9 +273,23 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3', '批次R1', '批次TH'];
+// 顺序 = 时间顺序（数组下标即 rank）。⚠️ 前缀有包含关系时必须取**最长命中的那条**：
+// '批次TH2：…' 同时以 '批次TH' 开头，用 findIndex 会把它判成 批次TH（批次TH2 就成了"最后一笔之前"，
+// ②b 的声明值核对会取到上一笔的 C/D 数 ⇒ 假红）。故 rank 改成"最长前缀胜出"。
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3', '批次R1', '批次TH', '批次TH2'];
 const ordered = MOVES.slice().sort((x, y) => {
-  const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
+  const rank = (m) => {
+    let hit = -1;
+    let hitLen = -1;
+    for (let i = 0; i < CHRONO.length; i += 1) {
+      const prefix = CHRONO[i];
+      if (m.id.indexOf(prefix) === 0 && prefix.length > hitLen) {
+        hit = i;
+        hitLen = prefix.length;
+      }
+    }
+    return hit;
+  };
   return rank(x) - rank(y);
 });
 const cls = new Map(); // key -> 'A' | 'C' | 'D'

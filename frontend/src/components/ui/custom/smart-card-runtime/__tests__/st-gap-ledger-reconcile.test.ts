@@ -52,22 +52,13 @@ try {
 }
 
 /** 已知的守卫漏列（2026-10-20 批次F 只读对账时的现状，逐键来自包H §3 D 族表）。 */
-const KNOWN_GUARD_GAPS = [
-  // 音频播放器族 5/8 漏
-  'appendAudioList', 'getCurrentAudio', 'pauseAudio', 'replaceAudioList', 'setAudioSettings',
-  // 预设体系族 10/16 漏
-  'builtin_prompt_default_order', 'createOrReplacePreset', 'createPreset', 'deletePreset',
-  'getPresetNames', 'getProxyPresetNames', 'importRawPreset', 'renamePreset', 'replacePreset',
-  'updatePresetWith',
-  // tavern regex 族 3/5 漏
-  'isCharacterTavernRegexesEnabled', 'replaceTavernRegexes', 'updateTavernRegexesWith',
-  // 扩展安装族 5/9 漏
-  'getExtensionStatus', 'getExtensionType', 'reinstallExtension', 'uninstallExtension',
-  'updateExtension',
-  // 原始对象导入器 1/2 漏
-  'importRawTavernRegex',
-  // 预设提示词类型判定 3/3 漏
-  'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
+const KNOWN_GUARD_GAPS: string[] = [
+  // [批次TH2 2026-10-26] 已清空：批次A/B/TH/TH2 陆续把守卫补齐后，
+  //   对账脚本实测 ③ = PASS（D 类 18 键全部被「D 名单 ∪ 正向锚点」覆盖，gaps = []）。
+  //   原先登记的四键 isPresetNormalPrompt / isPresetPlaceholderPrompt / isPresetSystemPrompt /
+  //   getProxyPresetNames 已按用户裁定 D→C（真落地，见 REPORT_包H §13），不再是漏列。
+  //   ⛔ 白名单是**债务账**不是反向守卫：现在为空 ⇒ 将来任何新漏列都会立刻红
+  //   （这正是本用例最初的目的，别为了"让它绿"往回塞名字）。
 ];
 
 const checks = (prefix: string): ReconCheck[] =>

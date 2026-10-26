@@ -523,3 +523,52 @@ rc=0
 >    越权 + 会话顶包；mock 版路由闭环，"建→读回→删→404"真数据闭环要连真实后端跑真机
 >    写链探针）。反证：把帧内 20 成员摘掉 ⇒ 批次TH 锚点组必红。
 > 台账另见 `docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md` §2.8。
+
+## 13. 订正（2026-10-26，批次TH2 预设类型判定 3 键 + 代理预设名单 1 键）
+
+> **订正（2026-10-26，批次TH2）**：`isPresetNormalPrompt` / `isPresetSystemPrompt` /
+> `isPresetPlaceholderPrompt` / `getProxyPresetNames` —— 四个键从 D 挪到 C ⇒
+> **C = 99 → 103、D = 22 → 18**（A = 13 不变；13 + 103 + 18 = 134 仍闭合）。
+> 用户已点头（"留 D 是台账红线待另批裁定"那条解除）。
+>
+> ① **旧理由当场作废，不是"补了就能过"**：批次TH 留 D 的原文理由是"本仓预设行没有
+>    marker / system_prompt / injection_position 这些判定字段，补了只能恒 false"。
+>    核一手后发现**判定式与这些字段无关**：酒馆助手实现是纯 id 归属
+>    （`src/function/preset.ts:107-124`）——
+>    `isPresetSystemPrompt(prompt) = ['main','nsfw','jailbreak','enhanceDefinitions'].includes(prompt.id)`；
+>    `isPresetPlaceholderPrompt(prompt) = 八个占位 id 的 includes`（worldInfoBefore /
+>    personaDescription / charDescription / charPersonality / scenario / worldInfoAfter /
+>    dialogueExamples / chatHistory）；`isPresetNormalPrompt = 两者都不是`。
+>    ⇒ 语义只依赖 `prompt.id`，与预设行还存了什么字段**零关系**。旧理由是把
+>    ST `PromptManager.js:1723` 的**另一条**布尔式（`system_prompt && injection_position
+>    !== ABSOLUTE`，那是 ST 侧的 system prompt 判定）误当成了助手 API 的判定式。
+>
+> ② **大小写口径**：`@types/function/preset.d.ts` 的 `PresetPlaceholderPrompt` 联合类型
+>    写的是 snake_case（`world_info_before` 等），但**实现判的是 camelCase id**。
+>    以实现为准（照抄实现）：判 snake_case 会恒 false，正是"形状对语义错"。
+>
+> ③ **唯一必要偏差（如实留痕）**：ST 直取 `prompt.id`，传 null 会 `TypeError`；
+>    本仓对 null / 非对象 / id 非字符串一律判 false，且 `isPresetNormalPrompt` 因此为 true
+>    （TH 的定义本就是排他二分）。理由：类型守卫语义下"不是预设提示词"就是 false，
+>    不替卡制造无意义崩溃。⛔ 不做内容猜测（不按 name / content 反推类型）。
+>
+> ④ **`getProxyPresetNames` 恒返回空数组 + 每帧一次性 `palinkDiag` 留痕**（owner=
+>    frame_compat ⇒ 不进 host_capability 缺口排行）。ST 一手是 `proxies.map(p => p.name)`
+>    （`src/function/generate/index.ts:39-41`）；Palink **没有代理预设子系统**
+>    （同口径注释在 `palink-diag.ts` 与 `SmartCardCompatController.ts`），也没有
+>    `loadProxyPreset` 的落点 ⇒ "一个名字都没有"就是本仓的真值。
+>    ⛔ 不返回假名字：假名字会让卡选中一个不存在的代理预设然后静默失效。
+>    若将来接了 connection profile 缓存，再改成读真名单（留给下一批）。
+>
+> ⑤ **实现落点**：`runtime-body/part-07.ts` 的 H-TH134 段 —— 判定常量与
+>    `th134Preset*` 三个纯函数在段内（模板串约束：无反引号 / 无美元花括号 / 无反斜杠），
+>    四个成员注册进 `tavernHelperTh134Compat`（纯函数，零 `requestParent`、零后端改动）。
+>
+> ⑥ **守卫同步改判**（改写不删）：守卫 D 名单移除这四键；原先"必须仍是 D"的反向红线
+>    改成**正向锚点 + 真值断言**（`h-tavernhelper-134-contract.test.ts` 的批次TH2 注释块与
+>    锚点组、`p2-preset-read-keys-frame.test.ts` 的"isPreset* 判定"与"getProxyPresetNames"
+>    两组各 7 例 / 4 例）。反证：把帧内四成员摘掉 ⇒ 两组必红。
+>
+> ⑦ 台账同步：`palink-diag.ts` 的 `preset_prompt` 注释、
+>    `scripts/docs/st-gap-ledger-reconcile.mjs` 的 MOVES（批次TH2 条目）、
+>    `__tests__/st-gap-ledger-reconcile.test.ts` 的已知漏列白名单（四键出账）。

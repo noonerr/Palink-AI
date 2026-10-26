@@ -109,9 +109,11 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   //   updatePresetWith / importRawPreset）与**常量 3 键**（builtin 部分桥 /
   //   builtin_prompt_default_order / default_preset）已落地 —— 写类走父侧既有路由
   //   （selection PUT / generation_presets 三件套+import / 会话覆盖层 PUT，零后端改动），
-  //   常量是 TH 自身静态值照抄。isPreset* 三键与 getProxyPresetNames **仍留 D**
-  //   （本批裁定留 D 档；isPreset* 的"缺判定字段"旧理由已被侦查推翻——TH 一手是纯 id
-  //   归属判定（preset.ts:103-121）——留 D 是台账红线待另批裁定，前提订正由主脑另行记录）。
+  //   常量是 TH 自身静态值照抄。isPreset* 三键与 getProxyPresetNames 曾留 D；
+  //   ⚠️ 2026-10-26 批次TH2 用户点头后 **4 键已落地（D→C）**：isPreset* 照抄 TH 一手
+  //   preset.ts:107-124 的纯 id 归属判定（camelCase id，非 d.ts 注释里的 snake_case）；
+  //   getProxyPresetNames 因本仓**无代理预设子系统**恒返回空数组 + 一次性 diag 留痕
+  //   （⛔ 不返回假名字）。键名按 st-gap-ledger-guard 纪律保留不删（历史卡调用的聚合账）。
   builtin: 'preset_prompt',
   builtin_prompt_default_order: 'preset_prompt',
   createOrReplacePreset: 'preset_prompt',

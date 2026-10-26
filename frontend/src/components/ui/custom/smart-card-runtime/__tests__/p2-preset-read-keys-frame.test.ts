@@ -92,7 +92,7 @@ describe('帧内成员确实存在（反向锚点：从 part-07 摘掉任一成�
     expect(typeof th.getPreset).toBe('function');
   });
 
-  it('写类与判定类键的注册边界（[批次TH 2026-10-26 改写，未删] 写类 9 键已真落地并注册；判定类与代理名单仍不得出现）', () => {
+  it('写类与判定类键的注册边界（[批次TH2 2026-10-26 改写，未删] 写类 9 键与判定 3 键 + 代理名单均已真落地）', () => {
     const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
     // [批次TH 2026-10-26] 写类 9 键从"不得出现"改为"必须出现"——它们走父侧既有路由
     // （loadPreset 同步快照判定 + 8 个 async 桥），行为断言见
@@ -103,14 +103,16 @@ describe('帧内成员确实存在（反向锚点：从 part-07 摘掉任一成�
     ].forEach((name) => {
       expect(typeof th[name], name + ' 批次TH 已落地，不得再缺席').toBe('function');
     });
-    // ⛔ 反向红线保持：isPreset* 三键与 getProxyPresetNames 仍是 D（本批裁定留 D 档），
-    //   谁把它们注册成假实现，这里必红。
+    // [批次TH2 2026-10-26] 反向红线改写（未删）：旧断言是"isPreset* 三键与 getProxyPresetNames
+    //   必须 undefined"。用户已点头 D→C，按"守卫要改写不是删"的规矩改成钉住新行为：
+    //   ① 键必须在且是同步函数；② 判定真值是纯 id 归属（不是恒 true/false 的空壳）；
+    //   ③ 代理名单恒空数组（本仓无代理预设子系统，⛔ 不造假名字）。逐条断言见下方 TH2 组。
     [
       'getProxyPresetNames',
       'isPresetNormalPrompt', 'isPresetSystemPrompt',
       'isPresetPlaceholderPrompt',
     ].forEach((name) => {
-      expect(th[name], name + ' 不得被注册成假实现').toBeUndefined();
+      expect(typeof th[name], name + ' 批次TH2 已落地，不得再缺席').toBe('function');
     });
   });
 });
@@ -238,5 +240,120 @@ describe('getPreset（preset.d.ts）', () => {
       presetSnapshot: { names: [], loadedName: 'x', inUse: { prompts: [] } },
     });
     expect(() => th.getPreset('某个名字')).toThrow(/presets/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [批次TH2 2026-10-26] isPreset* 三键 + getProxyPresetNames（用户点头 D→C）
+// 一手：TH 实现 src/function/preset.ts:107-124 与 generate/index.ts:39-41。
+// 判据是"真值对不对"，不只是"键在不在"——旧反向红线（必须 undefined）已按裁定改写。
+// ---------------------------------------------------------------------------
+const SYSTEM_IDS = ['main', 'nsfw', 'jailbreak', 'enhanceDefinitions'];
+const PLACEHOLDER_IDS = [
+  'worldInfoBefore', 'personaDescription', 'charDescription', 'charPersonality',
+  'scenario', 'worldInfoAfter', 'dialogueExamples', 'chatHistory',
+];
+
+describe('isPreset* 判定（TH preset.ts:107-124，纯 id 归属）', () => {
+  it('isPresetSystemPrompt：四个系统槽位 id 为真，其余为假', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    SYSTEM_IDS.forEach((id) => {
+      expect(th.isPresetSystemPrompt({ id }), id + ' 应判为系统提示词').toBe(true);
+    });
+    PLACEHOLDER_IDS.forEach((id) => {
+      expect(th.isPresetSystemPrompt({ id })).toBe(false);
+    });
+    expect(th.isPresetSystemPrompt({ id: '自定义' })).toBe(false);
+  });
+
+  it('isPresetPlaceholderPrompt：八个占位 id 为真，系统 id 与自定义 id 为假', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    PLACEHOLDER_IDS.forEach((id) => {
+      expect(th.isPresetPlaceholderPrompt({ id }), id + ' 应判为占位提示词').toBe(true);
+    });
+    SYSTEM_IDS.forEach((id) => {
+      expect(th.isPresetPlaceholderPrompt({ id })).toBe(false);
+    });
+    expect(th.isPresetPlaceholderPrompt({ id: '自定义' })).toBe(false);
+  });
+
+  it('isPresetNormalPrompt = 两者都不是（普通 id 为真；系统/占位为假）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    expect(th.isPresetNormalPrompt({ id: '自定义' })).toBe(true);
+    expect(th.isPresetNormalPrompt({ id: 'main' })).toBe(false);
+    expect(th.isPresetNormalPrompt({ id: 'chatHistory' })).toBe(false);
+  });
+
+  it('判的是 camelCase id（d.ts 注释里的 snake_case 是过期口径，以实现为准）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    expect(th.isPresetPlaceholderPrompt({ id: 'world_info_before' })).toBe(false);
+    expect(th.isPresetNormalPrompt({ id: 'world_info_before' })).toBe(true);
+    expect(th.isPresetSystemPrompt({ id: 'enhance_definitions' })).toBe(false);
+  });
+
+  it('不看 name / content（⛔ 不按文字猜类型）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    expect(th.isPresetSystemPrompt({ id: '自定义', name: 'Main Prompt', content: 'You are {{char}}' })).toBe(false);
+  });
+
+  it('null / undefined / 非对象 / id 非字符串 ⇒ 一律 false（对 ST 的唯一偏差，见注释）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    [null, undefined, 'main', 42, {}, { id: 1 }, { id: null }].forEach((prompt) => {
+      expect(th.isPresetSystemPrompt(prompt as any)).toBe(false);
+      expect(th.isPresetPlaceholderPrompt(prompt as any)).toBe(false);
+      // 两者都不是 ⇒ 归"普通提示词"（TH 的定义就是排他二分）。
+      expect(th.isPresetNormalPrompt(prompt as any)).toBe(true);
+    });
+  });
+
+  it('三个判定都不发起 requestParent（纯帧内函数）', () => {
+    const { th, requestParent } = buildFrame({ presetSnapshot: SNAPSHOT });
+    SYSTEM_IDS.forEach((id) => th.isPresetSystemPrompt({ id }));
+    PLACEHOLDER_IDS.forEach((id) => th.isPresetPlaceholderPrompt({ id }));
+    th.isPresetNormalPrompt({ id: 'x' });
+    expect(requestParent).not.toHaveBeenCalled();
+  });
+});
+
+describe('getProxyPresetNames（本仓无代理预设子系统）', () => {
+  it('恒返回空数组（不是 undefined、不是 Promise、不造假名字）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    const v = th.getProxyPresetNames();
+    expect(v).toEqual([]);
+    expect(v).not.toBeUndefined();
+    expect(v && typeof v.then).not.toBe('function');
+  });
+
+  it('每次返回新数组（卡 push 进去不污染下一次）', () => {
+    const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    const first = th.getProxyPresetNames();
+    first.push('假名字');
+    expect(th.getProxyPresetNames()).toEqual([]);
+  });
+
+  it('不发起 requestParent（没有父侧代理预设通道可问）', () => {
+    const { th, requestParent } = buildFrame({ presetSnapshot: SNAPSHOT });
+    th.getProxyPresetNames();
+    expect(requestParent).not.toHaveBeenCalled();
+  });
+
+  it('每帧只写一条 palinkDiag（留痕在，但不刷屏）', () => {
+    const record = vi.fn();
+    const g = globalThis as Record<string, unknown>;
+    const original = g.palinkDiagRecord;
+    g.palinkDiagRecord = record;
+    try {
+      const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+      th.getProxyPresetNames();
+      th.getProxyPresetNames();
+      th.getProxyPresetNames();
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(String((record.mock.calls[0] as any[])[0].name)).toBe('getProxyPresetNames');
+      // owner=frame_compat ⇒ 不进 host_capability 缺口排行（已实现，受限于子系统）。
+      expect((record.mock.calls[0] as any[])[0].owner).toBe('frame_compat');
+    } finally {
+      if (original === undefined) delete g.palinkDiagRecord;
+      else g.palinkDiagRecord = original;
+    }
   });
 });

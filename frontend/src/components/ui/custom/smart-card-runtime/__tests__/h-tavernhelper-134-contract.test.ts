@@ -186,7 +186,9 @@ describe('A fixture 与注册口径', () => {
     // [批次TH 2026-10-26] 满足数口径提到 110+：音频 8 + 预设写类 9 + 常量 3（builtin /
     // builtin_prompt_default_order / default_preset）落地后，并集命中 = 90 → 110
     //（探针 .tmp_probe/b2_hit_entry.ts 同款算法，改前实测 hitCount=90）。
+    // [批次TH2 2026-10-26] 再加 4（isPreset* 三键 + getProxyPresetNames）⇒ 实测 114。
     expect(hit.length).toBeGreaterThanOrEqual(110);
+    expect(hit.length).toBeGreaterThanOrEqual(114);
     // 反证锚点：H 段被摘掉时命中数必须掉下来 —— 这条断言就是"改坏必红"的落点。
     const withoutH = new Set([...compat, ...legacyMirror]);
     expect(TH134.filter((n) => withoutH.has(n)).length).toBeLessThan(20);
@@ -278,9 +280,9 @@ describe('A fixture 与注册口径', () => {
       // [批次P2 2026-10-21] getPresetNames 已移出（读类真落地）。
       // [批次TH 2026-10-26] builtin_prompt_default_order / createOrReplacePreset / createPreset /
       //   deletePreset / importRawPreset / renamePreset / replacePreset / updatePresetWith 已移出
-      //   （写类 8 键真落地，路由映射见 part-07 th134WritePresetContent 注释）；
-      //   getProxyPresetNames **仍留在这里**（Palink 无代理预设子系统，本批裁定留 D 档）。
-      'getProxyPresetNames',
+      //   （写类 8 键真落地，路由映射见 part-07 th134WritePresetContent 注释）。
+      // [批次TH2 2026-10-26] getProxyPresetNames 已移出（用户点头 D→C：恒返回 [] + 一次性 diag，
+      //   本仓无代理预设子系统 ⇒ 不造假名字；见下方批次TH2 锚点组）。
       // —— 批次I 补列 · 酒馆助手音频播放器：族表 8 键，原先只盯 3，补 5 ——
       // [批次TH 2026-10-26] appendAudioList / getCurrentAudio / pauseAudio / replaceAudioList /
       //   setAudioSettings 五键已移出（与上面 playAudio 族同批真落地）。
@@ -294,8 +296,7 @@ describe('A fixture 与注册口径', () => {
       // —— 批次I 补列 · ST 原始对象导入器：族表 2 键，原先只盯 1，补 1 ——
       'importRawTavernRegex',
       // —— 批次I 补列 · 预设提示词类型判定：族表 3 键，原先一个没盯，补 3 ——
-      // [批次TH 2026-10-26] 三键**继续留在这里**（本批裁定留 D 档，见 MUST_STAY_D 处注释）。
-      'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
+      // [批次TH2 2026-10-26] 三键已移出（用户点头 D→C，真落地，见下方批次TH2 锚点组）。
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
     // ⚠️ 2026-10-21 批次Q1 再改判一键：`retrieveDisplayedMessage` 移出 D 名单（D 51→50、C 70→71）。
@@ -357,22 +358,35 @@ describe('A fixture 与注册口径', () => {
       expect(readMemberSlice('getPreset', 'loadPreset').indexOf('requestParent')).toBe(-1);
     }
     expect(SRC.indexOf('ctx.presetSnapshot'), '三键的数据源必须是宿主带进来的预设快照').toBeGreaterThan(-1);
-    // ⛔ 反向红线（与上面那条配套）：isPreset* 三键与 getProxyPresetNames **必须仍是 D** ——
-    //   [批次TH 2026-10-26] 写类 9 键已从本名单移出（真落地，见下方批次TH 锚点组）；
-    //   isPreset* 三键与 getProxyPresetNames 本批裁定**留 D 档**（isPreset* 的旧"缺判定字段"
-    //   理由已被侦查推翻——TH 一手是纯 id 归属判定（preset.ts:103-121）——留 D 是台账红线
-    //   待另批裁定，前提订正由主脑另行记录）。谁把它们注册成假实现，这里必红。
-    //   ⚠️ 刻意**不用** `([...] as const).forEach` 形态：对账脚本
-    //   （scripts/docs/st-gap-ledger-reconcile.mjs 的 anchors 正则）把那种形态当
-    //   "正向锚点"收集，而正向锚点里出现 D 类键会被判成"锚点与分类矛盾"。
-    //   这里断言的方向相反（要求**不注册**），所以用普通数组。
-    const MUST_STAY_D = [
-      'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
-      'getProxyPresetNames',
-    ];
-    MUST_STAY_D.forEach((n) => {
-      expect(registered.has(n), `D 类键不得被注册成假实现：${n}`).toBe(false);
+    // ⚠️ 2026-10-26 批次TH2 再改判四键：isPreset* 三键 + getProxyPresetNames 移出 D 名单
+    //   （D 22→18、C 99→103；用户已点头）。**不是**为凑绿，是能力当天落地，且旧理由当场被推翻：
+    //   ① 契约一手：@types/function/preset.d.ts + 实现一手 src/function/preset.ts:107-124 ——
+    //      isPresetSystemPrompt = ['main','nsfw','jailbreak','enhanceDefinitions'].includes(prompt.id)；
+    //      isPresetPlaceholderPrompt = 八个占位 id 的 includes；isPresetNormalPrompt = 两者都不是。
+    //      纯 **id 归属判定**，与 prompts_data 有没有 marker/system_prompt/injection_position 无关
+    //      ⇒ 批次TH 那条"缺判定字段，补了只能恒 false"的前提是错的（camelCase id，非 d.ts 的 snake_case）。
+    //   ② getProxyPresetNames：ST 是 proxies.map(p => p.name)（generate/index.ts:39-41）；
+    //      Palink **没有代理预设子系统**（palink-diag.ts 与 SmartCardCompatController.ts 同段有据）
+    //      ⇒ 帧内恒返回 [] + 每帧一次性 palinkDiag 留痕，⛔ 不返回假名字。
+    //      这不是"假实现"：空数组就是本仓的真值（没有代理预设 = 一个名字都没有）。
+    //   台账同步（三层同批）：palink-diag.ts 的 preset_prompt 注释、REPORT_包H 的 2026-10-26
+    //      批次TH2 订正段（§13）、scripts/docs/st-gap-ledger-reconcile.mjs 的 MOVES。
+    //   正向锚点（把帧内成员摘掉 ⇒ 本用例必红）：
+    (['isPresetSystemPrompt', 'isPresetPlaceholderPrompt', 'isPresetNormalPrompt',
+      'getProxyPresetNames'] as const).forEach((n) => {
+      expect(registered.has(n), `批次TH2 已实现的键不得丢：${n}`).toBe(true);
     });
+    // 判定必须真的是"纯 id 归属"（不是按 name/content 猜，也不是恒 true/false 的空壳）：
+    //   两个 id 名单逐字在场 + 三个成员都走同一个 th134PresetIdIn 判定块。
+    expect(SRC.indexOf("const th134PresetSystemPromptIds = ['main', 'nsfw', 'jailbreak', 'enhanceDefinitions'];")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("'worldInfoBefore', 'personaDescription', 'charDescription', 'charPersonality'")).toBeGreaterThan(-1);
+    ['isPresetSystemPrompt', 'isPresetPlaceholderPrompt', 'isPresetNormalPrompt'].forEach((n) => {
+      expect(SRC.indexOf(n + ': (prompt) =>'), `${n} 必须是对外同步的纯判定函数`).toBeGreaterThan(-1);
+    });
+    expect(SRC.indexOf('!th134IsPresetSystemPrompt(prompt) && !th134IsPresetPlaceholderPrompt(prompt)')).toBeGreaterThan(-1);
+    // 代理名单：空数组 + 一次性 diag（不造假名字、不每次刷屏）。
+    expect(SRC.indexOf('const th134GetProxyPresetNames = () => {')).toBeGreaterThan(-1);
+    expect(SRC.indexOf("name: 'getProxyPresetNames'")).toBeGreaterThan(-1);
     // ⚠️ 2026-10-26 批次TH 再改判 20 键：预设**写类 9 键**（loadPreset / createPreset /
     //   createOrReplacePreset / deletePreset / renamePreset / replacePreset / setPreset /
     //   updatePresetWith / importRawPreset）、**音频 8 键**（playAudio / pauseAudio /
