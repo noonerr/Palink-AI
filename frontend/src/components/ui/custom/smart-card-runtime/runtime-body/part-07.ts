@@ -258,6 +258,11 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   //     [批次R1 2026-10-21] 扩展族里**读类 5 键**（getExtensionStatus / getExtensionType /
   //     getTavernHelperExtensionId / isInstalledExtension / isAdmin）已落地；安装/卸载/
   //     重装/更新四键**继续不注册**（R2，且必须逐次用户确认 + 白名单源）。
+  //     [批次TH 2026-10-26] 预设**写类 9 键**（loadPreset / createPreset / createOrReplacePreset /
+  //     deletePreset / renamePreset / replacePreset / setPreset / updatePresetWith /
+  //     importRawPreset）、**音频 8 键**（帧内双队列状态机，零父侧通道）与常量 3 键
+  //     （builtin 部分桥 / builtin_prompt_default_order / default_preset）已落地；
+  //     isPreset* 三键与 getProxyPresetNames **保持不注册**（本批裁定留 D 档）。
   //  3) 桥接一律**调用时**再取 window 上的实现：本段之后 part-08 才注册 triggerSlash 等全局。
   const th134Warn = (message) => {
     post({ type: 'log', level: 'warn', message: 'TavernHelper: ' + String(message) });
@@ -765,6 +770,350 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
     return null;
   };
 
+  // ---- [批次TH 2026-10-26] 音频播放器 8 键：帧内双队列状态机（bgm / ambient 各一份）。
+  //
+  // 契约一手：@types/function/audio.d.ts（全部**同步**签名）+ 一手实现
+  // st-plugins/third-party/JS-Slash-Runner-main/src/function/audio.ts:29-117 与
+  // src/store/audio.ts、src/type/settings.ts:15-33（默认值）。
+  // 落点（SPEC §2.2 audio_player 改判"急需做"的实义）：要的是"播放队列"这个对象 ——
+  // per-type store 九字段 + 每 type 一个 Audio 元素 + ended 按 mode 推进队列，
+  // 零 requestParent、零后端；CSP media-src 已实测放行 http/https 外链（curl 实证）。
+  // ⚠ 本区域位于模板字符串内：禁止反引号与美元花括号，反斜杠成对写（本段一个都没有）。
+  const th134AudioUrlToTitle = (url) => {
+    // 一手 audio.ts:15-17：url.split('/').at(-1)?.split('.').at(0) || url —— 等价的纯字符串写法
+    //（本区域不允许正则字面量）。
+    const text = String(url === undefined || url === null ? '' : url);
+    const file = text.slice(text.lastIndexOf('/') + 1);
+    const dot = file.indexOf('.');
+    const base = dot > 0 ? file.slice(0, dot) : '';
+    return base || text;
+  };
+  const th134AudioMakeStore = (isBgm) => ({
+    playlist: [],
+    src: '',
+    progress: 0,
+    playing: false,
+    // 默认值一手：type/settings.ts:20-23（bgm）与 :28-31（ambient）—— mode 两队列不同。
+    enabled: true,
+    mode: isBgm ? 'repeat_all' : 'play_one_and_stop',
+    muted: false,
+    volume: 50,
+  });
+  const th134AudioStores = { bgm: th134AudioMakeStore(true), ambient: th134AudioMakeStore(false) };
+  const th134AudioElements = {};
+  const th134AudioStore = (type) => {
+    if (type !== 'bgm' && type !== 'ambient') {
+      throw new Error('TavernHelper: 音频类型只支持 bgm/ambient（audio.d.ts:18），收到: ' + String(type));
+    }
+    return th134AudioStores[type];
+  };
+  const th134AudioElement = (type) => {
+    if (th134AudioElements[type]) return th134AudioElements[type];
+    // 非浏览器沙箱（契约测试的 new Function 环境）没有 Audio ⇒ 只记账不发声明；真 iframe 必有。
+    if (typeof Audio !== 'function') return null;
+    const el = new Audio();
+    el.addEventListener('ended', () => { th134AudioAdvance(type); });
+    el.addEventListener('timeupdate', () => {
+      const duration = Number(el.duration);
+      const store = th134AudioStores[type];
+      store.progress = Number.isFinite(duration) && duration > 0
+        ? Math.min(100, Math.max(0, Math.round((Number(el.currentTime) / duration) * 100)))
+        : 0;
+    });
+    el.addEventListener('error', () => {
+      // 加载失败必须可见：TH 的 store 只置 playing=false（音画不同步就没人知道了），这里补 warn 留痕。
+      th134AudioStores[type].playing = false;
+      th134Warn('音频加载失败（' + type + '），已按暂停处理');
+    });
+    th134AudioElements[type] = el;
+    return el;
+  };
+  const th134AudioStart = (type, item) => {
+    const store = th134AudioStores[type];
+    store.src = item.url;
+    store.progress = 0;
+    // TH 一手 audio.ts:40-43 无条件置 playing=true；autoplay 被浏览器拦下时由 play()
+    // 的拒绝回调翻回 false + 留痕（标志与实际发声保持一致，可观测）。
+    store.playing = true;
+    const el = th134AudioElement(type);
+    if (!el) return;
+    el.src = item.url;
+    el.muted = store.muted;
+    el.volume = Math.min(1, Math.max(0, store.volume / 100));
+    const playing = el.play();
+    if (playing && typeof playing.then === 'function') {
+      playing.catch((err) => {
+        store.playing = false;
+        th134Warn('playAudio 被浏览器拦下（autoplay 需用户先与页面交互）: ' + String(err && err.name ? err.name : err));
+        if (typeof palinkDiagRecord === 'function') {
+          palinkDiagRecord({
+            owner: 'frame_compat',
+            kind: 'compat_catch_swallowed',
+            name: 'part-07:audio_play_blocked',
+            detail: 'play() 拒绝（NotAllowedError 类），playing 标志已翻回 false，标志与实际发声一致',
+          });
+        }
+      });
+    }
+  };
+  const th134AudioAdvance = (type) => {
+    const store = th134AudioStores[type];
+    const list = store.playlist;
+    if (!list.length) { store.playing = false; return; }
+    if (store.mode === 'play_one_and_stop') { store.playing = false; return; }
+    let current = -1;
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i].url === store.src) { current = i; break; }
+    }
+    let next = 0;
+    if (store.mode === 'repeat_one') {
+      next = current >= 0 ? current : 0;
+    } else if (store.mode === 'shuffle') {
+      if (list.length > 1) {
+        next = current;
+        while (next === current) { next = Math.floor(Math.random() * list.length); }
+      }
+    } else {
+      next = (current + 1) % list.length;   // repeat_all；current=-1（src 不在队列）⇒ 从头播
+    }
+    th134AudioStart(type, list[next]);
+  };
+  const th134AudioNormalize = (list) => (Array.isArray(list) ? list : []).map((item) => ({
+    title: item && item.title ? String(item.title) : th134AudioUrlToTitle(item && item.url),
+    url: String(item && item.url !== undefined && item.url !== null ? item.url : ''),
+  }));
+  const th134PlayAudio = (type, audio) => {
+    const store = th134AudioStore(type);
+    if (!audio || typeof audio !== 'object' || !audio.url) {
+      th134Warn('playAudio 需要 { url }（audio.d.ts:29 AudioWithOptionalTitle），收到: ' + String(audio));
+      return;
+    }
+    const url = String(audio.url);
+    const title = audio.title ? String(audio.title) : th134AudioUrlToTitle(url);
+    const existing = store.playlist.find((item) => item.title === title || item.url === url);
+    if (existing) {
+      existing.title = title;
+      existing.url = url;
+    } else {
+      store.playlist.push({ title: title, url: url });
+    }
+    th134AudioStart(type, { url: url, title: title });
+  };
+  const th134PauseAudio = (type) => {
+    const store = th134AudioStore(type);
+    store.playing = false;
+    const el = th134AudioElements[type];
+    if (el && typeof el.pause === 'function') el.pause();
+  };
+  const th134GetAudioList = (type) => th134JsonClone(th134AudioStore(type).playlist);
+  const th134ReplaceAudioList = (type, list) => {
+    // TH 一手 audio.ts:56-59 只换 playlist，不动正在播的 src/playing。
+    th134AudioStore(type).playlist = th134AudioNormalize(list);
+  };
+  const th134AppendAudioList = (type, list) => {
+    // 契约明文（audio.d.ts:55-60）"不会重复添加同 title 或 url 的音频"；一手实现 audio.ts:61-66
+    // 漏了去重（上游 bug），按契约补上。
+    const store = th134AudioStore(type);
+    th134AudioNormalize(list).forEach((item) => {
+      const dup = store.playlist.find((ex) => ex.title === item.title || ex.url === item.url);
+      if (!dup) store.playlist.push(item);
+    });
+  };
+  const th134GetAudioSettings = (type) => {
+    const store = th134AudioStore(type);
+    return { enabled: store.enabled, mode: store.mode, muted: store.muted, volume: store.volume };
+  };
+  const th134SetAudioSettings = (type, settings) => {
+    const store = th134AudioStore(type);
+    const input = settings && typeof settings === 'object' ? settings : {};
+    // TH 一手 audio.ts:103-117：缺省字段保持原值；volume clamp(0,100)；enabled 只记账
+    //（audio.ts 的函数面不读它，照抄——别自作主张替卡关声音）。
+    if (input.enabled !== undefined) store.enabled = Boolean(input.enabled);
+    if (input.mode !== undefined) {
+      const mode = String(input.mode);
+      if (mode === 'repeat_one' || mode === 'repeat_all' || mode === 'shuffle' || mode === 'play_one_and_stop') {
+        store.mode = mode;
+      } else {
+        th134Warn('setAudioSettings 收到未知播放模式 ' + mode + '，保持原值（audio.d.ts:72 四选一）');
+      }
+    }
+    if (input.muted !== undefined) store.muted = Boolean(input.muted);
+    if (input.volume !== undefined) {
+      const volume = Number(input.volume);
+      if (Number.isFinite(volume)) store.volume = Math.min(100, Math.max(0, volume));
+    }
+    const el = th134AudioElements[type];
+    if (el) {
+      el.muted = store.muted;
+      el.volume = Math.min(1, Math.max(0, store.volume / 100));
+    }
+  };
+  const th134GetCurrentAudio = (type) => {
+    const store = th134AudioStore(type);
+    let title = '';
+    for (let i = 0; i < store.playlist.length; i += 1) {
+      if (store.playlist[i].url === store.src) { title = store.playlist[i].title; break; }
+    }
+    return { src: store.src, title: title, playing: store.playing, progress: store.progress };
+  };
+
+  // ---- [批次TH 2026-10-26] 常量 2 键：TH 自身静态值，照抄常量（"静态枚举"先例，SPEC §6）。
+  // default_preset 一手：src/function/preset.ts:126-218（TH 的默认预设内容，非用户数据）；
+  // builtin_prompt_default_order 一手：src/function/generate/types.ts:172-182（d.ts:525 @deprecated，
+  // 值 = placeholder_prompt_default_order 九项）。
+  const th134BuiltinPromptDefaultOrder = [
+    'world_info_before', 'persona_description', 'char_description', 'char_personality',
+    'scenario', 'world_info_after', 'dialogue_examples', 'chat_history', 'user_input',
+  ];
+  const th134DefaultPreset = {
+    settings: {
+      max_context: 2000000,
+      max_completion_tokens: 300,
+      reply_count: 1,
+      should_stream: false,
+      temperature: 1,
+      frequency_penalty: 0,
+      presence_penalty: 0,
+      repetition_penalty: 1,
+      top_p: 1,
+      min_p: 0,
+      top_k: 0,
+      top_a: 0,
+      seed: -1,
+      squash_system_messages: false,
+      reasoning_effort: 'auto',
+      request_thoughts: false,
+      request_images: false,
+      enable_function_calling: false,
+      enable_web_search: false,
+      allow_sending_images: 'disabled',
+      allow_sending_videos: false,
+      character_name_prefix: 'none',
+      wrap_user_messages_in_quotes: false,
+    },
+    prompts: [
+      { id: 'worldInfoBefore', name: 'World Info (before) - 角色定义之前', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'personaDescription', name: 'Persona Description - 玩家描述', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'charDescription', name: 'Char Description - 角色描述', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'charPersonality', name: 'Char Personality - 角色性格', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'scenario', name: 'Scenario - 情景', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'worldInfoAfter', name: 'World Info (after) - 角色定义之后', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'dialogueExamples', name: 'Chat Examples - 对话示例', enabled: true, position: { type: 'relative' }, role: 'system' },
+      { id: 'chatHistory', name: 'Chat History - 聊天记录', enabled: true, position: { type: 'relative' }, role: 'system' },
+    ],
+    prompts_unused: [],
+    extensions: { tavern_helper: { scripts: [], variables: {} } },
+  };
+
+  // ---- [批次TH 2026-10-26] builtin 部分桥（builtin.d.ts:1-85）。
+  // 口径：有帧内真实现的成员桥到同一个实现（不复制第二份逻辑），没有的**缺席**
+  // （不造假成员 —— 卡取 builtin.saveSettings 得 undefined 是可见的缺席，好过假成功）。
+  // 缺席成员（ST 界面/内部对象面，本帧无对应）：duringGenerating / getImageTokenCost /
+  // getVideoTokenCost / promptManager / reloadAndRenderChatWithoutEvents /
+  // reloadChatWithoutEvents / reloadEditor / reloadEditorDebounced / renderPromptManager /
+  // renderPromptManagerDebounced / saveSettings。
+  const th134CopyText = (text) => {
+    // TH 一手 util/compatibility.ts:101-121：优先 navigator.clipboard，回落隐藏 textarea + execCommand。
+    const value = String(text === undefined || text === null ? '' : text);
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      const writing = navigator.clipboard.writeText(value);
+      if (writing && typeof writing.then === 'function') {
+        writing.catch((err) => { th134Warn('copyText 剪贴板写入被拒绝: ' + String(err)); });
+      }
+      return;
+    }
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (copyErr) { th134Warn('copyText execCommand 异常: ' + String(copyErr)); }
+    document.body.removeChild(area);
+    if (!copied) th134Warn('copyText execCommand 返回 false（剪贴板可能不可用）');
+  };
+  const th134RenderMarkdown = (markdown) => {
+    // TH 一手 util/tavern.ts:142-144 是纯 markdown→HTML（makeHtml）；本帧最近似的真实现是
+    // messageFormatting（markdown 渲染 + ST 消息格式化的超集）—— 有已知形状偏差，不另造假管线。
+    const formatter = th134GlobalFn('messageFormatting');
+    if (!formatter) {
+      th134Warn('renderMarkdown 依赖的帧内实现 messageFormatting 未注册，原样返回文本（不造 HTML）');
+      return String(markdown === undefined || markdown === null ? '' : markdown);
+    }
+    return String(formatter.apply(window, [String(markdown === undefined || markdown === null ? '' : markdown), '', false, false, -1]));
+  };
+  const th134ParseRegexFromString = (value) => {
+    // ST 一手（world-info 的 parseRegexFromString）：'/pattern/flags' → RegExp，解析失败返 null。
+    // 本区域禁止正则字面量 ⇒ 纯字符串切分（语义等价：头尾各一个 '/'，flags 只收 dgimsuvy）。
+    const text = String(value === undefined || value === null ? '' : value).trim();
+    if (text.length < 2 || text.charAt(0) !== '/') return null;
+    const lastSlash = text.lastIndexOf('/');
+    if (lastSlash <= 0) return null;
+    const body = text.slice(1, lastSlash);
+    const flags = text.slice(lastSlash + 1);
+    for (let i = 0; i < flags.length; i += 1) {
+      if ('dgimsuvy'.indexOf(flags.charAt(i)) < 0) return null;
+    }
+    try {
+      return new RegExp(body, flags);
+    } catch (parseErr) {
+      th134Warn('parseRegexFromString 解析失败，返回 null: ' + String(parseErr));
+      return null;
+    }
+  };
+  const th134Builtin = {
+    addOneMessage: th134Bridge('addOneMessage'),
+    uuidv4: th134Bridge('uuidv4'),
+    copyText: th134CopyText,
+    renderMarkdown: th134RenderMarkdown,
+    parseRegexFromString: th134ParseRegexFromString,
+  };
+
+  // ---- [批次TH 2026-10-26] 预设**写类** 9 键：帧内复合 + 父侧既有路由（零后端改动）。
+  //
+  // 路由映射（全部既有端点；写/删严禁落 presets.py 的 user_id IS NULL 共享行 —— 后端
+  // PUT/DELETE 本就只认 user_id == 本人 ⇒ 拿共享行 id 操作必 404，帧内按契约转 false）：
+  //   loadPreset         → PUT  /api/prompt-manager/presets/selection（prompt_manager.py:111）
+  //   createPreset       → POST /api/roleplay/presets/import（multipart；presets.py:251 是唯一能把
+  //                        prompts 落进 prompts_data 的既有通道，:287 原样入库）
+  //   deletePreset       → DELETE /api/roleplay/presets/{id}（presets.py:194）
+  //   renamePreset       → PUT  /api/roleplay/presets/{id}（presets.py:159）
+  //   writeSessionPreset → PUT  /api/prompt-manager/sessions/{id}/preset（prompt_manager.py:274，
+  //                        P-1 裁定"卡改本对话份"，写时复制）—— 'in_use' 的写全走这里
+  //   replaceNamedPreset → PUT  /api/roleplay/presets/{id}（只有生成参数列可写）
+  //   importRawPreset    → 父侧把 content 包成 File 走 POST /api/roleplay/presets/import
+  //
+  // 同步/异步（P2-12 #15 的教训写死）：loadPreset 在 d.ts:169 是**同步** boolean ⇒ 帧内同步实现
+  // （快照名单判存在 + kick 父侧 PUT），⛔ 不许接成 async —— Promise 是恒真值，
+  // "查无此名返 false"就死了；其余 8 键 d.ts 本就是 async ⇒ async 桥。
+  const th134WritePresetContent = async (presetName, preset, options) => {
+    const name = String(presetName === undefined || presetName === null ? '' : presetName);
+    if (!preset || typeof preset !== 'object') {
+      throw new Error('TavernHelper: 写预设需要一份 Preset 对象内容（preset.d.ts），收到: ' + String(preset));
+    }
+    const render = options && options.render !== undefined ? String(options.render) : 'debounced';
+    const prompts = Array.isArray(preset.prompts) ? preset.prompts : [];
+    const settings = preset.settings && typeof preset.settings === 'object' ? preset.settings : {};
+    if (name === 'in_use') {
+      const res = await requestParent('writeSessionPreset', { settings: settings, prompts: prompts, render: render });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: 写本对话预设份失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return;
+    }
+    const res = await requestParent('replaceNamedPreset', { name: name, settings: settings, prompts: prompts, render: render });
+    if (!res || res.success !== true) {
+      throw new Error('TavernHelper: 写预设 ' + name + ' 失败: ' + String((res && res.error) || 'unknown'));
+    }
+    if (res.prompts_written === false && prompts.length > 0) {
+      // 诚实留痕：generation_presets 行没有 prompts 写通道（PresetUpdateRequest 无该字段，
+      // 第一方界面也只编辑生成参数）。卡要改提示词内容请走 in_use（P-1 裁定：卡改本对话份）。
+      th134Warn('replacePreset 对具名预设只写入了生成参数；prompts 没有全局写通道（改内容请走 in_use 会话份）');
+    }
+  };
+
   const tavernHelperTh134Compat = {
     // 变量族（写体，ST 的 option.type 语义；getVariables / replaceVariables 两个 A 类键不动，
     // 它们既有实现是 Palink 已上线口径，改它属回归风险，只写进报告 §7 不当场改）
@@ -980,6 +1329,168 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
       }
       return found;
     },
+    // [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 预设**写类** 9 键（契约逐条抄 preset.d.ts /
+    // import_raw.d.ts:40；路由映射与同步/异步纪律见 th134WritePresetContent 上方注释）。
+    // 失败语义分族（一手）：
+    //   loadPreset():169 —— **同步** boolean：快照名单查无此名 ⇒ false（TH 一手 preset.ts:579-584
+    //     findPreset 失败返 false）；命中 ⇒ kick 父侧 PUT selection 并返回 true（TH 的 selectPreset
+    //     也是"先接受、保存防抖"的同步语义）。
+    //   createPreset():192 —— 同名 / 名为 'in_use' 返 false；不填内容用 default_preset（TH :593-599）。
+    //   createOrReplacePreset():204 —— 建 true / 替换 false；'in_use' 恒为替换（TH 名单恒含 'in_use'）。
+    //   deletePreset():217 —— 不存在返 false；其他失败抛（可见）。
+    //   renamePreset():227 —— 查无此名返 false。
+    //   replacePreset():276 —— 不存在 @throws；Promise<void>。
+    //   updatePresetWith():332 —— 读-改-写复合（同 updatePersonaWith 先例），返回更新后内容。
+    //   setPreset():361 —— 部分深合并（TH preset.ts:733-745：传入值赢、旧值补缺、数组整体替换）。
+    //   importRawPreset(import_raw.d.ts:40) —— TH 一手 import_raw.ts:79-85 任何失败返 false，不抛；
+    //     TH 的"同名即更新"在本仓不成立（import 路由对同名改建 "(imported)" 新行），如实留痕。
+    loadPreset: (presetName) => {
+      const wanted = String(presetName === undefined || presetName === null ? '' : presetName);
+      if (!wanted || wanted === 'in_use') return false;
+      const snap = readPresetSnapshotCompat();
+      if (!snap) return false;
+      const names = Array.isArray(snap.names) ? snap.names : [];
+      if (names.indexOf(wanted) < 0) return false;
+      requestParent('loadPreset', { name: wanted }).then((res) => {
+        if (!res || res.success !== true) {
+          th134Warn('loadPreset 父侧切换失败: ' + String((res && res.error) || 'unknown'));
+          if (typeof palinkDiagRecord === 'function') {
+            palinkDiagRecord({
+              owner: 'frame_compat',
+              kind: 'compat_catch_swallowed',
+              name: 'part-07:preset_load_failed',
+              detail: 'loadPreset 已同步返回 true，父侧 PUT selection 失败 —— 选中名实际未切换',
+            });
+          }
+        }
+      }).catch((loadErr) => {
+        th134Warn('loadPreset 父侧通道异常: ' + String(loadErr));
+      });
+      return true;
+    },
+    createPreset: async (presetName, preset) => {
+      const wanted = String(presetName === undefined || presetName === null ? '' : presetName);
+      if (!wanted || wanted === 'in_use') return false;
+      const res = await requestParent('createPreset', {
+        name: wanted,
+        preset: preset === undefined || preset === null ? th134DefaultPreset : preset,
+      });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: createPreset 失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return res.created === true;
+    },
+    createOrReplacePreset: async (presetName, preset, options) => {
+      const wanted = String(presetName === undefined || presetName === null ? '' : presetName);
+      if (!wanted) return false;
+      const content = preset === undefined || preset === null ? th134DefaultPreset : preset;
+      if (wanted === 'in_use') {
+        await th134WritePresetContent('in_use', content, options);
+        return false;
+      }
+      const current = await requestParent('getPreset', { presetName: wanted });
+      if (current && current.success === true) {
+        await th134WritePresetContent(wanted, content, options);
+        return false;
+      }
+      if (!current || current.error !== 'preset_not_found') {
+        throw new Error('TavernHelper: createOrReplacePreset 存在性判定失败: ' + String((current && current.error) || 'unknown'));
+      }
+      const res = await requestParent('createPreset', { name: wanted, preset: content });
+      if (!res || res.success !== true) {
+        throw new Error('TavernHelper: createOrReplacePreset 失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return res.created === true;
+    },
+    deletePreset: async (presetName) => {
+      const wanted = String(presetName === undefined || presetName === null ? '' : presetName);
+      if (!wanted || wanted === 'in_use') return false;
+      const res = await requestParent('deletePreset', { name: wanted });
+      if (!res || res.success !== true) {
+        if (res && res.error === 'preset_not_found') return false;
+        throw new Error('TavernHelper: deletePreset 失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return res.deleted === true;
+    },
+    renamePreset: async (presetName, newName) => {
+      const wanted = String(presetName === undefined || presetName === null ? '' : presetName);
+      const next = String(newName === undefined || newName === null ? '' : newName);
+      if (!wanted || wanted === 'in_use' || !next || next === 'in_use') return false;
+      const res = await requestParent('renamePreset', { name: wanted, newName: next });
+      if (!res || res.success !== true) {
+        if (res && res.error === 'preset_not_found') return false;
+        throw new Error('TavernHelper: renamePreset 失败: ' + String((res && res.error) || 'unknown'));
+      }
+      return true;
+    },
+    replacePreset: async (presetName, preset, options) => {
+      const wanted = String(presetName === undefined || presetName === null ? 'in_use' : presetName);
+      if (wanted !== 'in_use') {
+        const probe = await requestParent('getPreset', { presetName: wanted });
+        if (!probe || probe.success !== true) {
+          throw new Error('TavernHelper: replacePreset 预设不存在: ' + wanted);
+        }
+      }
+      await th134WritePresetContent(wanted, preset, options);
+    },
+    updatePresetWith: async (presetName, updater, options) => {
+      const wanted = String(presetName === undefined || presetName === null ? 'in_use' : presetName);
+      const current = await requestParent('getPreset', { presetName: wanted });
+      if (!current || current.success !== true) {
+        throw new Error('TavernHelper: updatePresetWith 预设不存在或读取失败: ' + wanted + ': ' + String((current && current.error) || 'unknown'));
+      }
+      const updated = typeof updater === 'function' ? await updater(current.preset) : current.preset;
+      if (!updated || typeof updated !== 'object') {
+        throw new Error('TavernHelper: updatePresetWith 的 updater 必须返回预设对象（preset.d.ts:282 PresetUpdater）');
+      }
+      await th134WritePresetContent(wanted, updated, options);
+      return updated;
+    },
+    setPreset: async (presetName, partialPreset, options) => {
+      const wanted = String(presetName === undefined || presetName === null ? 'in_use' : presetName);
+      if (!partialPreset || typeof partialPreset !== 'object') {
+        throw new Error('TavernHelper: setPreset 需要部分预设内容（preset.d.ts:363 PartialDeep）');
+      }
+      const current = await requestParent('getPreset', { presetName: wanted });
+      if (!current || current.success !== true) {
+        throw new Error('TavernHelper: setPreset 预设不存在或读取失败: ' + wanted + ': ' + String((current && current.error) || 'unknown'));
+      }
+      const oldPreset = current.preset && typeof current.preset === 'object' ? current.preset : {};
+      const merged = {
+        settings: th134DeepMerge(th134JsonClone(oldPreset.settings), th134JsonClone(partialPreset.settings), false),
+        prompts: partialPreset.prompts !== undefined ? th134JsonClone(partialPreset.prompts) : oldPreset.prompts,
+        prompts_unused: partialPreset.prompts_unused !== undefined ? th134JsonClone(partialPreset.prompts_unused) : oldPreset.prompts_unused,
+        extensions: th134DeepMerge(th134JsonClone(oldPreset.extensions), th134JsonClone(partialPreset.extensions), false),
+      };
+      await th134WritePresetContent(wanted, merged, options);
+      return merged;
+    },
+    importRawPreset: async (filename, content) => {
+      const res = await requestParent('importRawPreset', {
+        filename: String(filename === undefined || filename === null ? '' : filename),
+        content: String(content === undefined || content === null ? '' : content),
+      });
+      if (!res || res.success !== true) {
+        th134Warn('importRawPreset 失败: ' + String((res && res.error) || 'unknown'));
+        return false;
+      }
+      return true;
+    },
+    // [批次TH 2026-10-26] 音频 8 键（全部**同步**签名，audio.d.ts）—— 状态机本体见上方
+    // th134AudioStores 段。P2-12 #15 的验收口径：这些键必须 thenable=false 且返回真数据。
+    playAudio: th134PlayAudio,
+    pauseAudio: th134PauseAudio,
+    getAudioList: th134GetAudioList,
+    replaceAudioList: th134ReplaceAudioList,
+    appendAudioList: th134AppendAudioList,
+    getAudioSettings: th134GetAudioSettings,
+    setAudioSettings: th134SetAudioSettings,
+    getCurrentAudio: th134GetCurrentAudio,
+    // [批次TH 2026-10-26] 常量 3 键：builtin 部分桥（缺席成员见 th134Builtin 上方注释）+
+    // TH 自身静态值两键（照抄常量，非用户数据；值出处见 th134DefaultPreset 上方注释）。
+    builtin: th134Builtin,
+    builtin_prompt_default_order: th134BuiltinPromptDefaultOrder,
+    default_preset: th134DefaultPreset,
     // [批次R1 2026-10-21] 扩展读面 5 键（契约逐条抄 @types/function/extension.d.ts）。
     //
     // 契约一手：
@@ -1505,13 +2016,21 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
   //   是同一个对象（不是两份）。重名时 :79-82 只 console.trace 告警，:95/:99 照样赋值。
   // 这张表只记 alias 到 base 的**指向**，不新增独立命令条目：取值仍解析到 base 的那一个 entry。
   const slashKnownAliasesCompat = new Map();
+  // [API-8b 2026-10-26] 可执行面观察集：宿主引擎真注册的名字（同一种子响应的 implemented 键）。
+  // 只读不改表：commands 的键集仍是「真注册 ∪ 权威主名 ∪ 别名」三源并集，不受本集影响。
+  const slashImplementedNamesCompat = new Set();
   // 合成项缓存：主名每次取值必须是同一个对象（ST 表里存的是注册时那个对象），
   // 否则 commands[alias] 与 commands[base] 会各自 new 一份，「同一个对象」这条语义就守不住。
   const slashSynthEntryCacheCompat = new Map();
+  // [API-8b 2026-10-26] 纯加性来源标记：合成项一律带 __palinkSeedOnly=true，帧内真注册
+  // （registerSlashCommandCompat 进 Map）不带这个键 ⇒ 卡与探针面有抓手分辨「真注册」与
+  // 「种子合成」（此前 helpString 恒空串、callback 恒为函数，两者完全不可分辨）。
+  // 语义只是「来源 = 种子合成」；能不能真执行由 window.__palinkSlashImplementedNames 给出。
   const synthesizeSlashEntryCompat = (name) => ({
     name,
     aliases: [],
     helpString: '',
+    __palinkSeedOnly: true,
     callback: (args) => executeSlashCommandCompat('/' + name + (args ? ' ' + args : '')),
   });
   const resolveSlashEntryCompat = (name) => {
@@ -1579,10 +2098,17 @@ export const RUNTIME_BODY_PART_07 = `  ensureFunction('getCharWorldbook', async 
           slashKnownAliasesCompat.set(aliasKey, aliasBaseName);
         }
       }
+      // [API-8b 2026-10-26] 同一响应的 implemented（宿主引擎真注册名）落观察面。纯加性：
+      // 宿主没发（旧形状）时是空操作，与 aliases 同一条「退回修复前形状」纪律，不炸、不凭空造名字。
+      const seedImplemented = seedResponse && Array.isArray(seedResponse.implemented) ? seedResponse.implemented : [];
+      for (const implementedName of seedImplemented) {
+        if (typeof implementedName === 'string' && implementedName) slashImplementedNamesCompat.add(implementedName);
+      }
       window.__palinkSlashSeedNamesCount = seedNames.length;
       window.__palinkSlashSeedAliasCount = slashKnownAliasesCompat.size;
       window.__palinkSlashKnownNames = Array.from(slashKnownNamesCompat);
       window.__palinkSlashKnownAliases = Array.from(slashKnownAliasesCompat.keys());
+      window.__palinkSlashImplementedNames = Array.from(slashImplementedNamesCompat);
     } catch (e) {
       // 取不到名单就退回 /help 口径（等同修复前），不影响既有行为
     }

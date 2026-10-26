@@ -1,10 +1,11 @@
 import { toast } from 'sonner';
 import DOMPurify from 'dompurify';
-import { api, invalidateCache } from '@/services/api';
+import { api, invalidateCache, ApiError } from '@/services/api';
 import { worldbookApi } from '@/services/worldbookApi';
 import { runPalinkSlashCommands } from '@/lib/sillytavern/slash-commands-compat';
 import { executeSlashCommandCompat } from '@/lib/sillytavern/getContext';
 import { getStCompatCommandAliases, getStCompatCommandNames } from '@/lib/slash-engine/st-command-catalog';
+import { SlashCommandEngine } from '@/lib/slash-engine';
 import type {
   CharacterChatSession,
   SmartCardCompatDiagnostic,
@@ -21,8 +22,22 @@ import {
 } from './extension-catalog';
 // [包N B-3 2026-10-19] 会话改名的宿主侧广播（与 lib/sillytavern/getContext.ts 的宿主轨同源）
 import { emitEvent } from '@/lib/event-bus';
+// [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 预设写类 9 键写成功后的快照热更广播：
+// CharacterCardRenderer 监听该事件自增 revision 重拉 /presets/snapshot → context-update 进帧。
+import { notifyPresetSelectionChanged } from '@/lib/promptPresetSelection';
 
 type SmartCardWorldBookEntry = Record<string, any>;
+
+/**
+ * [API-8b 2026-10-26] 宿主 slash 引擎此刻真注册的命令名（小写，与引擎表键同口径）。
+ * 随 getStCompatCommandNames 的种子响应按 implemented 键纯加性下发：帧内观察面
+ * （window.__palinkSlashImplementedNames）用它分辨「种子合成」与「真可执行」。
+ * 实时读 getAllCommands 而非静态抄名单——引擎在应用入口已注册完毕
+ * （main.tsx 的 ensureSlashCommandsBootstrapped），此处是活快照。
+ */
+function getStCompatImplementedCommandNames(): string[] {
+  return SlashCommandEngine.getAllCommands().map((cmd) => String(cmd.name).toLowerCase());
+}
 
 function getSmartCardControllerText() {
   const isEnglish = getCurrentInterfaceIsEnglish();
@@ -1231,6 +1246,264 @@ export async function getSmartCardPreset(
   return { success: true, preset: mapPresetRowToSt(found) };
 }
 
+// ============================================================
+// [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 预设**写类** 9 键的父侧动作。
+// 契约一手：preset.d.ts:169/192/204/217/227/276/332/361 + import_raw.d.ts:40。
+// 路由面（零后端改动，全部既有端点；帧内桥见 runtime-body/part-07.ts 的同名段）：
+//   loadPreset         → PUT  /api/prompt-manager/presets/selection（prompt_manager.py:111）
+//   createPreset       → POST /api/roleplay/presets/import（multipart；presets.py:251 是唯一能把
+//                        prompts 落进 prompts_data 的既有通道，:287 原样入库）
+//   deletePreset       → DELETE /api/roleplay/presets/{id}（presets.py:194）
+//   renamePreset       → PUT  /api/roleplay/presets/{id}（presets.py:159）
+//   writeSessionPreset → PUT  /api/prompt-manager/sessions/{id}/preset（prompt_manager.py:274，
+//                        P-1 裁定"卡改本对话份"，写时复制）—— 'in_use' 的写全走这里
+//   replaceNamedPreset → PUT  /api/roleplay/presets/{id}（只有生成参数列可写）
+//   importRawPreset    → POST /api/roleplay/presets/import（multipart）
+//
+// 归属红线（P3-B，越权用例钉死）：名单口径先过快照（服务端只列本人行，`user_id IS NULL`
+// 的共享行不进名单）；id 解析走既有 GET 列表（响应不带 user_id，可能混入共享行）⇒ 逐 id
+// 尝试、由后端 user_id 过滤兜底 —— 共享行 id 一律 404（presets.py:166-169/200-203 的
+// `user_id == user.id` 条件），任何写/删都落不到共享行上。
+// 会话 id（writeSessionPreset）只认宿主 resolveSmartCardHostSessionId，帧内 payload 不读（P2-12 #14）。
+// ============================================================
+
+/** ST `Preset.settings` → `GenerationPreset` 生成参数列（presets.py 的请求模型只收这几格）。 */
+function presetSettingsToGenerationPatch(settings: unknown): Record<string, number> {
+  const src = settings && typeof settings === 'object' ? (settings as Record<string, unknown>) : {};
+  const patch: Record<string, number> = {};
+  const put = (key: string, value: unknown) => {
+    if (typeof value === 'number' && Number.isFinite(value)) patch[key] = value;
+  };
+  put('temperature', src.temperature);
+  put('top_p', src.top_p);
+  // 本仓列名是 max_tokens；ST 的 Preset.settings 叫 max_completion_tokens（getPreset 回读时
+  // settings = 本仓 config，键名是 max_tokens）⇒ 两个名字都认。
+  put('max_tokens', src.max_tokens !== undefined ? src.max_tokens : src.max_completion_tokens);
+  put('frequency_penalty', src.frequency_penalty);
+  put('presence_penalty', src.presence_penalty);
+  put('min_p', src.min_p);
+  put('top_k', src.top_k);
+  put('repetition_penalty', src.repetition_penalty);
+  return patch;
+}
+
+/**
+ * 名字 → 本人行 id 列表。名单先过快照（只列本人行）：解析不到 ⇒ 空数组（= preset_not_found）。
+ * id 只能从既有 GET 列表解析（快照的按名索引不含 id）；列表可能混入共享行 ⇒ 交给
+ * `attemptSmartCardPresetWrite` 逐 id 尝试、由后端 user_id 过滤兜底。
+ */
+async function listSmartCardPresetRowIdsByName(name: string): Promise<number[]> {
+  const snapshot = await fetchSmartCardPresetSnapshot();
+  const names = Array.isArray(snapshot.names) ? snapshot.names : [];
+  if (!names.includes(name)) return [];
+  const rows = await api.get<Array<{ id: number | string; name: string }>>('/api/roleplay/presets');
+  return rows
+    .filter((row) => String(row?.name || '') === name)
+    .map((row) => Number(row.id))
+    .filter((id) => Number.isFinite(id));
+}
+
+/** 逐个同名 id 尝试写/删：404（共享行或他人行）⇒ 试下一个；本人行命中即成功。 */
+async function attemptSmartCardPresetWrite(
+  name: string,
+  attempt: (id: number) => Promise<void>,
+): Promise<boolean> {
+  const ids = await listSmartCardPresetRowIdsByName(name);
+  for (const id of ids) {
+    try {
+      await attempt(id);
+      return true;
+    } catch (error) {
+      const status = error instanceof ApiError ? error.status : 0;
+      if (status === 404) continue;
+      throw error;
+    }
+  }
+  return false;
+}
+
+/** preset.d.ts:169 `loadPreset(preset_name): boolean`（帧内已做同步存在性判定后才到这里）。 */
+async function loadSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; name?: string; error?: string }> {
+  const name = String(payload?.name ?? '').trim();
+  if (!name || name === 'in_use') return { success: false, error: 'preset_name_invalid' };
+  try {
+    await api.put('/api/prompt-manager/presets/selection', { name });
+  } catch (error) {
+    const status = error instanceof ApiError ? error.status : 0;
+    if (status === 404) return { success: false, error: 'preset_not_found' };
+    return { success: false, error: 'preset_selection_failed' };
+  }
+  // 写后广播 ⇒ CharacterCardRenderer 重拉快照 → context-update 热更进帧（帧内三键同步读）。
+  notifyPresetSelectionChanged(name);
+  return { success: true, name };
+}
+
+/**
+ * preset.d.ts:192 `createPreset(name, preset?)`：同名 ⇒ created:false（d.ts:188）；
+ * 内容经 /import multipart 落库（prompts_data 原样入库，presets.py:287）。
+ */
+async function createSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; created?: boolean; name?: string; error?: string }> {
+  const name = String(payload?.name ?? '').trim();
+  if (!name || name === 'in_use') return { success: false, error: 'preset_name_invalid' };
+  const snapshot = await fetchSmartCardPresetSnapshot();
+  const names = Array.isArray(snapshot.names) ? snapshot.names : [];
+  if (names.includes(name)) return { success: true, created: false };
+  const preset = payload?.preset && typeof payload.preset === 'object'
+    ? (payload.preset as Record<string, unknown>)
+    : {};
+  const settings = preset.settings && typeof preset.settings === 'object'
+    ? (preset.settings as Record<string, unknown>)
+    : {};
+  const importBody: Record<string, unknown> = {
+    name,
+    ...presetSettingsToGenerationPatch(settings),
+    prompts: Array.isArray(preset.prompts) ? preset.prompts : [],
+  };
+  const file = new File([JSON.stringify(importBody)], 'palink-card-preset.json', { type: 'application/json' });
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const created = await api.post<Record<string, unknown>>('/api/roleplay/presets/import', form);
+    // 竞态兜底：import 对同名会改建成 "{name} (imported)"（presets.py:270-271）—— 上一步刚查过
+    // 无同名，若仍发生说明并发写入；如实上报实际落库名，帧内据此留痕。
+    const actualName = created && typeof created === 'object' ? String(created.name ?? '') : '';
+    return { success: true, created: true, name: actualName || name };
+  } catch (error) {
+    return { success: false, error: 'preset_create_failed' };
+  }
+}
+
+/** preset.d.ts:217 `deletePreset(name)`：查无此名（或只剩共享行）⇒ preset_not_found ⇒ 帧内转 false。 */
+async function deleteSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; deleted?: boolean; error?: string }> {
+  const name = String(payload?.name ?? '').trim();
+  if (!name || name === 'in_use') return { success: false, error: 'preset_name_invalid' };
+  let deleted = false;
+  try {
+    deleted = await attemptSmartCardPresetWrite(name, async (id) => {
+      await api.delete(`/api/roleplay/presets/${id}`);
+    });
+  } catch (error) {
+    return { success: false, error: 'preset_delete_failed' };
+  }
+  if (!deleted) return { success: false, error: 'preset_not_found' };
+  notifyPresetSelectionChanged(name);
+  return { success: true, deleted: true };
+}
+
+/** preset.d.ts:227 `renamePreset(name, new_name)`：查无此名 ⇒ preset_not_found ⇒ 帧内转 false。 */
+async function renameSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string }> {
+  const name = String(payload?.name ?? '').trim();
+  const newName = String(payload?.newName ?? '').trim();
+  if (!name || name === 'in_use' || !newName || newName === 'in_use') {
+    return { success: false, error: 'preset_name_invalid' };
+  }
+  let renamed = false;
+  try {
+    renamed = await attemptSmartCardPresetWrite(name, async (id) => {
+      await api.put(`/api/roleplay/presets/${id}`, { name: newName });
+    });
+  } catch (error) {
+    return { success: false, error: 'preset_rename_failed' };
+  }
+  if (!renamed) return { success: false, error: 'preset_not_found' };
+  notifyPresetSelectionChanged(newName);
+  return { success: true };
+}
+
+/**
+ * 'in_use' 的写（replacePreset / setPreset / updatePresetWith / createOrReplacePreset）
+ * —— P-1 裁定"卡改本对话份"：写会话覆盖层（写时复制），永不回写全局行
+ * （prompt_manager.py:274 的服务端语义也有测试钉死）。
+ * `render:'none'`（preset.d.ts:231）= 不刷新前端显示 ⇒ 跳过快照热更广播；其余档位都广播
+ * （ST 的 debounced/immediate 映射为"写成功后重拉一次快照"）。
+ */
+async function writeSessionSmartCardPreset(
+  payload: Record<string, unknown>,
+  context: SmartCardCompatRequestContext | null | undefined,
+): Promise<{ success: boolean; error?: string }> {
+  const sessionId = resolveSmartCardHostSessionId(context);
+  if (!sessionId) return { success: false, error: 'no_active_session' };
+  const body = {
+    config: payload?.settings && typeof payload.settings === 'object' ? payload.settings : {},
+    entries: Array.isArray(payload?.prompts) ? payload.prompts : [],
+  };
+  try {
+    await api.put(`/api/prompt-manager/sessions/${encodeURIComponent(sessionId)}/preset`, body);
+  } catch (error) {
+    const status = error instanceof ApiError ? error.status : 0;
+    if (status === 404) return { success: false, error: 'session_not_found' };
+    return { success: false, error: 'session_preset_write_failed' };
+  }
+  if (String(payload?.render ?? 'debounced') !== 'none') notifyPresetSelectionChanged(null);
+  return { success: true };
+}
+
+/**
+ * 具名预设的内容写：只有生成参数列可写（PresetUpdateRequest 无 prompts_data 字段，
+ * presets.py:39-55）⇒ prompts 如实上报 prompts_written:false，帧内据此 warn。
+ * 卡要改提示词内容请走 writeSessionPreset（P-1：卡改本对话份）。
+ */
+async function replaceNamedSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; prompts_written?: boolean; error?: string }> {
+  const name = String(payload?.name ?? '').trim();
+  if (!name || name === 'in_use') return { success: false, error: 'preset_name_invalid' };
+  const patch = presetSettingsToGenerationPatch(payload?.settings);
+  let updated = false;
+  try {
+    updated = await attemptSmartCardPresetWrite(name, async (id) => {
+      await api.put(`/api/roleplay/presets/${id}`, patch);
+    });
+  } catch (error) {
+    return { success: false, error: 'preset_replace_failed' };
+  }
+  if (!updated) return { success: false, error: 'preset_not_found' };
+  if (String(payload?.render ?? 'debounced') !== 'none') notifyPresetSelectionChanged(name);
+  return { success: true, prompts_written: false };
+}
+
+/**
+ * import_raw.d.ts:40 `importRawPreset(filename, content)` —— d.ts 注明"@param filename 预设名"
+ * ⇒ 名参数权威（TH 一手 import_raw.ts:80 `savePreset(name, JSON.parse(content))`），覆盖
+ * content JSON 里自带的 name。JSON 解析失败 ⇒ success:false（帧内转 false，TH 同款）。
+ */
+async function importRawSmartCardPreset(
+  payload: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string }> {
+  const filename = String(payload?.filename ?? '').trim();
+  const content = String(payload?.content ?? '');
+  let parsed: Record<string, unknown>;
+  try {
+    const raw = JSON.parse(content) as unknown;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('preset json must be an object');
+    parsed = raw as Record<string, unknown>;
+  } catch (error) {
+    console.warn('importRawPreset: content 不是合法的预设 JSON 对象:', error);
+    return { success: false, error: 'preset_import_invalid_json' };
+  }
+  if (filename) parsed.name = filename;
+  // ⚠️ 语义偏差（如实留痕）：TH 的 import 是"导入新预设/**更新现有预设**"（savePreset 同名即更新）；
+  // 本仓 /import 路由对同名会改建成 "{name} (imported)" 新行（presets.py:270-271）⇒ 更新语义不成立。
+  const file = new File([JSON.stringify(parsed)], `${filename || 'palink-card-preset'}.json`, { type: 'application/json' });
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    await api.post('/api/roleplay/presets/import', form);
+  } catch (error) {
+    return { success: false, error: 'preset_import_failed' };
+  }
+  notifyPresetSelectionChanged(null);
+  return { success: true };
+}
+
 /** 预设读类三键的帧内 action 名 → 父侧动作分发。 */
 export async function dispatchSmartCardPresetAction(
   action: string,
@@ -1244,6 +1517,22 @@ export async function dispatchSmartCardPresetAction(
       return getSmartCardLoadedPresetName(context);
     case 'getPreset':
       return getSmartCardPreset(payload, context);
+    // [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 写类 9 键的父侧动作（7 个：'in_use' 的
+    // replacePreset/setPreset/updatePresetWith/createOrReplacePreset 共用 writeSessionPreset）。
+    case 'loadPreset':
+      return loadSmartCardPreset(payload);
+    case 'createPreset':
+      return createSmartCardPreset(payload);
+    case 'deletePreset':
+      return deleteSmartCardPreset(payload);
+    case 'renamePreset':
+      return renameSmartCardPreset(payload);
+    case 'writeSessionPreset':
+      return writeSessionSmartCardPreset(payload, context);
+    case 'replaceNamedPreset':
+      return replaceNamedSmartCardPreset(payload);
+    case 'importRawPreset':
+      return importRawSmartCardPreset(payload);
     default:
       return { success: false, error: 'preset_action_unknown' };
   }
@@ -2139,14 +2428,23 @@ export async function handleSmartCardCompatRequest(
     ) {
       result = await dispatchSmartCardPersonaAction(action.action, payload);
     } else if (
-      // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设**读类**三键（preset.d.ts）。
-      // 全是只读：不进手势闸门（与批次A/B 同源论证 —— 用户激活不传播到 opaque-origin
-      // iframe，而"读当前预设"是最正当的无手势用法）。
-      // 越权面由「会话 id 只取宿主构造的 requestContext.selectedSession.id + 预设列表/选中名都按登录态
-      // user_id 过滤」兜住；帧内 payload 里的 sessionId 一律不读。
+      // [ST-BRIDGE-PRESET 2026-10-21 批次P2 段③] 预设读类三键（preset.d.ts）。
+      // [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 写类 9 键（preset.d.ts:169-365 +
+      // import_raw.d.ts:40）并入本分发。不进手势闸门：与批次A/B 同源论证（用户激活不传播到
+      // opaque-origin iframe，而"改自己预设"是 ST 插件最正当的无手势用法之一）；
+      // 越权面由「会话 id 只取宿主 requestContext.selectedSession.id + 名单先过快照
+      // （只列本人行）+ 写删由后端 user_id 过滤兜底（共享行 id 必 404）」兜住；
+      // 帧内 payload 里的 sessionId 一律不读。
       action.action === 'getPresetNames'
       || action.action === 'getLoadedPresetName'
       || action.action === 'getPreset'
+      || action.action === 'loadPreset'
+      || action.action === 'createPreset'
+      || action.action === 'deletePreset'
+      || action.action === 'renamePreset'
+      || action.action === 'writeSessionPreset'
+      || action.action === 'replaceNamedPreset'
+      || action.action === 'importRawPreset'
     ) {
       result = await dispatchSmartCardPresetAction(action.action, payload, requestContext);
     } else if (
@@ -2182,7 +2480,12 @@ export async function handleSmartCardCompatRequest(
       // 且 commands[alias] 与 commands[base] 指向同一个对象 ⇒ 帧内要枚举到别名键、取值也要命中同一 entry。
       // `names` 的语义**不变**（仍是 293 个权威主名 ⇒ 帧内 __palinkSlashSeedNamesCount 恒 293），
       // 别名只进「表内键」口径；两个计数在帧内分别是 __palinkSlashSeedNamesCount / __palinkSlashSeedAliasCount。
-      result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases() };
+      //
+      // [API-8b 2026-10-26] 同一响应再带 implemented（宿主引擎真注册名，实时快照）：
+      // 帧内 prime 读进观察面 window.__palinkSlashImplementedNames，配合合成项上的
+      // __palinkSeedOnly 标记，探测面从此能分辨「种子合成」与「真可执行」。
+      // names/aliases 的形状与计数口径不动（仍 293/176），纯加性兄弟键。
+      result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases(), implemented: getStCompatImplementedCommandNames() };
     } else if (action.action === 'runPalinkSlash') {
       // [S5-GDEP3 T2 2026-10-16] 卡内 triggerSlash 的宿主侧落点。
       //

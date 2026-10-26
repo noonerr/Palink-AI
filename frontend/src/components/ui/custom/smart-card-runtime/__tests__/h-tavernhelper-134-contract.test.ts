@@ -18,7 +18,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // [包L 2026-10-18] 两个载体各按语义取用：
 //   · SRC     = 求值后产物（生产 iframe 逐字节同源）⇒ new Function 执行断言一律用它；
 //   · SRC_RAW = 未求值源码文本 ⇒ 只用于「H 段源码里一个裸反斜杠都没有」这类
@@ -58,11 +58,15 @@ function topLevelKeys(src: string, objectName: string): string[] {
 interface Stub {
   globals?: Record<string, unknown>;
   parentResult?: unknown;
+  /** [批次TH] 按 action 分发父侧响应（updatePresetWith 等读-改-写复合需要两次不同响应）。 */
+  parentRoute?: (action: string, payload: Record<string, unknown>) => unknown;
   chat?: Record<string, unknown>;
   global?: Record<string, unknown>;
   local?: Record<string, unknown>;
   characters?: Array<Record<string, unknown>>;
   lastMessageId?: number;
+  /** [批次TH] 宿主带进 ctx 的预设快照（loadPreset 的同步存在性判定读它）。 */
+  presetSnapshot?: Record<string, unknown>;
 }
 
 /**
@@ -79,12 +83,22 @@ function buildFrame(stub: Stub = {}) {
   const events: string[] = [];
   const emitCompatEvent = vi.fn((name: string) => { events.push(name); });
   const post = vi.fn();
-  const requestParent = vi.fn(async () => stub.parentResult ?? { ok: true, success: true });
+  const requestParent = vi.fn(async (action?: string, payload?: Record<string, unknown>) => {
+    if (stub.parentRoute) return stub.parentRoute(String(action ?? ''), payload ?? {});
+    return stub.parentResult ?? { ok: true, success: true };
+  });
   const compatChat: Array<Record<string, unknown>> = [
     { mesid: 0, mes: '第一条', name: '露缇雅' },
     { mesid: 1, mes: '第二条', name: '露缇雅' },
   ];
-  const ctx = { characterName: '露缇雅', characterId: 'lutiya', sessionId: '42', messageId: 1, userName: '我' };
+  const ctx = {
+    characterName: '露缇雅',
+    characterId: 'lutiya',
+    sessionId: '42',
+    messageId: 1,
+    userName: '我',
+    ...(stub.presetSnapshot !== undefined ? { presetSnapshot: stub.presetSnapshot } : {}),
+  };
   const win: Record<string, unknown> = {
     eventSource: { on: vi.fn(), once: vi.fn(), emit: vi.fn() },
     getContext: () => ({ characters: stub.characters ?? [{ name: '露缇雅', avatar: 'lutiya.png', data: { name: '露缇雅', greeting: '你好' } }] }),
@@ -169,6 +183,10 @@ describe('A fixture 与注册口径', () => {
     const union = new Set([...compat, ...extra, ...legacyMirror]);
     const hit = TH134.filter((n) => union.has(n));
     expect(hit.length).toBeGreaterThanOrEqual(55);
+    // [批次TH 2026-10-26] 满足数口径提到 110+：音频 8 + 预设写类 9 + 常量 3（builtin /
+    // builtin_prompt_default_order / default_preset）落地后，并集命中 = 90 → 110
+    //（探针 .tmp_probe/b2_hit_entry.ts 同款算法，改前实测 hitCount=90）。
+    expect(hit.length).toBeGreaterThanOrEqual(110);
     // 反证锚点：H 段被摘掉时命中数必须掉下来 —— 这条断言就是"改坏必红"的落点。
     const withoutH = new Set([...compat, ...legacyMirror]);
     expect(TH134.filter((n) => withoutH.has(n)).length).toBeLessThan(20);
@@ -246,24 +264,26 @@ describe('A fixture 与注册口径', () => {
     //     那就不是"补名单"，是"分类改判"，必须三层同批（正向锚点 + 台账行 + 包H 计数），
     //     不许删键、不许放宽名单、不许改产品码来凑绿。
     const forbidden = [
-      // —— 包H 首版 24 键（本次未动，顺序与内容保持原样）——
+      // —— 包H 首版 24 键（顺序与内容保持原样）——
       // [批次P2 2026-10-21] 其中 getPreset / getLoadedPresetName 已移出（读类真落地，见下方锚点）。
-      'setPreset', 'loadPreset', 'builtin', 'default_preset',
-      'playAudio', 'getAudioList', 'getAudioSettings',
-      // [批次R1 2026-10-21] isInstalledExtension / isAdmin / getTavernHelperExtensionId
-      // 已移出（扩展读类真落地）。安装/卸载/重装/更新四键仍留在这里（R2）。
+      // [批次TH 2026-10-26] setPreset / loadPreset / builtin / default_preset 已移出（写类/常量真落地）。
+      // [批次TH 2026-10-26] playAudio / getAudioList / getAudioSettings 已移出（音频状态机真落地，
+      //   见下方"批次TH 音频"锚点组；pauseAudio 等其余 5 键来自批次I 补列段，同样移出）。
       'installExtension',
       'injectPrompts', 'uninjectPrompts',
       'stopGenerationById', 'getModelList',
       'getAllEnabledScriptButtons', 'rotateChatMessages', 'importRawWorldbook', 'importRawChat',
       'getTavernRegexes', 'formatAsTavernRegexedString',
       // —— 批次I 补列 · ST 预设体系：族表 16 键，原先只盯 6，补 10 ——
-      // [批次P2 2026-10-21] getPresetNames 已移出（读类真落地）；剩 15 键仍为 D。
-      'builtin_prompt_default_order', 'createOrReplacePreset', 'createPreset', 'deletePreset',
-      'getProxyPresetNames', 'importRawPreset', 'renamePreset',
-      'replacePreset', 'updatePresetWith',
+      // [批次P2 2026-10-21] getPresetNames 已移出（读类真落地）。
+      // [批次TH 2026-10-26] builtin_prompt_default_order / createOrReplacePreset / createPreset /
+      //   deletePreset / importRawPreset / renamePreset / replacePreset / updatePresetWith 已移出
+      //   （写类 8 键真落地，路由映射见 part-07 th134WritePresetContent 注释）；
+      //   getProxyPresetNames **仍留在这里**（Palink 无代理预设子系统，本批裁定留 D 档）。
+      'getProxyPresetNames',
       // —— 批次I 补列 · 酒馆助手音频播放器：族表 8 键，原先只盯 3，补 5 ——
-      'appendAudioList', 'getCurrentAudio', 'pauseAudio', 'replaceAudioList', 'setAudioSettings',
+      // [批次TH 2026-10-26] appendAudioList / getCurrentAudio / pauseAudio / replaceAudioList /
+      //   setAudioSettings 五键已移出（与上面 playAudio 族同批真落地）。
       // —— 批次I 补列 · tavern regex 族：族表 5 键，原先只盯 2，补 3 ——
       'isCharacterTavernRegexesEnabled', 'replaceTavernRegexes', 'updateTavernRegexesWith',
       // —— 批次I 补列 · ST 扩展安装体系：族表 9 键，原先只盯 4，补 5 ——
@@ -274,6 +294,7 @@ describe('A fixture 与注册口径', () => {
       // —— 批次I 补列 · ST 原始对象导入器：族表 2 键，原先只盯 1，补 1 ——
       'importRawTavernRegex',
       // —— 批次I 补列 · 预设提示词类型判定：族表 3 键，原先一个没盯，补 3 ——
+      // [批次TH 2026-10-26] 三键**继续留在这里**（本批裁定留 D 档，见 MUST_STAY_D 处注释）。
       'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
     ];
     expect(forbidden.filter((n) => registered.has(n))).toEqual([]);
@@ -318,24 +339,89 @@ describe('A fixture 与注册口径', () => {
       expect(registered.has(n), `批次P2 已实现的预设读类键不得丢：${n}`).toBe(true);
       expect(SRC.indexOf(n + ': ('), `${n} 必须是同步箭头函数（ST 契约同步，见 preset.d.ts:150）`).toBeGreaterThan(-1);
       expect(SRC.indexOf(n + ': async'), `${n} 不得是 async（返回 Promise 会让真卡拿到 undefined）`).toBe(-1);
-      expect(SRC.indexOf("requestParent('" + n + "'"), `${n} 不得再走异步直连桥（P3 改同步快照）`).toBe(-1);
     });
+    //   [批次TH 2026-10-26 改写，未删] 旧断言是「SRC 里任何 requestParent('getPreset' 都不存在」，
+    //   批次TH 的写类复合键（updatePresetWith / setPreset / replacePreset / createOrReplacePreset）
+    //   会把 'getPreset' 当**父侧读动作**用（读-改-写），全文件文本级断言不再成立。
+    //   钉住的新不变量：三个**读键成员自身**仍是同步快照读 —— 切出成员体逐段断言无 requestParent。
+    {
+      const readMemberSlice = (member: string, next: string) => {
+        const start = SRC.indexOf(member + ': (');
+        const stop = SRC.indexOf(next + ': (', start);
+        expect(start, 'read member missing: ' + member).toBeGreaterThan(-1);
+        expect(stop, 'next member missing: ' + next).toBeGreaterThan(start);
+        return SRC.slice(start, stop);
+      };
+      expect(readMemberSlice('getPresetNames', 'getLoadedPresetName').indexOf('requestParent')).toBe(-1);
+      expect(readMemberSlice('getLoadedPresetName', 'getPreset').indexOf('requestParent')).toBe(-1);
+      expect(readMemberSlice('getPreset', 'loadPreset').indexOf('requestParent')).toBe(-1);
+    }
     expect(SRC.indexOf('ctx.presetSnapshot'), '三键的数据源必须是宿主带进来的预设快照').toBeGreaterThan(-1);
-    // ⛔ 反向红线（与上面那条配套）：写类 9 键与 isPreset* 三键**必须仍是 D** ——
-    //   写类留到 P3；isPreset* 缺判定字段（本仓预设行没有 marker/system_prompt/
-    //   injection_position），补了只能恒 false。谁把它们注册成假实现，这里必红。
+    // ⛔ 反向红线（与上面那条配套）：isPreset* 三键与 getProxyPresetNames **必须仍是 D** ——
+    //   [批次TH 2026-10-26] 写类 9 键已从本名单移出（真落地，见下方批次TH 锚点组）；
+    //   isPreset* 三键与 getProxyPresetNames 本批裁定**留 D 档**（isPreset* 的旧"缺判定字段"
+    //   理由已被侦查推翻——TH 一手是纯 id 归属判定（preset.ts:103-121）——留 D 是台账红线
+    //   待另批裁定，前提订正由主脑另行记录）。谁把它们注册成假实现，这里必红。
     //   ⚠️ 刻意**不用** `([...] as const).forEach` 形态：对账脚本
     //   （scripts/docs/st-gap-ledger-reconcile.mjs 的 anchors 正则）把那种形态当
     //   "正向锚点"收集，而正向锚点里出现 D 类键会被判成"锚点与分类矛盾"。
     //   这里断言的方向相反（要求**不注册**），所以用普通数组。
     const MUST_STAY_D = [
       'isPresetNormalPrompt', 'isPresetPlaceholderPrompt', 'isPresetSystemPrompt',
-      'createPreset', 'replacePreset', 'updatePresetWith', 'createOrReplacePreset',
-      'deletePreset', 'renamePreset', 'loadPreset', 'setPreset', 'getProxyPresetNames',
+      'getProxyPresetNames',
     ];
     MUST_STAY_D.forEach((n) => {
       expect(registered.has(n), `D 类键不得被注册成假实现：${n}`).toBe(false);
     });
+    // ⚠️ 2026-10-26 批次TH 再改判 20 键：预设**写类 9 键**（loadPreset / createPreset /
+    //   createOrReplacePreset / deletePreset / renamePreset / replacePreset / setPreset /
+    //   updatePresetWith / importRawPreset）、**音频 8 键**（playAudio / pauseAudio /
+    //   getAudioList / replaceAudioList / appendAudioList / getAudioSettings /
+    //   setAudioSettings / getCurrentAudio）、**常量 3 键**（builtin / builtin_prompt_default_order /
+    //   default_preset）从 D 挪到 C。**不是**为凑绿，是能力当天落地，三层都有托底：
+    //   ① 契约一手：@types/function/preset.d.ts:169-365、audio.d.ts（全 8 键）、
+    //      generate.d.ts:525（builtin_prompt_default_order）、preset.d.ts:143（default_preset）、
+    //      builtin.d.ts:1-85（builtin 部分桥：addOneMessage/copyText/renderMarkdown/
+    //      parseRegexFromString/uuidv4 有真实现，其余 11 成员缺席不造假）。
+    //   ② 数据源真在库里/帧内真有状态机：写类走既有路由（selection PUT / generation_presets
+    //      三件套 / 会话覆盖层 PUT，零后端改动；共享行由后端 user_id 过滤兜底）；
+    //      音频是帧内双队列状态机（per-type store + Audio 元素 + ended 按 mode 推进，零父侧通道）；
+    //      常量是 TH 自身静态值（preset.ts:126-218 / generate/types.ts:172-182，非用户数据）。
+    //   ③ 帧内成员 → 父侧 dispatchSmartCardPresetAction（SmartCardCompatController.ts），
+    //      会话 id 只认宿主 resolveSmartCardHostSessionId（P2-12 #14 同口径）；
+    //      loadPreset 按 d.ts:169 是**同步** boolean ⇒ 帧内同步实现（快照名单判存在 + kick PUT），
+    //      ⛔ 不许接成 async（P3-A 同款错误：Promise 恒真值，"查无此名返 false"就死了）。
+    //   台账同步（三层同批）：palink-diag.ts 的 preset_prompt / audio_player 注释、
+    //      REPORT_包H 的 2026-10-26 订正段（§12）、SPEC §2.8 追加节、
+    //      scripts/docs/st-gap-ledger-reconcile.mjs 的 MOVES（批次TH 条目）。
+    //   正向锚点（把帧内成员摘掉 ⇒ 本用例必红）：
+    (['loadPreset', 'createPreset', 'createOrReplacePreset', 'deletePreset', 'renamePreset',
+      'replacePreset', 'setPreset', 'updatePresetWith', 'importRawPreset',
+      'playAudio', 'pauseAudio', 'getAudioList', 'replaceAudioList', 'appendAudioList',
+      'getAudioSettings', 'setAudioSettings', 'getCurrentAudio',
+      'builtin', 'builtin_prompt_default_order', 'default_preset'] as const).forEach((n) => {
+      expect(registered.has(n), `批次TH 已实现的键不得丢：${n}`).toBe(true);
+    });
+    // 写类逐键必须真的发起父侧动作（不是空壳）；'in_use' 的写走会话覆盖层动作，具名走行写动作。
+    expect(SRC.indexOf("requestParent('loadPreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('createPreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('deletePreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('renamePreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('writeSessionPreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('replaceNamedPreset'")).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('importRawPreset'")).toBeGreaterThan(-1);
+    // 复合族（updatePresetWith / setPreset / createOrReplacePreset）= 读 + 写两个父侧动作都在场。
+    expect(SRC.indexOf("requestParent('getPreset', { presetName: wanted })")).toBeGreaterThan(-1);
+    // loadPreset 必须是同步箭头（d.ts:169 同步 boolean；P3-A 教训：async 的 false 会被 Promise 吃掉）。
+    expect(SRC.indexOf('loadPreset: (presetName) => {')).toBeGreaterThan(-1);
+    expect(SRC.indexOf('loadPreset: async')).toBe(-1);
+    // 音频 8 键是帧内状态机直实现：不走 requestParent（零父侧通道），且 store 是 per-type 双份。
+    expect(SRC.indexOf('th134AudioStores = { bgm: th134AudioMakeStore(true), ambient: th134AudioMakeStore(false) }')).toBeGreaterThan(-1);
+    expect(SRC.indexOf("requestParent('playAudio'")).toBe(-1);
+    expect(SRC.indexOf('el.addEventListener(\'ended\'')).toBeGreaterThan(-1);
+    // 常量 2 键必须硬编 TH 静态值（不是空对象占位）：max_context/seed/九项顺序任一漂移即红。
+    expect(SRC.indexOf('max_context: 2000000')).toBeGreaterThan(-1);
+    expect(SRC.indexOf("mode: isBgm ? 'repeat_all' : 'play_one_and_stop'")).toBeGreaterThan(-1);
     // 正向锚点（配套上面那条改判）：registerMacroLike 确实进了成员清单，且桥不是空壳。
     expect(registered.has('registerMacroLike')).toBe(true);
     expect(SRC.indexOf("registerMacroLike: th134Bridge('registerMacroLike')")).toBeGreaterThan(-1);
@@ -803,5 +889,410 @@ describe('G 世界书删除与卡↔书绑定写侧（批次A）', () => {
     expect(call[0]).toBe('rebindCharWorldbooks');
     expect(call[1].characterName).toBe('current');
     expect(call[1].charWorldbooks).toEqual({ primary: 'A', additional: ['B'] });
+  });
+});
+
+// ============================================================
+// H 音频播放器（批次TH）
+//   契约一手：@types/function/audio.d.ts（8 键全部**同步**签名）；
+//   一手实现：src/function/audio.ts:29-117 + src/type/settings.ts:20-31（默认值）。
+//   P2-12 #15 的教训写死在验收里：同步键必须断 thenable=false 且真数据
+//   （当年"Promise+空表"假实现，用例 await 了 Promise 照样绿）。
+// ============================================================
+describe('H 音频播放器（批次TH）', () => {
+  /** 最小 Audio 假体：记录调用、可手动派发 ended/timeupdate（jsdom 的 play() 会打 Not implemented）。 */
+  class FakeAudio {
+    src = '';
+    volume = 1;
+    muted = false;
+    duration = 100;
+    currentTime = 0;
+    played = 0;
+    paused = 0;
+    private listeners: Record<string, Array<() => void>> = {};
+    addEventListener(name: string, fn: () => void) { (this.listeners[name] ??= []).push(fn); }
+    removeEventListener(name: string, fn: () => void) {
+      this.listeners[name] = (this.listeners[name] ?? []).filter((f) => f !== fn);
+    }
+    dispatch(name: string) { (this.listeners[name] ?? []).forEach((fn) => fn()); }
+    play() { this.played += 1; return Promise.resolve(); }
+    pause() { this.paused += 1; }
+  }
+  let lastBgm: FakeAudio;
+  const built: FakeAudio[] = [];
+
+  beforeEach(() => {
+    lastBgm = new FakeAudio();
+    built.length = 0;
+    // 普通函数而不是 vi.fn：vitest v4 的 mock fn 不可 new（帧内是 new Audio()）。
+    vi.stubGlobal('Audio', function AudioStub() {
+      const el = built.length === 0 ? lastBgm : new FakeAudio();
+      built.push(el);
+      return el;
+    } as unknown as typeof Audio);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('getAudioSettings 是同步键：thenable=false 且默认值与 TH 一手一致（type/settings.ts:20-31）', () => {
+    const { th } = buildFrame();
+    const bgm = th.getAudioSettings('bgm');
+    expect(bgm && typeof (bgm as any).then).not.toBe('function');
+    expect(bgm).toEqual({ enabled: true, mode: 'repeat_all', muted: false, volume: 50 });
+    const ambient = th.getAudioSettings('ambient');
+    expect(ambient && typeof (ambient as any).then).not.toBe('function');
+    expect(ambient).toEqual({ enabled: true, mode: 'play_one_and_stop', muted: false, volume: 50 });
+  });
+
+  it('playAudio 同步登记并起播：getCurrentAudio thenable=false 且 src/title/playing 真数据', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { url: 'http://example.com/a/song.mp3' });
+    const cur = th.getCurrentAudio('bgm');
+    expect(cur && typeof (cur as any).then).not.toBe('function');
+    expect(cur).toEqual({ src: 'http://example.com/a/song.mp3', title: 'song', playing: true, progress: 0 });
+    expect(lastBgm.src).toBe('http://example.com/a/song.mp3');
+    expect(lastBgm.played).toBe(1);
+  });
+
+  it('playAudio 缺 title 从 url 取文件名（audio.ts:15-17）；显式 title 优先', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { url: 'http://example.com/a/b.c.mp3' });
+    expect(th.getAudioList('bgm')[0].title).toBe('b');
+    th.playAudio('bgm', { title: '主题曲', url: 'http://example.com/other.mp3' });
+    expect(th.getAudioList('bgm')[1].title).toBe('主题曲');
+  });
+
+  it('playAudio 同 url 重复播放不重复入队（audio.ts:33-39 按 title 或 url 命中即更新）', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { url: 'http://example.com/a.mp3' });
+    th.playAudio('bgm', { url: 'http://example.com/a.mp3' });
+    expect(th.getAudioList('bgm')).toHaveLength(1);
+  });
+
+  it('appendAudioList 按契约去重（d.ts:55-60 明文；一手实现漏了去重，按契约补）', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { title: 'A', url: 'http://example.com/a.mp3' });
+    th.appendAudioList('bgm', [
+      { title: 'B', url: 'http://example.com/b.mp3' },
+      { title: 'A', url: 'http://example.com/c.mp3' },  // 同 title ⇒ 不加
+      { title: 'D', url: 'http://example.com/a.mp3' },  // 同 url ⇒ 不加
+    ]);
+    expect(th.getAudioList('bgm').map((i: any) => i.title)).toEqual(['A', 'B']);
+  });
+
+  it('replaceAudioList 整队替换、不影响正在播的 src（audio.ts:56-59）', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { title: 'A', url: 'http://example.com/a.mp3' });
+    th.replaceAudioList('bgm', [{ url: 'http://example.com/x.mp3' }, { title: 'Y', url: 'http://example.com/y.mp3' }]);
+    expect(th.getAudioList('bgm').map((i: any) => i.title)).toEqual(['x', 'Y']);
+    expect(th.getCurrentAudio('bgm').src).toBe('http://example.com/a.mp3');
+  });
+
+  it('setAudioSettings：缺省字段保持原值；volume clamp(0,100)（audio.ts:114-116）；未知 mode 拒绝并 warn', () => {
+    const { th, post } = buildFrame();
+    th.setAudioSettings('bgm', { volume: 250, muted: true });
+    expect(th.getAudioSettings('bgm')).toMatchObject({ volume: 100, muted: true, mode: 'repeat_all' });
+    th.setAudioSettings('bgm', { volume: -5 });
+    expect(th.getAudioSettings('bgm').volume).toBe(0);
+    th.setAudioSettings('bgm', { mode: 'loop_forever' });
+    expect(th.getAudioSettings('bgm').mode).toBe('repeat_all');
+    const messages = post.mock.calls.map((call: any[]) => JSON.stringify(call[0]));
+    expect(messages.some((m: string) => m.indexOf('未知播放模式') >= 0)).toBe(true);
+  });
+
+  it('pauseAudio 置 playing=false 并真的 pause 元素（audio.ts:46-49）', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { url: 'http://example.com/a.mp3' });
+    th.pauseAudio('bgm');
+    expect(th.getCurrentAudio('bgm').playing).toBe(false);
+    expect(lastBgm.paused).toBe(1);
+  });
+
+  it('ended 按 mode 推进：repeat_all 走下一首、repeat_one 重播同首、play_one_and_stop 停', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { title: 'A', url: 'http://example.com/a.mp3' });
+    th.playAudio('bgm', { title: 'B', url: 'http://example.com/b.mp3' });
+    expect(th.getCurrentAudio('bgm').src).toBe('http://example.com/b.mp3');
+    lastBgm.dispatch('ended');
+    expect(th.getCurrentAudio('bgm').src).toBe('http://example.com/a.mp3');  // repeat_all 环回
+    th.setAudioSettings('bgm', { mode: 'repeat_one' });
+    lastBgm.dispatch('ended');
+    expect(th.getCurrentAudio('bgm').src).toBe('http://example.com/a.mp3');
+    th.setAudioSettings('bgm', { mode: 'play_one_and_stop' });
+    lastBgm.dispatch('ended');
+    expect(th.getCurrentAudio('bgm').playing).toBe(false);
+  });
+
+  it('shuffle 推进后仍在队列内（不越界、不自旋死循环）', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { title: 'A', url: 'http://example.com/a.mp3' });
+    th.playAudio('bgm', { title: 'B', url: 'http://example.com/b.mp3' });
+    th.setAudioSettings('bgm', { mode: 'shuffle' });
+    lastBgm.dispatch('ended');
+    const urls = ['http://example.com/a.mp3', 'http://example.com/b.mp3'];
+    expect(urls).toContain(th.getCurrentAudio('bgm').src);
+  });
+
+  it('timeupdate 写 progress（0-100），非法时长不写 NaN', () => {
+    const { th } = buildFrame();
+    th.playAudio('bgm', { url: 'http://example.com/a.mp3' });
+    lastBgm.currentTime = 50;
+    lastBgm.dispatch('timeupdate');
+    expect(th.getCurrentAudio('bgm').progress).toBe(50);
+    lastBgm.duration = NaN;
+    lastBgm.dispatch('timeupdate');
+    expect(th.getCurrentAudio('bgm').progress).toBe(0);
+  });
+
+  it('非法 type 抛错，不静默落到 bgm（本仓红线：诚实报错好过猜）', () => {
+    const { th } = buildFrame();
+    expect(() => th.getAudioSettings('drum')).toThrow(/bgm\/ambient/);
+  });
+});
+
+// ============================================================
+// I 预设写类（批次TH）
+//   契约一手：preset.d.ts:169-365 + import_raw.d.ts:40。
+//   loadPreset 是**同步** boolean（d.ts:169）⇒ thenable=false 是硬验收；
+//   写类失败语义按 d.ts 分族（false vs @throws）。
+// ============================================================
+describe('I 预设写类（批次TH）', () => {
+  const SNAPSHOT = {
+    names: ['预设A', '预设B'],
+    loadedName: '预设A',
+    inUse: { settings: { temperature: 0.5 }, prompts: [{ id: 'main' }], prompts_unused: [], extensions: {} },
+    presets: { 预设A: { settings: { temperature: 0.5 }, prompts: [{ id: 'main' }], prompts_unused: [], extensions: {} } },
+  };
+
+  it('loadPreset 是同步键：thenable=false；名单命中 ⇒ true 并 kick 父侧 PUT selection', () => {
+    const { th, requestParent } = buildFrame({ presetSnapshot: SNAPSHOT });
+    const out = th.loadPreset('预设B');
+    expect(out && typeof (out as any).then).not.toBe('function');
+    expect(out).toBe(true);
+    expect(requestParent).toHaveBeenCalledWith('loadPreset', { name: '预设B' });
+  });
+
+  it('loadPreset 查无此名 ⇒ false 且不发父侧请求（TH preset.ts:581-583 findPreset 失败返 false）', () => {
+    const { th, requestParent } = buildFrame({ presetSnapshot: SNAPSHOT });
+    expect(th.loadPreset('查无此名')).toBe(false);
+    expect(th.loadPreset('in_use')).toBe(false);
+    expect(th.loadPreset('')).toBe(false);
+    expect(requestParent).not.toHaveBeenCalled();
+  });
+
+  it("createPreset：'in_use' 拒绝；同名（父侧 created:false）⇒ false；新建 ⇒ true 且缺省内容补 default_preset", async () => {
+    const { th } = buildFrame({
+      parentRoute: (action, payload) => {
+        if (action === 'createPreset') {
+          return { ok: true, success: true, created: payload.name !== '预设A' };
+        }
+        return { ok: true, success: true };
+      },
+    });
+    await expect(th.createPreset('in_use')).resolves.toBe(false);
+    await expect(th.createPreset('预设A')).resolves.toBe(false);
+    await expect(th.createPreset('预设C')).resolves.toBe(true);
+    const second = buildFrame({
+      parentRoute: () => ({ ok: true, success: true, created: true }),
+    });
+    await second.th.createPreset('预设C');
+    const call = ((second.requestParent as any).mock.calls as any[][]).find((c) => c[0] === 'createPreset') as any[];
+    expect(call[1].preset).toMatchObject({ settings: { temperature: 1, max_context: 2000000, seed: -1 } });
+  });
+
+  it("createOrReplacePreset：存在 ⇒ 替换并返 false；不存在 ⇒ 建 true；'in_use' 恒替换", async () => {
+    const { th, requestParent } = buildFrame({
+      presetSnapshot: SNAPSHOT,
+      parentRoute: (action, payload) => {
+        if (action === 'getPreset') {
+          return String(payload?.presetName ?? '') === '预设A'
+            ? { ok: true, success: true, preset: { settings: {}, prompts: [] } }
+            : { ok: true, success: false, error: 'preset_not_found' };
+        }
+        if (action === 'replaceNamedPreset') return { ok: true, success: true, prompts_written: false };
+        if (action === 'createPreset') return { ok: true, success: true, created: true };
+        if (action === 'writeSessionPreset') return { ok: true, success: true };
+        return { ok: true, success: true };
+      },
+    });
+    await expect(th.createOrReplacePreset('预设A', { settings: { temperature: 2 }, prompts: [] })).resolves.toBe(false);
+    await expect(th.createOrReplacePreset('预设C', { settings: {}, prompts: [] })).resolves.toBe(true);
+    await expect(th.createOrReplacePreset('in_use', { settings: {}, prompts: [] })).resolves.toBe(false);
+    const actions = ((requestParent as any).mock.calls as any[][]).map((c) => c[0]);
+    expect(actions).toContain('replaceNamedPreset');
+    expect(actions).toContain('createPreset');
+    expect(actions).toContain('writeSessionPreset');
+  });
+
+  it('deletePreset / renamePreset：查无此名（父侧 preset_not_found）⇒ false，成功 ⇒ true', async () => {
+    const { th } = buildFrame({
+      parentRoute: (action) => (
+        action === 'deletePreset' || action === 'renamePreset'
+          ? { ok: true, success: false, error: 'preset_not_found' }
+          : { ok: true, success: true }
+      ),
+    });
+    await expect(th.deletePreset('查无此名')).resolves.toBe(false);
+    await expect(th.renamePreset('查无此名', '新名')).resolves.toBe(false);
+    const ok = buildFrame({
+      parentRoute: (action) => (action === 'deletePreset' || action === 'renamePreset'
+        ? { ok: true, success: true, deleted: true }
+        : { ok: true, success: true }),
+    });
+    await expect(ok.th.deletePreset('预设A')).resolves.toBe(true);
+    await expect(ok.th.renamePreset('预设A', '新名')).resolves.toBe(true);
+  });
+
+  it("replacePreset：具名不存在 @throws（d.ts:241）；'in_use' 走会话份且 Promise<void>（resolve undefined）", async () => {
+    const missing = buildFrame({
+      parentRoute: (action) => (action === 'getPreset'
+        ? { ok: true, success: false, error: 'preset_not_found' }
+        : { ok: true, success: true }),
+    });
+    await expect(missing.th.replacePreset('查无此名', { settings: {}, prompts: [] })).rejects.toThrow(/不存在/);
+    const { th } = buildFrame({
+      parentRoute: (action) => (action === 'writeSessionPreset'
+        ? { ok: true, success: true }
+        : { ok: true, success: false, error: 'preset_not_found' }),
+    });
+    await expect(
+      th.replacePreset('in_use', { settings: { temperature: 0.9 }, prompts: [{ id: 'main' }] }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('updatePresetWith 读-改-写复合：getPreset → updater → writeSessionPreset，返回更新后对象', async () => {
+    const { th, requestParent } = buildFrame({
+      parentRoute: (action) => (action === 'getPreset'
+        ? { ok: true, success: true, preset: { settings: { temperature: 0.5 }, prompts: [{ id: 'main' }], prompts_unused: [], extensions: {} } }
+        : { ok: true, success: true }),
+    });
+    const out = await th.updatePresetWith('in_use', (preset: any) => {
+      preset.settings.temperature = 2;
+      return preset;
+    });
+    expect(out).toMatchObject({ settings: { temperature: 2 } });
+    const write = ((requestParent as any).mock.calls as any[][]).find((c) => c[0] === 'writeSessionPreset') as any[];
+    expect(write[1].settings).toEqual({ temperature: 2 });
+    expect(write[1].prompts).toEqual([{ id: 'main' }]);
+  });
+
+  it('setPreset 部分深合并：传入值赢、旧值补缺、prompts 未传保持原值（TH preset.ts:733-745）', async () => {
+    const { th, requestParent } = buildFrame({
+      parentRoute: (action) => (action === 'getPreset'
+        ? { ok: true, success: true, preset: { settings: { temperature: 0.5, top_p: 0.9 }, prompts: [{ id: 'main' }], prompts_unused: [], extensions: {} } }
+        : { ok: true, success: true }),
+    });
+    const merged = await th.setPreset('in_use', { settings: { temperature: 1 } });
+    expect(merged.settings).toEqual({ temperature: 1, top_p: 0.9 });
+    expect(merged.prompts).toEqual([{ id: 'main' }]);
+    const write = ((requestParent as any).mock.calls as any[][]).find((c) => c[0] === 'writeSessionPreset') as any[];
+    expect(write[1].settings).toEqual({ temperature: 1, top_p: 0.9 });
+  });
+
+  it('importRawPreset：父侧任何失败返 false 不抛（TH import_raw.ts:79-85），成功返 true', async () => {
+    const failing = buildFrame({
+      parentRoute: () => ({ ok: true, success: false, error: 'preset_import_invalid_json' }),
+    });
+    await expect(failing.th.importRawPreset('新预设', '{}')).resolves.toBe(false);
+    const ok = buildFrame({ parentRoute: () => ({ ok: true, success: true }) });
+    await expect(ok.th.importRawPreset('新预设', '{"name":"x"}')).resolves.toBe(true);
+  });
+
+  it('具名 replacePreset 的 prompts 无全局写通道：父侧 prompts_written:false ⇒ 帧 warn 留痕', async () => {
+    const { th, post } = buildFrame({
+      presetSnapshot: SNAPSHOT,
+      parentRoute: (action) => (action === 'getPreset'
+        ? { ok: true, success: true, preset: { settings: {}, prompts: [] } }
+        : { ok: true, success: true, prompts_written: false }),
+    });
+    await th.replacePreset('预设A', { settings: { temperature: 1 }, prompts: [{ id: 'main' }] });
+    const messages = post.mock.calls.map((call: any[]) => JSON.stringify(call[0]));
+    expect(messages.some((m: string) => m.indexOf('prompts 没有全局写通道') >= 0)).toBe(true);
+  });
+});
+
+// ============================================================
+// J 常量与 builtin（批次TH）
+//   default_preset / builtin_prompt_default_order = TH 自身静态值（非用户数据）；
+//   builtin 部分桥：有真实现的成员桥到同一实现，缺席成员不造假。
+// ============================================================
+describe('J 常量与 builtin（批次TH）', () => {
+  it('default_preset 是同步常量：thenable=false 且逐值等于 TH preset.ts:126-218', () => {
+    const { th } = buildFrame();
+    const preset = th.default_preset;
+    expect(preset && typeof (preset as any).then).not.toBe('function');
+    expect(preset.settings).toMatchObject({
+      max_context: 2000000, max_completion_tokens: 300, reply_count: 1, should_stream: false,
+      temperature: 1, frequency_penalty: 0, presence_penalty: 0, repetition_penalty: 1,
+      top_p: 1, min_p: 0, top_k: 0, top_a: 0, seed: -1, squash_system_messages: false,
+      reasoning_effort: 'auto', allow_sending_images: 'disabled', character_name_prefix: 'none',
+    });
+    expect(preset.prompts).toHaveLength(8);
+    expect(preset.prompts[0]).toMatchObject({ id: 'worldInfoBefore', enabled: true, position: { type: 'relative' }, role: 'system' });
+    expect(preset.prompts_unused).toEqual([]);
+    expect(preset.extensions).toEqual({ tavern_helper: { scripts: [], variables: {} } });
+  });
+
+  it('builtin_prompt_default_order 九项且顺序与 TH generate/types.ts:172-182 一致', () => {
+    const { th } = buildFrame();
+    const order = th.builtin_prompt_default_order;
+    expect(order && typeof (order as any).then).not.toBe('function');
+    expect(order).toEqual([
+      'world_info_before', 'persona_description', 'char_description', 'char_personality',
+      'scenario', 'world_info_after', 'dialogue_examples', 'chat_history', 'user_input',
+    ]);
+  });
+
+  it('builtin 部分桥：addOneMessage/uuidv4 桥到帧内同一实现；缺席成员不造假（得 undefined）', () => {
+    const { th, win } = buildFrame({
+      globals: { addOneMessage: vi.fn(async () => true), uuidv4: vi.fn(() => 'uuid-1') },
+    });
+    th.builtin.addOneMessage({ mes: 'hi' });
+    expect(win.addOneMessage).toHaveBeenCalledWith({ mes: 'hi' });
+    expect(th.builtin.uuidv4()).toBe('uuid-1');
+    // 缺席成员（saveSettings 等界面/内部对象面）：不造假成员 —— 取值是 undefined，可见的缺席。
+    expect(th.builtin.saveSettings).toBeUndefined();
+    expect(th.builtin.promptManager).toBeUndefined();
+  });
+
+  it('builtin.renderMarkdown 桥到 messageFormatting；缺席时原样返回文本不造 HTML', () => {
+    const { th, win } = buildFrame();
+    expect(th.builtin.renderMarkdown('**粗体**')).toBe('<p>**粗体**</p>');
+    expect(win.messageFormatting).toHaveBeenCalledWith('**粗体**', '', false, false, -1);
+    const off = buildFrame({ globals: { messageFormatting: undefined } });
+    expect(off.th.builtin.renderMarkdown('原文')).toBe('原文');
+  });
+
+  it('builtin.parseRegexFromString：/body/flags → RegExp；非法输入返 null（ST world-info 语义）', () => {
+    const { th } = buildFrame();
+    const parsed = th.builtin.parseRegexFromString('/ab+/gi');
+    expect(parsed).toBeInstanceOf(RegExp);
+    expect(parsed.source).toBe('ab+');
+    expect(parsed.flags).toBe('gi');
+    expect(th.builtin.parseRegexFromString('不是正则')).toBeNull();
+    expect(th.builtin.parseRegexFromString('/未闭合')).toBeNull();
+    expect(th.builtin.parseRegexFromString('/x/badflag')).toBeNull();
+  });
+
+  it('builtin.copyText 优先 navigator.clipboard；写入被拒时 warn 留痕（不空吞）', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    const stubbed = buildFrame();
+    const originalNavigator = globalThis.navigator;
+    Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText } }, configurable: true });
+    try {
+      stubbed.th.builtin.copyText('内容');
+      expect(writeText).toHaveBeenCalledWith('内容');
+      const rejected = buildFrame();
+      const rejecting = vi.fn(() => Promise.reject(new Error('denied')));
+      Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: rejecting } }, configurable: true });
+      rejected.th.builtin.copyText('内容');
+      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
+      const messages = rejected.post.mock.calls.map((call: any[]) => JSON.stringify(call[0]));
+      expect(messages.some((m: string) => m.indexOf('copyText 剪贴板写入被拒绝') >= 0)).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', { value: originalNavigator, configurable: true });
+    }
   });
 });

@@ -92,15 +92,25 @@ describe('帧内成员确实存在（反向锚点：从 part-07 摘掉任一成�
     expect(typeof th.getPreset).toBe('function');
   });
 
-  it('写类与判定类键**没有**被顺手注册（本批不碰 P3，也不写恒假实现）', () => {
+  it('写类与判定类键的注册边界（[批次TH 2026-10-26 改写，未删] 写类 9 键已真落地并注册；判定类与代理名单仍不得出现）', () => {
     const { th } = buildFrame({ presetSnapshot: SNAPSHOT });
+    // [批次TH 2026-10-26] 写类 9 键从"不得出现"改为"必须出现"——它们走父侧既有路由
+    // （loadPreset 同步快照判定 + 8 个 async 桥），行为断言见
+    // h-tavernhelper-134-contract.test.ts 的 I 组与 th-preset-write-keys-parent.test.ts。
     [
-      'createPreset', 'replacePreset', 'updatePresetWith', 'createOrReplacePreset',
-      'deletePreset', 'renamePreset', 'loadPreset', 'setPreset', 'getProxyPresetNames',
-      'isPresetNormalPrompt', 'isPresetPresetSystemPrompt', 'isPresetSystemPrompt',
+      'loadPreset', 'createPreset', 'createOrReplacePreset', 'deletePreset', 'renamePreset',
+      'replacePreset', 'setPreset', 'updatePresetWith', 'importRawPreset',
+    ].forEach((name) => {
+      expect(typeof th[name], name + ' 批次TH 已落地，不得再缺席').toBe('function');
+    });
+    // ⛔ 反向红线保持：isPreset* 三键与 getProxyPresetNames 仍是 D（本批裁定留 D 档），
+    //   谁把它们注册成假实现，这里必红。
+    [
+      'getProxyPresetNames',
+      'isPresetNormalPrompt', 'isPresetSystemPrompt',
       'isPresetPlaceholderPrompt',
     ].forEach((name) => {
-      expect(th[name], name + ' 不该在本批出现').toBeUndefined();
+      expect(th[name], name + ' 不得被注册成假实现').toBeUndefined();
     });
   });
 });

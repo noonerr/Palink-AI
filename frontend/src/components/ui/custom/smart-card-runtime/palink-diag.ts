@@ -103,10 +103,15 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   // ⚠️ 2026-10-21 批次P2 订正：族里**读类 3 键已落地**（getPresetNames /
   //   getLoadedPresetName / getPreset → 父侧 dispatchSmartCardPresetAction，
   //   数据源 = 全局选中份 + 本对话覆盖层），故下面三个名字现在只是**分类表残留**，
-  //   不代表它们仍是缺口。剩下 16 个仍是 D 类（写类 9 键 + builtin/default_preset/
-  //   importRawPreset + isPreset* 三键）。isPreset* 不做的理由不是"缺通道"而是
-  //   **缺判定字段**：本仓 prompt_presets 行只有 entries/config，没有 marker /
-  //   system_prompt / injection_position ⇒ 补了只能恒 false（本仓红线）。
+  //   不代表它们仍是缺口。
+  // ⚠️ 2026-10-26 批次TH 再订正：**写类 9 键**（loadPreset / createPreset /
+  //   createOrReplacePreset / deletePreset / renamePreset / replacePreset / setPreset /
+  //   updatePresetWith / importRawPreset）与**常量 3 键**（builtin 部分桥 /
+  //   builtin_prompt_default_order / default_preset）已落地 —— 写类走父侧既有路由
+  //   （selection PUT / generation_presets 三件套+import / 会话覆盖层 PUT，零后端改动），
+  //   常量是 TH 自身静态值照抄。isPreset* 三键与 getProxyPresetNames **仍留 D**
+  //   （本批裁定留 D 档；isPreset* 的"缺判定字段"旧理由已被侦查推翻——TH 一手是纯 id
+  //   归属判定（preset.ts:103-121）——留 D 是台账红线待另批裁定，前提订正由主脑另行记录）。
   builtin: 'preset_prompt',
   builtin_prompt_default_order: 'preset_prompt',
   createOrReplacePreset: 'preset_prompt',
@@ -174,6 +179,10 @@ export const ST_GAP_BY_NAME: Record<string, string> = {
   'rename-char': 'charlib_write',
 
   // [ST-GAP:audio_player] 要的是"播放队列"这个对象，不是 8 个函数壳（Palink TTS 逐条合成，无队列状态机）。
+  //   ⚠️ 2026-10-26 批次TH 再订正：8 键已全部落地 —— 帧内**双队列状态机**（per-type store
+  //   九字段 + 每 type 一个 Audio 元素 + ended 按 mode 推进 + timeupdate 进度，
+  //   runtime-body/part-07.ts th134AudioStores 段），零 requestParent、零后端；
+  //   CSP media-src 已实测放行 http/https 外链。键名按 st-gap-ledger-guard 纪律保留不删。
   playAudio: 'audio_player',
   pauseAudio: 'audio_player',
   getCurrentAudio: 'audio_player',

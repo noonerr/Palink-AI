@@ -1,0 +1,222 @@
+/**
+ * ST 事件类型枚举权威源（单源）—— 宿主与智能卡帧内共用的常量（纯数据，零 import）。
+ *
+ * [P2-25 2026-10-26] 收编此前多份手维护副本（取证：.tmp_probe/b2_diag_evt2.json）：
+ *   - 宿主 getContext.ts 的 ST_EVENT_TYPES（117 键）→ 本文件经 re-export 提供同名常量；
+ *   - 帧内 runtime-body/part-06.ts 的 ensureObject('event_types', {...})（104 键 = ST 1.18.0
+ *     events.js 的精确克隆）→ 构建期经 ${JSON.stringify(ST_EVENT_TYPES_SHARED)} 从本清单派生
+ *     （插值位点登记于 runtime-body-template-literal-guard.test.ts 的 ALLOWED_INTERPOLATIONS）。
+ *   - 第三份 runtime.ts 的 ST_TO_PALINK_EVENT_MAP（112 键）本批不收编，留待另批。
+ *
+ * 清单构成（145 键 = 76 + 28 + 41，合并前逐键比对值零冲突、无重复键）：
+ *   - 共享 76 键：ST 1.18.0 events.js 与原宿主/帧内两份副本三方一致；
+ *   - 补收 28 键：ST 1.18.0 有、原宿主清单漏收（原帧内克隆持有），随统一补齐；
+ *   - Palink 自创 41 键：ST 1.18.0 无，其中 7 键有真实发射点（见块内注记）。
+ *
+ * 诚实留痕：ST_EVENT_TYPES_NOT_IMPLEMENTED 列出的 34 键全仓零 emit 点——按枚举订阅
+ * 不报错但永不触发。这是「枚举对齐」与「行为实现」的边界，不要顺手补假 emit。
+ *
+ * 参照树：_reference/sillytavern-1.18.0/public/scripts/events.js（与 d:/SillyTavern-release
+ * 逐字节一致，cmp 已验）；验收探针：node frontend/scripts/verify-event-roundtrip.mjs --quiet
+ * （frame_missing_from_st_types=0 且 emitted_but_unsubscribable=0）。
+ */
+export const ST_EVENT_TYPES_SHARED: Record<string, string> = {
+  // ── 共享 76 键（ST 1.18.0 与原两份副本三方一致）──
+  APP_INITIALIZED: 'app_initialized',
+  APP_READY: 'app_ready',
+  CHARACTER_DELETED: 'characterDeleted',
+  CHARACTER_DUPLICATED: 'character_duplicated',
+  CHARACTER_EDITED: 'character_edited',
+  CHARACTER_EDITOR_OPENED: 'character_editor_opened',
+  CHARACTER_FIRST_MESSAGE_SELECTED: 'character_first_message_selected',
+  CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+  CHARACTER_PAGE_LOADED: 'character_page_loaded',
+  CHARACTER_RENAMED: 'character_renamed',
+  CHATCOMPLETION_MODEL_CHANGED: 'chatcompletion_model_changed',
+  CHATCOMPLETION_SOURCE_CHANGED: 'chatcompletion_source_changed',
+  CHAT_CHANGED: 'chat_id_changed',
+  CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+  CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
+  CHAT_CREATED: 'chat_created',
+  CHAT_DELETED: 'chat_deleted',
+  CHAT_LOADED: 'chatLoaded',
+  CHAT_RENAMED: 'chat_renamed',
+  CONNECTION_PROFILE_CREATED: 'connection_profile_created',
+  CONNECTION_PROFILE_DELETED: 'connection_profile_deleted',
+  CONNECTION_PROFILE_LOADED: 'connection_profile_loaded',
+  CONNECTION_PROFILE_UPDATED: 'connection_profile_updated',
+  EXTENSION_SETTINGS_LOADED: 'extension_settings_loaded',
+  EXTRAS_CONNECTED: 'extras_connected',
+  GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
+  GENERATE_AFTER_DATA: 'generate_after_data',
+  GENERATE_BEFORE_COMBINE_PROMPTS: 'generate_before_combine_prompts',
+  // K-6 修复沿用：对齐 ST 1.18.0 events.js:22（全大写，非 snake_case）
+  GENERATION_AFTER_COMMANDS: 'GENERATION_AFTER_COMMANDS',
+  GENERATION_ENDED: 'generation_ended',
+  GENERATION_STARTED: 'generation_started',
+  GENERATION_STOPPED: 'generation_stopped',
+  GROUP_CHAT_CREATED: 'group_chat_created',
+  GROUP_CHAT_DELETED: 'group_chat_deleted',
+  GROUP_MEMBER_DRAFTED: 'group_member_drafted',
+  GROUP_UPDATED: 'group_updated',
+  GROUP_WRAPPER_FINISHED: 'group_wrapper_finished',
+  GROUP_WRAPPER_STARTED: 'group_wrapper_started',
+  MAIN_API_CHANGED: 'main_api_changed',
+  MESSAGE_DELETED: 'message_deleted',
+  MESSAGE_EDITED: 'message_edited',
+  MESSAGE_FILE_EMBEDDED: 'message_file_embedded',
+  MESSAGE_REASONING_DELETED: 'message_reasoning_deleted',
+  MESSAGE_REASONING_EDITED: 'message_reasoning_edited',
+  MESSAGE_RECEIVED: 'message_received',
+  MESSAGE_SENT: 'message_sent',
+  MESSAGE_SWIPED: 'message_swiped',
+  MESSAGE_SWIPE_DELETED: 'message_swipe_deleted',
+  MESSAGE_UPDATED: 'message_updated',
+  MORE_MESSAGES_LOADED: 'more_messages_loaded',
+  PERSONA_CHANGED: 'persona_changed',
+  PERSONA_CREATED: 'persona_created',
+  PERSONA_DELETED: 'persona_deleted',
+  PERSONA_RENAMED: 'persona_renamed',
+  PERSONA_UPDATED: 'persona_updated',
+  PRESET_CHANGED: 'preset_changed',
+  PRESET_DELETED: 'preset_deleted',
+  PRESET_RENAMED: 'preset_renamed',
+  SETTINGS_LOADED: 'settings_loaded',
+  SETTINGS_LOADED_AFTER: 'settings_loaded_after',
+  SETTINGS_LOADED_BEFORE: 'settings_loaded_before',
+  SETTINGS_UPDATED: 'settings_updated',
+  STREAM_REASONING_DONE: 'stream_reasoning_done',
+  STREAM_TOKEN_RECEIVED: 'stream_token_received',
+  TOOL_CALLS_PERFORMED: 'tool_calls_performed',
+  TOOL_CALLS_RENDERED: 'tool_calls_rendered',
+  TTS_AUDIO_READY: 'tts_audio_ready',
+  TTS_JOB_COMPLETE: 'tts_job_complete',
+  TTS_JOB_STARTED: 'tts_job_started',
+  USER_MESSAGE_RENDERED: 'user_message_rendered',
+  WORLDINFO_ENTRIES_LOADED: 'worldinfo_entries_loaded',
+  WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate',
+  WORLDINFO_SCAN_DONE: 'worldinfo_scan_done',
+  WORLDINFO_SETTINGS_UPDATED: 'worldinfo_settings_updated',
+  WORLDINFO_UPDATED: 'worldinfo_updated',
+  WORLD_INFO_ACTIVATED: 'world_info_activated',
+
+  // ── 补收 28 键（ST 1.18.0 有、原宿主清单漏收，随权威源统一补齐）──
+  CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER: 'character_group_overlay_state_change_after',
+  CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE: 'character_group_overlay_state_change_before',
+  CHARACTER_MANAGEMENT_DROPDOWN: 'charManagementDropdown',
+  CHARACTER_RENAMED_IN_PAST_CHAT: 'character_renamed_in_past_chat',
+  EXTENSIONS_FIRST_LOAD: 'extensions_first_load',
+  FILE_ATTACHMENT_DELETED: 'file_attachment_deleted',
+  FORCE_SET_BACKGROUND: 'force_set_background',
+  IMAGE_SWIPED: 'image_swiped',
+  IMPERSONATE_READY: 'impersonate_ready',
+  ITEMIZED_PROMPTS_DELETED: 'itemized_prompts_deleted',
+  ITEMIZED_PROMPTS_LOADED: 'itemized_prompts_loaded',
+  ITEMIZED_PROMPTS_SAVED: 'itemized_prompts_saved',
+  MEDIA_ATTACHMENT_DELETED: 'media_attachment_deleted',
+  MOVABLE_PANELS_RESET: 'movable_panels_reset',
+  OAI_PRESET_CHANGED_AFTER: 'oai_preset_changed_after',
+  OAI_PRESET_CHANGED_BEFORE: 'oai_preset_changed_before',
+  OAI_PRESET_EXPORT_READY: 'oai_preset_export_ready',
+  OAI_PRESET_IMPORT_READY: 'oai_preset_import_ready',
+  ONLINE_STATUS_CHANGED: 'online_status_changed',
+  OPEN_CHARACTER_LIBRARY: 'open_character_library',
+  PRESET_RENAMED_BEFORE: 'preset_renamed_before',
+  SD_PROMPT_PROCESSING: 'sd_prompt_processing',
+  SECRET_DELETED: 'secret_deleted',
+  SECRET_EDITED: 'secret_edited',
+  SECRET_ROTATED: 'secret_rotated',
+  SECRET_WRITTEN: 'secret_written',
+  SMOOTH_STREAM_TOKEN_RECEIVED: 'stream_token_received',
+  TEXT_COMPLETION_SETTINGS_READY: 'text_completion_settings_ready',
+
+  // ── Palink 自创 41 键（ST 1.18.0 无）──
+  // 有发射点的 7 键：CHAT_METADATA_UPDATED（帧内 part-08 开机/写档两处 + 宿主
+  // emitChatMetadataUpdated，P2-25 前帧内可发不可订的唯一一条）；CHARACTER_CHANGED、
+  // VARIABLE_SET、VARIABLE_ADDED、VARIABLE_DELETED、MESSAGE_STREAMING_STARTED、
+  // MESSAGE_STREAMING_STOPPED（宿主 runtime.ts 事件桥，帧内无发射点）。
+  APP_CHANGED: 'app_changed',
+  CHARACTER_CHANGED: 'character_changed',
+  CHARACTER_CREATED: 'character_created',
+  CHARACTER_EXPORTED: 'character_exported',
+  CHARACTER_IMPORTED: 'character_imported',
+  CHARACTER_SWIPED: 'character_swiped',
+  CHATCOMPLETION_SETTINGS_CHANGED: 'chatcompletion_settings_changed',
+  CHAT_EXPORTED: 'chat_exported',
+  CHAT_IMPORTED: 'chat_imported',
+  CHAT_METADATA_UPDATED: 'chat_metadata_updated',
+  CHAT_SEARCH_PERFORMED: 'chat_search_performed',
+  EXTENSION_SETTINGS_UPDATED: 'extension_settings_updated',
+  GENERATION_CANCELED: 'generation_canceled',
+  GENERATION_FAILED: 'generation_failed',
+  GENERATION_QUEUED: 'generation_queued',
+  GROUP_ACTIVATED: 'group_activated',
+  GROUP_CANCELED: 'group_canceled',
+  GROUP_CREATED: 'group_created',
+  GROUP_DELETED: 'group_deleted',
+  MESSAGE_DISPLAYED: 'message_displayed',
+  MESSAGE_HIDDEN: 'message_hidden',
+  MESSAGE_RENDERED: 'message_rendered',
+  MESSAGE_STREAMING_STARTED: 'message_streaming_started',
+  MESSAGE_STREAMING_STOPPED: 'message_streaming_stopped',
+  MODEL_CHANGED: 'model_changed',
+  PRESET_LOADED: 'preset_loaded',
+  PRESET_SAVED: 'preset_saved',
+  TOKENS_COUNTED: 'tokens_counted',
+  TOOL_CALLS_FAILED: 'tool_calls_failed',
+  TOOL_CALLS_STARTED: 'tool_calls_started',
+  TRANSLATE_API_CHANGED: 'translate_api_changed',
+  TTS_JOB_CANCELED: 'tts_job_canceled',
+  TTS_JOB_STOPPED: 'tts_job_stopped',
+  UI_READY: 'ui_ready',
+  VARIABLE_ADDED: 'variable_added',
+  VARIABLE_DELETED: 'variable_deleted',
+  VARIABLE_SET: 'variable_set',
+  WORLDINFO_CREATED: 'worldinfo_created',
+  WORLDINFO_DELETED: 'worldinfo_deleted',
+  WORLDINFO_IMPORTED: 'worldinfo_imported',
+  WORLDINFO_RENAMED: 'worldinfo_renamed',
+};
+
+/**
+ * 未实现键注记集（34 键，全部属 Palink 自创块）：枚举在册、宿主与帧内两级都零 emit 点。
+ * 消费者按 ST 惯例 eventSource.on(event_types.KEY, cb) 合法但不触发——保留名单是
+ * 诚实留痕（P2-25 裁定：列名+注记，不加假 emit）；后续补实现时从此处摘除并复跑
+ * verify-event-roundtrip.mjs 对账（名单与探针 verdict=未实现 一一对应，2026-10-26 实测）。
+ */
+export const ST_EVENT_TYPES_NOT_IMPLEMENTED: readonly string[] = [
+  'APP_CHANGED',
+  'CHARACTER_CREATED',
+  'CHARACTER_EXPORTED',
+  'CHARACTER_IMPORTED',
+  'CHARACTER_SWIPED',
+  'CHATCOMPLETION_SETTINGS_CHANGED',
+  'CHAT_EXPORTED',
+  'CHAT_IMPORTED',
+  'CHAT_SEARCH_PERFORMED',
+  'EXTENSION_SETTINGS_UPDATED',
+  'GENERATION_CANCELED',
+  'GENERATION_FAILED',
+  'GENERATION_QUEUED',
+  'GROUP_ACTIVATED',
+  'GROUP_CANCELED',
+  'GROUP_CREATED',
+  'GROUP_DELETED',
+  'MESSAGE_DISPLAYED',
+  'MESSAGE_HIDDEN',
+  'MESSAGE_RENDERED',
+  'MODEL_CHANGED',
+  'PRESET_LOADED',
+  'PRESET_SAVED',
+  'TOKENS_COUNTED',
+  'TOOL_CALLS_FAILED',
+  'TOOL_CALLS_STARTED',
+  'TRANSLATE_API_CHANGED',
+  'TTS_JOB_CANCELED',
+  'TTS_JOB_STOPPED',
+  'UI_READY',
+  'WORLDINFO_CREATED',
+  'WORLDINFO_DELETED',
+  'WORLDINFO_IMPORTED',
+  'WORLDINFO_RENAMED',
+];

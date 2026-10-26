@@ -21,6 +21,7 @@ import { eventBus, emitEvent } from '@/lib/event-bus';
 import { groupChatManager } from '@/lib/group-chat/manager';
 import { pluginManager } from '@/lib/plugin-system/manager';
 import { substituteParamsExtended } from './macros';
+import { ST_EVENT_TYPES_SHARED as ST_EVENT_TYPES } from './event-types-compat';
 import { runPalinkSlashCommands } from './slash-commands-compat';
 import {
   globalExtensionSettings,
@@ -849,163 +850,11 @@ function createStVariableScope(
 // ST 事件类型枚举
 // ============================================================
 
-/**
- * ST 事件类型枚举（与 eventTypes 一致）
- */
-export const ST_EVENT_TYPES: Record<string, string> = {
-  // 消息事件
-  MESSAGE_SENT: 'message_sent',
-  MESSAGE_RECEIVED: 'message_received',
-  MESSAGE_EDITED: 'message_edited',
-  MESSAGE_DELETED: 'message_deleted',
-  MESSAGE_UPDATED: 'message_updated',
-  MESSAGE_SWIPED: 'message_swiped',
-  MESSAGE_SWIPE_DELETED: 'message_swipe_deleted',
-  MESSAGE_FILE_EMBEDDED: 'message_file_embedded',
-  MESSAGE_REASONING_EDITED: 'message_reasoning_edited',
-  MESSAGE_REASONING_DELETED: 'message_reasoning_deleted',
-  MESSAGE_DISPLAYED: 'message_displayed',
-  MESSAGE_HIDDEN: 'message_hidden',
-  MESSAGE_STREAMING_STARTED: 'message_streaming_started',
-  MESSAGE_STREAMING_STOPPED: 'message_streaming_stopped',
-  MESSAGE_RENDERED: 'message_rendered',
-
-  // 渲染事件
-  USER_MESSAGE_RENDERED: 'user_message_rendered',
-  CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
-  CHARACTER_SWIPED: 'character_swiped',
-  // K-6 修复: 对齐 ST 1.18.0 events.js:22（GENERATION_AFTER_COMMANDS 为全大写，
-  // 非 snake_case）。此前小写与 runtime.ts/SillyTavernCompatRuntime 的大写不一致，
-  // 导致 quick-reply 等插件监听事件 key 与 emit key 错配、自动执行不触发。
-  GENERATION_AFTER_COMMANDS: 'GENERATION_AFTER_COMMANDS',
-  GENERATE_BEFORE_COMBINE_PROMPTS: 'generate_before_combine_prompts',
-  GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
-
-  // 生成事件
-  GENERATION_STARTED: 'generation_started',
-  GENERATION_STOPPED: 'generation_stopped',
-  GENERATION_ENDED: 'generation_ended',
-  GENERATE_AFTER_DATA: 'generate_after_data',
-  GENERATION_QUEUED: 'generation_queued',
-  GENERATION_CANCELED: 'generation_canceled',
-  GENERATION_FAILED: 'generation_failed',
-  TOKENS_COUNTED: 'tokens_counted',
-
-  // 聊天事件
-  CHAT_CHANGED: 'chat_id_changed',
-  CHAT_LOADED: 'chatLoaded',
-  CHAT_CREATED: 'chat_created',
-  CHAT_DELETED: 'chat_deleted',
-  CHAT_RENAMED: 'chat_renamed',
-  MORE_MESSAGES_LOADED: 'more_messages_loaded',
-  CHAT_METADATA_UPDATED: 'chat_metadata_updated',
-  CHAT_SEARCH_PERFORMED: 'chat_search_performed',
-  CHAT_EXPORTED: 'chat_exported',
-  CHAT_IMPORTED: 'chat_imported',
-
-  // 角色事件
-  CHARACTER_CHANGED: 'character_changed',
-  CHARACTER_EDITED: 'character_edited',
-  // N5 修复（批次 F）: 对齐 ST events.js:68 历史拼写 'characterDeleted'
-  //（非 snake_case）——此前值错误导致订阅该事件的插件永不触发。
-  // 经典轨映射（runtime.ts:214）与智能卡（CompatRuntime:4771）本就正确。
-  CHARACTER_DELETED: 'characterDeleted',
-  CHARACTER_DUPLICATED: 'character_duplicated',
-  CHARACTER_RENAMED: 'character_renamed',
-  CHARACTER_PAGE_LOADED: 'character_page_loaded',
-  CHARACTER_EDITOR_OPENED: 'character_editor_opened',
-  CHARACTER_FIRST_MESSAGE_SELECTED: 'character_first_message_selected',
-  CHARACTER_CREATED: 'character_created',
-  CHARACTER_IMPORTED: 'character_imported',
-  CHARACTER_EXPORTED: 'character_exported',
-
-  // 群组事件
-  GROUP_UPDATED: 'group_updated',
-  GROUP_CHAT_CREATED: 'group_chat_created',
-  GROUP_CHAT_DELETED: 'group_chat_deleted',
-  GROUP_MEMBER_DRAFTED: 'group_member_drafted',
-  GROUP_WRAPPER_STARTED: 'group_wrapper_started',
-  GROUP_WRAPPER_FINISHED: 'group_wrapper_finished',
-  GROUP_ACTIVATED: 'group_activated',
-  GROUP_CANCELED: 'group_canceled',
-  GROUP_CREATED: 'group_created',
-  GROUP_DELETED: 'group_deleted',
-
-  // 应用生命周期事件
-  APP_INITIALIZED: 'app_initialized',
-  APP_READY: 'app_ready',
-  APP_CHANGED: 'app_changed',
-  EXTRAS_CONNECTED: 'extras_connected',
-  SETTINGS_LOADED: 'settings_loaded',
-  SETTINGS_UPDATED: 'settings_updated',
-  SETTINGS_LOADED_BEFORE: 'settings_loaded_before',
-  SETTINGS_LOADED_AFTER: 'settings_loaded_after',
-  EXTENSION_SETTINGS_LOADED: 'extension_settings_loaded',
-  EXTENSION_SETTINGS_UPDATED: 'extension_settings_updated',
-  UI_READY: 'ui_ready',
-
-  // 世界书事件
-  WORLDINFO_UPDATED: 'worldinfo_updated',
-  WORLDINFO_SETTINGS_UPDATED: 'worldinfo_settings_updated',
-  WORLD_INFO_ACTIVATED: 'world_info_activated',
-  WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate',
-  WORLDINFO_ENTRIES_LOADED: 'worldinfo_entries_loaded',
-  WORLDINFO_SCAN_DONE: 'worldinfo_scan_done',
-  WORLDINFO_CREATED: 'worldinfo_created',
-  WORLDINFO_DELETED: 'worldinfo_deleted',
-  WORLDINFO_RENAMED: 'worldinfo_renamed',
-  WORLDINFO_IMPORTED: 'worldinfo_imported',
-
-  // Persona 事件
-  PERSONA_CHANGED: 'persona_changed',
-  PERSONA_CREATED: 'persona_created',
-  PERSONA_UPDATED: 'persona_updated',
-  PERSONA_RENAMED: 'persona_renamed',
-  PERSONA_DELETED: 'persona_deleted',
-
-  // 预设事件
-  PRESET_CHANGED: 'preset_changed',
-  PRESET_DELETED: 'preset_deleted',
-  PRESET_RENAMED: 'preset_renamed',
-  PRESET_LOADED: 'preset_loaded',
-  PRESET_SAVED: 'preset_saved',
-
-  // 连接事件
-  CONNECTION_PROFILE_LOADED: 'connection_profile_loaded',
-  CONNECTION_PROFILE_CREATED: 'connection_profile_created',
-  CONNECTION_PROFILE_DELETED: 'connection_profile_deleted',
-  CONNECTION_PROFILE_UPDATED: 'connection_profile_updated',
-  CHATCOMPLETION_SOURCE_CHANGED: 'chatcompletion_source_changed',
-  CHATCOMPLETION_MODEL_CHANGED: 'chatcompletion_model_changed',
-  MAIN_API_CHANGED: 'main_api_changed',
-  CHATCOMPLETION_SETTINGS_CHANGED: 'chatcompletion_settings_changed',
-  CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
-  CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
-  MODEL_CHANGED: 'model_changed',
-  TRANSLATE_API_CHANGED: 'translate_api_changed',
-
-  // TTS 事件
-  TTS_JOB_STARTED: 'tts_job_started',
-  TTS_AUDIO_READY: 'tts_audio_ready',
-  TTS_JOB_COMPLETE: 'tts_job_complete',
-  TTS_JOB_STOPPED: 'tts_job_stopped',
-  TTS_JOB_CANCELED: 'tts_job_canceled',
-
-  // 工具调用事件
-  TOOL_CALLS_PERFORMED: 'tool_calls_performed',
-  TOOL_CALLS_RENDERED: 'tool_calls_rendered',
-  TOOL_CALLS_STARTED: 'tool_calls_started',
-  TOOL_CALLS_FAILED: 'tool_calls_failed',
-
-  // 流式事件
-  STREAM_TOKEN_RECEIVED: 'stream_token_received',
-  STREAM_REASONING_DONE: 'stream_reasoning_done',
-
-  // 变量事件
-  VARIABLE_SET: 'variable_set',
-  VARIABLE_DELETED: 'variable_deleted',
-  VARIABLE_ADDED: 'variable_added',
-};
+// [P2-25 2026-10-26] 事件枚举权威源统一：145 键真身移至 event-types-compat.ts
+//（帧内 part-06 经 JSON.stringify 插值从同一清单派生；本处 117 键手维护副本撤销，
+// 原漏收的 28 个 ST 1.18 键随统一补齐）。消费面 eventTypes/event_types 字段与
+// 各处 import 的符号名 ST_EVENT_TYPES 保持不变。
+export { ST_EVENT_TYPES };
 
 // ============================================================
 // Popup 类型枚举

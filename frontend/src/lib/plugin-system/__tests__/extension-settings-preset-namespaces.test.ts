@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PluginSandbox } from '../sandbox';
+import { COMPAT_V2_RUNTIME_ARTIFACT } from '../../../components/ui/custom/smart-card-runtime/__tests__/compat-v2-runtime-source';
 import {
   globalExtensionSettings,
   ST_EXTENSION_SETTINGS_PRESET_OBJECT_NAMESPACES,
@@ -553,5 +554,66 @@ describe('API-2 其余命名空间的子键默认值抽查（哨兵键 + 结构�
     expect(filled.keep).toBe('mine');
     expect(filled.source).toBe('transformers');   // vectors/index.js:58 const settings
     expect(filled.maxEntries).toBe(5);
+  });
+});
+
+/**
+ * [帧内同步 2026-10-26] 帧内与宿主的子键默认值单源守卫。
+ *
+ * 帧内模板串不能 import：part-01 的 ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT 由构建期
+ * JSON.stringify(ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS) 插值下发。本守卫在**载体二**
+ * （生产逐字节同源的求值后产物，见 compat-v2-runtime-source.ts 头注）里把插值产物
+ * 抠出来与宿主常量逐命名空间、逐子键比对 —— 单源若被改断（插值被换成本地字面量副本、
+ * 或宿主/帧内两边各改一半），这里立刻红。
+ */
+describe('帧内同步：帧内 ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT 与宿主子键默认逐键相等', () => {
+  /** 从求值后产物里抠出 `const ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT = {...};` 的 JSON 字面量（花括号配平，跳过字符串与转义）。 */
+  function extractFrameSubkeyDefaults(artifact: string): Record<string, Record<string, unknown>> {
+    const marker = 'const ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT = ';
+    const start = artifact.indexOf(marker);
+    expect(start, '载体二里找不到 ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT 的插值产物').toBeGreaterThan(-1);
+    const open = artifact.indexOf('{', start + marker.length);
+    expect(open, '插值产物不是以对象字面量开头').toBeGreaterThan(start);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = open; i < artifact.length; i += 1) {
+      const ch = artifact[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) return JSON.parse(artifact.slice(open, i + 1));
+      }
+    }
+    throw new Error('ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT 的 JSON 字面量未配平');
+  }
+
+  it('插值位点仍指向共享单源常量（被换成本地字面量副本即红）', () => {
+    const frameSrc = readFileSync(join(process.cwd(), FRAME_PART_01), 'utf8');
+    expect(frameSrc).toContain(
+      'const ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT = ${JSON.stringify(ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS)};',
+    );
+  });
+
+  it('载体二（生产同源产物）里帧内子键默认与宿主常量逐命名空间、逐子键相等', () => {
+    const frameDefaults = extractFrameSubkeyDefaults(COMPAT_V2_RUNTIME_ARTIFACT);
+    const hostDefaults = ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS as Record<string, Record<string, unknown>>;
+    expect(Object.keys(frameDefaults).sort()).toEqual(Object.keys(hostDefaults).sort());
+    for (const ns of Object.keys(hostDefaults)) {
+      expect(frameDefaults[ns], ns + ' 的子键与宿主不一致').toEqual(hostDefaults[ns]);
+    }
+  });
+
+  it('帧内填充段语义在场：只补 undefined、非对象/数组命名空间跳过、clone 防写穿', () => {
+    const frameSrc = readFileSync(join(process.cwd(), FRAME_PART_01), 'utf8');
+    expect(frameSrc).toContain('if (!current || typeof current !== \'object\' || Array.isArray(current)) return;');
+    expect(frameSrc).toContain('if (current[subKey] === undefined) current[subKey] = clone(value);');
   });
 });

@@ -13,6 +13,7 @@
 
 import { IDB_NS_RUNTIME_SOURCE } from '../../../../../lib/sillytavern/card-idb-namespace';
 import { BUNDLED_ST_PLUGIN_CSS } from '../../../../../lib/sillytavern/bundled-plugin-css';
+import { ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS } from '../../../../../lib/sillytavern/extension-settings-subkey-defaults';
 
 export function runtimeBodyPart01(bootHeader: string): string {
   return `(() => {
@@ -737,6 +738,12 @@ ${IDB_NS_RUNTIME_SOURCE}
       ? runtimeConfig.extension_settings
       : {};
   };
+  // [帧内同步 2026-10-26] ST 内置扩展命名空间的子键级默认值：单源在宿主
+  // lib/sillytavern/extension-settings-subkey-defaults.ts（与 extension-settings-store
+  // re-export 同一常量），模板串不能 import，构建期经 JSON.stringify 插值内联 ——
+  // 照 BUNDLED_ST_PLUGIN_CSS 同款先例，位点已登记 runtime-body-template-literal-guard
+  // 的 ALLOWED_INTERPOLATIONS。填充语义见 applyStPluginRuntimeConfigCompat 内子键段。
+  const ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT = ${JSON.stringify(ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS)};
   const applyStPluginRuntimeConfigCompat = () => {
     if (!window.extension_settings || typeof window.extension_settings !== 'object') window.extension_settings = {};
     mergePlainObjectCompat(window.extension_settings, getStPluginExtensionSettingsCompat());
@@ -754,8 +761,10 @@ ${IDB_NS_RUNTIME_SOURCE}
     // extension_settings.regex ?? []，调用方 loadRegexScripts 直接 .forEach =>
     // 对象上 forEach 不是函数（真机 getScriptsByType(...).forEach is not a function）。
     // 故按类型补：对象给 {}，数组给 []，字符串给 ST 默认值，布尔给 false。
-    // [批次D1 2026-10-21] 名单从 5 个扩到 21 个；嵌套默认值不搬（ST 的 memory.prompt /
-    // sd.prompts / objective.customPrompts 是提示词正文，只给空对象）。
+    // [批次D1 2026-10-21] 名单从 5 个扩到 21 个。[API-2 2026-10-24] 「嵌套默认值不搬」
+    // 已被部分取代：四类补齐后按单源插值的 ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT 补子键默认
+    // （含 memory.prompt 等提示词正文，来源 = 本仓 vendor 的 ST 扩展源码同源文本）；
+    // 名单外的未知键仍不预置。
     const ST_PLUGIN_PRESET_OBJECT_NAMESPACES_COMPAT = ['caption', 'cfg', 'chromadb', 'dice', 'expressions', 'memory', 'note', 'objective', 'quickReply', 'randomizer', 'rvc', 'sd', 'speech_recognition', 'translate', 'tts'];
     const ST_PLUGIN_PRESET_ARRAY_NAMESPACES_COMPAT = ['disabledExtensions', 'expressionOverrides', 'regex'];
     const ST_PLUGIN_PRESET_STRING_NAMESPACES_COMPAT = ['apiKey', 'apiUrl'];
@@ -792,6 +801,18 @@ ${IDB_NS_RUNTIME_SOURCE}
     ST_PLUGIN_PRESET_BOOLEAN_NAMESPACES_COMPAT.forEach((key) => {
       if (typeof window.extension_settings[key] === 'boolean') return;
       window.extension_settings[key] = false;
+    });
+    // [帧内同步 2026-10-26] 子键级默认值，与宿主 ensureStExtensionSettingsPresets 的
+    // 子键步同语义：只补 === undefined 的子键、绝不覆盖已有数据；非对象命名空间跳过
+    // —— vectors 不在四类名单里、这里也不创建，仅在它已存在（旧数据/插件自建）时补
+    // （ST 里由扩展 init 自建）。clone 与宿主 deepCloneDefaultValue 同为 JSON 深拷贝，
+    // 防插件改动写穿插值常量；boot 与每次 context-update 重跑时补缺语义保证幂等。
+    Object.entries(ST_PLUGIN_SUBKEY_DEFAULTS_COMPAT).forEach(([ns, defaults]) => {
+      const current = window.extension_settings[ns];
+      if (!current || typeof current !== 'object' || Array.isArray(current)) return;
+      Object.entries(defaults).forEach(([subKey, value]) => {
+        if (current[subKey] === undefined) current[subKey] = clone(value);
+      });
     });
     if (!Array.isArray(window.extension_settings.regex_presets)) window.extension_settings.regex_presets = [];
     const runtimeConfig = ctx.stPluginRuntimeConfig && typeof ctx.stPluginRuntimeConfig === 'object'

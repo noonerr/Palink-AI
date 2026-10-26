@@ -214,6 +214,33 @@ const MOVES = [
     mode: 'keys', from: 'D', to: 'C',
     keys: ['getExtensionStatus', 'getExtensionType', 'getTavernHelperExtensionId', 'isInstalledExtension', 'isAdmin'],
   },
+  {
+    // 批次TH（2026-10-26）：音频 8 键 + 预设写类 9 键 + 常量 3 键（builtin /
+    // builtin_prompt_default_order / default_preset）。
+    // 音频 = 帧内双队列状态机（零父侧通道）；写类 = 父侧既有路由（selection PUT /
+    // generation_presets 三件套+import / 会话覆盖层 PUT，零后端改动）；常量 = TH 静态值照抄。
+    // isPreset* 三键与 getProxyPresetNames **不挪**（本批裁定留 D 档，红线前提订正另批）。
+    // 订正段在报告 §12（追加在文末，不动前面任何行号）。
+    id: '批次TH：音频8+预设写类9+常量3 D→C',
+    cite: {
+      lines: [474, 525],
+      expect: [
+        '订正（2026-10-26，批次TH）',
+        '二十个键从 D 挪到 C',
+        'C = 79 → 99',
+        'D = 42 → 22',
+        '13 + 99 + 22 = 134',
+        '双队列状态机',
+        '共享行',
+      ],
+    },
+    mode: 'keys', from: 'D', to: 'C',
+    keys: ['playAudio', 'pauseAudio', 'getAudioList', 'replaceAudioList', 'appendAudioList',
+      'getAudioSettings', 'setAudioSettings', 'getCurrentAudio',
+      'loadPreset', 'createPreset', 'createOrReplacePreset', 'deletePreset', 'renamePreset',
+      'replacePreset', 'setPreset', 'updatePresetWith', 'importRawPreset',
+      'builtin', 'builtin_prompt_default_order', 'default_preset'],
+  },
 ];
 
 function verifyCite(move) {
@@ -225,7 +252,7 @@ function verifyCite(move) {
 
 // 应用顺序 = **时间顺序**，不是文件行号顺序：§7.2（§7 里的原文，2026-10-18 实现期改判）
 // 比 §3/§4 里追加的订正段（2026-10-20）都早。按行号排会把批次A 的四键当成"起始类不对"跳过。
-const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3', '批次R1'];
+const CHRONO = ['§7.2', '包AA', '批次A', '批次B 段①', '批次B 段②', '主脑复验', '批次Q1', '批次P2', '批次P3', '批次R1', '批次TH'];
 const ordered = MOVES.slice().sort((x, y) => {
   const rank = (m) => CHRONO.findIndex((p) => m.id.indexOf(p) === 0);
   return rank(x) - rank(y);

@@ -23,6 +23,16 @@
  *   /listinjects    slash-commands.js:2942 注册，:3845-3862 回调
  *   /flushinject    slash-commands.js:2958 注册，:3870-3889 回调
  *
+ * 第二批（2026-10-26，API-7 批 2A）· 纯逻辑 + 元数据 + 人设读取 10 条：
+ *   /getchatname    slash-commands.js:463-469（返回值与三轨前置逐字对齐，见命令处注释）
+ *   /hide /unhide   slash-commands.js:1835-1879 → chats.js:147-170 hideChatMessageRange
+ *   /sysname        slash-commands.js:1397-1405 → :5734-5740 setNarratorName
+ *   /cut            power-user.js:4160-4174 注册 → :2821-2862 doMesCut
+ *   /note 族        authors-note.js:502-560 + :30-36 metadata_keys + :44-103 四回调
+ *   /persona-get    personas.js:2638-2698 + :2275-2320 getPersonaDataCallback
+ * （member-count 恒空、db-* 无宿主数据源、renamechat/forcesave/del 属写操作批，
+ *   均按主脑裁定不做，证据见 .tmp_probe/b2_diag_api7.json。）
+ *
  * 设计红线：
  *   1. 不注册假实现。注入族真写 `promptInjection`（生成管线消费）+ chat_metadata；
  *      消息族真读写当前聊天的原生数组（与 getContext 的 `chat` 同一读源）。
@@ -32,7 +42,9 @@
  *      —— 派发只会把刚写的改动立刻冲掉。写入对同进程的卡脚本 / 插件可见，
  *      刷新后丢失。这是平台既有缺口，不是本批新造。
  *   3. 有意偏离全部就地写明（/is-mobile 的口径、/count 与 /trimtokens 的估算、
- *      /listinjects 的缺省返回、/message-name 的 avatar 字段不写）。
+ *      /listinjects 的缺省返回、/message-name 的 avatar 字段不写；
+ *      第二批：/note 族用本仓 author_note* 键而非 ST 的 note_*、
+ *      /persona-get 的 avatar 语义、popup/chat/toast 返回通道不落地说）。
  */
 
 import { SlashCommandEngine, ARGUMENT_TYPE } from './index';
@@ -41,6 +53,7 @@ import { getGlobalSillyTavernRuntime } from '../sillytavern/runtime';
 import { messageManager } from '@/services/message-manager';
 import { promptInjection } from '@/services/prompt-injection';
 import { tokenizerService } from '@/lib/tokenizer/service';
+import { api } from '@/services/api';
 
 const registered = new Set<string>();
 
@@ -173,8 +186,157 @@ const COMMENT_NAME_DEFAULT = 'Note';
 // slash-commands.js:3771 SCRIPT_PROMPT_KEY
 const SCRIPT_PROMPT_KEY = 'script_inject_';
 
+// ── 第二批辅助：会话 id / chat_metadata 稳定引用 / 落库 ─────────────
+
+// slash-commands.js:3769 NARRATOR_NAME_DEFAULT（键名 narrator_name 见 :3768）
+const NARRATOR_NAME_DEFAULT = 'System';
+
+/** 当前会话 id（与 slash-commands-compat.ts resolveGlobalContext 同口径：null/undefined → ''）。 */
+function resolveSessionId(): string {
+  const chatId = runtimeContext()?.chatId;
+  return chatId == null ? '' : String(chatId);
+}
+
 /**
- * 注册 API-7 第一批命令。幂等，可重复调用。
+ * chat_metadata 的稳定引用解析（P2-20 口径，与 getContext.ts 导出的
+ * resolveStableChatMetadata 同语义）。不能直接 import：getContext.ts 反向
+ * import 本引擎（getContext.ts:18），会成环，故就地复刻。
+ *
+ * 关键差异（相对第一批的 resolveChatMetadata）：ctx.chatMetadata **非空**才用——
+ * 运行时构造器缺省给它 `{}`（runtime.ts:498），空对象直接用会把写入落进
+ * 「宿主 saveMetadata 读不到」的孤儿引用（P2-20 的原始病灶）。
+ */
+function resolveStableChatMetadata(): Record<string, any> {
+  const fromCtx = runtimeContext()?.chatMetadata;
+  if (fromCtx && typeof fromCtx === 'object' && !Array.isArray(fromCtx) && Object.keys(fromCtx).length > 0) {
+    return fromCtx as Record<string, any>;
+  }
+  if (typeof window !== 'undefined') {
+    const w = window as any;
+    if (!w.chat_metadata || typeof w.chat_metadata !== 'object' || Array.isArray(w.chat_metadata)) {
+      w.chat_metadata = {};
+    }
+    return w.chat_metadata as Record<string, any>;
+  }
+  return (fromCtx && typeof fromCtx === 'object' ? fromCtx : {}) as Record<string, any>;
+}
+
+/**
+ * chat_metadata 落库（_persistChatMetadata 同款：getContext.ts:1611-1618 →
+ * PUT /api/character-sessions/{id}/metadata，后端 character_ext.py:2765 起浅合并）。
+ * 与 ST 命令回调里的 `await saveChatConditional()` 对位；失败 warn 不抛，
+ * 与 _persistChatMetadata 同款静默（不留空 catch）。
+ */
+async function persistChatMetadata(metadata: Record<string, any>): Promise<void> {
+  const sessionId = resolveSessionId();
+  if (!sessionId) return;
+  try {
+    await api.put(`/api/character-sessions/${sessionId}/metadata`, metadata);
+  } catch (e) {
+    console.warn('[Palink] saveChatMetadata failed:', e);
+  }
+}
+
+// ── 第二批辅助：persona 读取（宿主数据源直连）────────────────────
+//
+// 数据源与本仓既有父侧实现同口径：SmartCardCompatController.ts:648-707 的
+// listPalinkPersonas / resolvePersonaRef 与 :700-722 mapPersonaRowToSt。
+// 不能 import 该文件：它 import 了本目录的 st-command-catalog（:7），
+// lib → components 反向依赖会成环，故按侦查建议直连 @/services/api
+// （slash-commands-compat.ts:36 先例）。
+
+/** Palink persona 行形状（backend/app/api/personas.py:65-75 序列化输出）。 */
+type PalinkPersonaRow = {
+  id: string;
+  name: string;
+  description: string;
+  avatar: string | null;
+  characterBindings: Record<string, string>;
+  isDefault: boolean;
+  personaShow: boolean;
+  personaDescriptionPosition: number;
+  personaDescriptionDepth: number;
+  title?: string | null;
+  role?: number | null;
+  lorebook?: string | null;
+};
+
+/**
+ * persona 引用 → 行。ref 语义 = ST 的「名称 / 唯一键 / 'current'」：
+ * 'current'（缺省）走 /api/personas/active，其余先按 id 唯一匹配再按名称唯一匹配；
+ * 同名多只一律拒（与 resolvePersonaRef 同一安全口径，不替调用方猜一只）。
+ */
+async function resolvePersonaRow(
+  ref: unknown,
+): Promise<{ ok: true; row: PalinkPersonaRow } | { ok: false; error: 'not_found' | 'ambiguous' | 'failed' }> {
+  const raw = ref === undefined || ref === null || String(ref).trim() === '' ? 'current' : String(ref).trim();
+  let rows: PalinkPersonaRow[];
+  try {
+    const list = await api.get<PalinkPersonaRow[]>('/api/personas');
+    rows = Array.isArray(list) ? list : [];
+  } catch {
+    return { ok: false, error: 'failed' };
+  }
+  if (raw === 'current') {
+    // 当前人设是用户级单选（/active），不是列表里挑一只
+    try {
+      const active = await api.get<{ activePersonaId: string | null }>('/api/personas/active');
+      const activeId = active?.activePersonaId;
+      if (!activeId) return { ok: false, error: 'not_found' };
+      const found = rows.find((p) => p.id === activeId);
+      return found ? { ok: true, row: found } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'failed' };
+    }
+  }
+  const byId = rows.filter((p) => p.id === raw);
+  if (byId.length > 1) return { ok: false, error: 'ambiguous' };
+  if (byId.length === 1) return { ok: true, row: byId[0] };
+  const byName = rows.filter((p) => p.name === raw);
+  if (byName.length > 1) return { ok: false, error: 'ambiguous' };
+  if (byName.length === 1) return { ok: true, row: byName[0] };
+  return { ok: false, error: 'not_found' };
+}
+
+/** ST 语义的 persona 数据（fieldMap / 全量共用）；键名与值语义逐条对齐 ST。 */
+function personaDataOf(row: PalinkPersonaRow): Record<string, unknown> {
+  const connections: Array<{ type: 'character'; id: string }> = [];
+  const bindings = row.characterBindings || {};
+  for (const key of Object.keys(bindings)) {
+    if (key) connections.push({ type: 'character', id: key });
+  }
+  return {
+    // ST 的 avatar 是「头像文件名 = persona 唯一键」（personas.js:2291）；Palink 的
+    // avatar 列是路径字符串、唯一键是 id（mapPersonaRowToSt 的 avatar_id）⇒ 这里给
+    // id 保住「可当 persona handle 回传给其它 persona 命令」的语义；路径走卡侧
+    // getPersonaAvatarPath，不走本命令。
+    avatar: row.id,
+    name: row.name ?? '',
+    description: row.description ?? '',
+    title: row.title ?? '',
+    // 缺省值跟 mapPersonaRowToSt（4/4，本仓列缺省）而非 ST fieldMap 字面缺省
+    // （IN_PROMPT 0 / DEFAULT_DEPTH 2）：后端列缺省就是 4，同进程同答案。
+    position: Number(row.personaDescriptionPosition ?? 4),
+    depth: Number(row.personaDescriptionDepth ?? 4),
+    role: row.role ?? 0,
+    lorebook: row.lorebook ?? '',
+    default: Boolean(row.isDefault),
+    connections,
+  };
+}
+
+/**
+ * ST slashCommandReturnHelper.doReturn 的 pipe / object 两个可用分支
+ * （SlashCommandReturnHelper.js:60-75）。popup / chat / toast / console / none
+ * 五类在 ST 里是「副作用后返 ''」——Palink 引擎没有弹窗与聊天返回通道，
+ * 同样返 '' 但副作用无从发生（调用处 warn 说明）。
+ */
+function personaFieldToString(value: unknown): string {
+  return typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * 注册 API-7 第一批 + 第二批命令。幂等，可重复调用。
  * @returns 本次实际新增的命令名
  */
 export function registerStChatCommands(): string[] {
@@ -629,6 +791,259 @@ export function registerStChatCommands(): string[] {
         + `scan: ${inject?.scan ?? false}, role: ${inject?.role ?? 0})`
       ));
       return `### Script injections:\n${lines.length ? lines.join('\n') : 'No script injections for the current chat'}`;
+    },
+  });
+
+  // ── 第二批：纯逻辑 + 元数据 + 人设读取（API-7 批 2A）──────────────
+  // 除 /persona-get 外均为同步；/note 族与 /sysname 写后落库（ST 的
+  // saveChatConditional 对位），消息族写入仅内存态（文件头红线 2）。
+
+  // slash-commands.js:463-469 doGetChatName：返回当前聊天文件名。
+  // ⚠️ 三轨前置（SmartCardCompatController.ts:2198 / sandbox.ts:3722 /
+  // getContext.ts:2692 都先调 runPalinkSlashCommands）在
+  // slash-commands-compat.ts:180-183 已有确定返回 `palink-session-${sessionId}.jsonl`
+  // （无会话 → ''）——这里逐字对齐同一口径：前置命中的轨永远先答，引擎登记只补
+  // getCommand 真值 / 枚举计数，不产生第二种答案。
+  register('getchatname', {
+    description: 'Returns the name of the current chat file into the pipe.',
+    returns: 'chat file name',
+    callback: () => {
+      const sessionId = resolveSessionId();
+      return sessionId ? `palink-session-${sessionId}.jsonl` : '';
+    },
+  });
+
+  // slash-commands.js:1835-1879 → chats.js:147-170 hideChatMessageRange：
+  // range 缺省最后一条；name 过滤不匹配的跳过；is_system 置/复位；返 ''。
+  // ⚠️ 消息写入仅内存态（文件头红线 2）：后端 slash_command_service.py:1069-1115
+  // 已有 websocket/用户消息轨的持久实现（is_hidden 列），两轨不互通。
+  const hideMessageCallback = (hide: boolean) => (_n: Record<string, string>, u: string[]) => {
+    const chat = resolveChat();
+    const value = u.join(' ').trim();
+    const range = value ? stringToRange(value, 0, chat.length - 1) : { start: chat.length - 1, end: chat.length - 1 };
+    if (!range) {
+      console.warn(`WARN: Invalid range provided for /${hide ? 'hide' : 'unhide'} command: ${value}`);
+      return '';
+    }
+    const nameFilter = String(_n.name ?? '').trim();
+    for (let messageId = range.start; messageId <= range.end; messageId += 1) {
+      const message = chat[messageId];
+      if (!message) continue;
+      if (nameFilter && message.name !== nameFilter) continue;
+      message.is_system = hide;
+    }
+    return '';
+  };
+
+  register('hide', {
+    description: 'Hides a chat message from the prompt (in-memory only)',
+    namedArgs: [strArg('name', 'only hide messages from a certain character or persona')],
+    unnamedArgs: [strArg('range', 'message index (starts with 0) or range, defaults to the last message index if not provided')],
+    callback: hideMessageCallback(true),
+  });
+
+  register('unhide', {
+    description: 'Unhides a message from the prompt (in-memory only)',
+    namedArgs: [strArg('name', 'only unhide messages from a certain character or persona')],
+    unnamedArgs: [strArg('range', 'message index (starts with 0) or range, defaults to the last message index if not provided')],
+    callback: hideMessageCallback(false),
+  });
+
+  // slash-commands.js:1397-1405 → :5734-5740 setNarratorName：写
+  // chat_metadata['narrator_name']（:3768-3769 键名/缺省 'System'），空参 = 重置，
+  // 每次调用都 saveChatConditional（ST 同款），返 ''。本仓暂无 narrator_name
+  // 消费方（backend/app 全仓 grep 无命中），落库通道同 /note 族。
+  register('sysname', {
+    description: 'Sets a name for future system narrator messages in this chat (display only). Default: System. Leave empty to reset.',
+    unnamedArgs: [strArg('name', 'narrator name (empty to reset)')],
+    callback: async (_n, u) => {
+      const metadata = resolveStableChatMetadata();
+      const name = u.join(' ') || NARRATOR_NAME_DEFAULT;
+      metadata.narrator_name = name;
+      await persistChatMetadata(metadata);
+      return '';
+    },
+  });
+
+  // power-user.js:4160-4174 注册 → :2821-2862 doMesCut：range 必填，逐条
+  // 「先取正文再删除」（同一 start 下标反复删，返回每条正文 + '\n' 后缀）。
+  // ⚠️ 消息写入仅内存态（文件头红线 2）：后端 slash_command_service.py:986-1020
+  // 已有持久版，两轨不互通。ST 的 loadUntilMesId / DOM 段不适用（本读源即活数组）。
+  register('cut', {
+    description: 'Cuts the specified message or continuous chunk from the chat; returns the text of cut messages (in-memory only)',
+    returns: 'the text of cut messages separated by a newline',
+    unnamedArgs: [strArg('range', 'number or range (inclusive)', true)],
+    callback: (_n, u) => {
+      const chat = resolveChat();
+      const range = stringToRange(u.join(' ').trim(), 0, chat.length - 1);
+      if (!range) {
+        console.warn('WARN: Must provide a Message ID or a range to cut.');
+        return '';
+      }
+      let cutText = '';
+      const totalToCut = range.end - range.start + 1;
+      for (let i = 0; i < totalToCut; i += 1) {
+        cutText += (chat[range.start]?.mes || '') + '\n';
+        chat.splice(range.start, 1);
+      }
+      return cutText;
+    },
+  });
+
+  // ── /note 族（authors-note.js:502-560 + :44-103 四回调）────────────
+  //
+  // ⚠️ 键名分叉（有意偏离）：ST 存 note_prompt / note_interval / note_depth /
+  // note_position（:30-36 metadata_keys）；本仓两轨统一用 author_note /
+  // author_note_depth / author_note_frequency / author_note_position —— 后端写侧
+  // slash_command_service.py:131-236 与装配消费侧 roleplay_prompt_assembly.py
+  // （:3589 正文 / :3635 位置 / :3649 深度 / :3664 频率）都用这套键，前端写 ST 键
+  // 只会「落库但永不进提示词」。命令名与别名照 ST 权威名单（st-command-catalog）。
+  // ST 各回调在写后 saveChatConditional → 对位 persistChatMetadata。
+  // ST 语义：只吃未命名参数（管道需显式 {{pipe}}，scope.ts:85 已支持）。
+
+  // setNoteTextCommand（:44-50）：有参写、无参只读；返回当前值。
+  register('note', {
+    description: "Sets an author's note for the currently selected chat if specified and returns the current note.",
+    returns: "current author's note",
+    unnamedArgs: [strArg('text', "author's note text")],
+    callback: async (_n, u) => {
+      const metadata = resolveStableChatMetadata();
+      const text = u.join(' ');
+      if (text) {
+        metadata.author_note = text;
+        await persistChatMetadata(metadata);
+      }
+      return String(metadata.author_note ?? '');
+    },
+  });
+
+  // setNoteDepthCommand（:52-65）：Number 失败报错不写；写 Math.abs(value)。
+  register('note-depth', {
+    aliases: ['depth'],
+    description: "Sets an author's note depth for in-chat positioning if specified and returns the current depth.",
+    returns: "current author's note depth",
+    unnamedArgs: [{ name: 'number', description: 'depth value', type: [ARGUMENT_TYPE.NUMBER] }],
+    callback: async (_n, u) => {
+      const metadata = resolveStableChatMetadata();
+      const text = u.join(' ');
+      if (text) {
+        const value = Number(text);
+        if (Number.isNaN(value)) {
+          console.warn('Not a valid number');
+          return '';
+        }
+        metadata.author_note_depth = Math.abs(value);
+        await persistChatMetadata(metadata);
+      }
+      return String(metadata.author_note_depth ?? '');
+    },
+  });
+
+  // setNoteIntervalCommand（:67-79）：同 depth，写 Math.abs(value)。
+  register('note-frequency', {
+    aliases: ['freq', 'note-freq'],
+    description: "Sets an author's note insertion frequency if specified and returns the current frequency.",
+    returns: "current author's note insertion frequency",
+    unnamedArgs: [{ name: 'number', description: 'insertion frequency', type: [ARGUMENT_TYPE.NUMBER] }],
+    callback: async (_n, u) => {
+      const metadata = resolveStableChatMetadata();
+      const text = u.join(' ');
+      if (text) {
+        const value = Number(text);
+        if (Number.isNaN(value)) {
+          console.warn('Not a valid number');
+          return '';
+        }
+        metadata.author_note_frequency = Math.abs(value);
+        await persistChatMetadata(metadata);
+      }
+      return String(metadata.author_note_frequency ?? '');
+    },
+  });
+
+  // setNotePositionCommand（:82-103）：after/scenario→0、chat→1、
+  // before_scenario/before→2；读侧按键序返回首个匹配名（2 → 'before_scenario'）。
+  // ⚠️ 有意偏离：本仓后端 twin（slash_command_service.py:196-236）额外收
+  // none/inactive→-1（装配侧 -1 = NONE 跳过注入），这里同样收，读侧 -1 → 'none'
+  // （ST 的 validPositions 没有 -1，其读侧对 -1 会返回 undefined）。
+  const NOTE_POSITIONS: Record<string, number> = {
+    after: 0,
+    scenario: 0,
+    chat: 1,
+    before_scenario: 2,
+    before: 2,
+    none: -1,
+    inactive: -1,
+  };
+  register('note-position', {
+    aliases: ['pos', 'note-pos'],
+    description: "Sets an author's note insertion position if specified and returns the current position.",
+    returns: "current author's note insertion position",
+    unnamedArgs: [strArg('position', 'after / scenario / chat / before_scenario / before / none / inactive')],
+    callback: async (_n, u) => {
+      const metadata = resolveStableChatMetadata();
+      const text = u.join(' ').trim().toLowerCase();
+      if (text) {
+        const position = NOTE_POSITIONS[text];
+        if (typeof position === 'undefined') {
+          console.warn('Not a valid position');
+          return '';
+        }
+        metadata.author_note_position = position;
+        await persistChatMetadata(metadata);
+      }
+      return Object.keys(NOTE_POSITIONS).find((key) => NOTE_POSITIONS[key] === metadata.author_note_position) ?? '';
+    },
+  });
+
+  // personas.js:2638-2698 注册 → :2275-2320 getPersonaDataCallback。
+  // field 10 键 / return 缺省 pipe / 无 persona → ''，全部照 ST；数据源见
+  // resolvePersonaRow / personaDataOf 的注释。未知 return 类型照 ST 抛错
+  // （SlashCommandReturnHelper.js 的 default 分支）；已知但本仓无通道的五类返 ''。
+  const PERSONA_RETURN_CHANNELS = new Set(['popup-html', 'popup-text', 'chat-html', 'chat-text', 'toast-html', 'toast-text', 'console', 'none']);
+  const personaReturnToString = (value: unknown, mode: string, fullData: boolean): string => {
+    if (mode === 'pipe') return fullData ? JSON.stringify(value, null, 2) : personaFieldToString(value);
+    if (mode === 'object') return JSON.stringify(value);
+    if (PERSONA_RETURN_CHANNELS.has(mode)) {
+      console.warn(`Return type "${mode}" has no channel in Palink; returning empty string.`);
+      return '';
+    }
+    throw new Error(`Unknown return type: ${mode}`);
+  };
+
+  register('persona-get', {
+    aliases: ['persona-data'],
+    description: 'Retrieves persona data. Can return all data as JSON or a specific field value.',
+    returns: 'persona data as JSON or a specific field value',
+    namedArgs: [
+      strArg('persona', 'persona name, unique id, or "current" (default)'),
+      {
+        name: 'field',
+        description: 'Specific field to retrieve. If not provided, returns the entire persona data as JSON.',
+        type: [ARGUMENT_TYPE.STRING],
+        enumList: ['name', 'description', 'title', 'position', 'depth', 'role', 'lorebook', 'avatar', 'default', 'connections'],
+      },
+      strArg('return', 'The way to return the result (pipe / object)') /* defaultValue 缺省 pipe */,
+    ],
+    callback: async (n) => {
+      const resolved = await resolvePersonaRow(n.persona);
+      if (!resolved.ok) {
+        if (resolved.error === 'failed') console.warn('Persona lookup failed: backend access error.');
+        else if (resolved.error === 'ambiguous') console.warn('Persona reference is ambiguous; refuse to guess.');
+        else console.warn('No persona selected and no persona argument provided.');
+        return '';
+      }
+      const data = personaDataOf(resolved.row);
+      const mode = String(n.return ?? 'pipe');
+      const field = String(n.field ?? '');
+      if (field) {
+        if (!(field in data)) {
+          console.warn(`Unknown persona field "${field}"`);
+          return '';
+        }
+        return personaReturnToString(data[field], mode, false);
+      }
+      return personaReturnToString(data, mode, true);
     },
   });
 

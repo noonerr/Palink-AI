@@ -58,6 +58,7 @@ type Bridge = { calls: Array<{ name: string; args: unknown }> };
 function buildFrameView(options: {
   seedNames?: string[] | null;
   seedAliases?: Record<string, string> | null;
+  seedImplemented?: string[] | null;
   helpText?: string;
 } = {}) {
   const storeRegion = sliceBetween(
@@ -82,6 +83,9 @@ function buildFrameView(options: {
         ok: true,
         names: options.seedNames ?? ST_118_COMMAND_NAMES,
         aliases: options.seedAliases === null ? undefined : (options.seedAliases ?? ST_118_COMMAND_ALIASES),
+        // [API-8b 2026-10-26] 同一响应带 implemented（宿主引擎真注册名）；seedImplemented: null
+        // 模拟"宿主没发"的旧形状（帧内必须空操作退回：不炸、不凭空造名字）。
+        implemented: options.seedImplemented === null ? undefined : (options.seedImplemented ?? ['bg', 'echo']),
       });
     }
     if (action === 'runPalinkSlash') {
@@ -97,13 +101,14 @@ function buildFrameView(options: {
     'window',
     'requestParent',
     'executeSlashCommandCompat',
-    `${storeRegion}\n${viewRegion}\nreturn { view: slashCommandViewCompat, prime: primeSlashKnownNamesCompat, known: slashKnownNamesCompat };`,
+    `${storeRegion}\n${viewRegion}\nreturn { view: slashCommandViewCompat, prime: primeSlashKnownNamesCompat, known: slashKnownNamesCompat, implemented: slashImplementedNamesCompat };`,
   );
   const fakeWindow: any = { SlashCommandParser: {} };
   const built = factory(fakeWindow, requestParent, executeSlashCommandCompat) as {
     view: any;
     prime: () => Promise<void>;
     known: Set<string>;
+    implemented: Set<string>;
     window: any;
   };
   return { ...built, bridge, fakeWindow };
@@ -184,7 +189,7 @@ describe('F-1 源码接线（宿主与帧内两端都要在）', () => {
     expect(region).not.toContain("'checkpoint-create'");
   });
 
-  it('宿主：控制器有 getStCompatCommandNames 落点，且返回对象包一层 names + aliases', () => {
+  it('宿主：控制器有 getStCompatCommandNames 落点，且返回对象包一层 names + aliases + implemented', () => {
     const controller = readFileSync(
       join(process.cwd(), 'src/components/ui/custom/smart-card-runtime/SmartCardCompatController.ts'),
       'utf8',
@@ -195,9 +200,18 @@ describe('F-1 源码接线（宿主与帧内两端都要在）', () => {
     // 宿主必须把 alias→base 一起下发，帧内才可能在枚举视图里出现别名键。
     // 包一层 { names } 的形态**没变**（帧内 v2 对顶层数组会做对象展开 ⇒ 裸数组会变索引键），
     // 只是同一对象上多一个 aliases 兄弟键。
+    // [API-8b 2026-10-26 改判] 原断言是
+    // `result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases() };`。
+    // 改判依据：同一响应纯加性多一个 implemented 兄弟键（宿主引擎真注册名 ⇒ 帧内观察面
+    // window.__palinkSlashImplementedNames 的数据源，配合合成项 __palinkSeedOnly 标记分辨
+    // 「种子合成」与「真可执行」）。names/aliases 的形状、计数口径（293/176）与包一层对象的
+    // 形态**一字未动**——与上一轮加 aliases 同一性质，非删断言。
     expect(controller).toContain(
-      'result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases() };',
+      'result = { names: getStCompatCommandNames(), aliases: getStCompatCommandAliases(), implemented: getStCompatImplementedCommandNames() };',
     );
+    // implemented 不是静态抄名单：实时读引擎注册表（应用入口 bootstrap 后即全量）。
+    expect(controller).toContain('function getStCompatImplementedCommandNames');
+    expect(controller).toContain('SlashCommandEngine.getAllCommands()');
     expect(controller).toContain("from '@/lib/slash-engine/st-command-catalog'");
     expect(controller).toContain('getStCompatCommandAliases');
   });
@@ -363,5 +377,52 @@ describe('包AA A 别名进表：枚举视图里有别名键，且与主名同�
     expect('listchatvar' in view).toBe(true);
     expect('ghostalias' in view).toBe(false);
     expect(fakeWindow.__palinkSlashSeedAliasCount).toBe(1);
+  });
+});
+
+// ============================================================
+// API-8b · 未实现命令诊断信号（2026-10-26）
+// 纯加性：合成 entry 带 __palinkSeedOnly 来源标记（帧内真注册不带）；prime 把同一种子
+// 响应的 implemented（宿主引擎真注册名）读进观察面 window.__palinkSlashImplementedNames。
+// 不改空串返回值 / helpString / 卡可见字段形状；执行型断言跑求值后真源码。
+// ============================================================
+describe('API-8b 探测面标记与 implemented 观察面', () => {
+  it('合成 entry 带 __palinkSeedOnly=true；帧内真注册不带（探测面从此可分辨两者）', async () => {
+    const { view, prime } = buildFrameView();
+    await prime();
+    // 种子名单项（权威 293 内）：合成来源标记在场
+    expect(view.bg.__palinkSeedOnly).toBe(true);
+    expect(view.listvar.__palinkSeedOnly).toBe(true);
+    // 帧内真注册（经 Proxy set 陷阱进 Map）：不带标记 —— 这是探测面分辨两者的唯一抓手
+    view.echo = { name: 'echo', callback: () => 'x', aliases: [] };
+    expect(view.echo.__palinkSeedOnly).toBeUndefined();
+    // 既有字段形状一字未动（helpString 仍空串、aliases 仍空数组、callback 仍函数）
+    expect(view.bg.helpString).toBe('');
+    expect(view.bg.aliases).toEqual([]);
+    expect(typeof view.bg.callback).toBe('function');
+  });
+
+  it('prime 读 implemented 进观察面（Set + window 数组）；宿主没发时空操作退回', async () => {
+    const a = buildFrameView({ seedImplemented: ['bg', 'echo'] });
+    await a.prime();
+    expect(a.implemented.has('bg')).toBe(true);
+    expect(a.implemented.has('echo')).toBe(true);
+    expect(a.fakeWindow.__palinkSlashImplementedNames).toEqual(['bg', 'echo']);
+    // 反证：宿主没发 implemented（旧形状）⇒ 观察面为空集，不炸、不凭空造名字
+    const b = buildFrameView({ seedImplemented: null });
+    await b.prime();
+    expect(b.implemented.size).toBe(0);
+    expect(b.fakeWindow.__palinkSlashImplementedNames).toEqual([]);
+    // commands 的键集不受观察面影响（ownKeys 三源并集口径不动）
+    expect(Object.keys(b.view).length).toBeGreaterThanOrEqual(293);
+  });
+
+  it('种子响应缺 implemented（旧形状/失败响应）时观察面空集，/help 补漏路径照旧', async () => {
+    const { view, prime, implemented, fakeWindow } = buildFrameView({ seedNames: null, helpText: '/echo x\n' });
+    await prime();
+    expect(implemented.size).toBe(0);
+    expect(fakeWindow.__palinkSlashImplementedNames).toEqual([]);
+    expect('echo' in view).toBe(true);
+    expect('bg' in view).toBe(false);
   });
 });

@@ -59,6 +59,9 @@ const CATCH_SITES: string[] = [
   'part-05:dollar-method-apply', 'part-05:dollar-query-creation', 'part-05:dollar-proxy-set',
   'part-05:emit-compat-event',
   'part-07:tavernhelper-proxy-marker', 'part-07:worker-terminate', 'part-07:worker-postmessage',
+  // [批次TH 2026-10-26] 音频 autoplay 被浏览器拦下（playing 标志翻回 false，标志与实际发声一致）
+  // 与 loadPreset 同步返回 true 后父侧 PUT selection 失败（选中名实际未切换）——两处新登记。
+  'part-07:audio_play_blocked', 'part-07:preset_load_failed',
 ];
 
 /** 切出求值后载体里「帧内记录器」那一段（从记录器注释到 window.context 形状留痕之后）。 */

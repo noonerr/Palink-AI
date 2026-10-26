@@ -44,12 +44,22 @@ const PARTS = [
  *   JSON.stringify(BUNDLED_ST_PLUGIN_CSS)
  *   = [批次E2b 2026-10-21] 构建期插件 CSS 表（debugger.css 内联用），
  *     内容来自 bundled-plugin-css.generated.ts，不是运行时用户数据。
+ *   JSON.stringify(ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS)
+ *   = [帧内同步 2026-10-26] ST 内置扩展子键默认值单源（lib/sillytavern/
+ *     extension-settings-subkey-defaults.ts），applyStPluginRuntimeConfigCompat
+ *     子键填充段的构建期插值，内容是常量数据不是运行时用户数据。
+ *   JSON.stringify(ST_EVENT_TYPES_SHARED)
+ *   = [P2-25 2026-10-26] 事件枚举权威源单源（lib/sillytavern/event-types-compat.ts），
+ *     part-06 ensureObject('event_types', ...) 段的构建期插值，145 键纯字符串常量表，
+ *     宿主 getContext 经 re-export 共用同一份。
  */
 const ALLOWED_INTERPOLATIONS = [
   DOLLAR + '{bootHeader}',
   DOLLAR + '{IDB_NS_RUNTIME_SOURCE}',
   DOLLAR + '{VARIABLES_COMPAT_SOURCE}',
   DOLLAR + '{JSON.stringify(BUNDLED_ST_PLUGIN_CSS)}',
+  DOLLAR + '{JSON.stringify(ST_EXTENSION_SETTINGS_SUBKEY_DEFAULTS)}',
+  DOLLAR + '{JSON.stringify(ST_EVENT_TYPES_SHARED)}',
 ];
 
 /** 正则字母：紧跟在反斜杠后面时，反斜杠一旦被模板求值吞掉，正则就换了含义。 */

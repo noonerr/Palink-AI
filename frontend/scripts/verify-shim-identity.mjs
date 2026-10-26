@@ -74,6 +74,10 @@ const buildSillyTavernCompatRuntimeV2Shim = () => '';
 // runtime-url.ts 经 virtual module 导入（esbuild 视为 external、import 被剥除），
 // 需 stub 顶替，否则 SMART_CARD_RUNTIME_URL 求值时 ReferenceError
 const runtimeUrl = '';
+// legacy-url.ts 同为 virtual module 导入，需 stub 顶替；React2 是 esbuild 对
+// 内联模块 React 导入的重命名，import 剥除后同样需顶替
+const legacyUrl = '';
+const React2 = React;
 `;
 }
 

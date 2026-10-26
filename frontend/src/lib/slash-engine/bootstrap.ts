@@ -31,7 +31,8 @@ export function ensureSlashCommandsBootstrapped(): boolean {
     initSlashCommands();
     // ST 数学 / 文本 / 数组类命令（Palink 内置集里没有对应物，见 st-compat-commands.ts）
     registerStCompatCommands();
-    // [API-7 第一批 2026-10-24] 纯逻辑工具 + 消息读取 + 脚本注入（见 st-compat-commands-chat.ts）
+    // [API-7 第一批 2026-10-24 / 第二批 2026-10-26] 纯逻辑工具 + 消息读写 + 脚本注入
+    // + 元数据（/note 族）+ 人设读取（/persona-get），见 st-compat-commands-chat.ts
     registerStChatCommands();
   } catch (e) {
     // 注册失败不能拦住应用启动：引擎空着时行为等同修复前（命令返回空串）。

@@ -12,6 +12,9 @@
 
 import { SlashCommandScope, substituteMacros } from './scope';
 import { SlashCommandClosure, type ClosureExecutor } from './closure';
+// [API-8b 2026-10-26] 直执轨未实现命令留痕用。lib→components 方向的既有先例：
+// card-script-runner.ts 同款 import（仓内「静默失败登记」纪律，禁止空 catch）。
+import { recordPalinkDiag } from '@/components/ui/custom/smart-card-runtime/palink-diag';
 
 // ============================================================
 // 类型定义
@@ -163,6 +166,18 @@ class SlashCommandEngineClass implements ClosureExecutor {
       return { success: true, output: output || '', isCommand: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // [API-8b 2026-10-26] 宿主引擎直执轨的未实现命令留痕：sandbox / getContext / runtime
+      // 直接调本 execute，拿到 "Error: Unknown command: /x" 后各自消化，此前这条轨零痕迹
+      // （帧内桥接轨的折空串点已留痕）。owner/kind 与该折点同口径；返回值一字不改。
+      if (message.startsWith('Unknown command: /')) {
+        recordPalinkDiag({
+          owner: 'host_capability',
+          kind: 'slash_command_unimplemented',
+          name: message.slice('Unknown command: /'.length),
+          detail: '宿主引擎直执轨命中未实现命令；返回值照旧带 Error: 前缀字符串，调用方无感',
+          stack: error instanceof Error && error.stack ? error.stack : '',
+        });
+      }
       return {
         success: false,
         output: `Error: ${message}`,

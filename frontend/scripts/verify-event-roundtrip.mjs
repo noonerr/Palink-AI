@@ -7,7 +7,8 @@
  * 做什么
  *  1) 用生产载体 `COMPAT_V2_RUNTIME_ARTIFACT`（buildSmartCardCompatRuntimeExternalScript()
  *     的返回值，与 iframe 里逐字节相同的**已求值**脚本文本）在 jsdom 里启动帧运行时；
- *  2) 对 `ST_EVENT_TYPES`（lib/sillytavern/getContext.ts，117 条）逐条做
+ *  2) 对 `ST_EVENT_TYPES`（[P2-25 2026-10-26] 权威源 event-types-compat.ts，145 条；
+ *     getContext.ts 已改 re-export 同一对象）逐条做
  *     `eventSource.on(v)` → `eventSource.emit(v)` → 回调是否被调用；
  *  3) 用**受控宿主**（postMessage 拦截，全部 no-op 记录器，绝不发真实网络）
  *     驱动生产路径，记录运行期真正 emit 出来的事件名；
@@ -101,8 +102,10 @@ function parseLiteralTable(text, anchor, endToken = '};') {
 }
 
 function loadStEventTypes() {
-  const text = readFileSync(join(FRONTEND, 'src/lib/sillytavern/getContext.ts'), 'utf8');
-  return parseLiteralTable(text, 'export const ST_EVENT_TYPES');
+  // [P2-25 2026-10-26] 权威源统一后枚举真身移至 event-types-compat.ts（getContext.ts
+  // 仅 re-export，原字面量表已撤销），本探针随之改读权威源——指标口径不变。
+  const text = readFileSync(join(FRONTEND, 'src/lib/sillytavern/event-types-compat.ts'), 'utf8');
+  return parseLiteralTable(text, 'export const ST_EVENT_TYPES_SHARED');
 }
 
 function loadStReference() {
