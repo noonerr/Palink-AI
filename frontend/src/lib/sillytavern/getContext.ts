@@ -1534,6 +1534,184 @@ function stMessageToChatPatch(m: any, index: number): Omit<ChatMessage, 'id'> {
 }
 
 /**
+ * [API-3 2026-10-26] setChatMessages 的逐楼落库辅助（getContext 轨 + 沙箱轨共用）。
+ *
+ * 路线判定（为什么是逐楼 PUT 而**不是** POST /api/chats/save，取证见
+ * REPORT_查验_刷新即丢_setChatMessages落库_2026-10-26.md §2/§4 与本轮风险评估）：
+ *   /api/chats/save 是**全删重插**（backend/app/api/silly_tavern.py:3115-3149），
+ *   CharacterChatMessage.id（models/character.py:126 INTEGER 主键）会整体更换，而：
+ *   ① 记忆镜像 conversation_memories.message_id 挂旧主键
+ *      （memory_module/storage.py:260-269、models.py:78-81），save 路径无任何
+ *      [MEM-SYNC-ON-EDIT] 等价物 ⇒ 每次调用都批量制造孤儿镜像行；
+ *   ② 装配召回靠当前主键排除镜像防重复注入
+ *      （roleplay_prompt_assembly.py:6314-6331 + memory_module/retriever.py:103），
+ *      换号后排除失配 ⇒ 最近历史被镜像**二次注入**；
+ *   ③ 分支/MVU 锚点 branch.parent_message_id 与 (branch_id, up_to_message_id)
+ *      作用域（models/character.py:97、mvu_state.py:119、storage.py:982/:1387）
+ *      按数值比较，换号后分叉点指向错行/已删行。
+ *   setChatMessages 是热路径（MVU 每轮都调，见下 recordStubHitOnce 注释），换号
+ *   伤害每轮发生 ⇒ **方案 a 有实害，弃**。本函数走方案 b：按楼层用既有
+ *   PUT /api/character-sessions/{id}/messages/{id}（**保留主键**，自带
+ *   [MEM-SYNC-ON-EDIT] 记忆同步，character_ext.py:3521-3553）逐条写，
+ *   可见性用 PATCH :3574。写不通/表达不了的楼层**如实返回 false + 留痕，不假成功**。
+ */
+
+/** 取一条 ST 形状消息的 swipe 视图（数组、激活下标、激活文本）。 */
+function stFloorSwipeView(m: any): { swipes: string[]; swipeId: number; active: string } {
+  const raw = Array.isArray(m?.swipes) && m.swipes.length
+    ? m.swipes
+    : (Array.isArray(m?.extra?.swipes) && m.extra.swipes.length ? m.extra.swipes : null);
+  const mes = String(m?.mes ?? m?.message ?? '');
+  const swipes = raw ? raw.map((s: any) => String(s ?? '')) : [mes];
+  let swipeId = Math.trunc(Number(m?.swipe_id ?? 0));
+  if (!Number.isFinite(swipeId) || swipeId < 0) swipeId = 0;
+  swipeId = Math.min(swipeId, swipes.length - 1);
+  return { swipes, swipeId, active: swipes[swipeId] ?? '' };
+}
+
+interface StFloorPersistOutcome {
+  ok: boolean;
+  /** ok=false 时的简短原因（用于留痕）。 */
+  reason: string;
+}
+
+async function persistStChatFloors(
+  next: any[],
+  base: any[],
+  runtime: any,
+  authoritativeSource: boolean,
+): Promise<StFloorPersistOutcome> {
+  // [空读源 gate] base 不是来自权威 runtime.context.chat（读源为空、落到
+  // messageManager 兜底）时，楼层数组不是可信历史 —— 旧大堂桥时代整包
+  // POST /api/chats/save 正是"拿空读源覆盖 ⇒ 清空会话"的事故面
+  // （T1 报告护栏 1）。此处连逐楼写都不发起（下标可能整体错位）。
+  if (!authoritativeSource) {
+    return { ok: false, reason: '空读源：未读到权威 chat 数组，跳过逐楼落库（防错对齐覆盖）' };
+  }
+  // 会话定位**只取宿主权威值**：CharacterChat.tsx 每次渲染把 selectedSession.id
+  // 写进 runtime.context.chatId（:1693/:1729）。取不到就放弃落库 —— 绝不退化成
+  // avatar/file_name 推断，那是"拿别的会话顶包"的入口（chats/get 后端按
+  // X-Palink-Session-Id 精确定位并校验角色归属，silly_tavern.py:3002-3004、
+  // _session_for_file :1048-1055）。
+  const sessionId = String(runtime?.context?.chatId ?? '').trim();
+  const characterUuid = String((runtime?.context as any)?.characterUuid ?? '').trim();
+  if (!sessionId || !characterUuid) {
+    return { ok: false, reason: `宿主权威会话标识缺失（chatId=${sessionId ? 'ok' : '空'} characterUuid=${characterUuid ? 'ok' : '空'}）` };
+  }
+  let floors: any[];
+  try {
+    // 回读权威楼层：in-memory 的 StChatMessage **不带后端主键**
+    // （CharacterChat.tsx:1683-1692 的喂入映射与 toStMessage 都不含 id），
+    // 楼层→主键的映射必须以 /api/chats/get 的回读为准（返回形状含 id/mesid，
+    // 后端 _message_to_st silly_tavern.py:1190-1212）。
+    const resp: any = await api.post(
+      '/api/chats/get',
+      { avatar_url: `palink-${characterUuid}.png`, ch_name: String((runtime?.context as any)?.name2 ?? '') },
+      { headers: { 'X-Palink-Session-Id': sessionId } },
+    );
+    if (!Array.isArray(resp) || resp.length === 0) {
+      return { ok: false, reason: '回读失败：/api/chats/get 未返回权威楼层数组，不发任何写请求' };
+    }
+    // 首条为聊天头（_chat_header）；头里若声明了归属会话却对不上 ⇒ 中止
+    // （防"跨会话顶包"的第二道闸）。
+    const headerSessionId = resp[0]?.chat_metadata?.palink_session_id;
+    if (headerSessionId != null && String(headerSessionId) !== sessionId) {
+      return { ok: false, reason: '回读回来的会话与会头声明不一致，中止落库' };
+    }
+    floors = resp.slice(1);
+  } catch (e) {
+    console.warn('[Palink getContext] setChatMessages 回读 /api/chats/get 失败:', e);
+    return { ok: false, reason: '回读请求异常（/api/chats/get）' };
+  }
+
+  if (next.length !== floors.length) {
+    // 整体替换形态下的增/删楼层：保主键路线**故意不写**（删历史是高危操作，
+    // 且无批量原语；本判定与 T1 验收判据 3"读不到权威就不覆盖"同源）。
+    // 内存态照常、UI 重拉会恢复服务端版本 ⇒ 如实 false + 留痕。
+    return { ok: false, reason: `楼层数不一致（内存 ${next.length} vs 后端 ${floors.length}），增/删楼不落库` };
+  }
+
+  const failed: number[] = [];
+  const unwritable: number[] = [];
+  for (let i = 0; i < next.length; i++) {
+    const inc = next[i];
+    const prev = base[i];
+    const db = floors[i];
+    if (!inc || typeof inc !== 'object') continue;
+    const incMes = String(inc.mes ?? inc.message ?? '');
+    const inV = stFloorSwipeView(inc);
+    const pvV = prev && typeof prev === 'object' ? stFloorSwipeView(prev) : null;
+    // 变化判定用**同源**的 base（插件读走的 runtime.context.chat）而非 DB 回读行：
+    // 内存 chat 经宿主 stripStyleBlocks、DB 行经后端 clean_smart_card_markup，
+    // 两套清理口径不能逐字对齐 —— 拿 DB 行比对会把未动的楼层误判为"变了"并
+    // 逐楼全量重写。DB 回读行在这里只承担"楼层→主键"映射（+ 归属校验）。
+    const contentChanged = !pvV
+      || incMes !== String(prev?.mes ?? prev?.message ?? '')
+      || inV.swipes.join('\u0000') !== pvV.swipes.join('\u0000')
+      || inV.swipeId !== pvV.swipeId
+      || (typeof inc.name === 'string' && inc.name !== String(prev?.name ?? ''))
+      || (typeof inc.is_user === 'boolean' && inc.is_user !== Boolean(prev?.is_user))
+      || (typeof inc.is_system === 'boolean' && inc.is_system !== Boolean(prev?.is_system));
+    const visChanged = (Boolean(inc.is_hidden) !== Boolean(prev?.is_hidden))
+      || (Boolean(inc.is_locked) !== Boolean(prev?.is_locked));
+    if (!contentChanged && !visChanged) continue; // 无变化不写（热路径防全量写风暴）
+    const dbId = Number(db?.id);
+    if (!Number.isInteger(dbId) || dbId <= 0) {
+      unwritable.push(i); // 回读行拿不到正整数主键 ⇒ 这一楼没法保键写，如实记
+      continue;
+    }
+    if (contentChanged) {
+      // PUT 会把 content 强制写进激活 swipe 槽（character_ext.py:491
+      // `_sync_message_content_to_active_swipe`）。分三种情形：
+      //  · mes == 激活槽（ST 常态，含 COT"格式化写非激活槽"）⇒ 原样落库，零破坏；
+      //  · mes 被改了但激活槽没跟上 ⇒ 插件只改了正文（美化卡回写形态）——
+      //    按宿主真写路径同款（CharacterChat applySmartCardMessageUpdate 把新
+      //    content 写进激活槽）折叠后落库，非激活槽原样保留；
+      //  · mes 没改、只是把 swipe_id 挪向别的文本（COT"切展示保原文"双版本）⇒
+      //    保主键通道表达不了，不写这楼，如实记为未落库。
+      const mesEdited = incMes !== String(prev?.mes ?? prev?.message ?? '');
+      const putSwipes = inV.swipes.slice();
+      if (inV.active !== incMes && mesEdited) putSwipes[inV.swipeId] = incMes;
+      if (inV.active !== incMes && !mesEdited) {
+        unwritable.push(i);
+        continue;
+      }
+      try {
+        await api.put(`/api/character-sessions/${sessionId}/messages/${dbId}`, {
+          content: incMes,
+          name: typeof inc.name === 'string' ? inc.name : undefined,
+          is_user: typeof inc.is_user === 'boolean' ? inc.is_user : undefined,
+          is_system: typeof inc.is_system === 'boolean' ? inc.is_system : undefined,
+          swipes: putSwipes,
+          swipe_id: inV.swipeId,
+        });
+      } catch (e) {
+        console.warn('[Palink getContext] setChatMessages 落库失败（楼层', i, 'id', dbId, '）:', e);
+        failed.push(i);
+      }
+    }
+    if (visChanged) {
+      try {
+        await api.patch(`/api/character-sessions/${sessionId}/messages/${dbId}`, {
+          is_hidden: Boolean(inc.is_hidden),
+          is_locked: Boolean(inc.is_locked),
+        });
+      } catch (e) {
+        console.warn('[Palink getContext] setChatMessages 可见性落库失败（楼层', i, 'id', dbId, '）:', e);
+        failed.push(i);
+      }
+    }
+  }
+  if (failed.length || unwritable.length) {
+    return {
+      ok: false,
+      reason: `部分楼层未落库：写失败 ${failed.length} 楼、表达不了 ${unwritable.length} 楼（PUT 保主键通道无法承载 COT 双版本/增删楼）`,
+    };
+  }
+  return { ok: true, reason: '' };
+}
+
+/**
  * 共享的批量消息写入（ST setChatMessages 语义）。
  *
  * Palink 没有"整体覆盖聊天"的原生批量写原语，这里用 messageManager 的
@@ -1544,23 +1722,28 @@ function stMessageToChatPatch(m: any, index: number): Omit<ChatMessage, 'id'> {
  *   (a) 完整消息数组 → 整体替换；
  *   (b) 部分更新 [{ message_id, swipes, swipe_id }] → 按楼层只改 swipes。
  *
- * ⚠️ 已知降级（**不是静默吞掉**，调用时会登记进 window.__palinkCompatStats）：
- * 原大堂桥会把结果 POST 到 /api/chats/save 落库（COT 格式化 swipe 由此持久）；
- * 本实现只写内存态，刷新/重载后丢失。落库是否单独下沉需主控确认
- * （见 REPORT_sandbox-dep_2026-10-15.md 遗留项 L1）。
+ * [API-3 2026-10-26] **落库已接**：内存写完后调 persistStChatFloors（逐楼
+ * PUT/PATCH，保留主键 + 后端 [MEM-SYNC-ON-EDIT] 记忆同步）。落库成功才返回
+ * true；空读源 / 无宿主权威会话 / 回读失败 / 增删楼 / COT 双版本楼层一律
+ * 返回 false 并登记降级桩（旧版全程无网络请求却 return true 的假成功已消灭）。
+ * 为什么不下沉 /api/chats/save：全删重插换主键，会批量孤儿化记忆镜像、
+ * 打断装配去重与分支/MVU 锚点（证据见 persistStChatFloors 头注释）。
+ * 已知残余缺口（与帧内 th134 轨同界，见 T1 报告"第二个独立缺口"）：
+ * extra/swipe_info 的整包写、增删楼层不落库。
  */
-export function applyStChatMessages(
+export async function applyStChatMessages(
   messages: unknown,
   options?: { runtime?: unknown } | null,
-): boolean {
+): Promise<boolean> {
   const incoming = Array.isArray(messages) ? (messages as any[]) : null;
   if (!incoming || incoming.length === 0) return false;
 
   try {
     const runtime: any = options?.runtime ?? getGlobalSillyTavernRuntime();
     const runtimeChat = Array.isArray(runtime?.context?.chat) ? runtime.context.chat : null;
-    const base: any[] = (runtimeChat && runtimeChat.length > 0)
-      ? runtimeChat.slice()
+    const authoritativeSource = !!(runtimeChat && runtimeChat.length > 0);
+    const base: any[] = authoritativeSource
+      ? (runtimeChat as any[]).slice()
       : messageManager.messages.map(toStMessage);
 
     const isPartialUpdate = incoming.every(
@@ -1597,7 +1780,7 @@ export function applyStChatMessages(
     // ② 对齐写回 messageManager（add / update / delete 组合）
     //    仅在 messageManager 本身就是读源（runtime chat 为空）或已有内容时才写，
     //    避免给 useCharacterChat.ts:152 的真实消息读取注入合成消息。
-    const mmIsSource = !runtimeChat || runtimeChat.length === 0;
+    const mmIsSource = !authoritativeSource;
     if (mmIsSource || messageManager.messages.length > 0) {
       const mm = messageManager.messages;
       for (let i = 0; i < next.length; i++) {
@@ -1613,19 +1796,25 @@ export function applyStChatMessages(
       }
     }
 
-    // ③ 通知 UI 刷新（CharacterView.tsx:1654 监听，与大堂桥同款）
+    // ③ [API-3] 逐楼落库（保留主键的 PUT/PATCH 通道，见 persistStChatFloors）
+    const persist = await persistStChatFloors(next, base, runtime, authoritativeSource);
+
+    // ④ 通知 UI 刷新（CharacterView 监听后从服务端重拉；放在落库之后，
+    //    成功时重拉回来的是新数据，失败时重拉恢复服务端旧数据 = 内存态被回滚，
+    //    与"写不通不假成功"一致）。
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('palink:chatMessagesUpdated'));
     }
 
-    // [T5 口径 A 2026-10-17] 用**会话级**留痕：MVU 等卡脚本每轮都调 setChatMessages，
-    // 逐次登记会让插件管理页出现持续膨胀的计数（淹没其他降级信号）⇒ 每会话只记一次。
-    // 口径 A = 「留痕、不加闸门」，所以这里只登记、不做任何拦截。
-    recordStubHitOnce(
-      'setChatMessages:persist',
-      '仅写内存态（runtime.context.chat + messageManager），未经 /api/chats/save 落库，重载后丢失；待主控确认是否下沉落库',
-    );
-    return true;
+    // [T5 口径 A 2026-10-17 → API-3 2026-10-26] 高频留痕仍用**会话级**去重；
+    // 但登记条件从"每次调用必登记（当时根本没落库）"收紧为"仅落库不完整时登记"。
+    if (!persist.ok) {
+      recordStubHitOnce(
+        'setChatMessages:persist',
+        `落库不完整：${persist.reason}；内存态已写，服务端重拉后将回滚`,
+      );
+    }
+    return persist.ok;
   } catch (e) {
     console.warn('[Palink getContext] applyStChatMessages failed:', e);
     return false;

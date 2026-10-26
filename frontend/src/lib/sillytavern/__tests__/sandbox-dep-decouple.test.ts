@@ -18,7 +18,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// [API-3 2026-10-26] applyStChatMessages 已接真落库（逐楼 PUT/PATCH + /api/chats/get
+// 回读）。本文件是"解耦"守卫，不测网络细节（落库契约见 set-chat-messages-persist.test.ts），
+// 故把 @/services/api 的传输方法替换为可控桩；其余导出保留真实模块。
+const { apiMock } = vi.hoisted(() => ({
+  apiMock: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
+    stream: vi.fn(),
+  },
+}));
+vi.mock('@/services/api', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return { ...actual, api: { ...actual.api, ...apiMock } };
+});
+
 import {
   getContext,
   selectStChatMessages,
@@ -54,13 +73,30 @@ const BASE_CHAT = [
   { name: 'Bot', mes: 'bye', is_user: false, send_date: 3000, swipes: ['bye'], swipe_id: 0 },
 ];
 
+// 后端 /api/chats/get 的权威楼层回读桩（首条是聊天头，其余带主键 id）。
+const DB_CHAT_WITH_IDS = [
+  { chat_metadata: { palink_session_id: 'sess-s5dep' } },
+  { id: 101, mesid: 0, name: 'User', mes: 'hi', is_user: true, swipes: ['hi'], swipe_id: 0 },
+  { id: 102, mesid: 1, name: 'Bot', mes: 'hello', is_user: false, swipes: ['hello'], swipe_id: 0 },
+  { id: 103, mesid: 2, name: 'Bot', mes: 'bye', is_user: false, swipes: ['bye'], swipe_id: 0 },
+];
+
 const W = window as any;
 
 beforeEach(() => {
+  for (const fn of Object.values(apiMock)) fn.mockReset();
+  apiMock.post.mockImplementation(async (url: string) =>
+    (url === '/api/chats/get' ? DB_CHAT_WITH_IDS.map((x) => ({ ...x })) : {}));
+  apiMock.put.mockResolvedValue({ status: 'ok' });
+  apiMock.patch.mockResolvedValue({ status: 'ok' });
+  apiMock.delete.mockResolvedValue({ status: 'ok' });
   messageManager.clearMessages();
   createSillyTavernRuntime({
     chat: BASE_CHAT.map(m => ({ ...m })),
     chatId: 'sess-s5dep',
+    // [API-3] 落库只认宿主权威标识（chatId + characterUuid），测试给出完整对
+    characterUuid: 'uuid-s5dep',
+    name2: 'Bot',
     character: { name: 'Bot', description: '' },
     characters: [],
   } as any);
@@ -141,49 +177,73 @@ describe('A. 行为层：三个 API 在 window 桥存在时也不读它', () => 
     }
   });
 
-  it('setChatMessages 写原生 runtime.context.chat（且不读 window 桥）', async () => {
+  it('setChatMessages 写原生 runtime.context.chat（且不读 window 桥）并真发落库 PUT', async () => {
     const ctx = getContext() as any;
     const ok = await ctx.setChatMessages([
-      { name: 'User', mes: 'a', is_user: true },
-      { name: 'Bot', mes: 'b', is_user: false },
+      { name: 'User', mes: 'a', is_user: true, swipe_id: 0 },
+      { name: 'Bot', mes: 'b', is_user: false, swipes: ['b'], swipe_id: 0 },
+      { name: 'Bot', mes: 'bye', is_user: false, swipes: ['bye'], swipe_id: 0 },
     ]);
+    // [API-3] true 现在意味着"落库请求真的写成了"（api 桩恒成功），不再是内存假成功
     expect(ok).toBe(true);
     // 反证：没有吃到 window 桥哨兵
     expect(W.__bridgeSetCalled).toBe(false);
 
     const rt = getGlobalSillyTavernRuntime() as any;
-    expect(rt.context.chat.length).toBe(2);
+    expect(rt.context.chat.length).toBe(3);
     expect(rt.context.chat[1].mes).toBe('b');
     // 下一次 getContext() 立即读到新值（无需等 React 重渲染）
-    expect((getContext() as any).getChatMessages(-1)[0].mes).toBe('b');
+    expect((getContext() as any).getChatMessages(-1)[0].mes).toBe('bye');
+    // [API-3] 变化的两楼各发一次保主键 PUT；未变的那楼（103）不得重写
+    expect(apiMock.put).toHaveBeenCalledTimes(2);
+    const urls = apiMock.put.mock.calls.map((c: any[]) => String(c[0]));
+    expect(urls).toContain('/api/character-sessions/sess-s5dep/messages/101');
+    expect(urls).toContain('/api/character-sessions/sess-s5dep/messages/102');
+    expect(urls).not.toContain('/api/character-sessions/sess-s5dep/messages/103');
+    // 落库绝不走 /api/chats/save 整包覆盖（全删重插换主键，见 getContext 注释）
+    expect(apiMock.post.mock.calls.every((c: any[]) => !String(c[0]).includes('chats/save'))).toBe(true);
   });
 
-  it('setChatMessages 支持部分更新形态 [{message_id, swipes, swipe_id}]', async () => {
+  it('setChatMessages 支持部分更新形态 [{message_id, swipes, swipe_id}]（COT：格式化写非激活槽可落库）', async () => {
     const ctx = getContext() as any;
     await ctx.setChatMessages([
-      { name: 'User', mes: 'a', is_user: true },
-      { name: 'Bot', mes: 'b', is_user: false },
+      { name: 'User', mes: 'a', is_user: true, swipe_id: 0 },
+      { name: 'Bot', mes: 'b', is_user: false, swipes: ['b'], swipe_id: 0 },
+      { name: 'Bot', mes: 'bye', is_user: false, swipes: ['bye'], swipe_id: 0 },
     ]);
-    await ctx.setChatMessages([{ message_id: 1, swipes: ['S0', 'S1'], swipe_id: 1 }]);
+    apiMock.put.mockClear();
+    // 格式化文本写入**非激活**槽（swipe_id=0 仍指向原文槽）⇒ 双版本可保键落库
+    const ok = await ctx.setChatMessages([{ message_id: 1, swipes: ['b', '格式化'], swipe_id: 0 }]);
+    expect(ok).toBe(true);
 
     const rt = getGlobalSillyTavernRuntime() as any;
-    expect(rt.context.chat.length).toBe(2);
-    expect(rt.context.chat[1].swipes).toEqual(['S0', 'S1']);
-    expect(rt.context.chat[1].swipe_id).toBe(1);
+    expect(rt.context.chat.length).toBe(3);
+    expect(rt.context.chat[1].swipes).toEqual(['b', '格式化']);
+    expect(rt.context.chat[1].swipe_id).toBe(0);
     // 正文不得被部分更新清掉
     expect(rt.context.chat[1].mes).toBe('b');
     expect(W.__bridgeSetCalled).toBe(false);
+    // 真的 PUT 了这一楼的主键 102，且带着完整 swipes（激活槽=content，非激活槽原样）
+    expect(apiMock.put).toHaveBeenCalledTimes(1);
+    const [, body] = apiMock.put.mock.calls[0] as any[];
+    expect(body.swipes).toEqual(['b', '格式化']);
+    expect(body.content).toBe('b');
   });
 
-  it('setChatMessages 在 messageManager 为读源时用 add/update/delete 组合写入', () => {
+  it('setChatMessages 在 messageManager 为读源时用 add/update/delete 组合写入（且不落库）', async () => {
     // 构造"无 runtime chat"场景（messageManager 即读源）
     createSillyTavernRuntime({ chat: [], chatId: 'sess-mm', character: { name: 'Bot', description: '' } } as any);
     messageManager.addMessage({ id: 'm1', name: 'User', mes: 'old', is_user: true, send_date: 1 });
 
-    applyStChatMessages([
+    const ok1 = await applyStChatMessages([
       { name: 'User', mes: 'new', is_user: true },
       { name: 'Bot', mes: 'reply', is_user: false },
     ]);
+    // [API-3 空读源 gate] runtime chat 为空 ⇒ 权威历史读不到，**一律不发写请求**
+    //（旧大堂桥时代整包 chats/save 会清空会话；逐楼路线同样禁止错对齐写）
+    expect(ok1).toBe(false);
+    expect(apiMock.post.mock.calls.every((c: any[]) => String(c[0]) !== '/api/chats/get')).toBe(true);
+    expect(apiMock.put).not.toHaveBeenCalled();
 
     expect(messageManager.messages.length).toBe(2);
     expect(messageManager.messages[0].id).toBe('m1'); // 同下标复用原 id（update 而非重建）
@@ -191,13 +251,17 @@ describe('A. 行为层：三个 API 在 window 桥存在时也不读它', () => 
     expect(messageManager.messages[1].mes).toBe('reply');
 
     // 缩减：写回 1 条 → 多出的被 delete
-    applyStChatMessages([{ name: 'User', mes: 'only', is_user: true }]);
+    const ok2 = await applyStChatMessages([{ name: 'User', mes: 'only', is_user: true }]);
+    expect(ok2).toBe(false); // 同上：空读源不落库
     expect(messageManager.messages.length).toBe(1);
     expect(messageManager.messages[0].mes).toBe('only');
   });
 
-  it('setChatMessages 的"未落库"降级被登记（不是静默吞掉）', () => {
-    applyStChatMessages([{ name: 'User', mes: 'x', is_user: true }]);
+  it('setChatMessages 落库不完整时登记降级桩（不再是"每会话必现"的假成功留痕）', async () => {
+    // [API-3] 语义反转：内存写 + 落库成功 ⇒ **不**登记；本次用"楼层数不一致"
+    // （插件传入截断数组，隐含删楼意图，保主键路线拒绝落库）构造不完整路径。
+    const ok = await applyStChatMessages([{ name: 'User', mes: 'x', is_user: true }]);
+    expect(ok).toBe(false);
     const stats = W.__palinkCompatStats as Map<string, { count: number }> | undefined;
     expect(stats).toBeDefined();
     expect(stats!.has('setChatMessages:persist')).toBe(true);
