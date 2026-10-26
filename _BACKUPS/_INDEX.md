@@ -196,3 +196,13 @@
 | 2026-10-26 | [`_QUARANTINE_2026-10-18`](./_QUARANTINE_2026-10-18) | 根级 `_QUARANTINE_2026-10-18/` | 42M 旧 staging（包M后），原位置违规；本次仅归位并补 BACKUP_INFO，内容零改动。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-19`](./_QUARANTINE_2026-10-19) | 根级 `_QUARANTINE_2026-10-19/` | 35M 旧 staging（包N后），原位置违规；本次仅归位并补 BACKUP_INFO，内容零改动。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_tmp_audit`](./_QUARANTINE_2026-10-26_tmp_audit) | 根级 `.tmp_audit/` | 2.0M 旧审计探针与草稿（10-22 后未动），按减负清单 §3.8 归置。 |
+| 2026-10-26 | [`2026-10-26_预设库0072前`](./2026-10-26_预设库0072前) | `palink-ai-db-1` / 库 `ai_hub` | **34M**（`pg_dump \| gzip`，`gzip -t` 通过）；迁移前 alembic=0071、context 4 / instruct 5 / prompt_presets 0 / generation 27。用于 0072 `context_templates.user_id` 上线回滚。 |
+
+## 清理记录（非备份，仅留痕）
+
+| 日期 | 对象 | 原大小 | 处置 | 依据 / 备注 |
+|---|---|---|---|---|
+| 2026-10-26 | `.mimosa/hook-state/` | **31G** / 375,241 个 `.baseline` | 整目录改名隔离后直接删除；工具下次运行会重新生成 | 用户 2026-10-26「第四个可以」；先例 `_INDEX.md:111`（10-03 删同物 1.6G）。删后 D 盘可用从约 2G 回到 **33G**，`.mimosa` 现 77K。删前已确认施工链停止写入。 |
+| 2026-10-26 | `frontend/dist_*` staging ×25 | 293M | 移入 `_QUARANTINE_2026-10-26_frontend_staging/` | 减负清单 §3.4；源码可重建，保鲜期后删。 |
+| 2026-10-26 | 根级 `_QUARANTINE_2026-10-18/19` | 42M + 35M | 归位到 `_BACKUPS/` 并补 `BACKUP_INFO` | 原位置违规；内容零改动。 |
+| 2026-10-26 | `.tmp_audit/` | 2.0M | 移入 `_QUARANTINE_2026-10-26_tmp_audit/` | 减负清单 §3.8。 |
