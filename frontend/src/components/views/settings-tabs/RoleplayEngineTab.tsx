@@ -26,6 +26,7 @@ import { GlassCard } from '@/components/ui/custom/GlassCard';
 import { SettingsGroup, SettingsRow, Segmented } from './settings-ui';
 import { Switch } from '@/components/ui/switch';
 import { PresetManager } from '@/components/ui/custom/PresetManager';
+import { PresetLibraryPanel } from '@/components/ui/custom/PresetLibraryPanel';
 import { fetchPresetSelection } from '@/lib/promptPresetSelection';
 import { useRoleplayTheme, RoleplayThemeProvider } from '@/contexts/RoleplayThemeContext';
 
@@ -847,6 +848,12 @@ export function RoleplayEngineTab({ bottomPadding, onOpenAdminPlugins }: Rolepla
                     ))}
                   </div>
                 )}
+              </GlassCard>
+
+              {/* 模板库：context/instruct/sysprompt/reasoning 四类清单的统一管理入口。
+                  导入/删除后回调刷新上下文模板下拉，保证本页以及重新进入时口径一致。 */}
+              <GlassCard className="p-4 md:p-6">
+                <PresetLibraryPanel onChanged={fetchContextTemplates} />
               </GlassCard>
             </div>
           )}
