@@ -93,7 +93,8 @@ def _other_user(db_session, username: str = "preset_lib_other") -> User:
 class TestBuiltinLibrary:
     def test_list_has_four_kinds_with_chinese_builtins(self, client):
         library = _library(client)
-        assert set(library.keys()) == {"context", "instruct", "sysprompt", "reasoning"}
+        # sysprompt_current：[SP-1 2026-10-26] 起附带 sysprompt 当前选中态（dict）
+        assert set(library.keys()) == {"context", "instruct", "sysprompt", "reasoning", "sysprompt_current"}
         assert "Palink·沉浸叙事" in _names(library["context"])
         assert "Palink·极简" in _names(library["context"])
         assert "Palink·对话体" in _names(library["instruct"])

@@ -2139,6 +2139,11 @@ def _build_char_system_prompt(char: Character, user_nickname: str = "用户", pr
     # - true（默认）且角色 system_prompt 非空 → 作为角色设定总纲置于核心规则层之上
     #   （ST 语义：charPrompt 决定 system 槽，角色设定优先于用户全局）；
     # - false（或空）→ 忽略角色 system_prompt，回落默认三层模板（ST：退回用户全局 sysprompt）。
+    # [SP-1 2026-10-26] 「用户全局 sysprompt」现已接入原生装配：power_user.sysprompt
+    #   （enabled+content）由 character_message_builder.build_character_chat_messages
+    #   作为**独立前置 system 消息**注入 messages[0]（叠加语义，不替换本分支的 main 槽，
+    #   也不受本 prefer_character_prompt 开关门控——与 ST 的替换语义偏差，裁定依据见
+    #   docs/_active/spec/SPEC_预设库接入原生装配_方案_2026-10-26.md §3.1/§3.2）。
     prefer_char_prompt = True
     if user_setting and user_setting.power_user:
         try:

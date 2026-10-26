@@ -14,7 +14,9 @@
 
 sysprompt / reasoning 没有专表：``st_power_user_defaults.py`` 的 ``sysprompt`` /
 ``reasoning`` 是 ST 设置对象里的**当前选中值**（单选），不是可选集合。所以本库
-另起两个数组键存集合，**不动那两个选中值**，也不发明装配接线（本期只做库）。
+另起两个数组键存集合。[SP-1 2026-10-26] sysprompt 的选中值已接入原生装配
+（``/sysprompt/current`` 写入 → ``character_message_builder.read_enabled_sysprompt``
+消费，enabled+非空 content 才前置注入）；reasoning 选中值仍不动（SPEC 裁定缓做）。
 
 ## ST 原生 JSON 导入
 
@@ -54,6 +56,7 @@ import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -154,6 +157,13 @@ _META_KEYS = {
 }
 
 
+class SyspromptCurrentRequest(BaseModel):
+    """POST /sysprompt/current 请求体：name 与 clear 二选一。"""
+
+    name: Optional[str] = None
+    clear: bool = False
+
+
 # ---------------------------------------------------------------------------
 # 通用小工具
 # ---------------------------------------------------------------------------
@@ -197,6 +207,44 @@ def _write_stored_preset_entries(setting: UserSetting, key: str, entries: list[d
     stored = _load_settings_dict(setting.silly_tavern_settings, user_id=user_id)
     stored[key] = entries
     setting.silly_tavern_settings = json.dumps(stored, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# [SP-1 2026-10-26] sysprompt「当前选中值」通道（UserSetting.power_user 列）
+#
+# ST 语义对照（power-user.js:267-272）：`power_user.sysprompt = {enabled, name,
+# content, post_history}` 是下拉框的**当前选中值**；本库数组键
+# `silly_tavern_settings.sysprompt_presets` 是可选集合。「设为当前」= 把集合中
+# 某条拷进选中值并置 enabled=true；「取消启用」= 只置 enabled=false（name/
+# content 保留，与 ST 勾选框行为一致）。消费端在
+# services/character_message_builder.read_enabled_sysprompt（enabled 且 content
+# 非空才注入，默认关=零回归）。
+# 读改写口径与 silly_tavern.py `/api/themes/save`（power_user 列同款）一致：
+# 只动 sysprompt 子键，其余 power_user 键原样。
+# ---------------------------------------------------------------------------
+def _load_power_user_dict(setting: Optional[UserSetting], *, user_id: int) -> dict[str, Any]:
+    raw = getattr(setting, "power_user", None) if setting is not None else None
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError) as exc:
+        record("preset_library.power_user_json", exc, user_id=user_id)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sysprompt_current_view(setting: Optional[UserSetting], user_id: int) -> dict[str, Any]:
+    pu = _load_power_user_dict(setting, user_id=user_id)
+    sp = pu.get("sysprompt")
+    if not isinstance(sp, dict):
+        return {"enabled": False, "name": "", "has_content": False}
+    content = sp.get("content")
+    return {
+        "enabled": bool(sp.get("enabled")),
+        "name": str(sp.get("name") or ""),
+        "has_content": bool(str(content or "").strip()),
+    }
 
 
 def _unknown_keys(item: dict, allowed: set[str]) -> list[str]:
@@ -322,7 +370,7 @@ def _ensure_seeded(db: Session, user: User) -> dict[str, int]:
         return {}
 
 
-def _library_payload(db: Session, user: User) -> dict[str, list[dict[str, Any]]]:
+def _library_payload(db: Session, user: User) -> dict[str, Any]:
     context = (
         _visible_context_query(db, user)
         .order_by(ContextTemplate.is_builtin.desc(), ContextTemplate.name)
@@ -345,6 +393,8 @@ def _library_payload(db: Session, user: User) -> dict[str, list[dict[str, Any]]]
             _reasoning_builtin_entries(),
             _stored_preset_entries(setting, REASONING_PRESETS_KEY, user.id),
         ),
+        # [SP-1] sysprompt 当前选中态（UI 据此显示「当前」徽标/取消启用按钮）。
+        "sysprompt_current": _sysprompt_current_view(setting, user.id),
     }
 
 
@@ -603,6 +653,56 @@ def ensure_defaults(
         db.rollback()
         raise HTTPException(500, "Failed to seed preset library") from exc
     return {"ok": True, "counts": counts}
+
+
+@router.post("/sysprompt/current")
+def select_sysprompt_current(
+    payload: SyspromptCurrentRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """[SP-1 2026-10-26] sysprompt「设为当前 / 取消启用」唯一写入口。
+
+    - ``{"name": "<库内条目名>"}``：把该条拷进 ``power_user.sysprompt``
+      （enabled=true + name + content，其余子键如 post_history 原样保留）。
+      ST 对照：power-user.js 下拉框选中 + 启用勾选，写入的是**选中值**，
+      不新增表、不动 `sysprompt_presets` 可选集合。
+    - ``{"clear": true}``：仅置 enabled=false（"取消启用"回到默认关；
+      name/content 保留，与 ST 勾选框行为一致）。
+    - 归属只认 token；写 UserSetting.power_user 列，天然按用户隔离
+      （A 的选中值不进 B 的行，测试 test_selection_is_per_user 钉住）。
+    """
+    name = (payload.name or "").strip()
+    if payload.clear and name:
+        raise HTTPException(400, "Use exactly one of name / clear")
+    if not payload.clear and not name:
+        raise HTTPException(400, "Provide name (设为当前) or clear=true (取消启用)")
+
+    _ensure_seeded(db, user)
+    setting = _get_or_create_setting(db, user.id)
+
+    content_value: Optional[str] = None
+    if not payload.clear:
+        library = _library_payload(db, user)
+        entry = next(
+            (e for e in library[KIND_SYSPROMPT] if str(e.get("name") or "").strip() == name),
+            None,
+        )
+        if entry is None:
+            raise HTTPException(404, "Sysprompt preset not found")
+        content_value = str(entry.get("content") or "")
+
+    pu = _load_power_user_dict(setting, user_id=user.id)
+    sp = pu.get("sysprompt")
+    sp = dict(sp) if isinstance(sp, dict) else {}
+    if payload.clear:
+        sp["enabled"] = False
+    else:
+        sp.update({"enabled": True, "name": name, "content": content_value or ""})
+    pu["sysprompt"] = sp
+    setting.power_user = json.dumps(pu, ensure_ascii=False)
+    db.commit()
+    return {"ok": True, "current": _sysprompt_current_view(setting, user.id)}
 
 
 @router.post("/import")

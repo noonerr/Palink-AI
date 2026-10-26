@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
+  CheckCircle2,
   Download,
   FileJson,
   Loader2,
@@ -19,11 +20,30 @@ import { ConfirmDialog } from '@/components/ui/custom/ConfirmDialog';
  * 四类清单：context / instruct / sysprompt / reasoning。
  * - 清单字段口径不完全一致：context/instruct 用 `id/name/display_name/is_builtin`，
  *   sysprompt/reasoning 用 `name/builtin`。归一化统一走 normalizePresetLibrary。
- * - 本批 sysprompt/reasoning **只做库管理**，不接「应用到生成」（见卡片底部说明）。
+ * - [SP-1 2026-10-26] sysprompt 已接「设为当前 / 取消启用」（写后端
+ *   `power_user.sysprompt` 选中值，启用后由原生装配前置注入一条 system；
+ *   默认关=零回归）。reasoning 仍只做库管理，不接生成。
  * - 导入走 multipart（`file` + 可选 `kind`），复用 PresetManager 的同款写法。
  */
 
 export type PresetLibraryKind = 'context' | 'instruct' | 'sysprompt' | 'reasoning';
+
+/** 后端 `sysprompt_current`：power_user.sysprompt 当前选中态（[SP-1] 新增键）。 */
+export interface SyspromptCurrent {
+  enabled: boolean;
+  name: string;
+  hasContent: boolean;
+}
+
+/** 归一化 sysprompt 当前选中态；缺键/非法形状一律回落"未启用"（不抛）。 */
+export function normalizeSyspromptCurrent(raw: unknown): SyspromptCurrent {
+  const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return {
+    enabled: source.enabled === true,
+    name: asText(source.name).trim(),
+    hasContent: source.has_content === true || source.hasContent === true,
+  };
+}
 
 export const PRESET_LIBRARY_KINDS: { key: PresetLibraryKind; label: string; hint: string }[] = [
   { key: 'context', label: '上下文模板', hint: 'Context Template' },
@@ -176,6 +196,13 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
   const [importKind, setImportKind] = useState<'' | PresetLibraryKind>('');
   const [summary, setSummary] = useState<PresetLibraryImportSummary | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ kind: PresetLibraryKind; item: PresetLibraryItem } | null>(null);
+  // [SP-1 2026-10-26] sysprompt 当前选中态 + 写请求进行中标记（防连点重复提交）。
+  const [syspromptCurrent, setSyspromptCurrent] = useState<SyspromptCurrent>({
+    enabled: false,
+    name: '',
+    hasContent: false,
+  });
+  const [syspromptBusy, setSyspromptBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(true);
 
@@ -204,6 +231,13 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
       const data = await api.get('/api/preset-library');
       if (!mountedRef.current) return;
       setLibrary(normalizePresetLibrary(data));
+      setSyspromptCurrent(
+        normalizeSyspromptCurrent(
+          data && typeof data === 'object'
+            ? (data as Record<string, unknown>).sysprompt_current
+            : null,
+        ),
+      );
     } catch (e) {
       console.error('Failed to load preset library:', e);
       if (!mountedRef.current) return;
@@ -290,6 +324,34 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
       if (mountedRef.current) setRestoring(false);
     }
   };
+
+  // [SP-1 2026-10-26] 「设为当前」：POST /api/preset-library/sysprompt/current。
+  // 写后端 power_user.sysprompt 选中值（enabled=true + name + content），
+  // 启用后原生装配在提示词最前多出一条 system；取消启用回到默认关。
+  const postSyspromptCurrent = useCallback(
+    async (body: { name?: string; clear?: boolean }, okMessage: string) => {
+      if (syspromptBusy) return;
+      setSyspromptBusy(true);
+      try {
+        await api.post('/api/preset-library/sysprompt/current', body);
+        await loadLibrary();
+        notifyChanged();
+        toast.success(okMessage);
+      } catch (e: any) {
+        console.error('Failed to update sysprompt current:', e);
+        toast.error(e?.message || '系统提示词启用状态更新失败');
+      } finally {
+        if (mountedRef.current) setSyspromptBusy(false);
+      }
+    },
+    [syspromptBusy, loadLibrary, notifyChanged],
+  );
+
+  const handleSelectSysprompt = (item: PresetLibraryItem) =>
+    void postSyspromptCurrent({ name: item.name }, `已设为当前系统提示词：${item.displayName}`);
+
+  const handleDisableSysprompt = () =>
+    void postSyspromptCurrent({ clear: true }, '已取消启用（回到默认关闭）');
 
   const handleConfirmDelete = async () => {
     if (!pendingDelete) return;
@@ -437,13 +499,27 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
                     <p className="text-sm font-medium truncate">{label}</p>
                     <p className="text-[11px] text-muted-foreground truncate">{hint}</p>
                   </div>
-                  <span
-                    className="shrink-0 text-xs text-muted-foreground"
-                    data-testid="preset-library-count"
-                    data-kind={key}
-                  >
-                    {items.length} 项
-                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {key === 'sysprompt' && syspromptCurrent.enabled && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={handleDisableSysprompt}
+                        disabled={syspromptBusy}
+                        data-testid="preset-library-disable-sysprompt"
+                      >
+                        取消启用
+                      </Button>
+                    )}
+                    <span
+                      className="text-xs text-muted-foreground"
+                      data-testid="preset-library-count"
+                      data-kind={key}
+                    >
+                      {items.length} 项
+                    </span>
+                  </div>
                 </div>
                 {items.length === 0 ? (
                   <div className="px-3 py-3 text-xs text-muted-foreground">暂无</div>
@@ -469,6 +545,40 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
                           <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-secondary text-muted-foreground">
                             内置
                           </span>
+                        )}
+                        {key === 'sysprompt' &&
+                          syspromptCurrent.name !== '' &&
+                          item.name === syspromptCurrent.name && (
+                            <span
+                              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-primary/15 text-primary"
+                              data-testid="preset-library-sysprompt-current"
+                              data-enabled={syspromptCurrent.enabled ? 'true' : 'false'}
+                            >
+                              {syspromptCurrent.enabled ? '当前·已启用' : '当前（未启用）'}
+                            </span>
+                          )}
+                        {key === 'sysprompt' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 shrink-0"
+                            title="设为当前（启用后原生生成的提示词最前会注入这条）"
+                            aria-label={`设为当前 ${item.displayName}`}
+                            data-testid="preset-library-select-current"
+                            data-kind={key}
+                            data-key={item.key}
+                            disabled={
+                              syspromptBusy ||
+                              (syspromptCurrent.enabled && syspromptCurrent.name === item.name)
+                            }
+                            onClick={() => handleSelectSysprompt(item)}
+                          >
+                            {syspromptBusy ? (
+                              <Loader2 size={13} className="animate-spin" />
+                            ) : (
+                              <CheckCircle2 size={13} />
+                            )}
+                          </Button>
                         )}
                         <Button
                           variant="ghost"
@@ -509,7 +619,8 @@ export function PresetLibraryPanel({ onChanged, refreshToken = 0, className }: P
       )}
 
       <p className="text-xs text-muted-foreground leading-relaxed" data-testid="preset-library-note">
-        说明：原生对话暂未消费 sysprompt/reasoning，ST 插件面可使用。导入 ST 预设时，
+        说明：系统提示词「设为当前」并启用后，原生对话会在提示词最前注入该条
+        （默认关闭，取消启用即回到原状）；reasoning 仍仅服务 ST 插件面。导入 ST 预设时，
         context 中无法映射的键会被丢弃并列入提示。
       </p>
 

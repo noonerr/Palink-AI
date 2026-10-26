@@ -5,10 +5,13 @@
  *   1. 四类清单归一化：context/instruct 的 id/display_name/is_builtin 与
  *      sysprompt/reasoning 的 name/builtin 两种口径都能读；缺字段/非数组不抛。
  *   2. 导入摘要：created/skipped/warnings 兼容字符串与对象两种条目。
- *   3. 组件渲染：四个分组 + 条数 + 内置小标；非内置才有删除按钮；sysprompt/reasoning
- *      只做库管理（底部说明在位）。
+ *   3. 组件渲染：四个分组 + 条数 + 内置小标；非内置才有删除按钮；
+ *      底部说明已改为「sysprompt 已接原生注入（默认关）」。
  *   4. 导入：multipart 带 file（自动识别时不带 kind），导入后展示 created 数与 warnings、
  *      并重拉清单、回调父组件刷新。
+ *   5. [SP-1 2026-10-26] sysprompt「设为当前 / 取消启用」：仅 sysprompt 组有该按钮；
+ *      POST /sysprompt/current 带 name / clear:true；成功后重拉清单并回调；
+ *      sysprompt_current 选中态渲染徽标与「取消启用」按钮；归一化容错。
  *
  * 运行: cd frontend && npx vitest run src/components/ui/custom/__tests__/preset-library-panel.test.tsx
  */
@@ -20,6 +23,7 @@ import {
   PresetLibraryPanel,
   normalizePresetLibrary,
   normalizePresetLibraryItem,
+  normalizeSyspromptCurrent,
   summarizePresetLibraryImport,
 } from '../PresetLibraryPanel';
 import { api } from '@/services/api';
@@ -179,10 +183,130 @@ describe('PresetLibraryPanel 渲染', () => {
     );
     expect(deleteKeys.sort()).toEqual(['context/2', 'sysprompt/NSFW']);
 
-    // sysprompt/reasoning 本批不接生成，说明必须在位
+    // sysprompt 已接原生注入（默认关）；reasoning 仍只服务插件面
     expect(byTestId('preset-library-note').textContent).toContain(
-      '原生对话暂未消费 sysprompt/reasoning',
+      '设为当前」并启用后，原生对话会在提示词最前注入',
     );
+    // 默认无选中态时：不出现「取消启用」按钮，也不出现当前徽标
+    expect(container.querySelector('[data-testid="preset-library-disable-sysprompt"]')).toBeNull();
+    expect(container.querySelector('[data-testid="preset-library-sysprompt-current"]')).toBeNull();
+  });
+});
+
+describe('normalizeSyspromptCurrent', () => {
+  it('缺键/非法形状回落未启用，不抛', () => {
+    expect(normalizeSyspromptCurrent(null)).toEqual({ enabled: false, name: '', hasContent: false });
+    expect(normalizeSyspromptCurrent('oops')).toEqual({ enabled: false, name: '', hasContent: false });
+    expect(normalizeSyspromptCurrent({ enabled: true, name: ' 中性对话 ', has_content: true })).toEqual({
+      enabled: true,
+      name: '中性对话',
+      hasContent: true,
+    });
+    // enabled 非严格 true 视同关闭
+    expect(normalizeSyspromptCurrent({ enabled: 'yes', name: 'A' }).enabled).toBe(false);
+  });
+});
+
+describe('PresetLibraryPanel sysprompt 设为当前', () => {
+  const LIB_WITH_CURRENT = {
+    ...LIBRARY,
+    sysprompt_current: { enabled: true, name: 'Main', has_content: true },
+  };
+
+  it('仅 sysprompt 组渲染「设为当前」按钮，当前项带徽标且按钮禁用，头部有取消启用', async () => {
+    mockedGet.mockResolvedValue(LIB_WITH_CURRENT);
+    await act(async () => {
+      root.render(<PresetLibraryPanel />);
+    });
+    await act(async () => {});
+
+    const selects = container.querySelectorAll('[data-testid="preset-library-select-current"]');
+    expect(selects).toHaveLength(2); // 只挂在 sysprompt 的两行上
+    const kinds = new Set(Array.from(selects).map((el) => (el as HTMLElement).dataset.kind));
+    expect([...kinds]).toEqual(['sysprompt']);
+
+    // 当前项（Main）按钮禁用，另一项（NSFW）可点
+    const byKey: Record<string, HTMLButtonElement> = {};
+    selects.forEach((el) => {
+      const k = (el as HTMLElement).dataset.key || '';
+      byKey[k] = el as HTMLButtonElement;
+    });
+    expect(byKey.Main.disabled).toBe(true);
+    expect(byKey.NSFW.disabled).toBe(false);
+
+    const badge = byTestId('preset-library-sysprompt-current') as HTMLElement;
+    expect(badge.textContent).toContain('当前·已启用');
+    expect(badge.dataset.enabled).toBe('true');
+    expect(byTestId('preset-library-disable-sysprompt')).toBeTruthy();
+  });
+
+  it('点击「设为当前」POST {name}，成功后重拉清单并回调父组件', async () => {
+    mockedGet.mockResolvedValue(LIBRARY);
+    mockedPost.mockResolvedValue({ ok: true, current: { enabled: true, name: 'NSFW', has_content: true } });
+    const onChanged = vi.fn();
+
+    await act(async () => {
+      root.render(<PresetLibraryPanel onChanged={onChanged} />);
+    });
+    await act(async () => {});
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+
+    const btn = container.querySelector(
+      '[data-testid="preset-library-select-current"][data-key="NSFW"]',
+    ) as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    await act(async () => {
+      btn.click();
+    });
+    await act(async () => {});
+
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+    expect(mockedPost.mock.calls[0][0]).toBe('/api/preset-library/sysprompt/current');
+    expect(mockedPost.mock.calls[0][1]).toEqual({ name: 'NSFW' });
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('点击「取消启用」POST {clear:true}', async () => {
+    mockedGet.mockResolvedValue(LIB_WITH_CURRENT);
+    mockedPost.mockResolvedValue({ ok: true, current: { enabled: false, name: 'Main', has_content: true } });
+
+    await act(async () => {
+      root.render(<PresetLibraryPanel />);
+    });
+    await act(async () => {});
+
+    const disable = byTestId('preset-library-disable-sysprompt') as HTMLButtonElement;
+    await act(async () => {
+      disable.click();
+    });
+    await act(async () => {});
+
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+    expect(mockedPost.mock.calls[0][0]).toBe('/api/preset-library/sysprompt/current');
+    expect(mockedPost.mock.calls[0][1]).toEqual({ clear: true });
+    // 重拉后回到未选中态视图（mock 仍返回带 current 的清单，这里只验证请求形状）
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('POST 失败时报错提示且不重拉清单', async () => {
+    mockedGet.mockResolvedValue(LIBRARY);
+    mockedPost.mockRejectedValue(new Error('404 Sysprompt preset not found'));
+
+    await act(async () => {
+      root.render(<PresetLibraryPanel />);
+    });
+    await act(async () => {});
+
+    const btn = container.querySelector(
+      '[data-testid="preset-library-select-current"][data-key="NSFW"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+    });
+    await act(async () => {});
+
+    expect(mockedGet).toHaveBeenCalledTimes(1); // 失败不重拉
   });
 });
 

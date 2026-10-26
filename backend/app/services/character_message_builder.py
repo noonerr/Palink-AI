@@ -16,6 +16,50 @@ from ..utils import strip_inline_think
 
 logger = logging.getLogger(__name__)
 
+# [SP-1 2026-10-26] 用户全局 sysprompt 注入消息的私有 prompt-id（出栈前由
+# 装配层 _palink_ 私有键剥离统一剥掉，见 roleplay_prompt_assembly）。
+PALINK_PROMPT_ID_SYSPROMPT = "sysprompt"
+
+
+def read_enabled_sysprompt(user_setting: Optional[UserSetting]) -> str:
+    """读取 power_user.sysprompt「当前选中值」（ST power-user.js:267-272 同款对象）。
+
+    [SP-1 2026-10-26] palink-native 装配接入（SPEC_预设库接入原生装配 P0）。
+    仅当 `enabled == true` 且 `content` 去空白后非空时返回 content；其余一切
+    形态（无设置行 / power_user 为空 / 键缺失 / 坏 JSON / enabled=false /
+    content 空）一律返回 ""——"" 是零回归硬线：调用方据此不插任何消息。
+
+    注意与预设库数组键 `silly_tavern_settings.sysprompt_presets`（可选集合）
+    区分：本函数读的是 **UserSetting.power_user 列里的选中值**，
+    与 character_ext.py `_build_char_system_prompt` 读 prefer_character_prompt
+    用的是同一列、同一解析容错口径。
+    """
+    if user_setting is None:
+        return ""
+    raw = getattr(user_setting, "power_user", None)
+    if not raw:
+        return ""
+    try:
+        pu = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        # 装配热路径：once=True 只留一条记录，防持续性坏 JSON 刷屏（纪律：新
+        # except 必须接 silent_failure，不许无声吞掉）。
+        from ..core.silent_failure import record as _sf_record
+
+        _sf_record("sysprompt.power_user_json", exc, once=True)
+        return ""
+    if not isinstance(pu, dict):
+        return ""
+    sysprompt = pu.get("sysprompt")
+    if not isinstance(sysprompt, dict):
+        return ""
+    if not bool(sysprompt.get("enabled", False)):
+        return ""
+    content = sysprompt.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return ""
+    return content
+
 
 def parse_system_commands(text: str) -> Tuple[str, List[str]]:
     """
@@ -165,7 +209,9 @@ def build_character_chat_messages(
     """
     构建角色聊天消息列表。
 
-    顺序：[ASM-4 前部插槽: worldInfoBefore] -> 稳定角色提示词(main) ->
+    顺序：[SP-1 用户全局 sysprompt 前置 system（power_user.sysprompt.enabled
+    且 content 非空时才有，否则整段缺席）] ->
+    [ASM-4 前部插槽: worldInfoBefore] -> 稳定角色提示词(main) ->
     [ASM-4 前部插槽: worldInfoAfter → D-5b 三段卡字段（charDescription/
     charPersonality/scenario，各自独立成条）→ 记忆/实体卡/AN/IN_PROMPT 等
     相对扩展提示] ->
@@ -200,6 +246,36 @@ def build_character_chat_messages(
     # main 消息显式打上 "main" 标识：标题指令与 instruct 模板注入从此按标记定位，
     # 不再依赖 messages[0] 位置启发（前部插槽存在时 messages[0] 已不是 main）。
     messages: List[Dict[str, Any]] = []
+
+    # D3 修复: 群聊时 {{char}} 绑定到当前发言者
+    _char_name_for_sub = (speaker_char.name if (is_group and speaker_char is not None) else char.name) or ""
+
+    # ══ [SP-1 2026-10-26] 用户全局 sysprompt 前置注入（SPEC_预设库接入原生装配 P0）══
+    # ST 一手语义（power-user.js:267-272 选中值 + openai.js getSettingKey('system','prompt')）：
+    #   sysprompt.enabled=true 时其 content **替换** system 槽（main）的内容；
+    #   prefer_character_prompt=true 且卡 system_prompt 非空时卡侧胜出
+    #   （即 character_ext.py `_build_char_system_prompt` 分支注释里写的"ST：退回用户全局 sysprompt"）。
+    # Palink 落点与偏差（主脑裁定，2026-10-26）：
+    #   · 偏差①：不替换、不并进 main，而是作为**独立的前置 system 消息**插在
+    #     messages[0]（整个前部块之首）。ST 中 sysprompt 就坐在 system 槽=全部
+    #     提示词的最前块，故位置对应关系是"占 main 之前的头名"；worldInfoBefore
+    #     → main 的既有相对顺序零改动。
+    #   · 偏差②：不做 prefer_character_prompt 门控——enabled 本身即用户显式
+    #     选择（预设库"设为当前"写入），叠加而非互斥，避免改动卡 prompt 优先级语义。
+    #   · 群聊不注入：ST 群聊走 group_sysprompt 槽（与本选中值是两把开关），
+    #     该槽本批未接入，不把单聊 sysprompt 错套到群。
+    # 零回归硬线：enabled=false / content 空 / 无 power_user / 坏 JSON ⇒
+    #   read_enabled_sysprompt 返回 ""，此处不插消息，序列与改前逐字节一致。
+    # 尾部 system 红线：本注入位于**头部**，messages[-1] 形状不变（PROMPT-TAIL-GUARD 不受影响）。
+    if not is_group:
+        _sysprompt_text = read_enabled_sysprompt(user_setting)
+        if _sysprompt_text:
+            messages.append({
+                "role": "system",
+                "content": _replace_placeholders(_sysprompt_text, user_nickname, _char_name_for_sub) or _sysprompt_text,
+                "_palink_prompt_id": PALINK_PROMPT_ID_SYSPROMPT,
+            })
+
     for _fb_msg in (front_before_main or []):
         messages.append(dict(_fb_msg))
     messages.append({
@@ -210,9 +286,6 @@ def build_character_chat_messages(
     _main_prompt_idx = len(messages) - 1
     for _fa_msg in (front_after_main or []):
         messages.append(dict(_fa_msg))
-
-    # D3 修复: 群聊时 {{char}} 绑定到当前发言者
-    _char_name_for_sub = (speaker_char.name if (is_group and speaker_char is not None) else char.name) or ""
 
     # A2 修复: mes_example 按 <START> 拆块组织（ST parseMesExamples +
     # populateDialogueExamples 语义），对齐 st-compat 函数族行为：

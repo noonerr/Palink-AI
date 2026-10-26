@@ -41,7 +41,10 @@ from ..models.extension_prompt import (
     EXTENSION_PROMPT_POSITION_MIN,
     EXTENSION_PROMPT_POSITION_MAX,
 )
-from ..services.character_message_builder import build_character_chat_messages
+from ..services.character_message_builder import (
+    PALINK_PROMPT_ID_SYSPROMPT,
+    build_character_chat_messages,
+)
 from ..services.plotline_service import build_plotline_context
 from ..services.worldbook_service import build_worldbook_context, WorldbookContextResult
 from ..services.macro_service import MacroEnv, evaluate_macros, evaluate_macros_in_messages
@@ -1218,6 +1221,12 @@ def _collect_prompt_sources(
             priority = _TRIM_PRIORITY_SMART_CARD  # 复用较低优先级（30）
             trimmable = True
         elif identifier == PROMPT_ID_SYSTEM_PROMPT:
+            priority = _TRIM_PRIORITY_SYSTEM
+            trimmable = False
+        elif identifier == PALINK_PROMPT_ID_SYSPROMPT:
+            # [SP-1 2026-10-26] 用户全局 sysprompt 前置注入：ST 中它是 system 槽
+            # 本体（随 main 不可裁），接入后必须继承同等待遇——否则超预算时
+            # 落到兜底 LOW/trimmable，用户显式选择的系统提示词第一批被裁掉。
             priority = _TRIM_PRIORITY_SYSTEM
             trimmable = False
         elif identifier in (
