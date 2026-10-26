@@ -201,6 +201,7 @@
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_presetui`](./_QUARANTINE_2026-10-26_dist孤儿chunk_presetui) | `frontend/dist` | 本轮重建前 126 个历史孤儿；现行入口 `index-CSqzhUI7.js`，本区均不再被引用。 |
 | 2026-10-26 | [`2026-10-26_dist重建前_气泡P2-3`](./2026-10-26_dist重建前_气泡P2-3) | `frontend/dist` | **7.1M**（tar.gz），改前入口 `index-CSqzhUI7.js`；上线 P2-3 气泡 98%+自适应（`755e465`）与预设库 ST 等价默认（`05bea50`）。上线后入口 `index-CeOdXquD.js`，HTTP 200，真机窄屏 427px 实测气泡右边界与 `.mes` 齐平、短消息仅 48px、无横向溢出。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_p23`](./_QUARANTINE_2026-10-26_dist孤儿chunk_p23) | `frontend/dist` | 本轮重建前 124 个历史孤儿；现行入口 `index-CeOdXquD.js`。 |
+| 2026-10-26 | [`2026-10-26_仓外备份_下午HEAD`](./2026-10-26_仓外备份_下午HEAD) | `.git`（`--all`） | **138M** bundle，`git bundle verify` = complete history，HEAD `32eae92`。起因：当日中午首推成功（远端建分支、731 笔），下午续推 3 笔时 github 443 连接被重置 ⇒ 远端落后 3 笔，本份为推送恢复前的唯一远端级保险。待办见该目录 `BACKUP_INFO.md` §④。 |
 
 ## 清理记录（非备份，仅留痕）
 
