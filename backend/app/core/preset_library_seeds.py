@@ -20,6 +20,23 @@ sysprompt / reasoning 没有专表（见 ``services/st_power_user_defaults.py`` 
 ``sysprompt`` / ``reasoning`` 默认块：那是 ST 设置对象的**当前选中值**，不是
 预设集合）。本库另起两个**数组键**存"可选集合"，与 ST 的选中值互不影响。
 
+## 与 ST 1.18 出厂预设的对应关系（2026-10-26 内容补全）
+
+**只对齐"用途/结构/覆盖面"，正文全部自写。** 逐类依据：
+
+| kind      | ST 1.18 依据（证据等级）                                                | 本文件覆盖 |
+|-----------|-------------------------------------------------------------------------|-----------|
+| context   | 四套结构模板 Default / Classic / ChatCompletion / Instruct（一手：仓库内 `context_template_seeds.py` 已按 ST 结构实现） | ST 结构四类已在表里，本文件只补 2 条中文风格项 |
+| instruct  | 常见 Instruct 序列 Alpaca / ChatML / Llama 2 / Llama 3 / Mistral（一手：同上 `instruct_template_seeds.py`；ST 默认选中 `Alpaca`，见 `power-user.js:220`） | ST 结构五类已在表里，本文件只补 2 条中文风格项 |
+| sysprompt | 默认选中 `Neutral - Chat`（一手：`power-user.js:267-272`）；目录内另有 `Actor.json` / `Lightning 1.1.json` 等身份型预设（前序会话留档，本地 `_reference` 缺 `default/content`，本次无法复核） | 7 条：中性对话 / 中性指令 / 入戏扮演 / 沉浸第一人称 / 旁白叙事 / 轻松休闲 / 严谨考据 |
+| reasoning | 默认模板 `Think XML` = `<think>` + `</think>` + `\n`（一手：`reasoning.js:34`、`power-user.js:274-281`） | 3 条：标准思考（同标签配置）/ 显式分步 / 无标签草稿 |
+
+版权自审口径：ST 默认 sysprompt 原句
+`Write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}.`
+**未出现在本文件任何一条里**，也没有逐句翻译版；`Actor` / `Lightning 1.1` 的原文
+本次无法读取，故只按"用途"重写，不复述其句式。测试
+`test_builtin_texts_do_not_copy_st_default` 钉住这条。
+
 ## 幂等与"不覆盖用户值"
 
 ``ensure_preset_library_seeds(db, user_id=...)``：
@@ -168,10 +185,41 @@ BUILTIN_INSTRUCT_PRESETS: list[dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# sysprompt（4 条）—— 落 silly_tavern_settings.sysprompt_presets
+# sysprompt（7 条）—— 落 silly_tavern_settings.sysprompt_presets
+#
+# 顺序 = 使用频率：前两条对应 ST 的 `Neutral - Chat`（默认选中）与
+# `Neutral - Instruct`（中性、无风格倾向）；随后是身份/视角/语调四类。
+# 名字用中文短标签，一眼能看出对应 ST 的哪一类用途；正文全部自写。
 # ---------------------------------------------------------------------------
 BUILTIN_SYSPROMPT_PRESETS: list[dict[str, Any]] = [
     {
+        # 对应 ST `Neutral - Chat`（默认项）：最小介入，只要求续写角色这一侧。
+        # ⚠️ 不要写成 ST 原句的中译——用途相同，句式与信息点必须是我们自己的。
+        "name": "中性对话",
+        "content": (
+            "本轮仍由你出演{{char}}：回应{{user}}刚才那句话，只写{{char}}这一方"
+            "的言语和举动。人设、口吻保持连贯，不替对方说话，也不做收尾总结。"
+        ),
+    },
+    {
+        # 对应 ST `Neutral - Instruct`：指令模式下同样保持中性，不注入风格。
+        "name": "中性指令",
+        "content": (
+            "按{{user}}最新的要求继续，以{{char}}的身份作答：回答集中、少铺垫、"
+            "不重复问题。若要求与角色设定冲突，先守住角色，再用一句话说明取舍。"
+        ),
+    },
+    {
+        # 对应 ST `Actor`（"专业演员"型身份预设）：只取"方法派表演"这一用途。
+        "name": "入戏扮演",
+        "content": (
+            "把{{char}}当作一场戏里的角色来演：开口前先确认此刻身在何处、想要"
+            "什么、心情如何，再让台词和动作自然长出来。不点评自己的表演，不预告"
+            "剧情走向，也不替对手戏的{{user}}做选择。"
+        ),
+    },
+    {
+        # 对应 ST `Lightning 1.1` 一类"你就是角色"的沉浸型预设（用途对齐）。
         "name": "沉浸第一人称",
         "content": (
             "你是{{char}}。请始终以第一人称说话和思考，用当下的感官细节（所见、"
@@ -204,20 +252,33 @@ BUILTIN_SYSPROMPT_PRESETS: list[dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# reasoning（2 条）—— 落 silly_tavern_settings.reasoning_presets
+# reasoning（3 条）—— 落 silly_tavern_settings.reasoning_presets
+#
+# 标签一律 ASCII：prefix/suffix 是模型端解析协议，中文标签会破坏解析。
+# 第 1 条与 ST 默认模板 `Think XML` 的标签配置一致（配置事实，不是正文）。
 # ---------------------------------------------------------------------------
 BUILTIN_REASONING_PRESETS: list[dict[str, Any]] = [
     {
+        # 对应 ST `Think XML`（默认）：同一组标签，separator 同为换行。
         "name": "标准思考",
         "prefix": "<think>",
         "suffix": "</think>",
         "separator": "\n",
     },
     {
+        # 分步型：Claude 系常用 <thinking>；段落之间空一行，便于肉眼分段。
         "name": "显式分步",
-        "prefix": "【推理】\n",
-        "suffix": "\n【回应】\n",
-        "separator": "\n---\n",
+        "prefix": "<thinking>",
+        "suffix": "</thinking>",
+        "separator": "\n\n",
+    },
+    {
+        # Palink 补充（ST 默认目录未核实有同名项）：部分 API 把推理单独返回，
+        # 正文里再包标签会重复，故留一条纯文本、无标签的草稿模板。
+        "name": "无标签草稿",
+        "prefix": "",
+        "suffix": "",
+        "separator": "\n\n",
     },
 ]
 

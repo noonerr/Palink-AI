@@ -3,7 +3,9 @@
 钉的行为（不是"端点存在"）：
 
 ① 自带中文明单四类齐全，且重复播种**幂等**（created 全 0、数组无重复），
-   用户改过的数组条目不会被种子回滚；
+   用户改过的数组条目不会被种子回滚；升级时只追加缺失项（旧 4 条不被动）；
+   sysprompt 7 条 / reasoning 3 条，reasoning 标签必须 ASCII；
+   自写正文不得出现 ST 默认 sysprompt 原句或英文片段（版权自审）；
 ② ST 四类判定（instruct / context / sysprompt / reasoning）与 **instruct 全字段
    透传**——反证锚：把 ``_ST_INSTRUCT_FIELD_MAP`` 里任一列漏掉，本文件必红；
 ③ context 无列可落的 ST 键（story_string_position / story_string_role /
@@ -106,6 +108,62 @@ class TestBuiltinLibrary:
         assert all(item["is_builtin"] for item in library["context"] if item["name"].startswith("Palink·"))
         assert all(item["builtin"] for item in library["sysprompt"])
 
+    def test_builtin_counts_and_unique_names(self, client):
+        """四类覆盖面：ST 结构模板 + 中文风格项；同类内名字必须唯一。"""
+        library = _library(client)
+        # context：ST 四套结构模板 Default/Classic/ChatCompletion/Instruct 已在
+        # 启动期种子里（这里直接查种子账本，不依赖 lifespan 是否跑过），
+        # instruct：5 套常见序列同理。
+        from app.core.context_template_seeds import BUILTIN_CONTEXT_TEMPLATES
+        from app.core.instruct_template_seeds import BUILTIN_INSTRUCT_TEMPLATES
+
+        context_seed_names = [item["name"] for item in BUILTIN_CONTEXT_TEMPLATES]
+        for name in ("Default", "Classic", "ChatCompletion", "Instruct"):
+            assert name in context_seed_names, name
+        instruct_seed_names = [item["name"] for item in BUILTIN_INSTRUCT_TEMPLATES]
+        for name in ("Alpaca", "ChatML", "Llama 2", "Llama 3", "Mistral"):
+            assert name in instruct_seed_names, name
+        # 本库自带的中文风格项确实进了库
+        assert {"Palink·沉浸叙事", "Palink·极简"} <= set(_names(library["context"]))
+        assert {"Palink·对话体", "Palink·小说正文体"} <= set(_names(library["instruct"]))
+
+        assert len(BUILTIN_SYSPROMPT_PRESETS) == 7
+        assert len(BUILTIN_REASONING_PRESETS) == 3
+        sysprompt_names = _names(library["sysprompt"])
+        # ST 默认用途必须有对应项：中性对话（= Neutral - Chat）、中性指令、
+        # 入戏扮演（= Actor）、沉浸第一人称（= Lightning 类）。
+        for name in ("中性对话", "中性指令", "入戏扮演", "沉浸第一人称", "旁白叙事", "轻松休闲", "严谨考据"):
+            assert name in sysprompt_names, name
+        assert sysprompt_names[0] == "中性对话", "ST 默认项应是列表首条"
+        for kind in ("context", "instruct", "sysprompt", "reasoning"):
+            names = _names(library[kind])
+            assert len(names) == len(set(names)), (kind, names)
+
+    def test_reasoning_tags_are_ascii(self, client):
+        """prefix/suffix 是模型端解析协议，必须 ASCII（ST 的 Think XML 同为标签配置）。"""
+        for seed in BUILTIN_REASONING_PRESETS:
+            for field in ("prefix", "suffix", "separator"):
+                value = seed[field]
+                assert value.isascii(), (seed["name"], field, value)
+        assert BUILTIN_REASONING_PRESETS[0]["prefix"] == "<think>"
+        assert BUILTIN_REASONING_PRESETS[0]["suffix"] == "</think>"
+
+    def test_builtin_texts_do_not_copy_st_default(self, client):
+        """版权自审：ST 默认 sysprompt 原句及其逐句中译都不得出现在种子里。"""
+        st_sentence = (
+            "Write {{char}}'s next reply in a fictional chat between "
+            "{{char}} and {{user}}."
+        )
+        texts: list[str] = []
+        for seed in BUILTIN_SYSPROMPT_PRESETS:
+            texts.append(seed["content"])
+        for seed in BUILTIN_CONTEXT_PRESETS:
+            texts.extend(str(seed.get(key) or "") for key in ("story_string", "system_prompt"))
+        for text in texts:
+            assert st_sentence not in text
+            for fragment in ("fictional chat between", "next reply", "expert actor"):
+                assert fragment.lower() not in text.lower(), (fragment, text)
+
     def test_seed_is_idempotent_and_keeps_user_edits(self, client, db_session, test_user):
         first = ensure_preset_library_seeds(db_session, user_id=test_user.id)
         db_session.commit()
@@ -136,6 +194,35 @@ class TestBuiltinLibrary:
         assert (
             db_session.query(InstructTemplate).filter(InstructTemplate.user_id.is_(None)).count() == 2
         )
+
+    def test_upgrade_appends_new_seeds_without_touching_old_ones(self, client, db_session, test_user):
+        """已上线用户的数组里只有旧的 4 条 sysprompt：本轮新增项应追加，
+        已有条目的正文（含用户改过的）原样保留。"""
+        setting = UserSetting(user_id=test_user.id, silly_tavern_settings="{}")
+        db_session.add(setting)
+        db_session.commit()
+        old_entries = [
+            {"name": "沉浸第一人称", "content": "用户改过的正文", "builtin": True},
+            {"name": "旁白叙事", "content": "旧正文", "builtin": True},
+        ]
+        stored = {SYSPROMPT_PRESETS_KEY: old_entries, REASONING_PRESETS_KEY: []}
+        setting.silly_tavern_settings = json.dumps(stored, ensure_ascii=False)
+        db_session.commit()
+
+        counts = ensure_preset_library_seeds(db_session, user_id=test_user.id)
+        db_session.commit()
+        assert counts["sysprompt_created"] == len(BUILTIN_SYSPROMPT_PRESETS) - 2
+
+        db_session.expire_all()
+        setting = db_session.query(UserSetting).filter(UserSetting.user_id == test_user.id).first()
+        stored = json.loads(setting.silly_tavern_settings)
+        entries = {entry["name"]: entry for entry in stored[SYSPROMPT_PRESETS_KEY]}
+        assert entries["沉浸第一人称"]["content"] == "用户改过的正文"
+        assert entries["旁白叙事"]["content"] == "旧正文"
+        assert {"中性对话", "中性指令", "入戏扮演", "轻松休闲", "严谨考据"} <= set(entries)
+        assert [entry["name"] for entry in stored[REASONING_PRESETS_KEY]] == [
+            s["name"] for s in BUILTIN_REASONING_PRESETS
+        ]
 
     def test_pending_startup_seed_rows_do_not_duplicate(self, db_session):
         """2026-10-26 上线回归：启动期 seed 与 preset_library seed 共用 Session 且
