@@ -470,3 +470,56 @@ rc=0
 >    `__tests__/r1-extension-read-keys-parent.test.ts`（10 例，父侧落点 + 越权面）、
 >    `src/lib/slash-engine/__tests__/r1-extension-slash-commands.test.ts`（9 例，ST 命令语义）。
 > 台账另见 `docs/_active/report/REPORT_批次R1_插件只读与启停_2026-10-21.md`。
+
+## 12. 订正（2026-10-26，批次TH 音频8+预设写类9+常量3）
+
+> **订正（2026-10-26，批次TH）**：`playAudio` / `pauseAudio` / `getAudioList` /
+> `replaceAudioList` / `appendAudioList` / `getAudioSettings` / `setAudioSettings` /
+> `getCurrentAudio`（音频 8 键）、`loadPreset` / `createPreset` / `createOrReplacePreset` /
+> `deletePreset` / `renamePreset` / `replacePreset` / `setPreset` / `updatePresetWith` /
+> `importRawPreset`（预设写类 9 键）、`builtin` / `builtin_prompt_default_order` /
+> `default_preset`（常量 3 键）—— 二十个键从 D 挪到 C ⇒ **C = 79 → 99、D = 42 → 22**
+> （A = 13 不变；13 + 99 + 22 = 134 仍闭合）。
+> 挪动依据不是"为了让守卫变绿"，是能力当天落地，逐键一手核过契约：
+> ① 音频 8 键（`@types/function/audio.d.ts` 全 8 键，**全同步签名**）：帧内**双队列状态机**
+>    真实现（`runtime-body/part-07.ts` 的 th134AudioStores 段）—— per-type store 九字段
+>    （playlist/src/progress/playing/enabled/mode/muted/volume，默认值照抄
+>    `src/type/settings.ts:20-31`：bgm=repeat_all、ambient=play_one_and_stop）+
+>    每 type 一个 Audio 元素 + ended 按 mode 推进（repeat_one/repeat_all/shuffle/
+>    play_one_and_stop）+ timeupdate 进度（0-100），零 requestParent、零后端；
+>    CSP media-src 已实测放行 http/https 外链。appendAudioList 的去重按 d.ts:55-60 契约补
+>    （一手实现 audio.ts:61-66 漏了去重，上游 bug）；playAudio 照 TH 无条件置 playing=true，
+>    autoplay 被拦时 play() 拒绝回调翻回 false + palinkDiag 留痕（标志与实际发声一致）。
+> ② 预设写类 9 键走**父侧既有路由**（零后端改动，全部既有端点）：`loadPreset` → PUT
+>    `/api/prompt-manager/presets/selection`（prompt_manager.py:111）；create →
+>    `/api/roleplay/presets/import`（multipart，presets.py:251 是 prompts_data 唯一既有
+>    写通道）；delete/rename → DELETE/PUT `/api/roleplay/presets/{id}`；'in_use' 的写 →
+>    PUT `/api/prompt-manager/sessions/{id}/preset`（prompt_manager.py:274，P-1 裁定
+>    "卡改本对话份"，写时复制）；importRawPreset → 父侧把 content 包成 File 走 /import。
+>    ⚠️ `loadPreset` 按 d.ts:169 是**同步** boolean ⇒ 帧内同步实现（ctx.presetSnapshot.names
+>    判存在 + kick PUT selection），⛔ 不许接成 async（P3-A 同款错误：Promise 恒真值，
+>    "查无此名返 false"就死了）。
+>    ⚠️ 语义偏差如实留痕：具名 replacePreset 只写生成参数列（PresetUpdateRequest 无
+>    prompts_data 字段，presets.py:39-55）⇒ prompts_written:false 上报 + 帧内 warn；
+>    TH 的 import"同名即更新"在本仓不成立（/import 对同名改建 "(imported)" 新行）；
+>    createPreset/replacePreset 的"重复系统/占位提示词 @throws"后端校验未做（另行立项）。
+> ③ 常量 3 键：`default_preset` 照抄 TH 自身静态值（`src/function/preset.ts:126-218`，
+>    非用户数据）；`builtin_prompt_default_order` 九项照抄（`generate/types.ts:172-182`）；
+>    `builtin` 部分桥（addOneMessage / copyText / renderMarkdown / parseRegexFromString /
+>    uuidv4 有帧内真实现，其余 11 成员缺席不造假 —— 取值 undefined 是可见的缺席）。
+> ④ 归属红线：名单先过快照（服务端只列本人行）；id 解析走既有 GET 列表（响应不带
+>    user_id）⇒ 逐同名 id 尝试、由后端 user_id 过滤兜底 —— 共享行（user_id IS NULL）
+>    id 必 404，写/删永不落共享行；会话 id 只认宿主 resolveSmartCardHostSessionId
+>    （P2-12 #14 同口径）。有越权用例钉住（th-preset-write-keys-parent.test.ts）。
+> ⑤ `isPreset*` 三键与 `getProxyPresetNames` **仍留 D**（本批裁定留 D 档；isPreset* 的
+>    "缺判定字段"旧理由已被侦查推翻——TH 一手是纯 id 归属判定（preset.ts:103-121）——
+>    留 D 是台账红线待另批裁定，前提订正另行记录）。
+> ⑥ 守卫同步改判：D 名单移除这二十键 + 批次TH 正向锚点组（20 键 registered +
+>    7 条 requestParent 动作锚点 + loadPreset 同步箭头 + 音频状态机锚点）；
+>    满足数口径从 ≥55 提到 ≥110（并集命中 90 → 110，探针 .tmp_probe/b2_hit_entry.ts 实测）。
+>    见 `__tests__/h-tavernhelper-134-contract.test.ts` 的批次TH 注释块。
+> ⑦ 行为有测试托底：契约测试 H/I/J 三组（音频 11 例 / 预设写类 10 例 / 常量与 builtin
+>    6 例）+ `__tests__/th-preset-write-keys-parent.test.ts`（17 例，父侧落点 + 共享行
+>    越权 + 会话顶包；mock 版路由闭环，"建→读回→删→404"真数据闭环要连真实后端跑真机
+>    写链探针）。反证：把帧内 20 成员摘掉 ⇒ 批次TH 锚点组必红。
+> 台账另见 `docs/_active/spec/SPEC_向ST学习的子系统缺口与标记方案_2026-10-19.md` §2.8。

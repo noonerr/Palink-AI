@@ -152,6 +152,12 @@
      明确要求**默认关闭 + 保留 ≥30（建议 50）**，因为 `roleplay_prompt_assembly.py:5232` 的
      `MVU_STAT_LOOKBACK_LIMIT = 30`。**回看窗口 30 > 保留 20 ⇒ 第 21–30 楼快照被清 ⇒ 静默回落到会话级，分支状态不一致。**
      2026-10-17 实测两个默认值一字未改。
+     ⚠️ **2026-10-26 订正（T3 实测 + 主脑核验）：上面第 2 条已过期**——D5b 尾巴批的 MC-D（2026-10-25）已把
+     `mvu_cleanup.py:62-64` 改为 `DEFAULT_ENABLED = False` / `DEFAULT_KEEP_RECENT_FLOORS = 50`（主脑 grep 亲自核验）。
+     实测数据（REPORT_查验_MVU变量快照体量与清理必要性_2026-10-26.md）：全库快照仅 84kB+补丁 75kB（占库 0.2%）、
+     最大会话 102 层 ⇒ 默认关+保留 50 维持即可。**剩余**：① 三项真机验证仍没做；② `mvu_state.py:39` 文档串
+     仍写"老板裁定保留上游默认 true/20"，与代码矛盾，需订正；③ 历史「保留20<回看30」已造成过实害
+     （51 楼被清、8 楼不可还原），属既成数据，不追溯。
 - **⚠️ 这条曾被明确标为"须先问用户，不要自作主张"**（`PROMPT_MVU兼容补齐_交给Agent_2026-10-05.md` §3 P3-e），
   **然后就没有下文——没人问、没人改、也没人记。** 清理是**不可逆破坏性操作**，测试
   `test_defaults_match_plugin_schema` 还把危险默认值钉住了。
@@ -164,6 +170,7 @@
 
 - **为什么单列**：`P1-2` 是"代码状态"，这条是"没人做那个决定"。
   修代码容易，**没人拍板才是真堵点**。
+- **▶ 2026-10-26 进展（已闭环）**：用户质疑必要性 + T3 实测 + 主脑核验 ⇒ **MC-D（10-25）已改默认关+保留 50，危险前提已消除**；实测数字坐实"不用清"。剩余工作并入 [P1-2] 订正段（真机验证三项 + mvu_state.py 文档矛盾订正）。本条关闭。
 
 ---
 
@@ -307,7 +314,9 @@
 - **同批结论**：`MIN_SIMILARITY` 0.5→0.3 **完全无效**（数字一行没动）；预算 1500→6000 才有效
   （注入命中 33%→67%）。记忆改句级（每句一条向量）是另一条独立可做项，端到端 0.210→0.340。
 - 📌 完整数据与四步落地清单：
-  [`docs/_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md`](_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md)
+	[`docs/_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md`](_active/report/REPORT_向量记忆替代上下文_结论摘要与落地清单_2026-10-09.md)
+- ✅ **用户已授权修改（2026-10-26）**：流程=先出方案（任务流 dwfrun-2b086ea0 T6，只出方案禁改码）→ 呈用户过目 → 排施工。装配链红线：最小改动+可回退+判据先行（top1/排名/嵌入耗时三指标前后对照）。
+- ⚠️ **2026-10-26 主脑核验后翻案：本条"未施工"是台账过期**——病灶已于 2026-10-10 在 `b6fdd58`（"入库 10-09/10-10 记忆批源码（查询构造/邻居预算/档位 4000/40% 夹取）"）修复入库并部署容器：默认 current 模式本轮问题全文零截断、过短才补上一条尾部 120 字、三个兜底健在、`MEMORY_QUERY_MODE=window` 一键回退（主脑 git show 亲自核验提交存在）。**待办改为方案 A（零码改）**：订正本条 + 修 `roleplay_prompt_assembly.py:6340` 附近过期注释。方案 B（混合查询）留档不启用。见 `REPORT_方案_记忆搜索查询稀释修法_2026-10-26.md`。
 
 ### [P2-1] 格式规范每轮注入 · 真机验收被网关余额挡住
 
@@ -343,6 +352,7 @@
   3. 拆 smart-card-runtime ~470KB —— 收益最大风险最高（模板字符串打包器无法裁剪，与插件链路深度耦合）。
 - **权威文档**：`docs/SPEC_首屏入口包瘦身_执行与禁则_2026-10-05.md`
   （含归因方法论与可复制的正则、已否决方案全文、构建流程特殊约束、§8「我核实过的错误结论」5 条避坑）。
+  〔⚠️ 2026-10-26 订正：该 SPEC 已随文档大整理归档至 `_archive/2026-10/`，且其"拆包"路线已被 10-22 交接书 §177 裁定覆盖（首屏 ~285KB 属 ST 兼容层固有成本，拆包/SW/去 token 类方案不再提）——读它只取方法论与避坑，方案部分作废；P2-2 条目本身仍有效（638KB 事实与三选项中的加载态/验证 ~150KB 两路仍可谈）。〕
 - **完整清单**：`docs/OPEN_ISSUES_窄屏卡片三修已上线_首屏入口包未解决_2026-10-05.md`。
 
 ---
@@ -508,11 +518,11 @@
 | 2 | **动态 import 型死链的 reason 不在 I-2 分类口径内** | **P2** | 包I 留的问题：`TypeError: Failed to fetch` 形态不属于「Event / target 是资源元素」⇒ 仍会弹 toast。要拍板是否扩口径（扩了就有"一刀切吞 error"的反例风险） |
 | 3 | **`legacy-st-sim-parts/part-c.ts:362-363` 同款转义 + 产物含 5 个退格控制字符** | **P2** | 包L 顺带扫出但**未擅动**：`[\s>+~]` 在 legacy 产物里被模板求值吞掉反斜杠（`parentSelectorMatches` 的 send_textarea/send_but 分支），另有单反斜杠 `b` 落成退格符。legacy 侧载体本身保真 ⇒ 属"无人断言"，需先补断言再改码 |
 | 4 | **srcdoc 单帧 ≤50,000 这条判据本身失效** | **P3** | 改前旧码就已 57,356 超线，大头是卡自带 `body-html` 24,796 + 内联卡脚本 22,539 + `style` 11,608，运行时体在外部资产 ⇒ **别再拿 50,000 当包间验收线**；要治的是"卡自带内容"的预算策略，另立议题 |
-| 5 | 包G 三项：`appendMediaToMessage` 端到端落库未证实（父侧恒回 success，根因线索在报告）、`libs` 里 DOMPurify/lodash 实测是垫片、宿主缺 `power_user` 真偏好源 | **P2** | 各自独立可立项，勿混；DOMPurify 若真是垫片会影响净化语义，**优先核这条** |
+| 5 | 包G 三项：`appendMediaToMessage` 端到端落库未证实（父侧恒回 success，根因线索在报告）、`libs` 里 DOMPurify/lodash 实测是垫片、宿主缺 `power_user` 真偏好源 | **P2** | 各自独立可立项，勿混；DOMPurify 若真是垫片会影响净化语义，**优先核这条**〔▶ 2026-10-26 主脑核注：power_user 一项与批次D1b（`6fb5610`，默认 133 键对齐）**不是同一件事**——D1b 补的是"默认键"，本条悬的是"用户改过的偏好真源如何同步到帧内"，仍欠，不销账〕 |
 | 6 | 包F 三项：176 个命令别名未下发、`caption` 缺消息媒体入参、`listvar scope=global` | **P3** | 别名未下发意味着卡脚本按别名探测仍看不到；剩余量级小，可与第 1 项合并处理 |
 | 7 | ~~**上线状态**：F/G/H/I/L 六包**已提交未上线**（16000 仍服务旧 dist）~~ | **P0** | ✅ **2026-10-18 深夜已上线并逐包复跑**（主控两次重建：`dist_new` → `cp -r` 合并 → gzip；旧 dist 整份备份见 `_BACKUPS/2026-10-18_dist_批次FJ重建前/`）。回 :16000 实测：命令枚举 340 键 / 289 命中、`ctxMissing=[]`、`ctxNotReal` 只剩 6 项合法值、libs 30 键、TH 121 键、插件 CSS **t8→t16 全 7 帧 5/5 存活**、`guardSnapshot=8`、未授信 **7/7 opaque origin**、猫娘卡 nk style **1 份 / 3,156 字节**且美化仍生效、toast 0；帧内 `characterIdString` = 真 UUID（getContext 键数 194→196） |
 | 8 | ~~`.gitignore` 的 `_BACKUPS` 规则自相矛盾~~ → ✅ **2026-10-19 已修（主控判断后执行，本笔提交）** | **P2 闭环** | 根因：第 241 行的**目录级**排除 `_BACKUPS/` 会让 git 不再进入该目录，其后 300-317 行「放行 `_INDEX.md` 与各 `BACKUP_INFO.md`」的 allowlist **永远拿不到机会**，新增台账只能 `git add -f`，与 `AGENTS.md` §备份与清理规范第 7 条相冲。修法：把 241 行注释掉（排除职责交给后面的 `_BACKUPS/**`，它不排除目录本身，所以 `!` 能生效）。**实测校验**：新建备份目录里的 `BACKUP_INFO.md` 不再被忽略；`dist/index.html` 之类大产物仍被 `_BACKUPS/**` 忽略；`.git` 体积无变化。⚠️ 已知代价（不是缺陷）：`git status` 现在会列出 33 个 `_BACKUPS/<日期>_主题/` 未跟踪目录行——因为"放行目录"是放行其台账文件的前提，见 `.gitignore` 307-322 注释；已核实最深处 `2026-09-30_dsh-源码版清理/`（自嵌套 node_modules）**没有**导致状态输出爆量（最长路径 179 字符，未出现超长 ERROR）。**后面的人看到这些未跟踪行不要当脏文件处理**。 |
-| 9 | **卡帧内不存在 `window.context` 全局**（2026-10-18 包M 取证登记 · 包J 报告 §5 顺带查出） | **P2 → ✅ 已按裁定撤（2026-10-20 批次H）** | ~~boot 的 ctx 是 `const`（`SillyTavernCompatRuntime.ts:264`），不挂 window ⇒ ST 侧插件里常见的 `window.context.xxx` 直读全部拿不到（不是"值为 0"，是**整个对象不存在**）。补法要先定语义：镜像 `getContext()` 快照？还是活引用？ST 里 `window.context` 是**可写**的（卡脚本会改 `context.chat`），照抄=允许卡改父侧数据，属安全/契约面 ⇒ **先拍板再动**，别顺手 `window.context = ctx`~~ ⇒ **拍板结果：不摆**。① 一手核实（两棵 ST 1.18 树 + 酒馆助手插件全仓）：`window.context` / `globalThis.context` **0 命中**；`st-context.js` 只有 `export function getContext()` 与 `export default`，**没有 `export const context`** ⇒ 包N B-2 当年依据的「ST 1.18 的 context 是 st-context.js 里的一次性快照」是**误读**，ST 真实用法是文件内部 `const context = getContext()`（两树各 57 处）。② 真机探针（2026-10-20 :16000 露缇雅 7/7 帧）：每帧唯一记录 `frame_compat:global_shape_absent:window.context` 且 count=1，无任何 `name='context'` 的 error 轨记录 ⇒ 没有在跑的卡依赖这个面。③ 施工（批次H）：帧内定义已撤（`part-08.ts` 原位留撤销注记），启动留痕二改为「Palink 帧内同样不提供 + 卡应调 getContext()」，包N B-2 断言**改判**（非删除）见 `n-package-context-rename-media-trust.test.tsx` / `c-getcontext-six-keys-and-diag-wording.test.ts`，报告 `report/REPORT_包AG_H_window.context撤留钉事实_2026-10-20.md`。⚠️ 沙箱轨 `sandbox.ts:2767` 的 `var context = getContext()`（与 ST 同款的局部常量，**不在本批范围、未动**）与 `:4624` 的 script.js 模块映射 `context` 键（其依据「ST 的 script.js 导出 context」同样与一手事实不符——`script.js` 只 re-export `getContext`，:294）**另行登记待批** |
+| 9 | **卡帧内不存在 `window.context` 全局**（2026-10-18 包M 取证登记 · 包J 报告 §5 顺带查出） | **P2 → ✅ 已按裁定撤（2026-10-20 批次H）** | ~~boot 的 ctx 是 `const`（`SillyTavernCompatRuntime.ts:264`），不挂 window ⇒ ST 侧插件里常见的 `window.context.xxx` 直读全部拿不到（不是"值为 0"，是**整个对象不存在**）。补法要先定语义：镜像 `getContext()` 快照？还是活引用？ST 里 `window.context` 是**可写**的（卡脚本会改 `context.chat`），照抄=允许卡改父侧数据，属安全/契约面 ⇒ **先拍板再动**，别顺手 `window.context = ctx`~~ ⇒ **拍板结果：不摆**。① 一手核实（两棵 ST 1.18 树 + 酒馆助手插件全仓）：`window.context` / `globalThis.context` **0 命中**；`st-context.js` 只有 `export function getContext()` 与 `export default`，**没有 `export const context`** ⇒ 包N B-2 当年依据的「ST 1.18 的 context 是 st-context.js 里的一次性快照」是**误读**，ST 真实用法是文件内部 `const context = getContext()`（两树各 57 处）。② 真机探针（2026-10-20 :16000 露缇雅 7/7 帧）：每帧唯一记录 `frame_compat:global_shape_absent:window.context` 且 count=1，无任何 `name='context'` 的 error 轨记录 ⇒ 没有在跑的卡依赖这个面。③ 施工（批次H）：帧内定义已撤（`part-08.ts` 原位留撤销注记），启动留痕二改为「Palink 帧内同样不提供 + 卡应调 getContext()」，包N B-2 断言**改判**（非删除）见 `n-package-context-rename-media-trust.test.tsx` / `c-getcontext-six-keys-and-diag-wording.test.ts`，报告 `report/REPORT_包AG_H_window_context撤除与事实钉桩_2026-10-20.md`。⚠️ 沙箱轨 `sandbox.ts:2767` 的 `var context = getContext()`（与 ST 同款的局部常量，**不在本批范围、未动**）与 `:4624` 的 script.js 模块映射 `context` 键（其依据「ST 的 script.js 导出 context」同样与一手事实不符——`script.js` 只 re-export `getContext`，:294）**另行登记待批** |
 | 10 | **K-1 归因反转：卡侧样式不是被删，是被 Palink 自家 jQuery 兼容层"搬走后失联"**（2026-10-19 登记 · 包N 取证 + 主控复核） | **P1 → ✅ 已修并上线，见第 12 条**（本行的归因是**部分正确**：方向对、机制错，别再照它施工）| 用户裁定走 b（先修取证、不扩守护）⇒ 包N 的取证面已交付并上线（父侧能报 `style_removal[node_removed] … target=HEAD … textLen=3903` 带节点身份）。归因定案：163 次命中**单一调用方**（卡自带 `MagVarUpdate@beta` CDN bundle，`DOMContentLoaded` 时 `$(容器).append($('head 里的 style'))`），走 `part-04` 的 `collection.append` → `appendChild` **搬运**进一张随后脱离文档的 DIV；6 种删除 API 的同步钩子命中全 0。**⇒ 修法在兼容层，不在守护**：已派包P，先离线用真 jQuery 作 oracle 做 A/B 定位 stranded 的确切环节，⛔ 禁改 `STYLE-GUARD` 恢复范围。红基线（上线产物实测）：`tavern-cg-album-style` **ABSENT 7/7 帧**、`galgame-ui-plugin-styles` 2/7 丢，见 `.tmp_probe/MASTER_K1_base.txt` |
 | 11 | **K-3：露缇雅主实例 4.5–7.5s 弹 `Failed to fetch` toast（仅主实例，克隆不弹）** | **P2** | 包N 复现了现象（`billedHits=0` ⇒ 不是计费端点），但**该 rejection 走 toast 通道、不进帧内取证面** ⇒ 证据不足以定责，包N 明确写"定不了"没猜。下一步要么给 unhandled-rejection 轨也接上进 `__palinkFrameErrors`，要么用 devtools network 面板人工抓一次；⚠️ 别把它和包I 已分类的"资源加载失败"混为一谈（那条已经不弹了） |
 | 12 | **K-1 真根因与修复（包P2 `24c7706`，2026-10-19 上线）** + 三处未对齐遗留 | **P1 已闭环 / 遗留 P2-P3** | **根因两层，第 10 行的归因已被线上取证推翻一半**：三条候选（卡自带 jQuery 覆盖 / `document` 被遮蔽 / 注入了外来文档的 jQuery）**全部否证**——帧内 `$` 就是未接管的兼容层桥（`$.fn` undefined、`{get,set}` 描述符），`createElementsFromHtmlCompat` 确实在 live document 上 `createElement('template')`，那个 `href=null / nodeCount=0` 的外来文档是 **HTMLTemplateElement 的模板内容文档**（`createHTMLDocument`、`DOMParser` hook 零命中）；**致命点在搬运**：`appendTo`/`prependTo` 把整条 **nativeFallback Proxy** 集合交给 `append`，Proxy 取未知属性恒返回函数 ⇒ `value?.nodeType` 判真 ⇒ `appendChild(Proxy)` 抛错被 **`catch{}` 静默吞掉** ⇒ 空转，连原生建的 live 节点都搬不进 head（原生 `head.appendChild` 同容器却成功）。修复=创建结果 `importNode` 归本帧文档 + `append/prepend` 严格判节点并摊平集合（⛔ 未动 `STYLE-GUARD`）。**主控独立复跑上线实测**：cg 与 galgame 样式 **ABSENT 7/7 → PRESENT 7/7**、head style **8 → 24**、`sameDoc=true`、`wrapperInLiveHead=true`、帧内报错 0；零回归 getContext **196**、TH **121**、libs **31**、`guardSnapshot=8`、插件 CSS t8→t16 恒 **5/5**、未授信 **7/7 opaque**、猫娘 nk **1 份 / 3,156 字节**；`gate.sh frontend` rc=0（93 files / 1224 passed）。**遗留三条**：① 多目标 `append`/`appendTo` 的 **clone 语义仍未对齐 jQuery**（真 jQuery 对非最后目标克隆，Palink 现在不克隆 ⇒ 同一节点 append 两处会被第二个容器拿走）；② 兼容层 **`try/catch{}` 静默吞异常**是这次"无感失效"的放大器，建议给搬运路径加一次性留痕（复用包N 取证面，不弹 toast）；③ A/B oracle 只有 **jquery@4.0.0**，**缺 3.x 对照**（卡侧 bundle 可能按 3.x 写） |
@@ -521,7 +531,7 @@
 执行件 `PROMPT_对话包_批次Q1_本机默认放开卡片读主页面_2026-10-20.md`。同一轮里"乙类 = 要整套子系统"对
 `preset_prompt`/`audio_player` 也不成立（两处都有现成落点，见 §2.2 最后一行）。**旧原文保留不删，以订正为准。**〕。**标记机制是双向守门**：代码里 `[ST-GAP:<id>]` token + 运行时记录带 `missingStSubsystem:<id>` + 一条测试同时断言"台账有→代码标了"和"代码标了→台账记了"（单向检查会让台账先烂）。已验证锚点只列主控亲自 grep 过的行（如 `PromptManager.js:1723` 系统提示词判定式、`openai.js:1232` 破甲属系统提示词家族且卡可覆盖、`personas.js:462/515/154/551`、`extensions.js:1698`），**未核实的一律写"待核"**（参照树缺 worldbook/regex 两份文件）。✅ 2026-10-19 已接上（不再是"待补一小包"）：`palink-diag.ts` 的 `classifyStGap`（名单逐条抄自包H §3/§7.2 与包F §4.2，没核到的一律落 `unknown`，不自造归族）+ `palinkDiagStGapRanking()` + 导出 JSON 直接带 `stGapRanking`；双向守门测试 `__tests__/st-gap-ledger-guard.test.ts`（A 台账↔代码清单、B `[ST-GAP:<id>]` token 双向、C 键名必须在 th134/st289 权威 fixture 里、D 包H 的每条 D 类键不得静默落 `unknown`、E 字段与排行行为）。**"排行出数据之前不投入乙类"这条裁定不变。** |
 | 14 | **帧可以替宿主决定"是哪个会话"（`__palinkContext.sessionId` 顶包）**（2026-10-21 批次P2 主脑复核实测登记） | **P1（违反用户"卡片只能读自己这一份对话分身"的裁定，但不是跨账号）** | 合并点在 `frontend/src/components/ui/custom/smart-card-runtime/SmartCardCompatController.ts:1926`：`sessionId: context.sessionId || payload.__palinkContext?.sessionId` ⇒ **宿主没有会话时，帧自己塞的 id 生效**。✅ 预设面已收口（`resolveSmartCardPresetSessionId` 改为只认宿主构造的 `selectedSession.id`，`SmartCardCompatController.ts:971`；反证用例 `p2-preset-read-keys-parent.test.ts` 的"真实通道"那例，改前实测红）。⚠️ **还剩两处同一通道的未收口面**：① `generateRaw` / `generateQuietPrompt`（`:2120-2125`）仍回落到可被顶包的 `requestContext.sessionId` ⇒ 一张卡可指名用户另一个会话去取历史进提示词；② `__palinkContext` 是通用通道，世界书导出/绑定等动作是否也依赖它，需逐动作清点后再决定"要不要整体取消帧侧回落"（属行为变更，先量影响面）。⚠️ 另记一条方法论：**守卫往 `payload.sessionId` 塞伪造值是测空气** —— 那个键没有代码读，用例恒绿；测顶包必须走 `payload.__palinkContext.sessionId`。见 `docs/_active/report/REPORT_批次P2_*.md` §7.2/§7.4 |
-| 15 | **预设读类三键"键在、语义错"：对外是 Promise 而 ST 是同步，且数据源是一张空表**（2026-10-21 上线实机取证） | **P1（卡片不报错、门禁全绿，但真卡永远拿不到东西）** | 实机形状：`getPresetNames`/`getLoadedPresetName`/`getPreset` 全部 `tag=[object Promise] thenable=true`；权威契约 `st-plugins/.../@types/function/preset.d.ts:150` 是 `declare function getPresetNames(): string[]`（同步返数组）。数据源：`prompt_presets` **0 行**（全库）、`/api/prompt-manager/presets` → `[]`、`selection` → `source:"none"`；用户在用的那份在 **`generation_presets`（27 行）**，走 `/api/roleplay/presets`（`backend/app/api/presets.py:14` → `GenerationPreset`），第一方界面是 `PresetManager.tsx`/`PresetSelector.tsx`。**除新加的卡片桥之外没有任何代码消费 `/api/prompt-manager/presets*`** ⇒ 包P 的覆盖层 + P2-2 选中名 + P2-3 三键整条链建在无数据、无界面的表上，违反用户"默认刚进卡是设置里自己那份"的裁定。⚠️ 单测为何没抓到：用例 `await` 了返回值，而 `await` 对同步值与 Promise 同样成立 ⇒ 修法必须断 `thenable=false`，不能只断值。⚠️ 附带红线：`presets.py:114-115` 的列表含 `user_id IS NULL` 的**跨用户共享行**，卡片侧任何写/删通道严禁落到共享行。执行件：`docs/_active/prompt/PROMPT_对话包_批次P3_预设三键改同步并接到用户在用的那份表_2026-10-21.md`；取证全文：`docs/_active/report/REPORT_上线实测_包P与批次Q1与批次P2_2026-10-21.md` §2 |
+| 15 | **预设读类三键"键在、语义错"：对外是 Promise 而 ST 是同步，且数据源是一张空表**（2026-10-21 上线实机取证） | **P1（卡片不报错、门禁全绿，但真卡永远拿不到东西）** | 实机形状：`getPresetNames`/`getLoadedPresetName`/`getPreset` 全部 `tag=[object Promise] thenable=true`；权威契约 `st-plugins/.../@types/function/preset.d.ts:150` 是 `declare function getPresetNames(): string[]`（同步返数组）。数据源：`prompt_presets` **0 行**（全库）、`/api/prompt-manager/presets` → `[]`、`selection` → `source:"none"`；用户在用的那份在 **`generation_presets`（27 行）**，走 `/api/roleplay/presets`（`backend/app/api/presets.py:14` → `GenerationPreset`），第一方界面是 `PresetManager.tsx`/`PresetSelector.tsx`。**除新加的卡片桥之外没有任何代码消费 `/api/prompt-manager/presets*`** ⇒ 包P 的覆盖层 + P2-2 选中名 + P2-3 三键整条链建在无数据、无界面的表上，违反用户"默认刚进卡是设置里自己那份"的裁定。⚠️ 单测为何没抓到：用例 `await` 了返回值，而 `await` 对同步值与 Promise 同样成立 ⇒ 修法必须断 `thenable=false`，不能只断值。⚠️ 附带红线：`presets.py:114-115` 的列表含 `user_id IS NULL` 的**跨用户共享行**，卡片侧任何写/删通道严禁落到共享行。执行件：`docs/_active/prompt/PROMPT_对话包_批次P3_预设三键改同步并接到用户在用的那份表_2026-10-21.md`；取证全文：`docs/_active/report/REPORT_上线实测_包P与批次Q1与批次P2_2026-10-21.md` §2〔✅ **2026-10-26 销账**：批次P3 已修+真机验过（`101f7c0` 三键改同步接 generation_presets + `f373801` 真机复验同步返回真数据），文档大整理批 git 实证〕 |
 | 16 | **父页面 `postMessage` 被第三方包装时，卡片整条通道会被静默丢弃**（2026-10-21 存储测量 agent 的附带发现，主脑已一手复核代码） | **P2（触发条件是用户装了会包装 `postMessage` 的浏览器扩展；一旦触发是"卡片全哑"且零留痕）** | 守卫在 `frontend/src/components/ui/custom/CharacterCardRenderer.tsx:970-971`：`if (!iframeRef.current?.contentWindow) return; if (event.source !== iframeRef.current.contentWindow) return;` —— **fail-closed 且只认 `event.source` 恒等**。帧内一律走 `window.parent.postMessage(...)`（`runtime-body/part-08.ts:1181/1194/1521/1842`），该属性在调用时解析到**父 realm** 的 `postMessage`；若扩展在父页面替换了它并用自己的窗口转发，`event.source` 就变成主窗口 ⇒ 守卫 `return` ⇒ **storage 落库 / resize / RPC 全部静默丢弃**（不报错、不留痕、卡看起来"点了没反应"）。测量 agent 的第一版探针自己就踩了这个观察者效应（v1 数据作废）。修法方向（⛔ 不要顺手改，先定口径）：① 丢弃前必须 `palinkDiag` 留痕（本仓主题就是"让静默失败可见"）；② 来源判定不要只靠 `event.source` 恒等——已有 `frameSecret` + `frameId` 两道校验可作为回落判据（`CharacterCardRenderer.tsx:972-985` 起的手势令牌裁决就在用它们）；③ 加一条守卫测试模拟"父 realm 包装 postMessage"。取证：`docs/_active/report/REPORT_卡片存储shim收益实测_2026-10-21.md` §1.1 |
 | 17 | **实机控制台 9 类报错已定性：6 类是我们的锅、3 类是卡/插件自己的、1 类环境噪音**（2026-10-21 只读取证 agent + 主脑抽查） | **P2（按下列排序修，前两条最便宜）** | 取证全文 `docs/_active/report/REPORT_控制台报错九类定性_2026-10-21.md`（探针 `.tmp_probe/errtriage_full.js`、`errtriage_regexpresets.js` 可复跑）。**我们的锅 6 类**：① Chat Translation init `Object.hasOwn(undefined)` —— 宿主沙箱 `extension_settings` 缺 ST 预置命名空间（`sandbox.ts:3065/3081`），而**帧内同一处早已修**（`runtime-body/part-01.ts:751`）⇒ 宿主照抄即可；② Summarize `Cannot access 'MODULE_NAME' before initialization` —— 宿主转译器规则 11 就地赋值造成 TDZ（`sandbox.ts:2621-2635`），帧内已用活绑定修好（`part-02.ts:707`）；③ RegexPresetManager 找不到预设下拉 —— 宿主"init 先跑、面板后挂"竞态（专项探针实锤 `SELECT#regex_presets` 现在存在但监听器永远没挂上）；④ 快速回复保存 404 —— 后端**没有** `/api/quick-replies/save` 路由（只在 `silly_tavern.py:6049` 的注释里被提到，主脑已抽查确认）；⑤ `/st/locales/zh-cn.json` 404 —— i18n 去取一个不存在的资产；⑥ `debugger.css` MIME —— `st-plugins/regex/style.css:1` 的 `@import "debugger.css";` 无人重写（主脑已抽查确认该行存在）。**卡/插件自己的锅 3 类**：`style_removal`×168（卡自己搬样式 + 我们取证面每帧 24 条顶格上报，样式实际健在）、Music.js 外链失败族、Galgame `PIXI.live2d`（本仓零命中）。**环境噪音 1 类**：登录前 bootstrap 的 401。⚠️ **本次上线唯一新增的可见报错**是 ⑥（14 次/轮）：A/B 对照实锤 opaque 帧不发该请求、same-origin 帧才发 ⇒ 批次Q1 放开同源的**良性副作用**，零功能损害。⚠️ 114→209 那个差值是探针口径差（拦截策略不同），**不可相减**。修复排序建议：①②（帧内已修、宿主照抄）→ ⑥（模板串内改，注意 ES5 纪律）→ ④⑤ → `style_removal` 降噪（属产品决策，与本表第 12 行遗留②方向冲突，需用户裁定） |
 | 18 | **第 17 行的落地结果：① ② 已上线归零；⑥ 没修好且方向要换；并暴露出两条更靠后的缺口**（2026-10-21 批次E2 上线后实机复验） | **下一跳 P2；⑥ 的修法重定向 P3** | 实机计数（`.tmp_probe/errtriage_full.js`，7 帧同页）：`CNT_B3_translate_init=0`、`CNT_B5_summarize_tdz=0`（改前各 14 次量级），`FRAME0` 里 `esTranslate/esMemory` 已从 `undefined` 变成 `object` ⇒ 第 17 行的 ① ② 真修好了。**⑥ 仍是 14 次**：帧内 CSS 首行确实被重写成绝对路径了（`@import url("/api/plugins/db0c6324-…/asset/debugger.css")`，新产物字面量 `@import url(` 0→1 命中），但**目标不存在** —— 主脑一手核实：资产端点对该插件返回 `404 text/html`，该插件 `source_data` 里**没有** `debugger.css`（`like '%debugger.css%'` → `f`），而 `/st-plugins/regex/*` 经站点访问也是 404 ⇒ **"改 URL"这条路只能改形式**，正确修法是在宿主注入插件 CSS 时把 `@import` 内容**内联**（构建期把捆绑插件资产当资源读入），或把捆绑插件的 assets 正式导入 `plugins.source_data`。⚠️ 修好 ① ② 后出现两条**性质不同**的新错，别混为一谈：`macros.register is not a function` 是"修一跳露下一跳"（宿主 `'macros/macro-system.js'` 的 `macros` 是空对象，`sandbox.ts:5399-5419`；ST 的 macros 带 `registry/register/registerAlias`）；而 `getScriptsByType(...).forEach is not a function` **是 E2-1 自己引入的回归**——预置命名空间被一律补成 `{}`，`regex` 也在其中，但 ST 的 regex 扩展要求 `extension_settings.regex` 是**数组**（`st-plugins/regex/engine.js:108-112` 之后直接 `.forEach`）⇒ 必须按类型补，不能一律对象。两处都并入批次E2b。零回归：7 帧、`styles=25 nonEmpty=25`、`th=148`、`ctx=196` 全不变〔✅ **2026-10-21 下午已收口并上线**（批次E2b，`1c28e87`）：`CNT_B10_debugger_css_mime` **14→0**、`CNT_OTHER` **→0**（`macros.register` 与 `getScriptsByType(...).forEach` 两条都消失）、`FRAME0.regexCssHasImport=false` 且首行已是内联后的 debugger 样式；零回归复跑同判据全绿。⚠️ 覆盖边界：本批只修了**捆绑插件 CSS** 这条路，synthetic/第三方 CSS 里不可解析的 `@import` 仍会报同样的 MIME。取证：`docs/_active/report/REPORT_第三次上线实测_批次E2b与UI1_2026-10-21.md` §1〕 |
@@ -644,7 +654,7 @@ _（当前无）_
 
 | # | 缺口 | 档位 | 证据与影响 |
 |---|---|---|---|
-| 1 | **没有 `SillyTavern` 全局对象** | **P1（ST 生态最常见的入口之一）** | Kimi Thinking Prefill 第一行 `const { eventSource, event_types } = SillyTavern.getContext();` ⇒ 页面级 `ReferenceError: SillyTavern is not defined`（initSetting + PAGEERROR 两处）。我们只有模块化 shim 与 `TavernHelper`，没有这个全局。⚠️ 补它**不能直接暴露宿主对象**，要按现有 shim 口径包一层并评估沙箱红线（`SillyTavern.getContext()` 至少要能给出 eventSource/event_types/chat 等只读面） |
+| 1 | **没有 `SillyTavern` 全局对象** | **P1（ST 生态最常见的入口之一）** | Kimi Thinking Prefill 第一行 `const { eventSource, event_types } = SillyTavern.getContext();` ⇒ 页面级 `ReferenceError: SillyTavern is not defined`（initSetting + PAGEERROR 两处）。我们只有模块化 shim 与 `TavernHelper`，没有这个全局。⚠️ 补它**不能直接暴露宿主对象**，要按现有 shim 口径包一层并评估沙箱红线（`SillyTavern.getContext()` 至少要能给出 eventSource/event_types/chat 等只读面）〔✅ **2026-10-26 销账**：批次SG 已施工 `0d310fb`「feat(插件沙箱): 提供 ST 全局 SillyTavern」，文档大整理批 git 实证；Kimi 类报错随之消失与否待复验，但不构成缺口〕 |
 | 2 | **每卡插件 allowlist 无前端入口** | **P1（安装功能对"卡内使用"不可达）** | 测试角色库内实测 `plugin_scope_mode=allowlist`；后端 `_filter_runtime_config_for_character` 的 allowlist 分支只放 "allowlist ∪ exempt" ⇒ 新装插件不进任何卡的帧（7/7 帧实测 `hasNewCss=0`，但 `isInstalledExtension` 仍为 true）。〔⚠️ **主脑订正 2026-10-21**：这条说错了。每卡插件白名单**有 UI** —— 在**角色编辑器的「插件」Tab**（`frontend/src/components/views/character/CharacterPluginsTab.tsx`，挂载于 `CharacterEditor.tsx:476`，走 `GET/PUT /api/characters/{id}/plugin-state`，支持 `inherit`/`allowlist` + 逐插件勾选）。`grep plugin_scope_mode` 0 命中是因为前端用的是 `mode` 字段名，不是 DB 列名——我搜错了关键词。⇒ 新装插件进不了卡**不是缺 UI**，是那张卡处于 allowlist 模式且没把新插件勾进去；**用户可自行在角色编辑器里勾选**。原文保留：〕~~`grep frontend/src` 对 `plugin_scope_mode` **0 命中**（后端 `character.py:150` 能写）⇒ 用户装完在卡里用不上，也没有界面能把它加进某张卡。~~修法与 [P2-12] 第 19 行的"设置没 UI"同源 |
 | 3 | Smart Memory 的 `registerSmartMemoryMacros is not a function` | P2 | 其 31 个模块的导出链里有一个函数没挂上；与 E2b 修的规则 11/8b 属同类但形态不同（不是 TDZ，是"根本没导出"）。需按该插件自己的模块结构定位 |
 
@@ -708,6 +718,7 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 ⇒ 谁关的未知，**需用户确认**：如果那是他自己关的，验收① 就要等他重新打开再跑；
    如果不是，那是另一条待查（插件启停状态被谁改了，与 R1 的作用域收紧有关吗）。
    复跑脚本现成：`.tmp_probe/wu_ab.js`（会话 `wu_live1`，约 40s，不花钱）。
+   〔▶ 2026-10-26 口径订正（文档大整理批）：本条**施工欠账已清**（UI 已上线），剩余待办只有一件事——用户确认三个测试插件为何 `enabled=false`；若是用户自己关的，重开 Smart Memory 后复跑 `wu_ab.js` 即闭环验收①。〕
 
 ### [P2-15] bundled 插件 quick-reply 的「保存快捷回复集」其实一直失败（2026-10-21 · 一手实测）
 
@@ -855,3 +866,35 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 - **影响**：每次引擎 bounce / 24h 空闲卸载后的**第一轮对话**记忆注入静默塌约九成，无留痕；体感即"重启后第一句特别笨"。
 - **修法四选一（待用户拍板）**：① **预热（侦查推荐）**——backend 启动+定时（<24h，建议 6h）发一次小 embed 保 bge-m3 驻留；唯一同时覆盖"24h 空闲卸载"与"引擎/容器重启逐出"两个冷源的方案，代价 ≈160ms/次且模型本就常驻；落点参考 main.py:279-283 回填线程旁，线程须吞异常。② **超时放宽**——`OLLAMA_TIMEOUT` 30→60~120s（compose 一行 env，零改码）；代价＝冷轮首请求从"静默塌 90%"换成"同步卡 30~120s"。③ **降级留痕+可观测（改码）**——REPORT detail 回传 strategy_used 让导出自证；`[VEC-DIM]` 触发时仍跑关键词路（拆 :197 嵌套，注意 HYBRID 融合口径回归）；嵌入失败接 `_record_silent_failure`；后端关键留痕落盘持久化。④ 维持现状（不建议）。
 - **附带发现**：palink-ollama 容器日志通道自 10-11 起失效（healthcheck 每 30s 成功但 `docker logs` 零输出）——排查生产问题少一路证据，待修。
+  〔✅ 2026-10-26 T4 已定性（待用户点头执行）：磁盘日志**一直在写**，是 10-12 凌晨关机硬杀 Docker 把日志文件撕坏半行，`docker logs` 读取卡死在该行；修法=`docker compose up -d --force-recreate ollama`（模型在命名卷 ollama_data 不受影响；改 compose / restart 无用）。〕
+- ✅ **修法已拍板（2026-10-26 用户）**：选①**预热**（backend 启动+定时 <24h〔建议 6h〕小 embed 保 bge-m3 驻留，线程吞异常），**且必须做成配置开关**。施工排在施工链收口后第一批（`docs/_active/SPEC_下一程计划_用户裁定与排期_2026-10-26.md` §3.1）。ollama 日志失效已派只读查验（任务流 dwfrun-2b086ea0 T4）。
+
+---
+
+## TODOS 僵尸与悬挂验收索引（2026-10-26 文档大整理批 · 权威）
+
+> 来源：文档大整理链（dwfrun-a64ebbe4）终审员对 TODOS.md × 本文件逐条对照（394 份文档分诊副产品）。
+> **TODOS.md 巨文件（435KB）不逐条回改**（并行会话在途、行号漂移），后续 agent 遇下列条目**以本节为准**。
+> 明细与证据：`docs/_active/SPEC_文档大整理与项目状态总账_2026-10-26.md`。
+
+### 一、TODOS.md 僵尸：写着没做/旧状态，实际已做（8 条）
+
+| TODOS 位置 | 旧标签 | 实情 |
+|---|---|---|
+| :323 MVU 变量自动清理 | [已施工·未提交] | 已入库 `aecf216`；默认值危险已翻案（见 [P1-2] 订正段），仅剩真机验证三项 |
+| :389 变量可见性+插件变量接线 | [已施工·未提交] | 已入库 `8df6ebe`（[P1-4]）；剩真实写入/冗余壳收敛/真机验收 |
+| :445 插件设置轴复核 | [⚠未上线] | 代码已上线（[P1-10] 早已定性标签僵尸，TODOS 未回改） |
+| :272 向量记忆四步清单 | [未开工·待拍板] | 步骤1 已落 `b6fdd58`（P2-6 已翻案）；步骤2 句级已走完实施→否证→回退（`d6d1ef9`） |
+| :227 本地 LLM 全部删除 | [未开工·待拍板] | 10-22 交接书 §177：本地模型已全删，向量化走 Ollama 容器——做了没销账 |
+| :881 出图桥接修复批 | [进行中·已派单] | 用户已裁定暂缓（[P1-1]，勿主动重提） |
+| :1416/:1425/:1472/:1480 iOS PWA 四连条 | [待真机验证] | 10-22 交接书 §177：视口锚点已闭环——四条全过期 |
+| :1506 性能与网络加载低风险批 | [进行中·移交] | 大部分已消化；仅剩 A1 分页接线实测（`useChatMessages.ts` 无 limit=100/before_id）真欠 |
+
+### 二、悬挂验收尾：做了但验收从未发生（5 条，真欠——排进验收窗口）
+
+`:811` MVU 初始变量断链（`0ce1760` 在库，实机验收零回填）｜`:944` 出图提示词智能化（端到端从未实跑）｜`:1344` 注入对齐四 P0〔待容器验证〕（09-08 悬挂至今）｜`:1368` 移动端 UI 三档（待用户体感）｜`:1512` 分层记忆 Phase1（待用户体感）。
+
+### 三、台账引用失效（4 处）
+
+① [P2-2] 权威文档已归档+方案口径被 10-22 裁定覆盖（已补订正注）；② 报告名 `REPORT_包AG_H_window_context撤除与事实钉桩` 引用笔误已订正；③ **世界书 F2/F3 残留 hereby 立账**（源自 `docs/复核_世界书向量召回前端批A-E_2026-09-30.md` §3：勾选即派嵌入不看总开关／用户无法确认召回是否发生——此前全仓零登记，该文档归档前不得丢此两条）；④ `AGENTS.md:101` 的 `overview.md` 指向疑似 `docs/goal-groupchat/goal-overview.md`（其首部 10-03 已自证部分失效），goal-groupchat/* 归档前置需先改写该引用。
+
