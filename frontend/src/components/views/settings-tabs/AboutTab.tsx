@@ -86,7 +86,7 @@ export function AboutTab({ t }: AboutTabProps) {
             <SettingsRow
               icon={<Download size={15} />}
               title="记录静默失败"
-              desc="开启后，兼容层里「什么都没发生」的路径会在控制台打一行汇总，可用 window.__palinkDiagDump() 读取或在此导出。只写本机，不上传任何地址。"
+              desc="开启后，兼容层里「什么都没发生」的路径会在控制台打一行汇总，可用 window.__palinkDiagDump() 读取或在此导出。卡内样式移除取证（style_removal）平时静默、只在真丢失时报警，这里显式打开后改为每个事件逐条打印。只写本机，不上传任何地址。"
             >
               <Switch checked={diagRecording} onCheckedChange={handleDiagToggle} />
             </SettingsRow>

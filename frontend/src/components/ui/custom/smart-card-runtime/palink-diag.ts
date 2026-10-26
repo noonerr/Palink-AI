@@ -434,6 +434,19 @@ export function palinkDiagEnabled(): boolean {
   return isLocalPalinkSite();
 }
 
+/**
+ * [UI-2b 2026-10-26] 是否被**显式**打开过诊断面（区别于 palinkDiagEnabled 的"本机站点隐式默认开"）。
+ * 用途：需要"用户主动要求啰嗦"才生效的面（如 style_removal 取证的逐条放行）只能认这个，
+ * 否则本地开发（localhost）会被默认开诊断连带变成刷屏。
+ *   - 内存覆盖为 true（__palinkDiagSetEnabled(true)）⇒ true；
+ *   - localStorage 存 '1'（AboutTab 开发者模式 / 诊断开关落盘）⇒ true；
+ *   - 其余（含本机站点默认开）⇒ false。
+ */
+export function palinkDiagExplicitlyEnabled(): boolean {
+  if (state.enabledOverride !== null) return state.enabledOverride === true;
+  return storageGet(PALINK_DIAG_STORAGE_KEY) === '1';
+}
+
 export function setPalinkDiagEnabled(value: boolean | null, persist = true): boolean {
   state.enabledOverride = value === null ? null : Boolean(value);
   if (persist) {

@@ -40,7 +40,7 @@ import {
 import { REMAINING_MARKDOWN_PLUGINS, REMAINING_REHYPE_PLUGINS, INLINE_MIN_HEIGHT, IFRAME_DEFAULT_HEIGHT, IFRAME_INLINE_MAX_HEIGHT, IFRAME_VIEWPORT_MIN_HEIGHT, IFRAME_AVAILABLE_MIN_HEIGHT, SMART_CARD_CSP_NONCE, SMART_CARD_CONTEXT_UPDATE_DELAY_MS, SMART_CARD_VIEWPORT_SETTLE_DELAYS_MS, SMART_CARD_UI_TEXT } from './smart-card-runtime/shared';
 import { resolveAvailableHeightCardResize } from './smart-card-runtime/avail-height-unlock';
 import { absorbFrameDiagnostic } from './smart-card-runtime/palink-diag';
-import { absorbStyleRemovalFrameError, isStyleRemovalForensicPayload } from './smart-card-runtime/style-removal-forensics-aggregate';
+import { absorbStyleRemovalFrameError, isStyleRemovalForensicPayload, registerStyleRemovalProbeContext, type AbsorbStyleRemovalResult } from './smart-card-runtime/style-removal-forensics-aggregate';
 import { smartCardRuntimeConfigFallback } from './smart-card-runtime/helpers';
 import { SMART_CARD_ASSET_MODE_CHANGED_EVENT } from './smart-card-runtime/asset-mode';
 import {
@@ -232,6 +232,12 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // 偷走卡片自己的 <style>。挂一个守护：head childList 一有 STYLE/LINK 缺失就补回，
   // 6 个 setTimeout 自愈点兜住 head 被整体换的极端路径。详见 smart-card-runtime/style-guard.ts。
   const styleGuardRef = useRef<CardStyleGuardHandle | null>(null);
+  // [UI-2b 2026-10-26 style_removal 降噪] 取证探针要读的「本帧当前渲染高度」与卡身份。
+  // 渲染期赋值（同 contentOverrideActiveRef 的既有写法）：探针在帧卸载/重建后仍拿到最新值，
+  // 折叠态给 -1 = 不参与判定（折叠本来就该没高度，别把它报成样式丢失）。
+  const frameRenderedHeightRef = useRef(-1);
+  const styleRemovalCardIdRef = useRef('');
+  styleRemovalCardIdRef.current = String(context?.characterId || '');
   // 显式要求内联渲染时（状态栏卡片由 Message.tsx 传入 presentationMode:'inline'），
   // 压过所有"沉浸式/全屏/可折叠"启发式——状态栏应像 ST 那样内联在聊天气泡里、始终可见、随 AI 输出刷新。
   const explicitInline = context?.presentationMode === 'inline';
@@ -1031,16 +1037,26 @@ const IframeRenderer = React.memo(function IframeRenderer({
           // [UI-2 2026-10-24 D-4] style_removal 取证改会话级聚合：真机每轮 ~168 条
           // （帧内观察器每次安装上限 24 条，srcDoc 每轮重建 iframe ⇒ 帧内计数归零、同一批
           // 节点身份反复全额上报，而样式实际健在——守护一直在恢复）。聚合必须在父侧做
-          // （唯一跨帧存活的位置）：同「kind+节点身份」首次照旧走下面的全量记录（取证字段
-          // 一个不少 + console.error 一次），后续只累加计数
-          // （window.__palinkStyleRemovalAgg / diag 导出 records[].count），不再逐条刷屏。
+          // （唯一跨帧存活的位置）。
+          // [UI-2b 2026-10-26 用户裁定] 在聚合之上再降噪到「真出问题才报」：
+          //   - 纯「节点被移除/被替换」= 正常适配行为 ⇒ 默认**一条都不刷 console**，
+          //     也**不占**下面 __palinkFrameErrors 的 50 格缓冲（缓冲留给真错误）；
+          //     取证不删：会话账 window.__palinkStyleRemovalAgg / 汇总
+          //     window.__palinkStyleRemovalSummary() / diag 导出 records[].count 全都在，
+          //     管理页（插件管理 · ST 兼容层降级统计）也读得到。
+          //   - 真出问题（HEAD 被整份摘走 / settle 窗口后样式仍不在帧文档 / 守护真的回灌过 /
+          //     帧高度塌陷）由聚合器的延后探针定性，经 reportEscalation 出口落
+          //     一条 __palinkFrameErrors + 一行 console.error（见下面的注册 effect）。
+          //   - 「逐条放行」挂既有开发者模式开关（AboutTab developer_mode ⇒ 显式诊断开）：
+          //     开 = 每个取证事件一行 console，但仍只有首次进缓冲。
           // ⛔ 只动「记录」，不动 STYLE-GUARD 恢复/守护；不弹任何 UI。
+          let styleRemovalVerdict: AbsorbStyleRemovalResult | null = null;
           if (isStyleRemovalForensicPayload(data)) {
-            const verdict = absorbStyleRemovalFrameError(data, {
+            styleRemovalVerdict = absorbStyleRemovalFrameError(data, {
               frameId: frameIdRef.current || '',
-              cardId: String(context.characterId || ''),
+              cardId: styleRemovalCardIdRef.current,
             });
-            if (!verdict.first) return;
+            if (!styleRemovalVerdict.shouldLog) return;
           }
           // [P0 2026-09-30] filename/lineno 必须透传：shim 的 window.onerror 上报里
           // 带 e.filename（脚本级 parse error 时即出错资源的 sourceURL/URL），此前在
@@ -1066,13 +1082,21 @@ const IframeRenderer = React.memo(function IframeRenderer({
             node: data.node && typeof data.node === 'object' ? data.node : undefined,
             at: Date.now(),
           };
-          try {
-            const w = window as unknown as { __palinkFrameErrors?: unknown[] };
-            w.__palinkFrameErrors = w.__palinkFrameErrors || [];
-            if (w.__palinkFrameErrors.length < 50) w.__palinkFrameErrors.push(entry);
-          } catch { /* ignore */ }
-          console.error(`[smart-card ${frameIdRef.current.slice(0, 8)}] 卡内错误:`, data.message || data);
-        }
+          // [UI-2b] 静默路径（默认 + 普通搬家）走不到这里；能走到这里的只有两类：
+          //   ① 开发者模式逐条放行（shouldLog=true，但**只有首次**进缓冲，防 50 格被取证刷满）
+          //   ② 真出问题的升级上报 / 非取证的帧内真错误（一律进缓冲）
+          const shouldRecordFrameError = !styleRemovalVerdict || styleRemovalVerdict.shouldRecord;
+          if (shouldRecordFrameError) {
+            try {
+              const w = window as unknown as { __palinkFrameErrors?: unknown[] };
+              w.__palinkFrameErrors = w.__palinkFrameErrors || [];
+              if (w.__palinkFrameErrors.length < 50) w.__palinkFrameErrors.push(entry);
+            } catch { /* ignore */ }
+          }
+          console.error(shouldRecordFrameError
+            ? `[smart-card ${frameIdRef.current.slice(0, 8)}] 卡内错误:`
+            : `[smart-card ${frameIdRef.current.slice(0, 8)}] 卡内样式取证(开发者模式逐条 · 同键会话第 ${String(styleRemovalVerdict?.count ?? 0)} 次):`,
+          data.message || data);        }
         return;
       }
       if (!data || data.source !== 'palink-smart-card' || data.frameId !== frameIdRef.current) return;
@@ -1356,6 +1380,65 @@ const IframeRenderer = React.memo(function IframeRenderer({
     return () => window.removeEventListener('message', handleMessage);
   }, [context, maxMeasuredHeight, minMeasuredHeight, onAction, postPluginScriptsToFrame, prefersAvailableHeight, settleViewportContext, smartCardText.noActionHandler, sourceFingerprint, updateAvailableHeight]);
 
+  // [UI-2b 2026-10-26 style_removal 降噪] 给会话级聚合器挂一份「本帧」的取证探针上下文：
+  // 聚合器据此在 settle 窗口后判定「样式到底丢没丢」（真丢失 / 守护真的回灌过 / 帧高度塌陷），
+  // 只有判真出问题才经 reportEscalation 落一条 __palinkFrameErrors + 一行 console.error。
+  // 正常「节点被搬家」永远走不到这里 —— 但取证不删：计数仍在 window.__palinkStyleRemovalAgg /
+  // __palinkStyleRemovalSummary() / diag 导出面，插件管理页读得到。
+  useEffect(() => {
+    const frameId = frameIdRef.current;
+    return registerStyleRemovalProbeContext(frameId, {
+      resolveDocument: () => {
+        try {
+          return iframeRef.current?.contentDocument ?? null;
+        } catch {
+          // 跨源帧（sandbox 无 allow-same-origin）读不到文档：给 null ⇒ 聚合器记 probesSkipped，
+          // 不做任何"丢失"猜测（读不到 ≠ 丢了）。
+          return null;
+        }
+      },
+      readGuardRestored: () => {
+        const guard = (window as unknown as { __palinkStyleGuard?: { restored?: number } }).__palinkStyleGuard;
+        const restored = Number(guard?.restored);
+        return Number.isFinite(restored) ? restored : -1;
+      },
+      readRenderedHeight: () => frameRenderedHeightRef.current,
+      reportEscalation: (escalation) => {
+        const kind = escalation.key.split('|')[0] || '<kind-absent>';
+        const identityText = escalation.identity
+          ? (escalation.identity.id || escalation.identity.href || `${escalation.identity.tag}@len${escalation.identity.textLen}`)
+          : '<no-identity>';
+        try {
+          const w = window as unknown as { __palinkFrameErrors?: unknown[] };
+          w.__palinkFrameErrors = w.__palinkFrameErrors || [];
+          if (w.__palinkFrameErrors.length < 50) {
+            w.__palinkFrameErrors.push({
+              frameId,
+              type: 'frame-error',
+              message: escalation.message,
+              kind,
+              directive: undefined,
+              blockedURI: undefined,
+              filename: identityText || '<no-filename>',
+              lineno: -1,
+              colno: -1,
+              errorReason: escalation.errorReason,
+              escalationTrigger: escalation.trigger,
+              sessionCount: escalation.count,
+              node: escalation.node && typeof escalation.node === 'object' ? escalation.node : undefined,
+              at: Date.now(),
+            });
+          }
+          console.error(`[smart-card ${frameId.slice(0, 8)}] 卡内样式异常(取证升级):`, escalation.message);
+        } catch (escalationError) {
+          // window / console 被环境剥掉时，升级结论已在聚合账里（__palinkStyleRemovalAgg 的
+          // escalated / escalationTrigger 字段），这里不重复刷，也不影响渲染。
+          void escalationError;
+        }
+      },
+    });
+  }, []);
+
   useEffect(() => {
     if (!prefersImmersive || collapsed || typeof document === 'undefined') return;
     const previousOverflow = document.body.style.overflow;
@@ -1528,6 +1611,8 @@ const IframeRenderer = React.memo(function IframeRenderer({
   // [CONTENT-UNLOCK] 解锁后 frameHeight 跟随 height（内容高），min 放开到 INLINE_MIN_HEIGHT
   // 允许内容收缩后 iframe 跟着收缩；未解锁保持视口切片（height=min=max 三重锁定）。
   const frameHeight = prefersAvailableHeight ? (contentOverrideActive ? height : availableHeight) : height;
+  // [UI-2b] 取证探针的「可见回归」读数：折叠态/未挂载给 -1（不参与判定），否则给本帧渲染高度。
+  frameRenderedHeightRef.current = collapsed ? -1 : Math.round(frameHeight);
   const frameMinHeight = prefersAvailableHeight ? (contentOverrideActive ? INLINE_MIN_HEIGHT : availableHeight) : minMeasuredHeight;
   const iframeKey = `${frameIdRef.current}-${effectiveMode}-${sourceFingerprint}`;
   // [包D D-2 2026-10-18] 入口可达性：此前是 `prefersImmersive && (mode === 'iframe-js' || mode === 'trusted-native')`，
