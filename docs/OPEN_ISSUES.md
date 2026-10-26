@@ -868,6 +868,7 @@ UI 已上线（第九次窗口，入口 `index-B1gYRfbW.js`）。真机取到的
 - **附带发现**：palink-ollama 容器日志通道自 10-11 起失效（healthcheck 每 30s 成功但 `docker logs` 零输出）——排查生产问题少一路证据，待修。
   〔✅ 2026-10-26 T4 已定性（待用户点头执行）：磁盘日志**一直在写**，是 10-12 凌晨关机硬杀 Docker 把日志文件撕坏半行，`docker logs` 读取卡死在该行；修法=`docker compose up -d --force-recreate ollama`（模型在命名卷 ollama_data 不受影响；改 compose / restart 无用）。〕
 - ✅ **修法已拍板（2026-10-26 用户）**：选①**预热**（backend 启动+定时 <24h〔建议 6h〕小 embed 保 bge-m3 驻留，线程吞异常），**且必须做成配置开关**。施工排在施工链收口后第一批（`docs/_active/SPEC_下一程计划_用户裁定与排期_2026-10-26.md` §3.1）。ollama 日志失效已派只读查验（任务流 dwfrun-2b086ea0 T4）。
+- ✅ **已施工并上线（2026-10-26，commit `022d259`）**：`OLLAMA_PREWARM_ENABLED=true` / `INTERVAL_HOURS=6` / `TEXT=预热`；启动即预热一次，之后每 6h；走记忆检索同一条 `embed_text → OllamaEmbedder`，daemon 不持 DB、异常经 silent_failure、lifespan 关闭时停。上线实测 `预热完成：1024 维 / 3611ms`，ollama 日志 `POST /api/embed 200`。如实保留：冷启动首次若自己撞 30s 超时仍可能降级，服务端继续加载，下一次真实请求自行恢复。详见 `docs/_active/report/REPORT_预设库与P2-26预热_2026-10-26.md` §4。
 
 ---
 

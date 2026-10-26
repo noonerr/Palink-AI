@@ -197,6 +197,8 @@
 | 2026-10-26 | [`_QUARANTINE_2026-10-19`](./_QUARANTINE_2026-10-19) | 根级 `_QUARANTINE_2026-10-19/` | 35M 旧 staging（包N后），原位置违规；本次仅归位并补 BACKUP_INFO，内容零改动。 |
 | 2026-10-26 | [`_QUARANTINE_2026-10-26_tmp_audit`](./_QUARANTINE_2026-10-26_tmp_audit) | 根级 `.tmp_audit/` | 2.0M 旧审计探针与草稿（10-22 后未动），按减负清单 §3.8 归置。 |
 | 2026-10-26 | [`2026-10-26_预设库0072前`](./2026-10-26_预设库0072前) | `palink-ai-db-1` / 库 `ai_hub` | **34M**（`pg_dump \| gzip`，`gzip -t` 通过）；迁移前 alembic=0071、context 4 / instruct 5 / prompt_presets 0 / generation 27。用于 0072 `context_templates.user_id` 上线回滚。 |
+| 2026-10-26 | [`2026-10-26_dist重建前_预设库UI`](./2026-10-26_dist重建前_预设库UI) | `frontend/dist` | **7.1M**（tar.gz），改前入口 `index-B81qxQFs.js`；上线预设库 UI + TH 预设接口 + P2-26 预热。上线后入口 `index-CSqzhUI7.js`，HTTP 200；旧 126 个孤儿隔离在 `_QUARANTINE_2026-10-26_dist孤儿chunk_presetui/`。 |
+| 2026-10-26 | [`_QUARANTINE_2026-10-26_dist孤儿chunk_presetui`](./_QUARANTINE_2026-10-26_dist孤儿chunk_presetui) | `frontend/dist` | 本轮重建前 126 个历史孤儿；现行入口 `index-CSqzhUI7.js`，本区均不再被引用。 |
 
 ## 清理记录（非备份，仅留痕）
 
