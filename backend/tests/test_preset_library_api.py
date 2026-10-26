@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_current_user
 from app.core.preset_library_seeds import (
+    BUILTIN_CONTEXT_PRESETS,
     BUILTIN_REASONING_PRESETS,
     BUILTIN_SYSPROMPT_PRESETS,
     REASONING_PRESETS_KEY,
@@ -136,12 +137,36 @@ class TestBuiltinLibrary:
             db_session.query(InstructTemplate).filter(InstructTemplate.user_id.is_(None)).count() == 2
         )
 
-    def test_ensure_defaults_endpoint_is_idempotent(self, client, auth_headers):
-        first = client.post(f"{LIB_URL}/ensure-defaults", headers=auth_headers)
-        assert first.status_code == 200, first.text
-        second = client.post(f"{LIB_URL}/ensure-defaults", headers=auth_headers)
-        assert second.status_code == 200
-        assert all(value == 0 for value in second.json()["counts"].values())
+    def test_pending_startup_seed_rows_do_not_duplicate(self, db_session):
+        """2026-10-26 上线回归：启动期 seed 与 preset_library seed 共用 Session 且
+        autoflush=False 时，前者 add 的两条中文 context 不会出现在后者的 query 里
+        ⇒ 后者再 add 一次，flush 撞 ix_context_templates_name，整段默认数据回滚。
+        修法在 _ensure_global_builtin_templates 开头 db.flush()，本测试钉住。
+        """
+        names = [seed["name"] for seed in BUILTIN_CONTEXT_PRESETS]
+        old_autoflush = db_session.autoflush
+        db_session.autoflush = False
+        try:
+            # 清掉已有种子行，模拟"启动期第一次播种"
+            db_session.query(ContextTemplate).filter(ContextTemplate.name.in_(names)).delete(
+                synchronize_session=False
+            )
+            db_session.flush()
+            # 启动期 _seed_builtin_context_templates：只 add、不 flush
+            for seed in BUILTIN_CONTEXT_PRESETS:
+                db_session.add(ContextTemplate(**seed))
+            counts = ensure_preset_library_seeds(db_session)
+            assert counts["context_created"] == 0, counts
+            db_session.flush()
+            rows = (
+                db_session.query(ContextTemplate)
+                .filter(ContextTemplate.name.in_(names))
+                .all()
+            )
+            assert sorted(row.name for row in rows) == sorted(names), rows
+        finally:
+            db_session.autoflush = old_autoflush
+            db_session.rollback()
 
 
 # ---------------------------------------------------------------------------

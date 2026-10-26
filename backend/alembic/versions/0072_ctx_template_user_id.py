@@ -23,9 +23,10 @@ ADD CONSTRAINT 全表校验、在 sqlite 会触发 batch 重建整表；而本�
 参与归属过滤，不依赖数据库级引用完整性。fresh 库由 Base.metadata.create_all
 按模型定义直接带 FK（模型里声明了 ForeignKey("users.id")），两条路径语义一致。
 
-幂等：inspector 先查列是否在场，已在则整段 no-op（fresh 库 create_all 先行，
-迁移必然 no-op）。downgrade 只卸列/索引，不改数据（属主信息丢了无法重建，属
-有损回退，但列本身可逆）。
+幂等：inspector 先查列/索引是否在场；列已在（例如启动期 runtime compat 先补了列）
+但索引不在时，仍然补索引后再由 alembic 记版本。fresh 库 create_all 先行时两者都在，
+迁移 no-op。downgrade 只卸列/索引，不改数据（属主信息丢了无法重建，属有损回退，
+但列本身可逆）。
 """
 from alembic import op
 import sqlalchemy as sa
@@ -62,14 +63,21 @@ def _index_present(table_name: str, index_name: str) -> bool:
 def upgrade() -> None:
     if not _table_exists(_TABLE):
         return
-    if _column_present(_TABLE, _COLUMN):
+
+    has_column = _column_present(_TABLE, _COLUMN)
+    has_index = _index_present(_TABLE, _INDEX)
+    if has_column and has_index:
         return
 
     # sqlite 走 batch（env.py 全局 render_as_batch 配合，0001/0029/0042/0071 同款），
     # postgres 为直通 ALTER TABLE ADD COLUMN（nullable，无表重写）。
+    # 生产 RUN_MIGRATIONS_ON_STARTUP=false 时，启动期 runtime compat 可能先补了
+    # 列但不会建索引；这里按"缺什么补什么"处理，不能因列已在就整段 return。
     with op.batch_alter_table(_TABLE) as batch_op:
-        batch_op.add_column(sa.Column(_COLUMN, sa.Integer(), nullable=True))
-        batch_op.create_index(_INDEX, [_COLUMN])
+        if not has_column:
+            batch_op.add_column(sa.Column(_COLUMN, sa.Integer(), nullable=True))
+        if not has_index:
+            batch_op.create_index(_INDEX, [_COLUMN])
 
 
 def downgrade() -> None:

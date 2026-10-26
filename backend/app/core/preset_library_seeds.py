@@ -252,6 +252,13 @@ def _ensure_global_builtin_templates(db) -> dict[str, int]:
     """context / instruct 内置行：插入缺失项，刷新 builtin 行，绝不动用户行。"""
     from ..models import ContextTemplate, InstructTemplate
 
+    # [2026-10-26 上线修复] 启动期 _seed_builtin_context/instruct_templates 与
+    # 本函数共用同一个 Session；Session 若 autoflush=False，前面 add 的两条
+    # 中文 context 模板不会在下面的 query 里可见 ⇒ 本函数再 add 一次，flush
+    # 时撞 ix_context_templates_name 唯一键，整段默认数据事务回滚。
+    # 先 flush，让启动期已 add 的种子行落进事务，query 才能按 name 命中并跳过。
+    db.flush()
+
     counts = {"context_created": 0, "context_updated": 0, "instruct_created": 0, "instruct_updated": 0}
 
     for seed in BUILTIN_CONTEXT_PRESETS:
