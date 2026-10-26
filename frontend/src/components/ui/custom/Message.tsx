@@ -1443,7 +1443,17 @@ function MessageInner({
       }}
     >
       <div className={cn(
-        isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]",
+        // [P2-3 方案B 2026-10-26] 用户气泡上限 90/75/65% → 98%。
+        // 病灶实测（OPEN_ISSUES P2-3）：396px 屏下 AI 正文列 388px（屏宽 98%）vs 用户气泡
+        // 349px（屏宽 88%），差 39px —— 上界就是这里的 90%。放宽到 98% 后气泡右边界与
+        // AI 列右边界对齐；**AI 正文列 / 卡片 iframe 宽度一概不动**（本文件其余宽度类未改）。
+        // w-fit（width: fit-content）：不足一行显示宽度时按内容收缩，不撑满 98%；
+        // 长消息被 max-w-[98%] 截住后照常换行（配合正文容器的 break/overflow-wrap）。
+        // 刻意不给任何 min-width —— 固定 min-width 会把短消息重新撑开。
+        isUser && "max-w-[98%]",
+        // 编辑态例外：编辑框里的 textarea 内在宽度只有 ~20ch，fit-content 会把编辑区压窄，
+        // 因此编辑态回到 w-full（仍受 98% 上限约束）。
+        isUser && (isEditing ? "w-full" : "w-fit"),
         isUser ? "items-end flex" : cn("items-start flex", isCharacterChat ? "w-full" : cn("w-full", showCharacterAvatar && "gap-3")),
         chatStyle === 'bubbles' && !isUser && "max-w-[90%] md:max-w-[75%] lg:max-w-[65%]"
       )}>
@@ -1604,7 +1614,13 @@ function MessageInner({
                 <>
                   {userTextContent && (
                     // 用户消息气泡为黑底白字，须用 !text-white 覆盖 .roleplay-container .markdown-content 的全局颜色规则
-                    <div className="markdown-content mes_text w-full break-words overflow-wrap-anywhere !text-white">
+                    // [P2-3] `overflow-wrap-anywhere` 在本仓**没有对应工具类**（tailwind.config 未定义、
+                    // index.css 也没有），实际生效的只有 break-words（overflow-wrap:break-word，
+                    // 只影响换行时的断词、不影响 min-content）。气泡改成 fit-content 后 min-content
+                    // 才决定短消息的宽度，故补一条真正的 `[overflow-wrap:anywhere]`：
+                    // 长英文单词 / URL 的 min-content 缩到 1 字符，短消息不会因一个长链接
+                    // 被撑到 98%，长消息也能在任意处断行。
+                    <div className="markdown-content mes_text w-full break-words overflow-wrap-anywhere [overflow-wrap:anywhere] !text-white">
                       <ReactMarkdown
                         remarkPlugins={REMARK_PLUGINS}
                         rehypePlugins={REHYPE_PLUGINS}
