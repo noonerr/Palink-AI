@@ -20,6 +20,8 @@ from .mcp import router as mcp_router
 from .presets import router as presets_router
 from .context_templates import router as context_templates_router
 from .instruct_templates import router as instruct_templates_router
+# [预设模板库 2026-10-25] 四类预设统一清单 + ST 原生 JSON 导入/导出/删除。
+from .preset_library import router as preset_library_router
 from .variables import router as variables_router
 # [MVU 补齐第二波 2026-10-05] 会话变量补丁写入端点。
 # 落新文件而非 character_ext.py：后者开工时正被并行 agent 改动且未提交，
@@ -95,6 +97,9 @@ api_router.include_router(mcp_router)
 api_router.include_router(presets_router)
 api_router.include_router(context_templates_router)
 api_router.include_router(instruct_templates_router)
+# 预设库是 Palink 原生写面（POST 导入/删除），与 presets 同族挂 csrf_guard：
+# guard 对 GET/HEAD 与带 Bearer 的请求放行，只拦"纯 cookie 跨站写请求"。
+api_router.include_router(preset_library_router, dependencies=[Depends(csrf_guard)])
 api_router.include_router(variables_router)
 api_router.include_router(mvu_variables_router)
 api_router.include_router(prompt_manager_router)

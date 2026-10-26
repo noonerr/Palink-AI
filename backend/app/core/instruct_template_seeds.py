@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# [预设模板库 2026-10-25] 自带中文 instruct 与系统预置共用同一份账本
+# （并入清单后 /api/instruct-templates/ensure-builtin 与启动期播种一并覆盖）。
+from .preset_library_seeds import BUILTIN_INSTRUCT_PRESETS
+
 
 BUILTIN_INSTRUCT_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -103,7 +107,7 @@ BUILTIN_INSTRUCT_TEMPLATES: list[dict[str, Any]] = [
         "wrap_sequences": False,
         "is_default": False,
     },
-]
+] + BUILTIN_INSTRUCT_PRESETS
 
 
 def get_builtin_template_names() -> list[str]:

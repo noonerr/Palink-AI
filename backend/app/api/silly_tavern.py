@@ -2356,6 +2356,20 @@ async def st_save_settings(
     elif old_ns:
         payload_data[_PRESET_SELECTION_NS] = old_ns
 
+    # [预设模板库 2026-10-25] 同理保护 Palink 自己的预设库数组键
+    # （sysprompt_presets / reasoning_presets）。ST 前端 saveSettings 不认识这两个键，
+    # 上面这行"整块替换"会把用户导入/自带的 sysprompt、reasoning 预设整批抹掉。
+    # 语义同上：payload 带了就按 payload，没带就保留旧值。
+    from ..core.preset_library_seeds import (
+        REASONING_PRESETS_KEY as _REASONING_PRESETS_KEY,
+        SYSPROMPT_PRESETS_KEY as _SYSPROMPT_PRESETS_KEY,
+    )
+
+    for _preset_key in (_SYSPROMPT_PRESETS_KEY, _REASONING_PRESETS_KEY):
+        _old_bucket = old_stored.get(_preset_key) if isinstance(old_stored, dict) else None
+        if _preset_key not in payload_data and _old_bucket is not None:
+            payload_data[_preset_key] = _old_bucket
+
     setting.silly_tavern_settings = _json_dumps(payload_data)
     # ST 1.18.0 ui_settings: persist separately from silly_tavern_settings
     # so UI-specific preferences survive independently. Default to "{}".

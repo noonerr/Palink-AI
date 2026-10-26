@@ -125,6 +125,13 @@ class ContextTemplate(Base):
     """
     __tablename__ = "context_templates"
     id = Column(Integer, primary_key=True, index=True)
+    # [预设模板库 2026-10-25] 属主字段（alembic 0072 补列）：
+    #   NULL  = 内置/历史共享行（is_builtin=True 或 2026-10-25 之前 admin 建的行）
+    #   非空  = 该用户私人模板（导入或自建），仅本人可见/可改/可删
+    # 历史行保持 NULL ⇒ 存量行为零变化。name 仍是**全局唯一**（装配按 name 查，
+    # 见 services/roleplay_prompt_assembly.py:_load_context_template），导入撞名走
+    # " (imported)" 后缀，不做 (user_id, name) 唯一键。
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String, nullable=False, unique=True, index=True)
     display_name = Column(String, nullable=True)
     # System prompt assembly template (placeholders replaced at runtime).

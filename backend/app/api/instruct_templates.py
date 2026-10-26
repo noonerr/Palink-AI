@@ -32,9 +32,24 @@ class InstructTemplateCreateRequest(BaseModel):
     last_output_prefix: Optional[str] = ""
     system_sequence_prefix: Optional[str] = ""
     system_sequence_suffix: Optional[str] = ""
+    # [预设模板库 2026-10-25] ST 1.18 新列此前不在请求模型里 ⇒ 带这些键的
+    # 导入/编辑请求会被 pydantic 静默丢弃。补齐后与表结构一一对应。
+    system_sequence: Optional[str] = ""
+    system_suffix: Optional[str] = ""
+    last_system_sequence: Optional[str] = ""
+    first_input_sequence: Optional[str] = ""
+    last_input_sequence: Optional[str] = ""
+    user_alignment_message: Optional[str] = ""
+    story_string_prefix: Optional[str] = ""
+    story_string_suffix: Optional[str] = ""
     stop_sequence: Optional[str] = ""
     separator_sequence: Optional[str] = ""
     wrap_sequences: Optional[bool] = False
+    skip_examples: Optional[bool] = False
+    names_behavior: Optional[str] = "force"
+    macro: Optional[bool] = False
+    system_same_as_user: Optional[bool] = False
+    sequences_as_stop_strings: Optional[bool] = True
     is_default: Optional[bool] = False
 
 
@@ -49,9 +64,22 @@ class InstructTemplateUpdateRequest(BaseModel):
     last_output_prefix: Optional[str] = None
     system_sequence_prefix: Optional[str] = None
     system_sequence_suffix: Optional[str] = None
+    system_sequence: Optional[str] = None
+    system_suffix: Optional[str] = None
+    last_system_sequence: Optional[str] = None
+    first_input_sequence: Optional[str] = None
+    last_input_sequence: Optional[str] = None
+    user_alignment_message: Optional[str] = None
+    story_string_prefix: Optional[str] = None
+    story_string_suffix: Optional[str] = None
     stop_sequence: Optional[str] = None
     separator_sequence: Optional[str] = None
     wrap_sequences: Optional[bool] = None
+    skip_examples: Optional[bool] = None
+    names_behavior: Optional[str] = None
+    macro: Optional[bool] = None
+    system_same_as_user: Optional[bool] = None
+    sequences_as_stop_strings: Optional[bool] = None
     is_default: Optional[bool] = None
 
 
@@ -69,9 +97,23 @@ def _template_to_dict(t: InstructTemplate) -> dict:
         "last_output_prefix": t.last_output_prefix or "",
         "system_sequence_prefix": t.system_sequence_prefix or "",
         "system_sequence_suffix": t.system_sequence_suffix or "",
+        # ST 1.18 新列（此前漏在此字典外，前端读到的是"字段不存在"）。
+        "system_sequence": t.system_sequence or "",
+        "system_suffix": t.system_suffix or "",
+        "last_system_sequence": t.last_system_sequence or "",
+        "first_input_sequence": t.first_input_sequence or "",
+        "last_input_sequence": t.last_input_sequence or "",
+        "user_alignment_message": t.user_alignment_message or "",
+        "story_string_prefix": t.story_string_prefix or "",
+        "story_string_suffix": t.story_string_suffix or "",
         "stop_sequence": t.stop_sequence or "",
         "separator_sequence": t.separator_sequence or "",
         "wrap_sequences": bool(t.wrap_sequences),
+        "skip_examples": bool(t.skip_examples),
+        "names_behavior": t.names_behavior or "force",
+        "macro": bool(t.macro),
+        "system_same_as_user": bool(t.system_same_as_user),
+        "sequences_as_stop_strings": bool(t.sequences_as_stop_strings),
         "is_default": bool(t.is_default),
         "is_system": t.user_id is None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -133,9 +175,22 @@ def create_instruct_template(
         last_output_prefix=req.last_output_prefix or "",
         system_sequence_prefix=req.system_sequence_prefix or "",
         system_sequence_suffix=req.system_sequence_suffix or "",
+        system_sequence=req.system_sequence or "",
+        system_suffix=req.system_suffix or "",
+        last_system_sequence=req.last_system_sequence or "",
+        first_input_sequence=req.first_input_sequence or "",
+        last_input_sequence=req.last_input_sequence or "",
+        user_alignment_message=req.user_alignment_message or "",
+        story_string_prefix=req.story_string_prefix or "",
+        story_string_suffix=req.story_string_suffix or "",
         stop_sequence=req.stop_sequence or "",
         separator_sequence=req.separator_sequence or "",
         wrap_sequences=bool(req.wrap_sequences),
+        skip_examples=bool(req.skip_examples),
+        names_behavior=req.names_behavior or "force",
+        macro=bool(req.macro),
+        system_same_as_user=bool(req.system_same_as_user),
+        sequences_as_stop_strings=bool(req.sequences_as_stop_strings),
         is_default=bool(req.is_default),
     )
     db.add(t)

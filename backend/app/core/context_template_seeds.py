@@ -14,6 +14,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# [预设模板库 2026-10-25] 自带中文明单与 ST 对齐的四条共用**同一份账本**，
+# 直接并入本清单 ⇒ 已有的 /api/roleplay/context-templates/ensure-builtin 与
+# 启动期 _seed_builtin_context_templates 会一并播下这 2 条，无需另开入口。
+# 注意：文本必须保持中文自写（版权边界），见 preset_library_seeds 文件头。
+from .preset_library_seeds import BUILTIN_CONTEXT_PRESETS
+
 
 BUILTIN_CONTEXT_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -72,7 +78,7 @@ BUILTIN_CONTEXT_TEMPLATES: list[dict[str, Any]] = [
         "normal_prompt": "<|im_start|>user\n{{user}}\n<|im_end|>",
         "group_prompt": "",
     },
-]
+] + BUILTIN_CONTEXT_PRESETS
 
 
 def get_builtin_template_names() -> list[str]:

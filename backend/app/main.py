@@ -180,6 +180,17 @@ def _init_default_data() -> None:
         # 初始化内置 instruct templates (ST 1.18.0)
         _seed_builtin_instruct_templates(db)
 
+        # [预设模板库 2026-10-25] 自带中文默认（context/instruct 落上面两张表，
+        # sysprompt/reasoning 落用户设置数组；这里只播全局部分，用户数组由
+        # GET /api/preset-library 或 /ensure-defaults 按用户补齐）。
+        # 单独兜异常：播种失败不得把上面已完成的默认数据一起回滚。
+        from .core.silent_failure import swallow as _swallow
+
+        with _swallow("preset_library.seed_startup"):
+            from .core.preset_library_seeds import ensure_preset_library_seeds
+
+            ensure_preset_library_seeds(db)
+
         db.commit()
     except Exception as e:
         logger.error(f"初始化默认数据失败: {e}")

@@ -19,6 +19,11 @@ _RUNTIME_COMPAT_COLUMNS = (
     ("generation_presets", "logit_bias", sa.Text()),
     # ST 1.18.0 context template binding (references ContextTemplate.name)
     ("generation_presets", "context_template_name", sa.String()),
+    # [预设模板库 2026-10-25] context_templates 属主列（alembic 0072 已建）。
+    # NULL = 内置/历史共享行；非 NULL = 该用户私人模板。
+    # 表本身由 create_all 建，此处是"老库缺列"的列级兜底（与 instruct_templates
+    # 那段同路径）；**不涉及**已删除的 silly_tavern_mode/theme（T1 红线）。
+    ("context_templates", "user_id", sa.Integer()),
     # ST 1.18.0 chat completion source ("custom"/"openai"/"claude"/"google"/"mistral")
     ("generation_presets", "chat_completion_source", sa.String()),
     ("characters", "ui_config", sa.Text()),

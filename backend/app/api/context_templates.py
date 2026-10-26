@@ -1,18 +1,26 @@
 """Context template API (ST 1.18.0 parity).
 
 Provides CRUD endpoints for context templates used during prompt assembly.
-Built-in templates (is_builtin=True) cannot be deleted by users but their
-editable fields can still be updated.
+
+[预设模板库 2026-10-25] 归属模型（alembic 0072 加 ``user_id`` 可空列）：
+  · ``user_id IS NULL`` —— 内置（is_builtin=True）或 2026-10-25 之前 admin 建的
+    共享行。全员可见；改/删仍限 admin（非 admin 一律 403，保持 PENTEST-2026-09-02
+    收口后的口径）。
+  · ``user_id = 某人`` —— 该用户私人模板（导入/自建）。只有本人可见/可改/可删，
+    他人访问一律 404（不泄露存在性）。
+  · ``name`` 保持**全局唯一**：装配按 name 查模板（roleplay_prompt_assembly.py
+    的 ``_load_context_template``），改成 (user_id, name) 唯一会让同名行产生歧义。
 """
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from ..core import get_db
-from ..api.dependencies import get_current_user, get_admin
+from ..api.dependencies import get_current_user
 from ..models import User, ContextTemplate
 
 router = APIRouter(prefix="/api/roleplay/context-templates", tags=["roleplay-context-templates"])
@@ -45,6 +53,7 @@ class ContextTemplateUpdateRequest(BaseModel):
 def _template_to_dict(t: ContextTemplate) -> dict:
     return {
         "id": t.id,
+        "user_id": t.user_id,
         "name": t.name,
         "display_name": t.display_name,
         "story_string": t.story_string,
@@ -59,18 +68,33 @@ def _template_to_dict(t: ContextTemplate) -> dict:
     }
 
 
+def _visible_templates(db: Session, user: User):
+    """内置 + 历史共享行（user_id NULL）+ 本人私人行。"""
+    return db.query(ContextTemplate).filter(
+        or_(
+            ContextTemplate.is_builtin.is_(True),
+            ContextTemplate.user_id.is_(None),
+            ContextTemplate.user_id == user.id,
+        )
+    )
+
+
+def _is_admin(user: User) -> bool:
+    return getattr(user, "role", "") == "admin"
+
+
 @router.get("")
 def list_context_templates(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all context templates (built-in + user-defined).
+    """List visible context templates (built-in/shared + current user's own).
 
-    Built-in templates are global (shared across users); user-defined
-    templates are scoped to the requesting user.
+    Built-in and legacy shared templates are global; user-defined templates are
+    scoped to the requesting user.
     """
     templates = (
-        db.query(ContextTemplate)
+        _visible_templates(db, user)
         .order_by(ContextTemplate.is_builtin.desc(), ContextTemplate.name)
         .all()
     )
@@ -83,7 +107,11 @@ def get_context_template(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    t = db.query(ContextTemplate).filter(ContextTemplate.name == template_name).first()
+    t = (
+        _visible_templates(db, user)
+        .filter(ContextTemplate.name == template_name)
+        .first()
+    )
     if not t:
         raise HTTPException(404, "Context template not found")
     return _template_to_dict(t)
@@ -92,16 +120,18 @@ def get_context_template(
 @router.post("")
 def create_context_template(
     req: ContextTemplateCreateRequest,
-    user: User = Depends(get_admin),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # [PENTEST-2026-09-02] 模板无 user_id 属主字段（全局共享资源），写操作曾仅需
-    # 登录即可改删他人/全部模板（渗透验证 D2/D3 实锤跨账号 200）。收口到 admin；
-    # GET 仍开放给登录用户（装配只读不受影响）。
-
+    # [PENTEST-2026-09-02] 模板曾无属主字段（全局共享资源），任何登录用户都能
+    # 改删他人模板（D2/D3 实锤跨账号 200）。现在改为**按属主隔离**：
+    #   · 普通用户：只能建自己的（user_id=本人），改删也只限自己那几行；
+    #   · admin：沿用旧语义建共享行（user_id=NULL），便于维护全局模板。
+    # 跨账号改删仍然被堵死（见 update/delete 的归属校验）。
     if db.query(ContextTemplate).filter(ContextTemplate.name == req.name).first():
         raise HTTPException(409, f"Context template '{req.name}' already exists")
     t = ContextTemplate(
+        user_id=None if _is_admin(user) else user.id,
         name=req.name,
         display_name=req.display_name,
         story_string=req.story_string,
@@ -122,11 +152,17 @@ def create_context_template(
 def update_context_template(
     template_id: int,
     req: ContextTemplateUpdateRequest,
-    user: User = Depends(get_admin),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     t = db.query(ContextTemplate).filter(ContextTemplate.id == template_id).first()
     if not t:
+        raise HTTPException(404, "Context template not found")
+    # 归属：私人行只认本人；内置/共享行（user_id NULL）仍限 admin。
+    if t.user_id is None:
+        if not _is_admin(user):
+            raise HTTPException(403, "Not enough permissions")
+    elif t.user_id != user.id:
         raise HTTPException(404, "Context template not found")
 
     update_data = req.model_dump(exclude_unset=True)
@@ -149,7 +185,7 @@ def update_context_template(
 @router.delete("/{template_id}")
 def delete_context_template(
     template_id: int,
-    user: User = Depends(get_admin),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     t = db.query(ContextTemplate).filter(ContextTemplate.id == template_id).first()
@@ -157,6 +193,11 @@ def delete_context_template(
         raise HTTPException(404, "Context template not found")
     if t.is_builtin:
         raise HTTPException(400, "Built-in context templates cannot be deleted")
+    if t.user_id is None:
+        if not _is_admin(user):
+            raise HTTPException(403, "Not enough permissions")
+    elif t.user_id != user.id:
+        raise HTTPException(404, "Context template not found")
     db.delete(t)
     db.commit()
     return {"ok": True}
