@@ -32,6 +32,7 @@ from .models import Base, User, SystemSetting
 from .services.provider_registry import get_missing_provider_secret_refs
 from .core.silent_failure import (
     bind_request_id as bind_silent_failure_request_id,
+    record as record_silent_failure,
     reset_request_id as reset_silent_failure_request_id,
 )
 
@@ -295,6 +296,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("记忆向量回填线程启动失败（非致命）")
 
+    # [OLLAMA-PREWARM 2026-10-26] P2-26 修法①：bge-m3 驻留预热 daemon 线程。
+    # ollama 的 bge-m3 被 24h 空闲卸载 / 容器重启逐出后，冷加载超过
+    # OLLAMA_TIMEOUT=30s ⇒ 降级 fastembed(512 维) ⇒ 维度门吞掉 ⇒ 记忆注入塌九成。
+    # 启动后先预热一次、之后每 OLLAMA_PREWARM_INTERVAL_HOURS 小时一次（默认 6h）。
+    # 开关关闭时不启动线程；线程不碰 DB、失败只经 silent_failure 留痕，不阻断启动。
+    try:
+        from .memory_module.prewarm import start_prewarm_worker
+        start_prewarm_worker()
+    except Exception as exc:
+        record_silent_failure("memory.prewarm.start", exc)
+        logger.warning("Ollama 嵌入预热线程启动失败（非致命）", exc_info=True)
+
     missing_secret_refs = get_missing_provider_secret_refs()
     if missing_secret_refs:
         refs = ", ".join(
@@ -310,6 +323,13 @@ async def lifespan(app: FastAPI):
     logger.info("应用启动完成")
     yield
     logger.info("应用关闭中...")
+
+    # [OLLAMA-PREWARM] 通知预热线程退出（daemon，join 超时也不阻塞进程退出）
+    try:
+        from .memory_module.prewarm import stop_prewarm_worker
+        stop_prewarm_worker()
+    except Exception as exc:
+        record_silent_failure("memory.prewarm.stop", exc)
 
     # [AUDIT-2026-09-25] stdio 型 MCP server 的子进程此前随连接常驻、重启
     # 也不回收——关闭时统一断开（含 exit_stack 里的子进程收尾）。

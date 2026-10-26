@@ -44,6 +44,21 @@ class Settings(BaseSettings):
     # 开启后：每轮对话落库后按阈值自动压缩（删除低权重记忆 + 生成压缩摘要）。
     # 置 False 可全局熔断，仅保留手动端点 /api/memory/compress。
     AUTO_MEMORY_COMPRESS: bool = True
+
+    # [OLLAMA-PREWARM 2026-10-26] P2-26 冷启动记忆塌缩的修法①：定期发一次小 embed，
+    # 让 ollama 的 bge-m3 保持驻留，避免它被 24h 空闲卸载 / 容器重启逐出后，
+    # 冷轮首请求超过 OLLAMA_TIMEOUT=30s → 降级 fastembed(512 维) → 维度门吞掉
+    # → 记忆注入塌约九成（机制链见 docs/OPEN_ISSUES.md [P2-26]）。
+    # 默认开；置 false 即完全不启动预热线程（回到改动前行为）。
+    OLLAMA_PREWARM_ENABLED: bool = True
+    # 预热间隔（小时）。必须 < ollama 的 OLLAMA_KEEP_ALIVE（compose 口径 24h），
+    # 否则刚过保留期才预热一次、中间仍会被卸载。<=0 视为关闭（不启动线程）。
+    # 注意：它只影响「定时」那一次次，启动后总会先预热一次。
+    OLLAMA_PREWARM_INTERVAL_HOURS: int = 6
+    # 预热用的极短文本。嵌入开销与文本长度弱相关（bge-m3 固定开销约 160ms/次），
+    # 取一两个字即可，目的是「让模型被调用」而不是产出有用向量。
+    OLLAMA_PREWARM_TEXT: str = "预热"
+
     TRUST_PROXY_HEADERS: bool = False
     RUN_MIGRATIONS_ON_STARTUP: bool = False
     MIGRATIONS_FAIL_FAST: bool = True
