@@ -239,10 +239,88 @@ export function buildCardScriptFrameBootstrap(frameId: string, nonce = ''): stri
   const dependencyUrls = ${dependencyUrlsJson};
   let thirdPartyGlobalsPromise = null;
   const seen = new Set();
-  const report = (message, detail) => {
+  // [安全顺手批 2026-10-26 · SPEC_下一程 §1#14] 父 realm 的 postMessage 被浏览器扩展
+  //（MAIN world 包装）替换后，帧 → 宿主的 RPC / storage / resize 整条通道会被宿主守卫
+  // 静默丢弃 —— 病灶与用户裁定见 docs/OPEN_ISSUES.md P2 第 16 行；守卫实测位置：
+  // components/ui/custom/CharacterCardRenderer.tsx:1119 的「event.source !== iframeRef.current.contentWindow」。
+  // 包装器用主窗口自身转发时 event.source 就不再是本帧 ⇒ 守卫 return，卡片"点了没反应"且零痕迹。
+  // 两层防御（本批允许改的文件只有这里与 palink-diag；模板串 part-*/legacy-st-sim 禁止触碰）：
+  //   ① **回落通道**：取 Window.prototype 上仍是原生实现的那份 postMessage，以 window.parent
+  //      为 receiver 调用 —— incumbent global 仍是本帧，event.source 因此保持正确。
+  //      只在"父窗口上的 postMessage 被 own-property 遮蔽掉"时才启用；未包装时
+  //      走的还是原来那条调用，行为与改前一致。
+  //   ② **丢弃前留痕**：包装在场、投递抛错、入站 frameId 对不上，都经 frame-error 轨上报一条
+  //      （宿主对这支只验 source+frameId、**不验 event.source**，见 CharacterCardRenderer.tsx:1035，
+  //      所以它是包装场景下唯一还能逃出去的通道），并停止裸 catch。
+  const palinkFrameMsg = { wrappedDetected: false, nativeFallbackUsed: false, sendFailed: 0, inboundDropped: 0, noticed: false };
+  // 真机取证入口（与 __palinkFrameErrors / __palinkDiagDump 同一套读法）：
+  // 帧内控制台 window.__palinkCardScriptFrameMsg ⇒ 包装是否在场、回落是否真用上、丢了几条。
+  try {
+    window.__palinkCardScriptFrameMsg = palinkFrameMsg;
+  } catch (error) {
+    palinkFrameMsg.sendFailed += 1;
+  }
+  const palinkNativePostMessage = () => {
     try {
-      window.parent.postMessage({ source: 'palink-smart-card-frame', frameId, type: 'frame-error', message, detail }, '*');
-    } catch {}
+      const parent = window.parent;
+      if (!parent) return null;
+      const proto = Object.getPrototypeOf(parent);
+      const fn = proto ? proto.postMessage : null;
+      if (typeof fn !== 'function') return null;
+      // prototype 级补丁已经把原生实现换掉 ⇒ 不能拿它当回落通道（等于再撞一次包装器）
+      return /\\[native code\\]/.test(Function.prototype.toString.call(fn)) ? fn : null;
+    } catch (error) {
+      palinkFrameMsg.sendFailed += 1;
+      return null;
+    }
+  };
+  const palinkFrameWrapNotice = (nativeAvailable) => {
+    return {
+      source: 'palink-smart-card-frame',
+      frameId,
+      type: 'frame-error',
+      message: 'palink_frame_postmessage_wrapped',
+      detail: '父 realm 的 postMessage 被第三方包装（own-property 遮蔽了 Window.prototype 的原生实现）。'
+        + '原生回落' + (nativeAvailable ? '可用：本帧已改走原生投递，event.source 保持为本帧。' : '不可用：本帧消息将由宿主守卫按 event.source 恒等校验丢弃，'
+          + '宿主侧的 capture 看门狗（palink-diag.ts installSmartCardFrameMsgWatch）会留一条 frame_msg_dropped。')
+        + '判据口径：frameId=' + String(frameId).slice(-6) + '（宿主发的 id），本通知走 frame-error 轨（只验 frameId）。',
+    };
+  };
+  const palinkSendToParent = (payload) => {
+    const parent = window.parent;
+    if (!parent) {
+      palinkFrameMsg.sendFailed += 1;
+      return false;
+    }
+    const direct = typeof parent.postMessage === 'function' ? parent.postMessage : null;
+    const native = palinkNativePostMessage();
+    const shadowed = Boolean(direct && native && direct !== native);
+    if (shadowed) palinkFrameMsg.wrappedDetected = true;
+    const fn = shadowed && native ? native : direct;
+    if (shadowed && native) palinkFrameMsg.nativeFallbackUsed = true;
+    if (typeof fn !== 'function') {
+      palinkFrameMsg.sendFailed += 1;
+      return false;
+    }
+    try {
+      fn.call(parent, payload, '*');
+    } catch (error) {
+      palinkFrameMsg.sendFailed += 1;
+      return false;
+    }
+    if (shadowed && !palinkFrameMsg.noticed) {
+      palinkFrameMsg.noticed = true;
+      // 直接 fn.call 而不是递归 palinkSendToParent：这条通知本身也必须出得去
+      try {
+        fn.call(parent, palinkFrameWrapNotice(Boolean(native)), '*');
+      } catch (error) {
+        palinkFrameMsg.sendFailed += 1;
+      }
+    }
+    return true;
+  };
+  const report = (message, detail) => {
+    palinkSendToParent({ source: 'palink-smart-card-frame', frameId, type: 'frame-error', message, detail });
   };
   const installCardScriptCompatGlobals = () => {
     try {
@@ -501,11 +579,26 @@ export function buildCardScriptFrameBootstrap(frameId: string, nonce = ''): stri
   installCardScriptCompatGlobals();
   window.addEventListener('message', (event) => {
     const data = event && event.data;
-    if (!data || data.source !== 'palink-smart-card-parent' || data.frameId !== frameId) return;
+    // [安全顺手批 2026-10-26] 改前这里是"一句 return、零痕迹"。宿主发的这一支带两道既有校验
+    //（信封 source + frameId 恒等），frameId 对不上就整条丢掉 —— 丢得不响 = 卡脚本永远收不到
+    // 清单却没人知道为什么。现在丢弃前经 frame-error 轨留痕（口径与用户裁定一致）。
+    // ⚠️ 两道校验本身不放宽：frameId 就是"这条消息是不是发给本帧"的身份，放宽等于让一张卡
+    //    读走另一张卡的脚本包。
+    if (!data || data.source !== 'palink-smart-card-parent') return;
+    if (data.frameId !== frameId) {
+      palinkFrameMsg.inboundDropped += 1;
+      report('card-scripts-push dropped: frameId mismatch', '宿主发的 ' + String(data.type || '<no-type>')
+        + ' 帧号与本帧不一致，已丢弃（本帧=' + String(frameId).slice(-6)
+        + '，来信=' + String(data.frameId || '').slice(-6) + '；累计丢弃 ' + palinkFrameMsg.inboundDropped + ' 条）');
+      return;
+    }
     if (data.type === 'card-scripts-push') {
       ensureThirdPartyGlobals().then(() => execute(data.scripts));
     }
-  });
+  }, true);
+  // ↑ capture 阶段：本仓在册的测量教训 —— 验/收这条链要在 capture 里看，不能靠包装
+  //   postMessage（会制造观察者效应）；bootstrap 是帧内最早跑的脚本，capture 注册因此
+  //   稳定先于卡自己的监听器，且本监听器不 stopPropagation、对卡侧可见行为零变化。
 })();
 </script>`;
 }

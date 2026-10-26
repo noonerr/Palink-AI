@@ -39,6 +39,7 @@ import { contextSetterRegistry, functionToolRegistry } from '../plugin-system/sa
 import { recordStubHit, recordStubHitOnce } from '../plugin-system/compat-stub-registry';
 import { toast } from 'sonner';
 import { i18nManager } from '../i18n';
+import { recordPalinkDiag } from '@/components/ui/custom/smart-card-runtime/palink-diag';
 import Handlebars from 'handlebars';
 import DOMPurify from 'dompurify';
 
@@ -3515,7 +3516,34 @@ function _buildGenerationRequestBody(
     : '';
   // 角色与会话标识
   const characterId = String(a.character_id ?? a.characterId ?? currentCharacterId ?? '');
-  const sessionId = String(a.session_id ?? a.sessionId ?? currentChatId ?? '');
+  // [安全顺手批 2026-10-26 · SPEC_下一程 §1#13] 会话标识**只认宿主权威值**。
+  // `currentChatId` 来自 `runtime.context.chatId`（本文件按 `const chatId = ctx?.chatId` 取），
+  // 由宿主 CharacterChat.tsx 每次渲染喂入（按 `chatId: selectedSession?.id || ''` 找，行号会漂），
+  // 帧/插件改不到；
+  // 而 `args.session_id` / `args.sessionId` 是**调用方自带**的声明
+  //（批次S §5.5 实测记录：帧侧 shim 至今仍在发 `__palinkContext.sessionId`，
+  //  批次S 只收了 SmartCardCompatController 那条 RPC 通道，本生成通道未被覆盖）。
+  // 口径与批次S 的 `resolveSmartCardHostSessionId` 一致：`__pending__` = 还没有会话。
+  // 宿主没有会话 ⇒ session_id 给 null：后端 `CharacterChatRequest.session_id` 是
+  // `Optional[str] = None`（backend/app/api/character_ext.py:4370，消费点 :4541 的
+  // POST /api/character-chat）⇒ 不会因为不带会话而 422（与批次S 对 generateRaw 的判定同口径）。
+  // 自带值与宿主值不一致 ⇒ 忽略并留痕（payload_session_ignored），不再让它进请求体。
+  const hostSessionRaw = String(currentChatId ?? '').trim();
+  const hostSessionId = hostSessionRaw === '__pending__' ? '' : hostSessionRaw;
+  const claimedSessionId = String(a.session_id ?? a.sessionId ?? '').trim();
+  if (claimedSessionId && claimedSessionId !== hostSessionId) {
+    recordPalinkDiag({
+      owner: 'frame_compat',
+      kind: 'payload_session_ignored',
+      name: 'getContext._buildGenerationRequestBody',
+      detail: `插件/卡自带会话标识与宿主权威值不一致，已按"宿主为准"忽略：`
+        + `自带=${claimedSessionId.slice(0, 40)} 宿主=${hostSessionId ? hostSessionId.slice(0, 40) : '<无会话>'}`
+        + `（消费点 sendStreamingRequest / sendGenerationRequest；请求体 session_id 取宿主值）`,
+      frameId: hostSessionId,
+      origin: 'host',
+    });
+  }
+  const sessionId = hostSessionId;
   // 模型：优先 args，其次 generationEngine 缓存
   const model = (typeof a.model === 'string' && a.model) || (generationEngine as any)._currentModel || '';
   return {

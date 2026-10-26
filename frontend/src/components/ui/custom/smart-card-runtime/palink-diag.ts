@@ -54,6 +54,14 @@ export const PALINK_DIAG_KINDS = [
   'missing_api',
   'host_script_error',
   'script_error',
+  // [安全顺手批 2026-10-26 · SPEC_下一程 §1#13/#14] 三条新静默点，全部对应台账
+  // docs/OPEN_ISSUES.md P2 #14（帧侧会话顶包）与 #16（父页面 postMessage 被包装）：
+  //   frame_msg_dropped            —— 帧→宿主的消息在 source 恒等校验处必被丢弃（留痕点）
+  //   parent_postmessage_wrapped   —— 检测到父 realm 的 postMessage 不是原生实现（包装在场）
+  //   payload_session_ignored      —— 帧自带 sessionId 与宿主权威值不一致，已按规则丢弃
+  'frame_msg_dropped',
+  'parent_postmessage_wrapped',
+  'payload_session_ignored',
 ] as const;
 
 export type PalinkDiagKind = (typeof PALINK_DIAG_KINDS)[number] | string;
@@ -1049,6 +1057,155 @@ export function installPalinkDiagHostRejectionTrack(): void {
   });
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * [安全顺手批 2026-10-26] 帧 ↔ 宿主 postMessage 的来源判定与「丢弃前留痕」
+ * （SPEC_下一程计划 §1#14 / §3 第 10 项；病灶登记：docs/OPEN_ISSUES.md P2 #16）
+ *
+ * 机制（台账原文）：帧内一律走 `window.parent.postMessage(...)`，该属性在调用时解析到
+ * **父 realm** 的 postMessage。若浏览器扩展在父页面（MAIN world）把它替换成自己的包装、
+ * 再用主窗口转发，`event.source` 就变成主窗口 ⇒ 宿主守卫（
+ * `components/ui/custom/CharacterCardRenderer.tsx` 的 `event.source !== iframeRef.current.contentWindow`
+ * 恒等校验，实测当前在 :1119）直接 `return` ⇒ storage 落库 / resize / RPC **整条静默丢弃**，
+ * 用户侧表现为「卡片点了没反应」，开发者侧零痕迹。
+ *
+ * 本批的口径（用户裁定「丢弃前必须 palinkDiag 留痕 + 以既有 frameSecret/frameId 双校验作
+ * 回落判据」）分成两半落地：
+ *   ① 留痕 —— 在下面这个 **capture 阶段**看门狗里做。capture 先于宿主的 bubble 监听器，
+ *      所以"这条消息注定被丢"能在丢之前记下；且只观察不改写、不包装 postMessage
+ *      （主脑在册的测量教训：包装会制造观察者效应，v1 数据就是这么作废的）。
+ *   ② 回落判据 —— 由 `resolveSmartCardFrameMsgProvenance` 算出并写进 detail：
+ *      frameId 形状（宿主发的 id 形如 `palink-smart-card-<CSPRNG>`，不可预测）
+ *      + 帧内手势令牌（frameSecret，宿主在 :1128-:1136 拿它作第二道校验）是否在场。
+ *      ⚠️ **本批不改宿主守卫本身**（`CharacterCardRenderer.tsx` 不在施工令允许的文件里），
+ *      所以这里只产出判据与痕迹，不新增放行通道 —— 放行会削弱"只有我自己的 iframe
+ *      才能冒充这张卡"这条红线（主页面脚本能读 iframe.srcdoc，因而能抄到 frameId）。
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+export interface SmartCardFrameMsgProvenance {
+  /** 不是本通道的消息 ⇒ 一律不看、不留痕（避免把全站 postMessage 灌进记录器） */
+  inScope: boolean;
+  frameId: string;
+  msgType: string;
+  /**
+   * provenance_ok              —— event.source 确实在场的某个 iframe 窗口里，宿主守卫会放行
+   * wrapper_provenance_lost    —— event.source 是主窗口本身/空/不在场（扩展包装的特征），
+   *                              宿主守卫**必然**丢弃本条 ⇒ 这是要留痕的那一类
+   * foreign_frame              —— event.source 是别的 iframe（多卡页面正常串台），本条不该记，
+   *                              记了会把真特征淹掉
+   */
+  verdict: 'provenance_ok' | 'wrapper_provenance_lost' | 'foreign_frame';
+  /** 回落判据一：frameId 形状是否像宿主自己发的（不可预测的 CSPRNG 后缀） */
+  frameIdShaped: boolean;
+  /** 回落判据二：帧内手势令牌（frameSecret）是否在场（legacy 轨在顶层，V2 轨在 payload 内） */
+  gestureTokenClaimed: boolean;
+}
+
+const SMART_CARD_FRAME_ID_RE = /^palink-smart-card-[A-Za-z0-9_-]{8,}$/;
+
+function frameMsgEnvelopeOf(data: unknown): { inScope: boolean; frameId: string; msgType: string; gestureTokenClaimed: boolean } {
+  if (!data || typeof data !== 'object') return { inScope: false, frameId: '', msgType: '', gestureTokenClaimed: false };
+  const d = data as Record<string, unknown>;
+  const src = typeof d.source === 'string' ? d.source : '';
+  // 两条外发信封都出自本仓 shim：
+  //   'palink-smart-card'        —— RPC / storage / resize，**过**宿主的 event.source 恒等校验
+  //                                （实测守卫在 CharacterCardRenderer.tsx:1119）⇒ 会被包装打成静默丢弃
+  //   'palink-smart-card-frame'  —— frame-error / frame-csp 取证轨，宿主在 :1035 那支**只验 frameId**、
+  //                                不看 event.source ⇒ 包装场景下它是唯一还出得去的通道，
+  //                                帧侧留痕就走它；纳进来只会把"注定放行"的消息误判成丢弃。
+  const inScope = src === 'palink-smart-card';
+  const frameId = typeof d.frameId === 'string' ? d.frameId : '';
+  const msgType = typeof d.type === 'string' ? d.type : '<no-type>';
+  const tokenTop = typeof d.__palinkGestureToken === 'string' ? d.__palinkGestureToken : '';
+  const payload = d.payload && typeof d.payload === 'object' ? (d.payload as Record<string, unknown>) : null;
+  const tokenPayload = payload && typeof payload.__palinkGestureToken === 'string'
+    ? String(payload.__palinkGestureToken)
+    : '';
+  return { inScope, frameId, msgType, gestureTokenClaimed: Boolean(tokenTop || tokenPayload) };
+}
+
+/**
+ * 纯函数：给定一条 message 事件的关键字段，判定宿主守卫会不会把它丢掉。
+ * 拆出来是为了能在单测里喂"主窗口转发的假事件"，而不是去包装 postMessage。
+ *
+ * `frames` 传 `document.querySelectorAll('iframe')` 那种 ArrayLike 即可；只比窗口身份，
+ * 不去读 srcdoc（卡片文档可达数 MB，逐条消息扫字符串是给自己加活）。
+ */
+export function resolveSmartCardFrameMsgProvenance(input: {
+  data: unknown;
+  source: unknown;
+  self: unknown;
+  frames: ArrayLike<{ contentWindow?: unknown } | null | undefined> | null | undefined;
+}): SmartCardFrameMsgProvenance {
+  const envelope = frameMsgEnvelopeOf(input.data);
+  const base: SmartCardFrameMsgProvenance = {
+    inScope: envelope.inScope,
+    frameId: envelope.frameId,
+    msgType: envelope.msgType,
+    verdict: 'foreign_frame',
+    frameIdShaped: SMART_CARD_FRAME_ID_RE.test(envelope.frameId),
+    gestureTokenClaimed: envelope.gestureTokenClaimed,
+  };
+  if (!envelope.inScope) return { ...base, verdict: 'foreign_frame' };
+  const source = input.source;
+  // 主窗口自己转发的（扩展包装后的典型形状）或 source 为空 ⇒ 守卫恒等比较必假。
+  if (!source || source === input.self) return { ...base, verdict: 'wrapper_provenance_lost' };
+  let isLiveFrameWindow = false;
+  const frames = input.frames;
+  if (frames) {
+    for (let i = 0; i < frames.length; i += 1) {
+      const frame = frames[i];
+      if (frame && frame.contentWindow === source) {
+        isLiveFrameWindow = true;
+        break;
+      }
+    }
+  }
+  return { ...base, verdict: isLiveFrameWindow ? 'provenance_ok' : 'foreign_frame' };
+}
+
+/**
+ * capture 阶段看门狗：只做"丢弃前留痕"，不拦截、不改写、不重新派发。
+ * 重复调用幂等（挂在 window 上的标记位）。记录器关闭时直接 return，零开销。
+ */
+export function installSmartCardFrameMsgWatch(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as unknown as Record<string, unknown>;
+  if (w.__palinkFrameMsgWatchInstalled === true) return;
+  w.__palinkFrameMsgWatchInstalled = true;
+  window.addEventListener('message', (event: MessageEvent) => {
+    // 关掉记录器时连判定都不做（红线：关闭零开销）
+    if (!palinkDiagEnabled()) return;
+    try {
+      const verdict = resolveSmartCardFrameMsgProvenance({
+        data: event?.data,
+        source: event?.source,
+        self: window,
+        frames: typeof document !== 'undefined' ? document.querySelectorAll('iframe') : null,
+      });
+      if (!verdict.inScope || verdict.verdict !== 'wrapper_provenance_lost') return;
+      recordPalinkDiag({
+        owner: 'frame_compat',
+        kind: 'frame_msg_dropped',
+        name: verdict.msgType,
+        detail: `帧→宿主消息被判定为"父 realm postMessage 被第三方包装后由主窗口转发"：`
+          + `event.source=${verdict.frameId ? '主窗口/空（非任何在场 iframe 窗口）' : '主窗口/空'}，`
+          + `宿主守卫的 event.source 恒等校验即将丢弃本条（storage/resize/RPC 整条通道失效）。`
+          + `回落判据：frameId 形状=${verdict.frameIdShaped} 手势令牌在场=${verdict.gestureTokenClaimed}`
+          + `（两项都在 ⇒ 更像扩展包装而非伪造；放行点未改，见 palink-diag.ts 段首说明）`,
+        frameId: verdict.frameId,
+        origin: 'host',
+      });
+    } catch (error) {
+      // 判定本身失败也要留痕（包W 的红线就是"什么都不做的 catch"）：
+      // 计数器挂在 window 上，控制台 `window.__palinkFrameMsgWatchErrors` 可直读。
+      // 这里不再调 recordPalinkDiag —— 记录器可能就是抛错的那一方，避免二次抛。
+      const w = window as unknown as Record<string, unknown>;
+      w.__palinkFrameMsgWatchErrors = Number(w.__palinkFrameMsgWatchErrors || 0) + 1;
+      w.__palinkFrameMsgWatchLastError = String((error as { message?: unknown })?.message || error).slice(0, 160);
+    }
+  }, true);
+}
+
 /**
  * 挂全局可读入口（父侧）。重复调用幂等。
  *   window.__palinkDiagDump()      → JSON 字符串（含各帧已上送的部分）
@@ -1059,8 +1216,7 @@ export function installPalinkDiagHostRejectionTrack(): void {
  *   window.__palinkDiagRecord(...) → 宿主代码写一条
  *   window.__palinkDiagRanking()   → 缺口排行数组（按事件数降序）
  */
-export function installPalinkDiagGlobals(): void {
-  if (typeof window === 'undefined') return;
+export function installPalinkDiagGlobals(): void {  if (typeof window === 'undefined') return;
   const w = window as unknown as Record<string, unknown>;
   w.__palinkDiagDump = palinkDiagDump;
   w.__palinkDiagRecords = palinkDiagRecords;
@@ -1074,5 +1230,10 @@ export function installPalinkDiagGlobals(): void {
   // 真机查验入口：手动触发一批上传 / 读上传态（批次配额、已发条数、最后结果）。
   w.__palinkDiagUploadNow = flushPalinkDiagUpload;
   w.__palinkDiagUploadStats = diagUploadStats;
+  // [安全顺手批 2026-10-26] 帧↔宿主消息的来源看门狗（capture 阶段，只留痕不放行）。
+  // 挂在本函数里 = 与记录器同一入口、同一次启动（main.tsx 调 installPalinkDiagGlobals），
+  // 不需要再动卡片渲染器；监听器内部按 palinkDiagEnabled() 短路，关闭时零开销。
+  installSmartCardFrameMsgWatch();
+  w.__palinkFrameMsgVerdict = resolveSmartCardFrameMsgProvenance;
   if (palinkDiagEnabled()) scheduleSummary();
 }

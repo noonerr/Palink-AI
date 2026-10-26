@@ -32,6 +32,8 @@ import {
   handleSmartCardCompatRequest,
   type SmartCardCompatControllerState,
 } from '@/components/ui/custom/smart-card-runtime/SmartCardCompatController';
+// [安全顺手批 2026-10-26] 顶包/静默丢弃都要留痕（台账 OPEN_ISSUES P2 #14 / #16）
+import { recordPalinkDiag } from '@/components/ui/custom/smart-card-runtime/palink-diag';
 // 插件侧角色身份派生（2026-10-02 P1：名字哈希 → UUID 派生）
 import { pluginCharacterIdFromUuid } from '@/lib/sillytavern/plugin-character-id';
 // 卡脚本存档的服务端写穿同步（P2）；失败静默降级为纯本地
@@ -351,6 +353,26 @@ export interface CharacterChatProps {
 
 /* ────── Component ──────────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * [安全顺手批 2026-10-26 · SPEC_下一程 §1#13] 会话作用域事件的放行判定（顶包收口）。
+ *
+ * 投递方在事件 detail 里**自声明** sessionId；宿主权威值是 `selectedSession.id`。
+ * 判据（与批次S 的 `resolveSmartCardHostSessionId`、以及同事件另一消费方
+ * `CharacterView.tsx:1698` 的既有守卫同口径）：
+ *   · 自声明与宿主都在场且不等 ⇒ **拒绝**（这就是"帧/插件替宿主决定是哪个会话"）
+ *   · 自声明为空 ⇒ 放行（改前行为；不能因为补守卫打死不带 id 的既有投递）
+ *   · 宿主没有会话（空 / `__pending__` 已在上游置空）⇒ 放行（没有可比对的权威值）
+ * 抽成纯函数是因为全仓没有任何用例渲染过本组件（实测 grep：
+ * `from '@/components/views/character/CharacterChat'` 在各 __tests__ 目录里零命中），
+ * 判据必须可测，否则这条守卫就是空气。
+ */
+export function acceptSessionScopedEvent(claimedSessionId: string, hostSessionId: string): boolean {
+  const claimed = String(claimedSessionId ?? '').trim();
+  const host = String(hostSessionId ?? '').trim();
+  if (!claimed || !host) return true;
+  return claimed === host;
+}
+
 export function CharacterChat(props: CharacterChatProps) {
   // 移动端布局（从 useMobileLayout 提取）
   const { isMobile, composerBottomPx } = useMobileLayout();
@@ -373,12 +395,37 @@ export function CharacterChat(props: CharacterChatProps) {
   // [PERF-2026-10-07 问题3] 主来源改为父级 props（CharacterView 从 messages 响应里承接，
   // 零额外请求）；生成流结束后的 mvuVariablesUpdated 事件仍是覆盖源。见下方同步 effect。
 
+  // [安全顺手批 2026-10-26] 宿主权威会话 id 的每帧快照（赋值在下方 props 解构之后），
+  // 给下面那个 [] 依赖的 palink:mvuVariablesUpdated 监听器比对用 —— 本组件既有写法
+  // （参考 inputValueRef / handleEditMessageRef）。
+  const hostSessionIdRef = useRef<string>('');
+
   // 生成流的 final_content 事件会携带后端刚保存的 MVU variables；直接写入页面状态，
   // 不等待生成状态 effect 或再次 GET，确保 iframe context-update 立即收到最新 stat_data。
   useEffect(() => {
     const handleMvuVariablesUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId?: string; variables?: unknown }>).detail;
       if (!detail?.variables) return;
+      // [安全顺手批 2026-10-26 · SPEC_下一程 §1#13] 顶包收口（第二处）。
+      // 事件 detail 里的 sessionId 是**投递方自声明**的（宿主轨 useCharacterChat.ts:462/817/
+      // 1016/1388 与下面的手动更新都带它），但改前这里一个字节都没看过它 —— 等于"自声明会话
+      // 的东西直接落到当前视图"，与用户裁定「卡片只能碰自己这一份对话」相反。
+      // 口径对齐同事件的另一消费方 CharacterView.tsx:1698（不等就 return），
+      // 并沿用批次S 的 `__pending__` = 还没有会话。未声明 sessionId 的旧投递保持原行为。
+      const claimed = typeof detail.sessionId === 'string' ? detail.sessionId.trim() : '';
+      const hostSessionId = hostSessionIdRef.current;
+      if (!acceptSessionScopedEvent(claimed, hostSessionId)) {
+        recordPalinkDiag({
+          owner: 'frame_compat',
+          kind: 'payload_session_ignored',
+          name: 'CharacterChat.palink:mvuVariablesUpdated',
+          detail: `变量更新事件自声明的会话与宿主当前会话不一致，已忽略（不落进 sessionVariables）：`
+            + `自声明=${claimed.slice(0, 40)} 宿主=${hostSessionId.slice(0, 40)}`,
+          frameId: hostSessionId,
+          origin: 'host',
+        });
+        return;
+      }
       if (typeof detail.variables === 'object' && !Array.isArray(detail.variables)) {
         setSessionVariables(detail.variables as { stat_data?: Record<string, unknown> });
       }
@@ -471,6 +518,11 @@ export function CharacterChat(props: CharacterChatProps) {
     systemDefaults,
     characterDisplayMode = 'framed',
   } = props;
+
+  // 每帧同步宿主权威会话 id（`__pending__` 按批次S 口径视作"还没有会话" ⇒ 置空）。
+  hostSessionIdRef.current = selectedSession && selectedSession.id && selectedSession.id !== '__pending__'
+    ? String(selectedSession.id)
+    : '';
   const dialogText = lang === 'en'
     ? {
         confirm: t.confirm || 'Confirm',

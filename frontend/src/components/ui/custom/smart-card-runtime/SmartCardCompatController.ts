@@ -25,6 +25,8 @@ import { emitEvent } from '@/lib/event-bus';
 // [ST-BRIDGE-PRESET-WRITE 2026-10-26 批次TH] 预设写类 9 键写成功后的快照热更广播：
 // CharacterCardRenderer 监听该事件自增 revision 重拉 /presets/snapshot → context-update 进帧。
 import { notifyPresetSelectionChanged } from '@/lib/promptPresetSelection';
+// [安全顺手批 2026-10-26] 帧自带会话标识的"顶包尝试"留痕（批次S §5.5 留下的取证缺口）。
+import { recordPalinkDiag } from './palink-diag';
 
 type SmartCardWorldBookEntry = Record<string, any>;
 
@@ -329,6 +331,49 @@ function resolveSmartCardHostSessionId(context: SmartCardCompatRequestContext | 
     ? String(context.selectedSession.id)
     : '';
   return raw === '__pending__' ? '' : raw.trim();
+}
+
+/**
+ * [安全顺手批 2026-10-26 · SPEC_下一程 §1#13] 顶包**尝试**的留痕（只取证，不改判据）。
+ *
+ * 批次S 把父侧的读取点全收了，但它的 §5.5（报告 `:225-226`）如实记录「帧侧 shim 仍在发
+ * `__palinkContext.sessionId`」—— 真身在 `runtime-body/part-01.ts` 与
+ * `frame-shim/legacy-st-sim-parts/part-a.ts` 的模板串里，本批禁止触碰。
+ * 于是"谁在自声明会话、声明的是不是宿主那一份"这条改前**零痕迹**。这里补上：
+ * 值一律丢弃，不一致才写一条 palinkDiag（owner=frame_compat）。
+ *
+ * ⚠️ 它**不是**放行条件：会话归属永远只由 `resolveSmartCardHostSessionId` 决定。
+ * 合法帧发的就是宿主注入的值（CharacterChat.tsx 的 `sessionId={selectedSession?.id}`
+ * → smart-card-runtime/helpers.ts:53 → 帧 ctx），因此生产路径上这条留痕应当恒为 0 次；
+ * 一旦有量，就是有人在伪造或 stale frame。
+ */
+function traceSmartCardFrameSessionClaim(
+  payload: Record<string, unknown> | undefined,
+  context: SmartCardCompatRequestContext,
+  actionName: string,
+): void {
+  const claimed = readSmartCardFrameClaimedSessionId(payload);
+  if (!claimed) return;
+  const hostSessionId = resolveSmartCardHostSessionId(context);
+  if (claimed === hostSessionId) return;
+  recordPalinkDiag({
+    owner: 'frame_compat',
+    kind: 'payload_session_ignored',
+    name: `smartCardCompat.${String(actionName || 'unknown')}`,
+    detail: `帧自带会话标识与宿主权威会话不一致，已忽略（批次S 口径：只认 selectedSession.id）：`
+      + `自带=${claimed.slice(0, 40)} 宿主=${hostSessionId ? hostSessionId.slice(0, 40) : '<无会话>'}`,
+    frameId: hostSessionId,
+    origin: 'host',
+  });
+}
+
+/** 帧侧自声明会话的两个键（`payload.__palinkContext.sessionId` 与顶层 `payload.sessionId`）。 */
+function readSmartCardFrameClaimedSessionId(payload: Record<string, unknown> | undefined): string {
+  if (!payload || typeof payload !== 'object') return '';
+  const nested = payload.__palinkContext && typeof payload.__palinkContext === 'object'
+    ? (payload.__palinkContext as Record<string, unknown>).sessionId
+    : undefined;
+  return String(nested ?? payload.sessionId ?? '').trim();
 }
 
 async function createOrReplaceSmartCardWorldBook(
@@ -2355,6 +2400,9 @@ export async function handleSmartCardCompatRequest(
     // 的动作已统一改走 `resolveSmartCardHostSessionId`（只认宿主构造的 selectedSession.id）。
     // 判据（逐动作清点）：docs/_active/report/REPORT_批次S_帧侧会话顶包收口_2026-10-21.md §S-1。
     const requestContext: SmartCardCompatRequestContext = context;
+    // [安全顺手批 2026-10-26] 帧自带会话键一律不进 requestContext（批次S 已收口），
+    // 这里只补一条"谁在自声明"的取证，判定与请求体都不看它。
+    traceSmartCardFrameSessionClaim(payload, requestContext, action.action);
     let result: unknown = { success: true };
 
     if (

@@ -54,6 +54,13 @@ vi.mock('@/services/worldbookApi', () => ({
 }));
 
 import { handleSmartCardCompatRequest } from '../SmartCardCompatController';
+// [安全顺手批 2026-10-26] 顶包**尝试**的留痕取证（批次S §5.5 记录帧侧 shim 至今仍在发
+// `__palinkContext.sessionId`，父侧不再读它 ⇒ 改前"谁在发"零痕迹）。
+import {
+  palinkDiagRecords,
+  resetPalinkDiagForTest,
+  setPalinkDiagEnabled,
+} from '../palink-diag';
 
 const HOST_SESSION = 'host-session';
 const FRAME_SESSION = 'frame-injected-other-session';
@@ -343,5 +350,65 @@ describe('预设读类：__palinkContext 通道已从 dispatcher 移除', () => 
       '帧给的 id 绝不能进 URL',
     ).toBe(false);
     expect(getMock.mock.calls.some((call) => String(call[0]).indexOf('/sessions/') >= 0)).toBe(false);
+  });
+});
+
+// ============================================================
+// ⑥ [安全顺手批 2026-10-26] 顶包**尝试**必须留痕（值仍一律无效）
+// ============================================================
+describe('payload_session_ignored 留痕：批次S §5.5 的取证缺口（帧侧仍在发，父侧不再读）', () => {
+  const ignored = () => palinkDiagRecords().filter((r) => r.kind === 'payload_session_ignored');
+
+  beforeEach(() => {
+    resetPalinkDiagForTest();
+    setPalinkDiagEnabled(true, false);
+  });
+
+  it('宿主无会话 + 帧塞 session ⇒ 一条留痕，且请求体照旧不带该 id', async () => {
+    const out = await callAction('renameChat', { worldBook: null }, noHostSessionContext(), {
+      ...frameSpoofPayload(),
+      title: '新标题',
+    });
+    expect(out.result.success).toBe(false);
+    expect(out.result.error).toBe('no_active_session');
+    expect(ignored()).toHaveLength(1);
+    expect(ignored()[0].detail).toContain(FRAME_SESSION);
+    expect(ignored()[0].owner).toBe('frame_compat');
+    expect(ignored()[0].name).toBe('smartCardCompat.renameChat');
+  });
+
+  it('宿主有会话 + 帧塞另一个 id ⇒ 同样留痕（正向行为不被打死，绑的还是宿主会话）', async () => {
+    postMock.mockResolvedValue({ id: 'wb-1' });
+    getMock.mockResolvedValue([]);
+    const ctx = baseContext();
+    const out = await callAction('rebindChatWorldbook', { worldBook: { id: 'wb-1', name: '书', entries: [] } }, ctx, frameSpoofPayload());
+    expect(out.result.success).toBe(true);
+    expect(
+      postMock.mock.calls.some((call) => String(call[0]).indexOf(`/api/character-sessions/${HOST_SESSION}/worldbook`) === 0),
+      '绑定的必须是宿主那一份会话',
+    ).toBe(true);
+    expect(ignored()).toHaveLength(1);
+    expect(ignored()[0].detail).toContain(HOST_SESSION);
+  });
+
+  it('合法帧声明的就是宿主那一份 ⇒ 零留痕（生产常态不制造噪声）', async () => {
+    await callAction('renameChat', { worldBook: null }, baseContext(), {
+      __palinkContext: { sessionId: HOST_SESSION },
+      title: '新标题',
+    });
+    expect(ignored()).toHaveLength(0);
+  });
+
+  it('payload 完全不带会话键 ⇒ 零留痕（不能把普通动作刷成告警）', async () => {
+    await callAction('renameChat', { worldBook: null }, baseContext(), { title: '新标题' });
+    expect(ignored()).toHaveLength(0);
+  });
+
+  it('顶层 payload.sessionId 也在取证范围内（批次S 记过：这个键没人读，但今天有人发）', async () => {
+    await callAction('renameChat', { worldBook: null }, noHostSessionContext(), {
+      sessionId: FRAME_SESSION,
+      title: '新标题',
+    });
+    expect(ignored()).toHaveLength(1);
   });
 });
